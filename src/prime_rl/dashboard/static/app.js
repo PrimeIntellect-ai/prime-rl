@@ -1985,8 +1985,7 @@ async function loadEpisodes({ append = false } = {}) {
   }
   renderEpisodeRows(fresh);
   if (!$("#trace-modal").hidden) renderRolloutWindow();
-  const scope = traces.mode === "step" ? `step ${traces.step}` : traces.bin ? "selected bin" : "stream";
-  $("#trace-status").textContent = `${data.total} episode${data.total === 1 ? "" : "s"} · ${scope}`;
+  $("#trace-status").textContent = `${fmtCompact(data.total)} episode${data.total === 1 ? "" : "s"}`;
 }
 
 async function loadMoreEpisodes() {
@@ -2089,7 +2088,7 @@ function renderHistogram() {
   const picked = selected
     ? ` · selected ${clock(selected[0])}–${clock(selected[1])} (${fmtBin(data.bin)})`
     : "";
-  $("#trace-chart-sub").textContent = `${data.total} episodes · ${fmtBin(data.bin)} bins · ${span}${picked}`;
+  $("#trace-chart-sub").textContent = `${fmtCompact(data.total)} episodes · ${fmtBin(data.bin)} bins · ${span}${picked}`;
 }
 
 function histTipHtml(start, count, bin) {
@@ -2097,7 +2096,7 @@ function histTipHtml(start, count, bin) {
   const day = new Date(start * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return (
-    `<div class="tip-head">${count} episode${count === 1 ? "" : "s"}</div>` +
+    `<div class="tip-head">${fmtCompact(count)} episode${count === 1 ? "" : "s"}</div>` +
     `<div class="tip-row"><span>start</span><span>${day} ${clock(start)}</span></div>` +
     `<div class="tip-row"><span>end</span><span>${day} ${clock(end)}</span></div>` +
     `<div class="tip-row"><span>duration</span><span>${fmtBin(bin)}</span></div>`
@@ -2594,7 +2593,7 @@ function toolDefinitionsHtml(trace) {
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
   const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
-  if (!rendered) return emptyState("rendered text not loaded", "select this view again to load recorded token IDs") + errors;
+  if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
@@ -2609,34 +2608,45 @@ function renderedTokensHtml(trace, branches) {
     const scales = episodeSignalScales(trace);
     const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
     return (
+      errors +
       `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
       `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
       (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
       (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
       `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
       `<span class="entry-chev">›</span></summary>` +
-      `<pre class="rendered-text">${body}</pre></details>` + errors
+      `<pre class="rendered-text">${body}</pre></details>`
     );
   }
   if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
-    return emptyState(title, detail) + errors;
+    return errors + emptyState(title, detail);
   }
   return (
+    errors +
     `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
     `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
     `<span class="entry-preview">${preview(selected.text, 180)}</span>` +
     `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
     `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
     `<span class="entry-chev">›</span></summary>` +
-    `<pre class="rendered-text">${esc(selected.text)}</pre></details>` + errors
+    `<pre class="rendered-text">${esc(selected.text)}</pre></details>`
   );
 }
 
 let entriesObserver = null;
 
 function episodeErrors(ep, trace) {
-  return [...(ep.errors || []), ...(trace?.errors || [])];
+  // one failure is often recorded twice, on the episode and on its trace; show it
+  // once, keeping whichever copy carries the traceback
+  const byMessage = new Map();
+  for (const error of [...(ep.errors || []), ...(trace?.errors || [])]) {
+    const record = error && typeof error === "object" ? error : { message: String(error) };
+    const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
+    const kept = byMessage.get(key);
+    if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
+  }
+  return [...byMessage.values()];
 }
 
 function errorBannersHtml(errors) {
@@ -2684,7 +2694,7 @@ function renderMessages(ep, trace, branches) {
   entriesObserver?.disconnect();
   const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
-    container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
+    container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
   }
   if (state.traces.viewMode === "rendered") {
@@ -2789,11 +2799,11 @@ function renderMessages(ep, trace, branches) {
     )
     .join("");
   container.innerHTML =
+    errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml +
-    errorsHtml;
+    unlinkedCallsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
