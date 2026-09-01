@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.trainer.rl.trace_annotations import TraceAnnotationWriter
+from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -257,7 +257,7 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    trace_annotation_writer = TraceAnnotationWriter(parallel_dims, world)
+    annotation_writer = AnnotationWriter(parallel_dims, world)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -537,7 +537,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            trace_annotation_writer.export(micro_batch, out)
+            annotation_writer.export(micro_batch, out)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -559,7 +559,7 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        trace_annotation_writer.flush()
+        annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.

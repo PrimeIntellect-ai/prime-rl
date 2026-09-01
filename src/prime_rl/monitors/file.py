@@ -10,9 +10,9 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.utils.pathing import get_annotations_dir, get_file_monitor_dir, get_index_path, get_trace_stream
-from prime_rl.utils.trace_index import index_row
-from prime_rl.utils.trace_updates import make_update, update_index_row
+from prime_rl.monitors.trace_index import index_row
+from prime_rl.monitors.trace_updates import update_index_row
+from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -21,42 +21,26 @@ if TYPE_CHECKING:
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
 
-def _stamp_arrival(episode: vf.Episode, kind: Kind, step: int, now: float) -> None:
-    """Record what this consumer knows as the episode lands: the kind of work it did,
-    when it was dispatched, and when it came back. A trace has several steps, so each
-    one is stamped as its own event rather than implied by where the record is stored."""
-    work = getattr(episode.run, "work", None)
-    for trace in episode.traces:
-        trace.info["kind"] = kind
-        if work is not None:
-            trace.info["dispatch"] = {"step": work.step, "time": trace.timing.start}
-        trace.info["arrival"] = {"step": step, "time": now}
+def get_trace_dir(output_dir: Path) -> Path:
+    """The trace stream and everything written about it, under one roof so nothing
+    beside it has to be read as belonging to it."""
+    return get_file_monitor_dir(output_dir) / "traces"
 
 
-def _cohort_step(step: int, kind: Kind) -> int:
-    """The training step a completed cohort ties to, 1-indexed like every other step.
-
-    A train cohort ties to the step whose batch shipped it. An eval epoch is triggered
-    by a policy version, and policy versions are 0-indexed, so it ties to the step that
-    produced the policy it measured - except the baseline epoch, which measured the
-    initial weights: no step produced those, so it ties to step 1, which trains from
-    them. One epoch keys to one step even when the policy turns over mid-epoch, which
-    per-trace provenance (the policy span) records instead."""
-    return max(step, 1) if kind == "eval" else step
+def get_trace_stream(output_dir: Path) -> Path:
+    """Every episode, appended as it arrives."""
+    return get_trace_dir(output_dir) / "stream.jsonl"
 
 
-def _effective_update(trace: vf.Trace, step: int, kind: Kind, now: float) -> dict[str, Any]:
-    """What the ship-time cohort adds over the arrival record: membership, the step it
-    ties to, the scalar advantage, and the per-token advantage streams."""
-    info: dict[str, Any] = {"effective": True, "ship": {"step": _cohort_step(step, kind), "time": now}}
-    if (advantage := trace.info.get("advantage")) is not None:
-        info["advantage"] = advantage
-    branches = {
-        branch.index: {"advantages": advantages}
-        for branch in trace.branches
-        if (advantages := branch.advantages) is not None
-    }
-    return make_update(trace.id, info=info, branches=branches)
+def get_annotations_dir(output_dir: Path) -> Path:
+    """One file per producer of trace updates: orch ship-time facts, trainer streams."""
+    return get_trace_dir(output_dir) / "annotations"
+
+
+def get_index_path(path: Path) -> Path:
+    """A stream's index, beside it. Every index under the trace directory is named for
+    what it indexes, so a reader pairs the two without knowing who wrote them."""
+    return path.with_name(path.name.replace(".jsonl", ".index.jsonl"))
 
 
 class FileMonitor(Monitor):
@@ -92,21 +76,15 @@ class FileMonitor(Monitor):
         self.file.write(json.dumps(row) + "\n")
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """``all`` appends each episode to the trace stream as it completes — every
-        episode is serialized exactly once, in arrival order, whatever its kind, so an
-        in-progress run can be tailed. ``effective`` writes no second copy: it records
-        what the ship-time cohort learned (see ``_effective_update``) as annotations
-        that readers fold back onto the stream. Episode-level failures are preserved
-        even when no trace was produced."""
+        """Append each episode to the trace stream as it completes — every episode is
+        serialized exactly once, in arrival order, whatever its kind, so an in-progress
+        run can be tailed. Episode-level failures are preserved even when no trace was
+        produced. The shipped cohort writes no second copy: what it learns arrives as
+        annotations that readers fold back onto the stream."""
         if subset == "effective":
-            now = time.time()
-            await self.log_annotations(
-                [_effective_update(trace, step, kind, now) for episode in episodes for trace in episode.traces]
-            )
             return
 
         def write() -> None:
-            now = time.time()
             path = get_trace_stream(self.output_dir)
             path.parent.mkdir(parents=True, exist_ok=True)
             # An index row goes out with every episode: summarising the record here,
@@ -115,7 +93,6 @@ class FileMonitor(Monitor):
             with open(path, "ab") as f, open(get_index_path(path), "ab") as index:
                 offset = f.tell()
                 for episode in episodes:
-                    _stamp_arrival(episode, kind, step, now)
                     record = episode.to_record()
                     line = orjson.dumps(record, default=str, option=OPTS)
                     f.write(line)

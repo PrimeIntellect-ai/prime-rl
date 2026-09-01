@@ -24,11 +24,12 @@ from pathlib import Path
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
+from prime_rl.monitors.file import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.trace_index import summarize_episode
+from prime_rl.monitors.trace_updates import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
-from prime_rl.utils.pathing import get_annotations_dir, get_file_monitor_dir, get_index_path, get_trace_stream
+from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.trace_index import summarize_episode
-from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates
 
 try:
     import uvicorn

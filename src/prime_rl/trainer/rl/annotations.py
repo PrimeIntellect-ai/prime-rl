@@ -8,10 +8,10 @@ import torch.distributed as dist
 from torch import Tensor
 
 from prime_rl import monitors
-from prime_rl.utils.trace_updates import make_update
+from prime_rl.monitors.trace_updates import make_update
 
 
-class TraceAnnotationWriter:
+class AnnotationWriter:
     """Collects the trainer's per-token streams (recomputed logprobs, entropies) during
     a step and logs them as trace updates — one record per trained sequence, keyed by
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix

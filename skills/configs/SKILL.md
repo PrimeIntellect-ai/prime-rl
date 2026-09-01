@@ -86,10 +86,6 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
-## RL trainer trace annotations
-
-The RL trainer always logs its per-token streams (recomputed logprobs, entropies) as trace updates through the file monitor, keyed by `trace_id` and `branch_index`. There is no config knob.
-
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

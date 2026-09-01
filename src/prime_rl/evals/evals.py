@@ -36,6 +36,7 @@ from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.evals.ckpt import CheckpointManager
+from prime_rl.orchestrator.annotations import stamp_arrival, stamp_ship
 from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
@@ -465,6 +466,7 @@ class Evals:
                 group_id = item.group_id
             else:
                 item_step = eval_work(item).step
+                stamp_arrival([item], "eval", item_step)
                 await monitors.log([item], item_step, "eval", "all")
                 eval_batch = self.eval_sink.add(item)
                 group_id = episode_group_id(item)
@@ -508,6 +510,7 @@ class Evals:
 
         if batch.episodes.effective:
             await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+            await monitors.log_annotations(stamp_ship(batch.episodes.effective.vf_episodes, batch.step))
 
         episodes = batch.episodes
         effective = episodes.effective

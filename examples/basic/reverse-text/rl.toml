@@ -41,10 +41,6 @@ lr = 3e-6
 
 [inference]
 
-# PrimeIntellect Qwen3 fine-tune - select its renderer and reasoning parser
-# explicitly: the -SFT suffix misses both auto-resolution maps, which key off the
-# `Qwen/` name. Without the parser, eval rollouts (which go through the chat API
-# rather than the trainer's renderer) keep <think> inline in the content.
 [orchestrator.renderer]
 name = "prime-qwen3"
 
