@@ -18,6 +18,13 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+# Sampling masks for top-p/top-k replay: flat int32 token-id bytes plus an
+# int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
+class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    ids: bytes
+    counts: bytes
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -69,6 +76,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Appended fields only: array_like structs encode positionally, so appending
+    # keeps the wire layout of earlier fields stable across versions.
+    sampling_mask: SamplingMask | None = None
+
     # Identity of the branch this sample was built from, so the trainer can key
     # its per-token annotations back to the rollout trace. ``None`` on synthetic
     # samples (e.g. fake data).
@@ -103,6 +114,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     rl_weights: list[float] | None = None
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
+
+    # See TrainingSample.sampling_mask; appended for wire-layout stability.
+    sampling_mask: SamplingMask | None = None
 
     # Per-sequence branch identity, parallel to ``sequence_lengths`` (see
     # TrainingSample.trace_id). ``""`` / ``-1`` mark an unknown sequence

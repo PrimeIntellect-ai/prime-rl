@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -45,6 +46,16 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
+    top_p: float = Field(1.0, gt=0, le=1.0)
+    """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
+    distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer and
+    rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
+
+    top_k: int | None = Field(None, ge=1)
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
+    a default top-k is injected when only top-p truncates so sampling masks stay
+    bounded — see docs/inference.md (Sampling Replay)."""
+
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
@@ -53,18 +64,46 @@ class TrainSamplingConfig(BaseConfig):
     extra_body: dict[str, Any] = {}
     """Extra body forwarded with each request to the inference server."""
 
+    def truncates_distribution(self) -> bool:
+        return self.top_p < 1.0 or self.top_k is not None
+
+    @model_validator(mode="after")
+    def validate_no_extra_body_truncation(self):
+        """Truncating values must come from the typed fields — the replay policy reads
+        them. Disabled values pass so resolved configs (where ``resolve_env_config``
+        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        smuggled = [
+            key
+            for key, truncates in (
+                ("top_p", self.extra_body.get("top_p", 1.0) < 1.0),
+                ("top_k", self.extra_body.get("top_k") not in (None, -1, 0)),
+                ("min_p", self.extra_body.get("min_p", 0.0) > 0.0),
+            )
+            if truncates
+        ]
+        if smuggled:
+            raise ValueError(
+                f"extra_body carries truncating {smuggled}; set them as fields on the train "
+                "sampling config instead (they drive sampling replay)."
+            )
+        return self
+
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
-        if self.extra_body:
-            args["extra_body"] = dict(self.extra_body)
+        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
+        extra_body = dict(self.extra_body)
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if extra_body:
+            args["extra_body"] = extra_body
 
         return args
 
@@ -442,6 +481,15 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+# Top-k injected on truncated policy sampling that has none, and the hard upper
+# bound for explicit top-k. vLLM's native sampling-mask capture requires a
+# per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
+# batch's masks to the largest sampling mask, so the bound also caps trainer
+# mask tensors. Large enough that a 0.95-0.99 nucleus rarely reaches it (the
+# sampling policy is essentially unchanged).
+TRAIN_TOP_K_BOUND = 512
+
+
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -568,6 +616,55 @@ class OrchestratorConfig(BaseConfig):
             env_cfg.algo.validate_env(env_cfg.env)
         return self
 
+    @model_validator(mode="after")
+    def setup_truncated_sampling(self):
+        """Truncated policy sampling trains with sampling replay (rollout
+        logprobs are renormalized — see docs/inference.md, Sampling Replay).
+        Owned here: every truncating config gets a top-k bound (bounds the sampling
+        masks); opd/opsd is rejected (full-vocab prefill refs would mix
+        normalizations). Frozen-source envs sample externally and are exempt."""
+        policy_samplings = [
+            env.sampling for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.train.sampling] if not self.train.source else [])
+        truncating = [sampling for sampling in policy_samplings if sampling.truncates_distribution()]
+        if not truncating:
+            return self
+
+        if any(sampling.temperature == 0 for sampling in truncating):
+            raise ValueError(
+                "Truncated train sampling (top_p/top_k) requires temperature > 0: greedy sampling has "
+                "no truncated distribution to replay, and the inference server rejects such requests "
+                "while sampling-mask capture is on."
+            )
+
+        oversized = [sampling.top_k for sampling in truncating if (sampling.top_k or 0) > TRAIN_TOP_K_BOUND]
+        if oversized:
+            raise ValueError(
+                f"Truncated train sampling with top_k = {max(oversized)} exceeds the sampling-replay "
+                f"bound ({TRAIN_TOP_K_BOUND}): the trainer pads each micro batch's masks to the largest "
+                f"sampling mask, so unbounded masks blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
+            )
+
+        unbounded = [sampling for sampling in truncating if sampling.top_k is None]
+        if unbounded:
+            warnings.warn(
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every sampling mask is "
+                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
+                stacklevel=2,
+            )
+            for sampling in unbounded:
+                sampling.top_k = TRAIN_TOP_K_BOUND
+
+        algos = [env.algo for env in self.train.source if env.algo is not None] or [self.algo]
+        if any(algo.type in ("opd", "opsd") for algo in algos):
+            raise ValueError(
+                "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
+                "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
+                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
+            )
+
+        return self
+
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
@@ -644,6 +741,23 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+        return self
+
+    @model_validator(mode="after")
+    def validate_policy_top_k_consistency(self):
+        """Require one top-k capture mode across the live policy server."""
+        policy_sources = [
+            env for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
+        ]
+        enabled = [env for env in policy_sources if env.sampling.top_k is not None]
+        disabled = [env for env in policy_sources if env.sampling.top_k is None]
+        if enabled and disabled:
+            names = ", ".join(env.resolved_name for env in disabled)
+            raise ValueError(
+                "Live-policy train sources cannot mix top_k > 0 and top_k = -1 because "
+                "sampling-mask capture is engine-wide. Set top_k > 0 for these sources: "
+                f"{names}."
+            )
         return self
 
     @property
