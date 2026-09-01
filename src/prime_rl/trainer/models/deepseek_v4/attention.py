@@ -201,12 +201,19 @@ class PackedContext:
         )
 
 
-def _readable_entries(layout: CompressionLayout, threshold: Tensor) -> Tensor:
-    """`[batch, seq_len, n_entries]` bool: which entries query `t` may read.
+def get_token_entry_causal_mask(layout: CompressionLayout, threshold: Tensor) -> Tensor:
+    """`[batch, seq_len, n_entries]` bool: which compressed entries each query token may read.
 
-    An entry has to belong to the query's own document, and it has to sit below the query's
-    per-document causal threshold. Comparing the threshold against a sequence-global entry number
-    instead would mix the two coordinate systems.
+    Element `[b, t, e]` is true when query token `t` may read compressed entry `e`. Both of
+    these have to hold:
+
+    - `e` belongs to `t`'s own document, so no query reads another document's history;
+    - `e` closed before `t` arrived, i.e. its index within that document is below
+      `threshold[b, t]`, the count of entries the query's position has completed.
+
+    `threshold` is `[batch, seq_len]` and counts per document, so it is compared against
+    `layout.entry_local` and not against the sequence-global entry number; those two
+    coordinate systems disagree for every document after the first.
     """
     same_document = layout.doc_of_token[None, :, None] == layout.entry_doc[None, None, :]
     return same_document & (threshold.unsqueeze(-1) > layout.entry_local[None, None, :])
@@ -350,7 +357,7 @@ class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
         if compressed_len == 0:
             return scores.topk(top_k, dim=-1).indices
 
-        readable = _readable_entries(layout, self.causal_threshold(position_ids)).expand_as(scores)
+        readable = get_token_entry_causal_mask(layout, self.causal_threshold(position_ids)).expand_as(scores)
         scores = scores.masked_fill(~readable, float("-inf"))
         top_k_indices = scores.topk(top_k, dim=-1).indices
         # An early query has fewer than `top_k` readable entries, so top-k still hands back
@@ -457,7 +464,7 @@ class DeepseekV4HCACompressor(nn.Module):
         # `(j + 1) * compress_rate - 1`, so it only becomes readable once the query has
         # reached that token of its own document.
         threshold = (position_ids + 1) // self.compress_rate
-        readable = _readable_entries(layout, threshold).unsqueeze(1)
+        readable = get_token_entry_causal_mask(layout, threshold).unsqueeze(1)
         block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
         return compressed_kv, block_bias.masked_fill_(~readable, float("-inf"))
 
@@ -594,4 +601,5 @@ __all__ = [
     "build_compression_layout",
     "build_sliding_window_mask",
     "eager_attention_with_sinks",
+    "get_token_entry_causal_mask",
 ]
