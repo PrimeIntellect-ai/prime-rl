@@ -25,10 +25,10 @@ import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.utils.config import default_output_dir
-from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.pathing import get_annotations_dir, get_file_monitor_dir, get_index_path, get_trace_stream
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.trace_index import INDEX_FILE, summarize_episode
-from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates, index_suffix
+from prime_rl.utils.trace_index import summarize_episode
+from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates
 
 try:
     import uvicorn
@@ -519,8 +519,8 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 
 def traces_file(run_dir: Path) -> Path | None:
     """The run's episode stream. prime-rl dumps it through the file monitor; a
-    verifiers ``uv run eval`` run writes the same file at its root."""
-    for path in (get_file_monitor_dir(run_dir) / "traces.jsonl", run_dir / "traces.jsonl"):
+    verifiers ``uv run eval`` run writes its own at the run root."""
+    for path in (get_trace_stream(run_dir), run_dir / "traces.jsonl"):
         if path.is_file() and path.stat().st_size > 0:
             return path
     return None
@@ -729,13 +729,12 @@ def _file_size(path: Path) -> int:
 
 
 def annotations_files(run_dir: Path) -> list[Path]:
-    """The annotation records themselves, one file per producer."""
-    directory = get_file_monitor_dir(run_dir) / "annotations"
+    """The annotation records themselves, one file per producer — their indexes are
+    named for them, so a name that is already an index is one of those."""
+    directory = get_annotations_dir(run_dir)
     if not directory.is_dir():
         return []
-    return sorted(
-        path for path in directory.glob("*.jsonl") if path.name == index_suffix(path.name).replace(".index", "")
-    )
+    return sorted(path for path in directory.glob("*.jsonl") if not path.name.endswith(".index.jsonl"))
 
 
 def annotation_index(run_dir: Path) -> dict[str, dict]:
@@ -744,9 +743,9 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     Reads the producers' indexes when they exist, so answering "which cohort, what
     credit" never touches the token streams — they can outweigh the traces themselves.
     A producer that wrote no index is read in full."""
-    files = [(data, data.with_name(index_suffix(data.name))) for data in annotations_files(run_dir)]
+    files = [(data, get_index_path(data)) for data in annotations_files(run_dir)]
     key = tuple((data.name, _file_size(data), _file_size(index)) for data, index in files)
-    cache_key = get_file_monitor_dir(run_dir) / "annotations"
+    cache_key = get_annotations_dir(run_dir)
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
     if cached and cached[0] == key:
@@ -1084,11 +1083,18 @@ def nice_bin(ideal: float) -> float:
 SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns", "group"}
 
 
+def stream_index_file(run_dir: Path) -> Path:
+    """Where the stream's index would sit — beside the stream, named for it. A stream
+    written by a producer that indexes nothing simply has no file there."""
+    stream = traces_file(run_dir)
+    return get_index_path(stream) if stream else get_index_path(get_trace_stream(run_dir))
+
+
 def written_index(run_dir: Path) -> list[dict] | None:
     """The index the file monitor wrote, read incrementally. ``None`` when the stream
     came from a producer that writes no index, which is the reader's cue to derive the
     rows itself."""
-    path = get_file_monitor_dir(run_dir) / INDEX_FILE
+    path = stream_index_file(run_dir)
     if not path.is_file():
         return None
     size = path.stat().st_size
@@ -1121,7 +1127,7 @@ def episode_rows(run_dir: Path) -> list[dict]:
     path = traces_file(run_dir)
     if path is None:
         return []
-    key = (_file_size(get_file_monitor_dir(run_dir) / INDEX_FILE), path.stat().st_size) + tuple(
+    key = (_file_size(stream_index_file(run_dir)), path.stat().st_size) + tuple(
         _file_size(file) for file in annotations_files(run_dir)
     )
     with _lock:

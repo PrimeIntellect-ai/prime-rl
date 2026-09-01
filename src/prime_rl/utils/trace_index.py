@@ -7,8 +7,6 @@ episode at so a reader can seek straight to one. A stream another producer wrote
 no index, so its reader derives the same rows itself.
 """
 
-INDEX_FILE = "index.jsonl"
-
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
     """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""

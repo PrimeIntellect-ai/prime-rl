@@ -209,9 +209,31 @@ def get_batch_dir(output_dir: Path) -> Path:
 
 
 def get_file_monitor_dir(output_dir: Path) -> Path:
-    """Everything the file monitor dumps locally: the metrics and trace streams,
-    and the annotations about them."""
+    """Everything the file monitor dumps locally: the metrics, and the traces with
+    the annotations about them."""
     return output_dir / "monitors" / "file"
+
+
+def get_trace_dir(output_dir: Path) -> Path:
+    """The trace stream and everything written about it, under one roof so nothing
+    beside it has to be read as belonging to it."""
+    return get_file_monitor_dir(output_dir) / "traces"
+
+
+def get_trace_stream(output_dir: Path) -> Path:
+    """Every episode, appended as it arrives."""
+    return get_trace_dir(output_dir) / "stream.jsonl"
+
+
+def get_annotations_dir(output_dir: Path) -> Path:
+    """One file per producer of trace updates: orch ship-time facts, trainer streams."""
+    return get_trace_dir(output_dir) / "annotations"
+
+
+def get_index_path(path: Path) -> Path:
+    """A stream's index, beside it. Every index under the trace directory is named for
+    what it indexes, so a reader pairs the two without knowing who wrote them."""
+    return path.with_name(path.name.replace(".jsonl", ".index.jsonl"))
 
 
 def get_eval_dir(output_dir: Path) -> Path:

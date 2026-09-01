@@ -5,9 +5,9 @@ is an update naming the trace: an ``info`` dict merged into the trace's own, plu
 per-token streams over a branch, full-length across the branch's token prefix (nulls
 mark unknown positions, so a stream never depends on the producer's loss mask).
 
-Each producer appends its own file under the file monitor's ``annotations/``
-directory, so every file has exactly one writer. Readers fold the updates onto the
-arrival records in write order, newest wins.
+Each producer appends its own file under the trace directory's ``annotations/``, so
+every file has exactly one writer. Readers fold the updates onto the arrival records
+in write order, newest wins.
 """
 
 from typing import Any
@@ -16,11 +16,6 @@ UPDATE_VERSION = 1
 
 STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
-
-
-def index_suffix(producer_file: str) -> str:
-    """The name of a producer's annotation index."""
-    return producer_file.replace(".jsonl", ".index.jsonl")
 
 
 def update_index_row(update: dict[str, Any], offset: int) -> dict[str, Any]:

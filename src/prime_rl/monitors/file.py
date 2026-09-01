@@ -10,9 +10,9 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.utils.pathing import get_file_monitor_dir
-from prime_rl.utils.trace_index import INDEX_FILE, index_row
-from prime_rl.utils.trace_updates import index_suffix, make_update, update_index_row
+from prime_rl.utils.pathing import get_annotations_dir, get_file_monitor_dir, get_index_path, get_trace_stream
+from prime_rl.utils.trace_index import index_row
+from prime_rl.utils.trace_updates import make_update, update_index_row
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ class FileMonitor(Monitor):
     async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
         self.producer = producer
-        index = get_file_monitor_dir(output_dir) / INDEX_FILE
+        index = get_index_path(get_trace_stream(output_dir))
         # a relaunch appends to the stream it finds, so the numbering carries on
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
         self.path = get_file_monitor_dir(output_dir) / self.config.path
@@ -107,13 +107,12 @@ class FileMonitor(Monitor):
 
         def write() -> None:
             now = time.time()
-            monitor_dir = get_file_monitor_dir(self.output_dir)
-            path = monitor_dir / "traces.jsonl"
-            monitor_dir.mkdir(parents=True, exist_ok=True)
+            path = get_trace_stream(self.output_dir)
+            path.parent.mkdir(parents=True, exist_ok=True)
             # An index row goes out with every episode: summarising the record here,
             # while it is already in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
-            with open(path, "ab") as f, open(monitor_dir / INDEX_FILE, "ab") as index:
+            with open(path, "ab") as f, open(get_index_path(path), "ab") as index:
                 offset = f.tell()
                 for episode in episodes:
                     _stamp_arrival(episode, kind, step, now)
@@ -135,12 +134,11 @@ class FileMonitor(Monitor):
             return
 
         def write() -> None:
-            name = f"{self.producer or 'unknown'}.jsonl"
-            path = get_file_monitor_dir(self.output_dir) / "annotations" / name
+            path = get_annotations_dir(self.output_dir) / f"{self.producer or 'unknown'}.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             # the scalars go to a sibling index so a reader can answer "which cohort,
             # what credit" without touching the token streams
-            with open(path, "ab") as f, open(path.with_name(index_suffix(name)), "ab") as index:
+            with open(path, "ab") as f, open(get_index_path(path), "ab") as index:
                 offset = f.tell()
                 for update in updates:
                     line = orjson.dumps(update, option=OPTS)
