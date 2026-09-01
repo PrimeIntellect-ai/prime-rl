@@ -680,7 +680,22 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "turns": turns,
         "branches": branches,
         "stop_condition": stop_condition,
+        # when the episode landed and how long it was alive: the stream's x axis,
+        # and the one duration worth sorting a stream by
+        "arrival": (first_info.get("arrival") or {}).get("time"),
+        "duration": _episode_duration(first_info, timing),
     }
+
+
+def _episode_duration(info: dict, timing: dict[str, float]) -> float | None:
+    """Wall-clock seconds from dispatch to arrival, or the summed phases for a record
+    that predates those stamps."""
+    dispatched = (info.get("dispatch") or {}).get("time")
+    arrived = (info.get("arrival") or {}).get("time")
+    if isinstance(dispatched, (int, float)) and isinstance(arrived, (int, float)):
+        return max(0.0, arrived - dispatched)
+    phases = [value for key, value in timing.items() if "/" not in key]
+    return sum(phases) if phases else None
 
 
 def episode_summaries(path: Path) -> list[dict]:
@@ -718,7 +733,7 @@ def episode_summaries(path: Path) -> list[dict]:
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
 SIDECAR_DIR = STATE_DIR
-SIDECAR_FORMAT = 3
+SIDECAR_FORMAT = 4
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
@@ -1131,6 +1146,131 @@ def project_episode_timeline(episode: dict) -> dict:
     return {"lanes": lanes}
 
 
+SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns"}
+
+
+def episode_rows(run_dir: Path) -> list[dict]:
+    """The run's episode index: one compact row per line of the stream, in arrival
+    order, with the cohort step its annotations give it. Parsed incrementally and
+    persisted, so a poll only reads the lines that arrived since the last one."""
+    path = traces_file(run_dir)
+    if path is None:
+        return []
+    ship_steps = trace_ship_steps(run_dir)
+    rows = []
+    for summary in episode_summaries(path):
+        steps = {step for trace_id in summary.get("trace_ids") or [] if (step := ship_steps.get(trace_id)) is not None}
+        rows.append({**summary, "step": min(steps) if steps else None})
+    return rows
+
+
+def filter_rows(
+    rows: list[dict],
+    *,
+    step: int | None = None,
+    kind: str | None = None,
+    env: str | None = None,
+    errors_only: bool = False,
+    start: float | None = None,
+    end: float | None = None,
+) -> list[dict]:
+    """Narrow the index. A step selects the cohort shipped at it — for train work the
+    orchestrator step, for eval the policy version — which is the only sense in which
+    an episode belongs to a step."""
+    if step is not None:
+        rows = [row for row in rows if row.get("step") == step]
+    if kind:
+        rows = [row for row in rows if row.get("kind") == kind]
+    if env:
+        rows = [row for row in rows if row.get("env") == env]
+    if errors_only:
+        rows = [row for row in rows if row.get("num_errors") or not row.get("ok")]
+    if start is not None:
+        rows = [row for row in rows if (row.get("arrival") or 0) >= start]
+    if end is not None:
+        rows = [row for row in rows if (row.get("arrival") or 0) < end]
+    return rows
+
+
+@app.get("/api/runs/{run}/episodes")
+def list_stream_episodes(
+    run: str,
+    step: int | None = None,
+    kind: str | None = None,
+    env: str | None = None,
+    episode: str | None = None,
+    errors_only: bool = False,
+    sort: str = "arrival",
+    order: str = "desc",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=128, ge=1, le=512),
+    start: float | None = None,
+    end: float | None = None,
+    etag: str | None = None,
+) -> dict:
+    """One page of the stream. The client scrolls by asking for the next offset, so a
+    run of any length costs the same to browse."""
+    run_dir = get_run_dir(run)
+    path = traces_file(run_dir)
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
+    current_etag = subset_etag(run_dir, "effective", path)
+    if etag is not None and etag == current_etag and offset == 0:
+        return {"unchanged": True, "etag": current_etag}
+    rows = episode_rows(run_dir)
+    envs = sorted({row["env"] for row in rows if row.get("env")})
+    kinds = [name for name in ("train", "eval") if any(row.get("kind") == name for row in rows)]
+    rows = filter_rows(rows, step=step, kind=kind, env=env, errors_only=errors_only, start=start, end=end)
+    if episode is not None:
+        rows = [row for row in rows if row.get("id") == episode]
+    if sort in SORT_KEYS:
+        rows = sorted(rows, key=lambda row: (row.get(sort) is None, row.get(sort) or 0), reverse=order == "desc")
+    return {
+        "etag": current_etag,
+        "total": len(rows),
+        "offset": offset,
+        "envs": envs,
+        "kinds": kinds,
+        "episodes": rows[offset : offset + limit],
+    }
+
+
+@app.get("/api/runs/{run}/episodes/histogram")
+def episode_histogram(
+    run: str,
+    bin: float = Query(default=60.0, gt=0),
+    window: float | None = None,
+    step: int | None = None,
+    kind: str | None = None,
+    env: str | None = None,
+    errors_only: bool = False,
+    bins: int = Query(default=240, ge=1, le=2000),
+) -> dict:
+    """Episodes finishing per time bin, over the same filters as the table — the
+    stream's shape, and the thing you click to narrow it to a moment."""
+    run_dir = get_run_dir(run)
+    rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, errors_only=errors_only)
+    arrivals = sorted(row["arrival"] for row in rows if isinstance(row.get("arrival"), (int, float)))
+    if not arrivals:
+        return {"bins": [], "bin": bin, "start": None, "end": None, "total": 0}
+    end = arrivals[-1] + bin
+    start = max(arrivals[0], end - window) if window else arrivals[0]
+    # keep the bar count bounded however long the run is
+    bin = max(bin, (end - start) / bins)
+    counts: dict[int, int] = {}
+    for arrival in arrivals:
+        if arrival >= start:
+            counts[int((arrival - start) // bin)] = counts.get(int((arrival - start) // bin), 0) + 1
+    span = max(1, int((end - start) // bin) + 1)
+    return {
+        "bins": [[start + index * bin, counts.get(index, 0)] for index in range(span)],
+        "bin": bin,
+        "start": start,
+        "end": end,
+        "total": sum(counts.values()),
+    }
+
+
 @app.get("/api/runs/{run}/rollouts")
 def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
@@ -1164,65 +1304,6 @@ def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
         for trace_id in summary.get("trace_ids") or []
         if (step := ship_steps.get(trace_id)) is not None
     }
-
-
-def select_summaries(run_dir: Path, step: int, kind: str, subset: str, summaries: list[dict]) -> list[dict]:
-    """The rows one address selects out of the stream.
-
-    ``all`` is every episode of that kind, in arrival order — a stream, so the step
-    does not narrow it. ``effective`` keeps the episodes whose cohort shipped at this
-    step and merges in the ship-time scalar advantage, which arrival records cannot
-    carry: credit is assigned after the episode lands."""
-    rows = [summary for summary in summaries if summary.get("kind") == kind]
-    if subset == "all":
-        return rows
-    ship_steps = trace_ship_steps(run_dir)
-    advantages = {
-        trace_id: info["advantage"]
-        for trace_id, updates in run_annotations(run_dir).items()
-        for update in updates
-        if isinstance((info := update.get("info") or {}).get("advantage"), (int, float))
-    }
-    selected = []
-    for summary in rows:
-        hits = [trace_id for trace_id in summary.get("trace_ids") or [] if ship_steps.get(trace_id) == step]
-        if not hits:
-            continue
-        scored = [advantages[trace_id] for trace_id in hits if trace_id in advantages]
-        selected.append({**summary, "advantage": sum(scored) / len(scored)} if scored else summary)
-    return selected
-
-
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}")
-def list_episodes(
-    run: str,
-    step: int,
-    kind: str,
-    subset: str,
-    limit: int = Query(default=5000, ge=1, le=5000),
-    episode: str | None = None,
-    env: str | None = None,
-    errors_only: bool = False,
-    sort: str = "line",
-    order: str = "asc",
-    etag: str | None = None,
-) -> dict:
-    run_dir = get_run_dir(run)
-    path = traces_path(run, step, kind, subset)
-    current_etag = subset_etag(run_dir, subset, path)
-    if etag is not None and etag == current_etag:
-        return {"unchanged": True, "etag": current_etag}
-    summaries = select_summaries(run_dir, step, kind, subset, episode_summaries(path))
-    envs = sorted({s["env"] for s in summaries if s.get("env")})
-    if episode is not None:
-        summaries = [s for s in summaries if s.get("id") == episode]
-    if env:
-        summaries = [s for s in summaries if s.get("env") == env]
-    if errors_only:
-        summaries = [s for s in summaries if s.get("num_errors") or not s.get("ok")]
-    if sort in ("reward", "advantage", "output_tokens", "turns", "group"):
-        summaries = sorted(summaries, key=lambda s: (s.get(sort) is None, s.get(sort) or 0), reverse=(order == "desc"))
-    return {"total": len(summaries), "etag": current_etag, "envs": envs, "episodes": summaries[:limit]}
 
 
 def get_tokenizer(model: str):
@@ -1304,17 +1385,19 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
     }
 
 
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/series")
-def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None, after: int = 0) -> dict:
-    """Per-episode series over a traces file (x = episode order): reward, shape, and the
+@app.get("/api/runs/{run}/episodes/series")
+def episode_series(run: str, kind: str | None = None, etag: str | None = None, after: int = 0) -> dict:
+    """Per-episode series over the stream (x = arrival order): reward, shape, and the
     nested rewards/metrics/timing keys — the metrics view for eval runs. `after` returns
-    only episodes past that index, so a growing file ships increments, not the world."""
+    only episodes past that index, so a growing stream ships increments, not the world."""
     run_dir = get_run_dir(run)
-    path = traces_path(run, step, kind, subset)
-    current_etag = subset_etag(run_dir, subset, path)
+    path = traces_file(run_dir)
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
+    current_etag = subset_etag(run_dir, "effective", path)
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
-    summaries = select_summaries(run_dir, step, kind, subset, episode_summaries(path))
+    summaries = [s for s in episode_summaries(path) if not kind or s.get("kind") == kind]
     keys: set[str] = set()
     for s in summaries:
         keys.update(
@@ -1343,17 +1426,17 @@ def read_episode_at(path: Path, line: int) -> dict:
         return orjson.loads(f.readline())
 
 
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
+@app.get("/api/runs/{run}/episodes/{line}")
 def get_episode(
     run: str,
-    step: int,
-    kind: str,
-    subset: str,
     line: int,
     tokens: bool = False,
     rendered: bool = False,
 ) -> dict:
-    path = traces_path(run, step, kind, subset)
+    """One episode, by its line in the stream, with every annotation folded on."""
+    path = traces_file(get_run_dir(run))
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
     rec = read_episode_at(path, line)
     run_dir = get_run_dir(run)
     annotations = run_annotations(run_dir)
@@ -1567,9 +1650,12 @@ async def view_events() -> "StreamingResponse":
     )
 
 
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}/timeline")
-def get_episode_timeline(run: str, step: int, kind: str, subset: str, line: int) -> dict:
-    return project_episode_timeline(read_episode_at(traces_path(run, step, kind, subset), line))
+@app.get("/api/runs/{run}/episodes/{line}/timeline")
+def get_episode_timeline(run: str, line: int) -> dict:
+    path = traces_file(get_run_dir(run))
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
+    return project_episode_timeline(read_episode_at(path, line))
 
 
 # -------------------------------------------------------------------------- static

@@ -42,12 +42,17 @@ const state = {
   },
   traces: {
     loaded: false, steps: [], step: null, env: "",
-    kind: "train",
-    preferred: "effective",
-    subset: "effective",
+    mode: prefs.traceMode ?? "stream",
+    kind: prefs.traceKind ?? "",
+    window: prefs.traceWindow ?? "14400",
+    bin: null,
+    episodes: [],
+    total: 0,
+    offset: 0,
+    paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
-    sort: (prefs.traceSort ?? "line:asc").split(":")[0],
-    order: (prefs.traceSort ?? "line:asc").split(":")[1],
+    sort: (prefs.traceSort ?? "arrival:desc").split(":")[0],
+    order: (prefs.traceSort ?? "arrival:desc").split(":")[1],
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
@@ -168,13 +173,12 @@ function applyRunTypeControls() {
   $("#metrics-mode").hidden = isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
-  // rl: train/eval + all/effective per step - sft: eval only - eval: neither, no steps
-  $("#trace-kind").hidden = isEval || state.meta?.type === "sft";
-  $("#trace-subset").hidden = isEval;
+  // an eval run has no steps to switch between, so it is stream-only
+  $("#trace-mode").hidden = isEval;
+  $("#tm-mode-row").hidden = isEval;
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
-  $("#tm-kind-row").hidden = isEval || state.meta?.type === "sft";
-  $("#tm-subset-row").hidden = isEval;
+  if (isEval) state.traces.mode = "stream";
 }
 
 async function selectRun(name, deferTab = false) {
@@ -202,7 +206,7 @@ async function selectRun(name, deferTab = false) {
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
-    kind: "train", subset: state.traces.preferred,
+    key: null, total: 0, bin: null, hist: null,
   };
   state.report = {
     ...state.report,
@@ -454,7 +458,7 @@ async function fetchEvalSeries() {
   try {
     const qs = new URLSearchParams({ after: m.evalCount || 0 });
     if (m.evalEtag) qs.set("etag", m.evalEtag);
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/0/eval/all/series?${qs}`);
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/series?${qs}`);
   } catch {
     return 0;
   }
@@ -1824,25 +1828,16 @@ async function initLogs() {
 
 async function loadRollouts() {
   const traces = state.traces;
-  const previousTarget = latestPreferredStep(traces.steps, traces.kind, traces.preferred);
+  const previousTarget = traces.steps.at(-1);
   const wasFollowing = traces.step == null || traces.step === previousTarget?.step;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts`);
   traces.steps = data.steps;
-  const target = latestPreferredStep(data.steps, traces.kind, traces.preferred);
+  const target = data.steps.at(-1);
   // Follow new work while the user is on the latest preferred step. Keep a
   // manually selected historical step stable, especially while its modal is open.
   if (target && wasFollowing && $("#trace-modal").hidden) traces.step = target.step;
   adjustKindSubset();
   renderStepControl();
-}
-
-function latestPreferredStep(steps, kind, preferred) {
-  const newestFirst = [...steps].reverse();
-  return (
-    newestFirst.find((s) => s.available[`${kind}/${preferred}`]) ??
-    newestFirst.find((s) => Object.keys(s.available).some((key) => key.endsWith(`/${preferred}`))) ??
-    newestFirst[0]
-  );
 }
 
 function stepInfo(step) {
@@ -1851,29 +1846,9 @@ function stepInfo(step) {
 
 function adjustKindSubset() {
   const traces = state.traces;
-  const available = stepInfo(traces.step)?.available || {};
-  const hasTrain = available["train/all"] || available["train/effective"];
-  const hasEval = available["eval/all"] || available["eval/effective"];
-  if (traces.kind === "train" && !hasTrain && hasEval) traces.kind = "eval";
-  if (traces.kind === "eval" && !hasEval && hasTrain) traces.kind = "train";
-  // fall back when the preferred subset is missing at this step (e.g. the latest
-  // step's effective file lands only at ship time), but return to it as soon as
-  // it exists again — advantages are only stamped on effective records
-  const preferred = traces.preferred;
-  const other = preferred === "all" ? "effective" : "all";
-  if (available[`${traces.kind}/${preferred}`]) traces.subset = preferred;
-  else if (available[`${traces.kind}/${other}`]) traces.subset = other;
-  for (const sel of ["#trace-kind", "#tm-kind"]) {
-    $(`${sel} [data-kind=train]`).disabled = !hasTrain;
-    $(`${sel} [data-kind=eval]`).disabled = !hasEval;
-    setActive(sel, "kind", traces.kind);
-  }
-  setActive("#trace-subset", "subset", traces.subset);
-  setActive("#tm-subset", "subset", traces.subset);
-  // `all` is the whole arrival-ordered stream; only `effective` ties to a step
-  const streamed = traces.subset === "all";
-  $("#step-bar").classList.toggle("muted-step", streamed);
-  for (const id of ["#step-prev", "#step-next", "#tm-step-prev", "#tm-step-next"]) $(id).disabled = streamed;
+  const steps = traces.steps.map((s) => s.step);
+  // a step is only meaningful once a cohort shipped at it
+  if (traces.mode === "step" && !steps.includes(traces.step)) traces.step = steps.at(-1) ?? null;
 }
 
 function renderStepControl() {
@@ -1922,36 +1897,61 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="10">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
 }
 
-async function loadEpisodes() {
+const PAGE = 128;
+
+function traceQuery(extra = {}) {
+  const t = state.traces;
+  const qs = new URLSearchParams({ sort: t.sort, order: t.order, errors_only: t.errorsOnly });
+  if (t.kind) qs.set("kind", t.kind);
+  if (t.env) qs.set("env", t.env);
+  if (t.mode === "step" && t.step != null) qs.set("step", t.step);
+  if (t.bin) {
+    qs.set("start", t.bin[0]);
+    qs.set("end", t.bin[1]);
+  }
+  for (const [key, value] of Object.entries(extra)) qs.set(key, value);
+  return qs;
+}
+
+function traceKey() {
+  const t = state.traces;
+  return JSON.stringify([state.run, t.mode, t.step, t.kind, t.env, t.errorsOnly, t.sort, t.order, t.bin]);
+}
+
+/* the table holds one page at a time and grows as the reader scrolls, so a run of
+   any length costs the same to open */
+async function loadEpisodes({ append = false } = {}) {
   const traces = state.traces;
   syncTraceFilterControls();
-  if (traces.step == null) {
+  if (traces.mode === "step" && traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces yet");
+    showTraceEmpty("no shipped cohorts yet", "no batch has shipped, so no episode ties to a step");
     return;
   }
-  const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
-  if (traces.env) qs.set("env", traces.env);
-  // etag = the file size the client last saw: while the file is unchanged the
-  // poll gets a tiny {unchanged} response instead of thousands of summaries
-  const etagKey = JSON.stringify([state.run, traces.step, traces.kind, traces.subset, traces.env, traces.errorsOnly, traces.sort, traces.order]);
-  if (traces.etagKey === etagKey && traces.etag) qs.set("etag", traces.etag);
+  const key = traceKey();
+  const fresh = !append || traces.key !== key;
+  const offset = fresh ? 0 : traces.episodes.length;
+  const qs = traceQuery({ offset, limit: PAGE });
+  if (!fresh && offset >= traces.total) return;
+  // etag = the stream size the client last saw: an unchanged run answers a poll
+  // with {unchanged} instead of a page
+  if (fresh && traces.key === key && traces.etag && !append) qs.set("etag", traces.etag);
   let data;
   try {
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}?${qs}`);
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} traces at step ${traces.step}`);
+    showTraceEmpty("no traces", "this run has no episode stream yet");
     return;
   }
   if (data.unchanged) return;
-  const fresh = traces.etagKey !== etagKey;
   traces.etag = data.etag;
-  traces.etagKey = etagKey;
-  traces.episodes = data.episodes;
+  traces.key = key;
+  traces.total = data.total;
+  traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
     $(sel).innerHTML =
@@ -1964,13 +1964,97 @@ async function loadEpisodes() {
     return;
   }
   renderEpisodeRows(fresh);
-  const fellBack = traces.subset !== traces.preferred && !$("#trace-subset").hidden;
-  $("#trace-status").textContent = `${data.total} episodes${fellBack ? ` · no ${traces.preferred} at this step` : ""}`;
+  const shown = traces.episodes.length;
+  const scope = traces.mode === "step" ? `step ${traces.step}` : traces.bin ? "selected bin" : "stream";
+  $("#trace-status").textContent = `${shown} of ${data.total} episodes · ${scope}`;
+}
+
+async function loadMoreEpisodes() {
+  const traces = state.traces;
+  if (traces.paging || traces.episodes.length >= traces.total) return;
+  traces.paging = true;
+  try {
+    await loadEpisodes({ append: true });
+  } finally {
+    traces.paging = false;
+  }
+}
+
+/* episodes finished per time bin: the stream's shape, and the thing you click to
+   narrow the table to a moment */
+async function loadHistogram() {
+  const traces = state.traces;
+  if (traces.mode !== "stream") return;
+  const qs = traceQuery();
+  qs.delete("start");
+  qs.delete("end");
+  qs.delete("sort");
+  qs.delete("order");
+  qs.set("bin", 60);
+  if (traces.window) qs.set("window", traces.window);
+  let data;
+  try {
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/histogram?${qs}`);
+  } catch {
+    return;
+  }
+  traces.hist = data;
+  renderHistogram();
+}
+
+function renderHistogram() {
+  const data = state.traces.hist;
+  const host = $("#trace-hist");
+  if (!data || !data.bins.length) {
+    host.innerHTML = "";
+    $("#trace-chart-sub").textContent = "";
+    return;
+  }
+  const bins = data.bins;
+  const max = Math.max(...bins.map((b) => b[1]), 1);
+  const W = 1000, H = 120, padL = 34, padB = 18;
+  const bw = (W - padL) / bins.length;
+  const selected = state.traces.bin;
+  const bars = bins
+    .map(([t, count], i) => {
+      const h = (count / max) * (H - padB);
+      const on = selected && t >= selected[0] && t < selected[1];
+      return (
+        `<rect class="hbar${on ? " on" : ""}" x="${padL + i * bw}" y="${H - padB - h}" ` +
+        `width="${Math.max(1, bw - 1)}" height="${h}" data-t="${t}" data-count="${count}">` +
+        `<title>${count} episodes · ${new Date(t * 1000).toLocaleString()}</title></rect>`
+      );
+    })
+    .join("");
+  const ticks = [0, Math.floor(bins.length / 2), bins.length - 1]
+    .filter((i, n, all) => all.indexOf(i) === n && bins[i])
+    .map(
+      (i) =>
+        `<text class="hax" x="${padL + i * bw}" y="${H - 4}">${new Date(bins[i][0] * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</text>`
+    )
+    .join("");
+  const grid = [0, max / 2, max]
+    .map((v) => {
+      const y = H - padB - (v / max) * (H - padB);
+      return `<line class="hgrid" x1="${padL}" y1="${y}" x2="${W}" y2="${y}"></line><text class="hax hval" x="0" y="${y + 3}">${fmtCompact(Math.round(v))}</text>`;
+    })
+    .join("");
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${bars}${ticks}</svg>`;
+  const span = `${new Date(data.start * 1000).toLocaleString()} → ${new Date(data.end * 1000).toLocaleTimeString()}`;
+  $("#trace-chart-sub").textContent = `${data.total} episodes · ${Math.round(data.bin)}s bins · ${span}`;
+}
+
+function fmtDuration(seconds) {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
 }
 
 function episodeRowHtml(ep) {
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
+        <td class="muted">${ep.arrival ? new Date(ep.arrival * 1000).toLocaleTimeString() : ""}</td>
+        <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
@@ -1981,7 +2065,6 @@ function episodeRowHtml(ep) {
             : ""
         }</td>
         <td>${ep.turns ?? ""}</td>
-        <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
       </tr>`;
@@ -2005,7 +2088,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="10" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML =
     pad(start * episodeRowH) +
     episodes.slice(start, end).map(episodeRowHtml).join("") +
@@ -2025,6 +2108,8 @@ async function refreshTraces() {
     await loadRollouts();
     if (state.traces !== traces) return;
     await loadEpisodes();
+    if (state.traces !== traces) return;
+    await loadHistogram();
   } finally {
     traces.fetching = false;
   }
@@ -2147,17 +2232,15 @@ async function modalStep(delta) {
 }
 
 function fetchEpisode(line, withTokens, withRendered = false) {
-  const traces = state.traces;
   const params = new URLSearchParams();
   if (withTokens) params.set("tokens", "true");
   if (withRendered) params.set("rendered", "true");
   const qs = params.size ? `?${params}` : "";
-  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
+  return api(`/api/runs/${encodeURIComponent(state.run)}/episodes/${line}${qs}`);
 }
 
 function fetchEpisodeTimeline(line) {
-  const traces = state.traces;
-  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}/timeline`);
+  return api(`/api/runs/${encodeURIComponent(state.run)}/episodes/${line}/timeline`);
 }
 
 async function ensureTimeline() {
@@ -2561,7 +2644,7 @@ function renderMessages(ep, trace, branches) {
     pendingHighlight.run === state.run &&
     pendingHighlight.step === state.traces.step &&
     pendingHighlight.kind === state.traces.kind &&
-    pendingHighlight.subset === state.traces.subset &&
+    pendingHighlight.subset === (state.traces.mode === "step" ? "effective" : "all") &&
     pendingHighlight.line === currentLine &&
     pendingHighlight.trace === currentTraceIdx
       ? pendingHighlight
@@ -3259,7 +3342,7 @@ async function resolveCitation(c, cache) {
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
   for (const key of ["prefix", "suffix"])
     if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
-  const base = `/api/runs/${encodeURIComponent(run)}/rollouts/${c.step}/${c.kind}/${c.subset}`;
+  const base = `/api/runs/${encodeURIComponent(run)}/episodes`;
   const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
   if (!cache.summaries.has(summaryKey))
     cache.summaries.set(
@@ -3392,10 +3475,9 @@ function primeTraceCommand(cmd) {
   const traces = state.traces;
   if (cmd.step != null) traces.step = cmd.step;
   if (cmd.kind) traces.kind = cmd.kind;
-  if (cmd.subset) {
-    traces.subset = cmd.subset;
-    traces.preferred = cmd.subset;
-  }
+  // a citation addressed to a step wants the cohort view; `all` is the stream
+  if (cmd.subset) traces.mode = cmd.subset === "effective" ? "step" : "stream";
+  traces.bin = null;
   traces.env = "";
   traces.errorsOnly = false;
   if (cmd.highlight?.length) traces.viewMode = "messages";
@@ -3461,7 +3543,7 @@ async function applyTraceCommand(cmd) {
     run: state.run,
     step: traces.step,
     kind: traces.kind,
-    subset: traces.subset,
+    subset: traces.mode === "step" ? "effective" : "all",
     line,
     trace: cmd.trace ?? 0,
     highlights: (cmd.highlight || []).filter((h) => h && h.node != null),
@@ -3617,10 +3699,20 @@ function dressSelect(select) {
 function syncTraceFilterControls() {
   const t = state.traces;
   for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
+  for (const sel of ["#trace-kind", "#tm-kind"]) $(sel).value = t.kind;
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = `${t.sort}:${t.order}`;
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"])
-    $(sel).classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  const active = [t.env, t.kind, t.errorsOnly].filter(Boolean).length;
+  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
+  const badge = $("#trace-filter-count");
+  badge.hidden = !active;
+  badge.textContent = active;
+  $("#trace-window").value = t.window;
+  $("#step-bar").hidden = t.mode !== "step";
+  $("#trace-chart").hidden = t.mode !== "stream";
+  $("#trace-clear-bin").hidden = !t.bin;
+  setActive("#trace-mode", "mode", t.mode);
+  setActive("#tm-mode", "mode", t.mode);
   syncDressedSelects();
 }
 
@@ -3848,19 +3940,13 @@ $("#step-next").addEventListener("click", () => {
   const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
   selectStepByIndex(idx + 1);
 });
-async function setTraceKind(kind, inModal = false) {
-  state.traces.kind = kind;
+async function setTraceMode(mode, inModal = false) {
+  const traces = state.traces;
+  traces.mode = mode;
+  traces.bin = null;
   adjustKindSubset();
   await loadEpisodes();
-  savePrefs();
-  if (inModal) await reopenFirstEpisode();
-}
-
-async function setTraceSubset(subset, inModal = false) {
-  state.traces.preferred = subset;
-  state.traces.subset = subset;
-  adjustKindSubset();
-  await loadEpisodes();
+  if (mode === "stream") await loadHistogram();
   savePrefs();
   if (inModal) await reopenFirstEpisode();
 }
@@ -3886,26 +3972,56 @@ async function reopenFirstEpisode() {
   $("#tm-meta").innerHTML = "";
 }
 
-for (const [sel, inModal] of [["#trace-kind", false], ["#tm-kind", true]])
+for (const [sel, inModal] of [["#trace-mode", false], ["#tm-mode", true]])
   document.querySelectorAll(`${sel} button`).forEach((b) =>
     b.addEventListener("click", () => {
-      if (b.disabled || b.dataset.kind === state.traces.kind) return;
-      setTraceKind(b.dataset.kind, inModal);
-    })
-  );
-for (const [sel, inModal] of [["#trace-subset", false], ["#tm-subset", true]])
-  document.querySelectorAll(`${sel} button`).forEach((b) =>
-    b.addEventListener("click", () => {
-      if (b.dataset.subset === state.traces.subset) return;
-      setTraceSubset(b.dataset.subset, inModal);
+      if (b.dataset.mode === state.traces.mode) return;
+      setTraceMode(b.dataset.mode, inModal);
     })
   );
 for (const sel of ["#trace-env", "#tm-env"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.env = e.target.value;
     await loadEpisodes();
+    await loadHistogram();
     await refreshModalList();
   });
+for (const sel of ["#trace-kind", "#tm-kind"])
+  $(sel).addEventListener("change", async (e) => {
+    state.traces.kind = e.target.value;
+    await loadEpisodes();
+    await loadHistogram();
+    savePrefs();
+    await refreshModalList();
+  });
+$("#trace-window").addEventListener("change", async (e) => {
+  state.traces.window = e.target.value;
+  state.traces.bin = null;
+  await loadHistogram();
+  await loadEpisodes();
+  savePrefs();
+});
+$("#trace-clear-bin").addEventListener("click", async () => {
+  state.traces.bin = null;
+  await loadEpisodes();
+  renderHistogram();
+});
+// a bar narrows the table to the episodes that finished in it
+$("#trace-hist").addEventListener("click", async (e) => {
+  const bar = e.target.closest(".hbar");
+  if (!bar) return;
+  const start = +bar.dataset.t;
+  const width = state.traces.hist?.bin ?? 60;
+  const bin = [start, start + width];
+  state.traces.bin = state.traces.bin && state.traces.bin[0] === start ? null : bin;
+  await loadEpisodes();
+  renderHistogram();
+});
+// infinite scroll: pull the next page as the reader nears the end
+$("#episode-table-wrap").addEventListener("scroll", () => {
+  const wrap = $("#episode-table-wrap");
+  if (wrap.scrollTop + wrap.clientHeight > wrap.scrollHeight - 400) loadMoreEpisodes();
+});
 for (const sel of ["#trace-errors", "#tm-errors"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.errorsOnly = e.target.checked;
@@ -4135,6 +4251,9 @@ function savePrefs() {
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
+      traceMode: state.traces.mode,
+      traceKind: state.traces.kind,
+      traceWindow: state.traces.window,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       traceViewMode: state.traces.viewMode,
       traceView,

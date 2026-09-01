@@ -78,49 +78,69 @@
   </section>
 
   <section id="tab-traces" hidden>
-    <div class="controls" id="step-bar">
+    <div class="controls" id="trace-bar">
+      <div class="seg" id="trace-mode">
+        <button data-mode="stream" class="active" title="every episode, newest first">Stream</button>
+        <button data-mode="step" title="the cohort shipped at one step">Step</button>
+      </div>
+      <div id="trace-filter-wrap" class="dd-wrap">
+        <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+          <span id="trace-filter-count" class="badge" hidden></span>
+        </button>
+        <div class="dd-menu dd-filters" id="trace-filter-menu" hidden>
+          <div class="dd-sec">filter</div>
+          <label class="dd-row"><span class="t-label">kind</span>
+            <select id="trace-kind">
+              <option value="">train &amp; eval</option>
+              <option value="train">train only</option>
+              <option value="eval">eval only</option>
+            </select>
+          </label>
+          <label class="dd-row"><span class="t-label">env</span>
+            <select id="trace-env"><option value="">all envs</option></select>
+          </label>
+          <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
+          <div class="dd-sec">sort</div>
+          <label class="dd-row"><span class="t-label">by</span>
+            <select id="trace-sort">
+              <option value="arrival:desc">newest first</option>
+              <option value="arrival:asc">oldest first</option>
+              <option value="duration:desc">total time ↓</option>
+              <option value="duration:asc">total time ↑</option>
+              <option value="reward:desc">reward ↓</option>
+              <option value="reward:asc">reward ↑</option>
+              <option value="output_tokens:desc">tokens ↓</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <select id="trace-window" title="how far back the stream chart reaches">
+        <option value="14400" selected>last 4h</option>
+        <option value="86400">last 24h</option>
+        <option value="604800">last 7d</option>
+        <option value="">all time</option>
+      </select>
+      <span id="trace-status" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="trace-clear-bin" class="btn" hidden>clear selection</button>
+    </div>
+    <div class="controls" id="step-bar" hidden>
       <button id="step-prev" class="btn tm-nav" title="previous step">‹</button>
       <div id="step-blocks"></div>
       <button id="step-next" class="btn tm-nav" title="next step">›</button>
       <span id="step-label" class="t-label"></span>
     </div>
-    <div class="controls">
-      <div id="trace-filter-wrap" class="dd-wrap">
-        <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
-          filter
-        </button>
-        <div id="trace-filter-menu" class="dd-menu" hidden>
-          <label class="t-label">env</label>
-          <select id="trace-env"><option value="">all envs</option></select>
-          <label class="t-label">sort</label>
-          <select id="trace-sort">
-            <option value="line:asc">order: arrival</option>
-            <option value="reward:desc">reward ↓</option>
-            <option value="reward:asc">reward ↑</option>
-            <option value="advantage:desc">advantage ↓</option>
-            <option value="advantage:asc">advantage ↑</option>
-            <option value="output_tokens:desc">tokens ↓</option>
-            <option value="group:asc">group</option>
-          </select>
-          <label class="toggle"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
-        </div>
-      </div>
-      <div class="seg" id="trace-kind">
-        <button data-kind="train" class="active">Train</button>
-        <button data-kind="eval">Eval</button>
-      </div>
-      <div class="seg" id="trace-subset">
-        <button data-subset="all">All</button>
-        <button data-subset="effective" class="active">Effective</button>
-      </div>
-      <span id="trace-status" class="muted"></span>
+    <div id="trace-chart">
+      <div class="chart-head"><span class="chart-title">Episodes finished</span><span id="trace-chart-sub" class="muted"></span></div>
+      <div id="trace-hist"></div>
     </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
         <thead><tr>
-          <th>#</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
-          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th>
+          <th>#</th><th>arrived</th><th>time</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
+          <th>tok</th><th>turns</th><th>stop</th><th>status</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -176,33 +196,38 @@
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
         </button>
-        <div id="tm-filter-menu" class="dd-menu" hidden>
-          <label class="t-label">env</label>
-          <select id="tm-env"><option value="">all envs</option></select>
-          <label class="t-label">sort</label>
-          <select id="tm-sort">
-            <option value="line:asc">order: arrival</option>
-            <option value="reward:desc">reward ↓</option>
-            <option value="reward:asc">reward ↑</option>
-            <option value="advantage:desc">advantage ↓</option>
-            <option value="advantage:asc">advantage ↑</option>
-            <option value="output_tokens:desc">tokens ↓</option>
-            <option value="group:asc">group</option>
-          </select>
-          <label class="toggle"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
+        <div class="dd-menu dd-filters" id="tm-filter-menu" hidden>
+          <div class="dd-sec">filter</div>
+          <label class="dd-row"><span class="t-label">kind</span>
+            <select id="tm-kind">
+              <option value="">train &amp; eval</option>
+              <option value="train">train only</option>
+              <option value="eval">eval only</option>
+            </select>
+          </label>
+          <label class="dd-row"><span class="t-label">env</span>
+            <select id="tm-env"><option value="">all envs</option></select>
+          </label>
+          <label class="toggle dd-row"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
+          <div class="dd-sec">sort</div>
+          <label class="dd-row"><span class="t-label">by</span>
+            <select id="tm-sort">
+              <option value="arrival:desc">newest first</option>
+              <option value="arrival:asc">oldest first</option>
+              <option value="duration:desc">total time ↓</option>
+              <option value="duration:asc">total time ↑</option>
+              <option value="reward:desc">reward ↓</option>
+              <option value="reward:asc">reward ↑</option>
+              <option value="output_tokens:desc">tokens ↓</option>
+            </select>
+          </label>
         </div>
       </div>
     </div>
-    <div class="tm-head tm-ctlrow" id="tm-kind-row">
-      <div class="seg" id="tm-kind">
-        <button data-kind="train">Train</button>
-        <button data-kind="eval">Eval</button>
-      </div>
-    </div>
-    <div class="tm-head tm-ctlrow" id="tm-subset-row">
-      <div class="seg" id="tm-subset">
-        <button data-subset="all">All</button>
-        <button data-subset="effective">Effective</button>
+    <div class="tm-head tm-ctlrow" id="tm-mode-row">
+      <div class="seg" id="tm-mode">
+        <button data-mode="stream">Stream</button>
+        <button data-mode="step">Step</button>
       </div>
     </div>
     <div class="tm-head">

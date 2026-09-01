@@ -138,6 +138,9 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 .dd-menu {
   position: absolute;
   top: 34px;
+  /* anchor to the trigger's left edge: without it the menu lays out from its
+     static position and runs off the side of the window */
+  left: 0;
   z-index: 40;
   background: var(--grey-1);
   border: 1px solid var(--grey-3);
@@ -1092,5 +1095,30 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 }
 #view-toast .toast-text { color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* the step control does not narrow the `all` stream */
-#step-bar.muted-step #step-blocks, #step-bar.muted-step #step-label { opacity: 0.35; }
+
+/* filter & sort popover */
+.dd-filters { min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
+.dd-sec {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--grey-4);
+  border-bottom: 1px solid var(--grey-3);
+  padding-bottom: 3px;
+  margin-top: 2px;
+}
+.dd-filters .dd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
+.dd-filters .dd-row select { flex: 1; min-width: 0; }
+.dd-filters .t-label { white-space: nowrap; }
+
+/* episodes-finished histogram */
+#trace-chart { padding: 8px 12px 4px; border-bottom: 1px solid var(--grey-2); }
+#trace-chart .chart-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+#trace-chart .chart-title { font-size: 12px; font-weight: 600; }
+#trace-hist svg { width: 100%; height: 120px; display: block; }
+.hbar { fill: var(--accent); opacity: 0.7; cursor: pointer; }
+.hbar:hover { opacity: 1; }
+.hbar.on { opacity: 1; fill: #fff; }
+.hgrid { stroke: var(--grey-3); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.hax { fill: var(--grey-4); font-size: 10px; }
+.hval { text-anchor: start; }
