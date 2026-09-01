@@ -733,6 +733,15 @@ def annotations_files(run_dir: Path) -> list[Path]:
     return sorted(path for path in directory.glob("*.jsonl") if not path.name.endswith(".index.jsonl"))
 
 
+def annotation_source(data: Path) -> Path:
+    """The file a producer's rows are read from: its index when it wrote one, else the
+    records themselves. Whatever depends on those rows versions itself by this file's
+    size - the record file can grow before its index row is flushed, and a version
+    taken from it would miss the index completing."""
+    index = get_index_path(data)
+    return index if index.is_file() else data
+
+
 def annotation_rows(data: Path) -> list[dict]:
     """A producer's updates as index rows - ``{trace_id, info, offset}`` - read from its
     index when it wrote one, and derived from the records themselves when it did not."""
@@ -765,7 +774,7 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     credit" never touches the token streams — they can outweigh the traces themselves.
     A producer that wrote no index is read in full."""
     files = annotations_files(run_dir)
-    key = tuple((data.name, _file_size(data), _file_size(get_index_path(data))) for data in files)
+    key = tuple((data.name, _file_size(annotation_source(data))) for data in files)
     cache_key = get_annotations_dir(run_dir)
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
@@ -1124,7 +1133,11 @@ def episode_rows(run_dir: Path) -> list[dict]:
     if path is None:
         return []
     files = annotations_files(run_dir)
-    key = (_file_size(stream_index_file(run_dir)), path.stat().st_size, *(_file_size(file) for file in files))
+    key = (
+        _file_size(stream_index_file(run_dir)),
+        path.stat().st_size,
+        *(_file_size(annotation_source(f)) for f in files),
+    )
     with _lock:
         cached = _lru_get(_rows_cache, run_dir)
     if cached and cached[0] == key:
@@ -1309,7 +1322,7 @@ def list_rollouts(run: str) -> dict:
 def stream_etag(run_dir: Path, path: Path) -> str:
     """What a listing depends on: the stream, and the annotations that give its rows
     their cohort and credit. Both are append-only, so their sizes are the version."""
-    return f"{path.stat().st_size}-{sum(_file_size(file) for file in annotations_files(run_dir))}"
+    return f"{path.stat().st_size}-{sum(_file_size(annotation_source(f)) for f in annotations_files(run_dir))}"
 
 
 def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
