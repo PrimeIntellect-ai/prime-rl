@@ -7710,7 +7710,7 @@ ta = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.0" },
+    { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=0.78.0" },
     { name = "datasets", specifier = ">=3.3.0,<6.0.0" },
     { name = "gepa", specifier = ">=0.0.6" },
