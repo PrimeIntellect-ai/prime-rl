@@ -568,7 +568,7 @@ class DeepseekV4Attention(nn.Module):
             self.sinks,
             attention_mask,
             scaling=self.scaling,
-            dropout=self.attention_dropout if self.training else 0.0,
+            dropout=self.attention_dropout,
             training=self.training,
         )
 
