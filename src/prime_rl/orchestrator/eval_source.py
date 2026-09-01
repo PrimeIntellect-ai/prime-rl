@@ -43,6 +43,7 @@ class EvalSource:
         self._next_index = 0
         self._completed: set[int] = set()
         self._triggered_task_counts: dict[tuple[str, int], int] = {}
+        self._skipped_task_counts: dict[tuple[str, int], int] = {}
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -61,6 +62,7 @@ class EvalSource:
             if (is_first or force or step % interval == 0) and self.tasks_by_env[name]:
                 fired.append(name)
         queued_counts: Counter[str] = Counter()
+        skipped_counts: Counter[str] = Counter()
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -73,15 +75,20 @@ class EvalSource:
                 source_index = self._next_index
                 self._next_index += 1
                 if source_index < self.cursor:
+                    skipped_counts[env_name] += 1
                     continue
                 self.queue.append(TaskRequest(env_name=env_name, task=task, step=step, source_index=source_index))
                 queued_counts[env_name] += 1
-        for env_name, count in queued_counts.items():
-            self._triggered_task_counts[(env_name, step)] = count
+        for env_name in fired:
+            self._triggered_task_counts[(env_name, step)] = queued_counts[env_name]
+            self._skipped_task_counts[(env_name, step)] = skipped_counts[env_name]
         return [name for name in fired if queued_counts[name]]
 
     def triggered_task_count(self, env_name: str, step: int) -> int:
         return self._triggered_task_counts.get((env_name, step), 0)
+
+    def skipped_task_count(self, env_name: str, step: int) -> int:
+        return self._skipped_task_counts.get((env_name, step), 0)
 
     def mark_completed(self, source_index: int) -> bool:
         """Advance the durable cursor only across a fully completed prefix."""
