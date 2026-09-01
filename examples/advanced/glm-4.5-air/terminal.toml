@@ -96,7 +96,7 @@ num_turns_weight = 0.1
 [[orchestrator.train.source]]
 name = "tmax"
 env.agent.harness.id = "rlm"
-env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-terminal"]
 env.taskset.id = "tmax"
 
@@ -123,7 +123,7 @@ interval = 20
 [[orchestrator.eval.source]]
 name = "swebench-verified"
 env.agent.harness.id = "rlm"
-env.agent.harness.summarize_at_tokens = 98304
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-terminal"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "swebench-verified"
@@ -144,7 +144,7 @@ env.taskset.id = "swebench-verified"
 name = "terminal-bench-2"
 group_size = 4 # avg@4
 env.agent.harness.id = "rlm"
-env.agent.harness.summarize_at_tokens = 98304
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-terminal"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "terminal-bench-2"

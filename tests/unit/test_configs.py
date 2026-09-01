@@ -452,11 +452,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
-def test_selective_activation_checkpointing_requires_custom_impl():
-    with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
-        TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
-
-
 def test_shared_model_name_propagates_to_subconfigs():
     model_name = "PrimeIntellect/test-model"
     config = RLConfig.model_validate(

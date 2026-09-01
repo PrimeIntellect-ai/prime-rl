@@ -1,11 +1,16 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from types import ModuleType
 from typing import Generic, Protocol, TypeVar
 
 import torch
-import torch.distributed as dist
 from torch.distributed import ProcessGroup
+
+from prime_rl.trainer.distributed.collectives import (
+    all_to_all_single,
+    all_to_all_single_equal,
+    mxfp8_all_to_all_combine,
+    mxfp8_all_to_all_dispatch,
+)
 
 
 class ExpertFunction(Protocol):
@@ -85,46 +90,8 @@ class LocalDispatchState:
 
 @dataclass(frozen=True)
 class TorchDispatchState(LocalDispatchState):
-    input_splits: list[int]
-    output_splits: list[int]
-
-
-class _AllToAll(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        x: torch.Tensor,
-        output_splits: list[int],
-        input_splits: list[int],
-        group: ProcessGroup,
-    ) -> torch.Tensor:
-        output = x.new_empty((sum(output_splits), *x.shape[1:]))
-        dist.all_to_all_single(output, x.contiguous(), output_splits, input_splits, group=group)
-        ctx.output_splits = output_splits
-        ctx.input_splits = input_splits
-        ctx.group = group
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        grad_input = grad_output.new_empty((sum(ctx.input_splits), *grad_output.shape[1:]))
-        dist.all_to_all_single(
-            grad_input,
-            grad_output.contiguous(),
-            ctx.input_splits,
-            ctx.output_splits,
-            group=ctx.group,
-        )
-        return grad_input, None, None, None
-
-
-def _all_to_all(
-    x: torch.Tensor,
-    output_splits: list[int],
-    input_splits: list[int],
-    group: ProcessGroup,
-) -> torch.Tensor:
-    return _AllToAll.apply(x, output_splits, input_splits, group)
+    input_splits: torch.Tensor
+    output_splits: torch.Tensor
 
 
 def permute_for_grouped_gemm(
@@ -264,18 +231,18 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
     def _dispatch_tokens(
         self,
         x: torch.Tensor,
-        output_splits: list[int],
-        input_splits: list[int],
+        output_splits: torch.Tensor,
+        input_splits: torch.Tensor,
     ) -> torch.Tensor:
-        return _all_to_all(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
-        output_splits: list[int],
-        input_splits: list[int],
+        output_splits: torch.Tensor,
+        input_splits: torch.Tensor,
     ) -> torch.Tensor:
-        return _all_to_all(x, output_splits, input_splits, self.group)
+        return all_to_all_single(x, output_splits, input_splits, self.group)
 
     def dispatch(
         self,
@@ -299,11 +266,10 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             scores_after_experts = sorted_scores
 
         ep_degree = self.group.size()
-        num_tokens_per_expert_group = torch.empty_like(num_tokens_per_expert)
         with torch.no_grad():
-            dist.all_to_all_single(num_tokens_per_expert_group, num_tokens_per_expert, group=self.group)
-            input_splits = num_tokens_per_expert.view(ep_degree, -1).sum(dim=1).tolist()
-            output_splits = num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1).tolist()
+            num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
+            input_splits = num_tokens_per_expert.view(ep_degree, -1).sum(dim=1)
+            output_splits = num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1)
 
         routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits)
         experts_per_rank = self.num_experts // ep_degree
@@ -342,23 +308,21 @@ class MXFP8TorchTokenDispatcher(TorchTokenDispatcher):
         top_k: int,
         token_group_alignment: int,
         group: ProcessGroup,
-        kernel: ModuleType,
     ) -> None:
         super().__init__(num_experts, top_k, token_group_alignment, group)
-        self.kernel = kernel
 
     def _dispatch_tokens(
         self,
         x: torch.Tensor,
-        output_splits: list[int],
-        input_splits: list[int],
+        output_splits: torch.Tensor,
+        input_splits: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel.all_to_all_dispatch(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_dispatch(x, output_splits, input_splits, self.group)
 
     def _combine_tokens(
         self,
         x: torch.Tensor,
-        output_splits: list[int],
-        input_splits: list[int],
+        output_splits: torch.Tensor,
+        input_splits: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel.all_to_all_combine(x, output_splits, input_splits, self.group)
+        return mxfp8_all_to_all_combine(x, output_splits, input_splits, self.group)

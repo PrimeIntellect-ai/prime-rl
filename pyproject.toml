@@ -139,6 +139,8 @@ environments = [
 # Override torch's pinned cuDNN to fix the Conv3d performance regression.
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
+    # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
+    "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
     # vLLM 0.28.0 requires quack-kernels 0.6.4. It requires this exact CUTLASS version.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
@@ -250,7 +252,7 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "82d6441" }
+flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
