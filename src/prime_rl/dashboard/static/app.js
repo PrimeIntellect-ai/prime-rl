@@ -1974,7 +1974,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   // drop the pages a reader has scrolled through and send them back to the top, so
   // while they are scrolled only the count moves. The etag is deliberately left
   // behind: the next poll after they return to the top refreshes for real.
-  if (poll && !append && $("#episode-table-wrap").scrollTop > 0) {
+  if (poll && !append && traces.key === key && $("#episode-table-wrap").scrollTop > 0) {
     traces.total = data.total;
     $("#trace-status").textContent = `${fmtCompact(data.total)} episode${data.total === 1 ? "" : "s"}`;
     return;
@@ -1983,7 +1983,14 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   traces.key = key;
   traces.total = data.total;
   traces.runKinds = data.kinds;
-  traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
+  // A live stream grows at its head under newest-first order, so a page fetched
+  // against a longer stream than the one already loaded repeats its tail. Lines
+  // are stable, so the repeats are dropped rather than shown twice.
+  if (fresh) traces.episodes = data.episodes;
+  else {
+    const held = new Set(traces.episodes.map((episode) => episode.line));
+    traces.episodes = traces.episodes.concat(data.episodes.filter((episode) => !held.has(episode.line)));
+  }
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
     $(sel).innerHTML =
