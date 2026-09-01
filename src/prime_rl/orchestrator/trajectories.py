@@ -66,15 +66,15 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _encode_kept_tokens(kept: vf.KeptTokens | None, num_tokens: int) -> KeptTokens | None:
-    """The branch's kept-set sampling masks (`Branch.kept_tokens`) -> the transport
+def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> KeptTokens | None:
+    """The branch's sampling mask (`Branch.sampling_mask`) -> the transport
     `KeptTokens` the trainer replays. Realigns `counts` to `num_tokens`
-    (truncating drops the tail's ids too) as a backstop — `Branch.kept_tokens` already
+    (truncating drops the tail's ids too) as a backstop — `Branch.sampling_mask` already
     guarantees alignment, mirroring `_encode_routed_experts`. A 0 count just means no
     replay for that position, so partial coverage stays safe."""
-    if kept is None:
+    if mask is None:
         return None
-    ids, counts = kept.ids, kept.counts
+    ids, counts = mask.ids, mask.counts
     if len(counts) > num_tokens:
         counts = counts[:num_tokens]
         ids = ids[: int(counts.sum())]
@@ -163,7 +163,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
-                kept_tokens=_encode_kept_tokens(branch.kept_tokens, len(token_ids)),
+                kept_tokens=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
             )
         )
     if not samples:
