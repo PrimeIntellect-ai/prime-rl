@@ -241,7 +241,7 @@ prime-kernels = false
 
 [tool.uv.sources]
 # TEMPORARY: prime-runs is not on PyPI yet (PrimeIntellect-ai/prime #856 + #873)
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", branch = "feature/prime-runs-train-backend" }
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", rev = "9cb688b" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.

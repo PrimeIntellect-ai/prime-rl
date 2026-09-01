@@ -5116,7 +5116,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-train-backend" },
+    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&rev=9cb688b" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5189,7 +5189,7 @@ requires-dist = [
 [[package]]
 name = "prime-runs"
 version = "0.1.0"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-train-backend#b69d3da61077ca4cd10d348821d73d58daeb0f98" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&rev=9cb688b#9cb688b86479d49566be7c303be3be79816eaa95" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
@@ -5222,7 +5222,7 @@ wheels = [
 [[package]]
 name = "prime-traces"
 version = "0.0.3"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-train-backend#b69d3da61077ca4cd10d348821d73d58daeb0f98" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&rev=9cb688b#9cb688b86479d49566be7c303be3be79816eaa95" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
