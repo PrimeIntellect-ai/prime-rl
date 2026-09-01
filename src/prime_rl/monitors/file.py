@@ -21,15 +21,6 @@ if TYPE_CHECKING:
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
 
-def _ship_step(episode: vf.Episode, step: int) -> int:
-    """The step an episode's cohort ties to: the orchestrator step whose batch shipped
-    it for train work, the policy version it measured for eval work."""
-    work = getattr(episode.run, "work", None)
-    if work is not None and work.type == "eval" and work.policy is not None:
-        return work.policy.start
-    return step
-
-
 def _stamp_arrival(episode: vf.Episode, kind: Kind, step: int, now: float) -> None:
     """Record what this consumer knows as the episode lands: the kind of work it did,
     when it was dispatched, and when it came back. A trace has several steps, so each
@@ -42,10 +33,22 @@ def _stamp_arrival(episode: vf.Episode, kind: Kind, step: int, now: float) -> No
         trace.info["arrival"] = {"step": step, "time": now}
 
 
-def _effective_update(trace: vf.Trace, step: int, now: float) -> dict[str, Any]:
-    """What the ship-time cohort adds over the arrival record: membership, the step
-    the cohort ties to, the scalar advantage, and the per-token advantage streams."""
-    info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
+def _cohort_step(step: int, kind: Kind) -> int:
+    """The training step a completed cohort ties to, 1-indexed like every other step.
+
+    A train cohort ties to the step whose batch shipped it. An eval epoch is triggered
+    by a policy version, and policy versions are 0-indexed, so it ties to the step that
+    produced the policy it measured - except the baseline epoch, which measured the
+    initial weights: no step produced those, so it ties to step 1, which trains from
+    them. One epoch keys to one step even when the policy turns over mid-epoch, which
+    per-trace provenance (the policy span) records instead."""
+    return max(step, 1) if kind == "eval" else step
+
+
+def _effective_update(trace: vf.Trace, step: int, kind: Kind, now: float) -> dict[str, Any]:
+    """What the ship-time cohort adds over the arrival record: membership, the step it
+    ties to, the scalar advantage, and the per-token advantage streams."""
+    info: dict[str, Any] = {"effective": True, "ship": {"step": _cohort_step(step, kind), "time": now}}
     if (advantage := trace.info.get("advantage")) is not None:
         info["advantage"] = advantage
     branches = {
@@ -98,11 +101,7 @@ class FileMonitor(Monitor):
         if subset == "effective":
             now = time.time()
             await self.log_annotations(
-                [
-                    _effective_update(trace, _ship_step(episode, step), now)
-                    for episode in episodes
-                    for trace in episode.traces
-                ]
+                [_effective_update(trace, step, kind, now) for episode in episodes for trace in episode.traces]
             )
             return
 

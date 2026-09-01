@@ -2966,12 +2966,17 @@ function renderMeta(ep, trace, branches) {
     const annotations = trace.train_annotations;
     const lag = (steps, seconds) =>
       `${steps} step${Math.abs(steps) === 1 ? "" : "s"}` + (isFinite(seconds) ? ` · ${fmtDuration(seconds)}` : "");
+    const isEvalTrace = info.kind === "eval";
     if (info.dispatch || info.arrival || info.ship || annotations) {
       parts.push(`<div class="meta-sec">timeline</div>`);
-      if (info.dispatch?.step != null) parts.push(metaRow("dispatch step", info.dispatch.step));
-      if (info.arrival?.step != null) parts.push(metaRow("arrival step", info.arrival.step));
-      if (info.ship?.step != null) parts.push(metaRow("ship step", info.ship.step));
-      if (info.ship?.step != null && info.dispatch?.step != null) {
+      if (!isEvalTrace) {
+        if (info.dispatch?.step != null) parts.push(metaRow("dispatch step", info.dispatch.step));
+        if (info.arrival?.step != null) parts.push(metaRow("arrival step", info.arrival.step));
+      }
+      // an eval epoch is never shipped into a batch and never goes stale: it is
+      // measured at a step, and the policy span below says what it measured
+      if (info.ship?.step != null) parts.push(metaRow(isEvalTrace ? "eval step" : "ship step", info.ship.step));
+      if (info.ship?.step != null && info.dispatch?.step != null && !isEvalTrace) {
         parts.push(metaRow("staleness", lag(info.ship.step - info.dispatch.step, info.ship.time - info.dispatch.time)));
         if (info.arrival?.step != null) {
           parts.push(metaSubRow("in flight", lag(info.arrival.step - info.dispatch.step, info.arrival.time - info.dispatch.time)));
