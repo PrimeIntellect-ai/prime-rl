@@ -17,6 +17,7 @@ dependencies = [
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.6.19",
+    "prime-runs[train]>=0.1.0",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -221,6 +222,8 @@ flash_attn_3 = false
 # appear in `uv tree` need to be listed; the resolver ignores entries for
 # packages it never sees.
 prime = false
+prime-runs = false
+prime-traces = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
@@ -237,6 +240,8 @@ torchao = false
 prime-kernels = false
 
 [tool.uv.sources]
+# TEMPORARY: prime-runs is not on PyPI yet (PrimeIntellect-ai/prime #856 + #873)
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", branch = "feature/prime-runs-train-backend" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.

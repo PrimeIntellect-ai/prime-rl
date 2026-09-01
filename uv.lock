@@ -20,12 +20,14 @@ exclude-newer-span = "P7D"
 vllm = false
 verifiers = false
 harbor = "2026-08-11T00:00:00Z"
+prime-traces = false
 prime-pydantic-config = false
 vllm-router = false
 dion = false
-fastokens = false
+prime-runs = false
 flash-attn-3 = false
 prime-tunnel = false
+fastokens = false
 deep-gemm = false
 prime-evals = false
 torchao = false
@@ -4951,6 +4953,7 @@ dependencies = [
     { name = "prime" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
+    { name = "prime-runs", extra = ["train"] },
     { name = "psutil" },
     { name = "pyarrow" },
     { name = "pybase64" },
@@ -5113,6 +5116,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "prime-runs", extras = ["train"], git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-train-backend" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5183,6 +5187,20 @@ requires-dist = [
 ]
 
 [[package]]
+name = "prime-runs"
+version = "0.1.0"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-runs&branch=feature%2Fprime-runs-train-backend#b69d3da61077ca4cd10d348821d73d58daeb0f98" }
+dependencies = [
+    { name = "httpx" },
+    { name = "prime-traces" },
+]
+
+[package.optional-dependencies]
+train = [
+    { name = "pyarrow" },
+]
+
+[[package]]
 name = "prime-sandboxes"
 version = "0.2.39"
 source = { registry = "https://pypi.org/simple" }
@@ -5199,6 +5217,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/8c/0bf89180addb74f75e41fbf6fa06c5401ea802b69ec0b565330562270be2/prime_sandboxes-0.2.39.tar.gz", hash = "sha256:7ff6c23aa2c96985a9129d977d532c0ae2fb6afb6d394dac746393ce0c53b597", size = 103161, upload-time = "2026-08-19T23:09:27.921Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/a5/8a2a1aefecfc58ca926d6b21e8302a127884bf2a45952ed390b5f702eeda/prime_sandboxes-0.2.39-py3-none-any.whl", hash = "sha256:3ea355158473c1697f9ef6ec2a07f3189e9a2555c80d1c88e1f7e22979772e0a", size = 58161, upload-time = "2026-08-19T23:09:26.69Z" },
+]
+
+[[package]]
+name = "prime-traces"
+version = "0.0.3"
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-traces&branch=feature%2Fprime-runs-train-backend#b69d3da61077ca4cd10d348821d73d58daeb0f98" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [[package]]
