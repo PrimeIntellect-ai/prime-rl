@@ -1,34 +1,24 @@
 # Real-data SFT for deepseek-ai/DeepSeek-V4-Flash-0731 at full depth (all 43 layers, no
-# `debug.num_layers` truncation) across 4 train nodes + 1 inference node for online eval.
+# `debug.num_layers` truncation) on 4 train nodes. Trainer only: no online eval, no inference
+# node, and so no weight broadcast. Tested on 8xH200. 
 #
-#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --dist-timeout-seconds 14400
+#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
 #
-# Why 4 train nodes: with `optimization_dtype = "float32"` the fp32 parameter shard is
-# 284.6e9 * 4 bytes / num_gpus. At 8 GPUs that is 132.5 GiB/GPU, which OOMs. At 32 GPUs it is
-# 33.1 GiB/GPU, leaving room for gradients and activations, so this needs neither `full_offload`
-# nor a stateless optimizer: it runs the ordinary FSDP + EP path with the default AdamW and the
-# default `optim_cpu_offload = true`. A single 8xH200 node OOMs under both CPU-offload
-# strategies this repo supports, so 4 nodes is a hardware floor, not a tuning choice.
+# Note: on 4 8xH200 nodes, this config is near the memory limit, using ~94%+ GPU memory. 
 #
-# `--dist-timeout-seconds 14400` is needed on any run that has to build the HF -> prime-rl
-# conversion cache, which takes far longer than the 3600s default. The cache is NOT layer-count
-# agnostic, so a cache built by a `debug.num_layers` run must not be reused at full depth.
+# `dist_timeout_seconds = 14400` is needed on any run that has to build the HF -> prime-rl
+# conversion cache, which takes far longer than the 3600s default.
 #
-# `force_balanced_routing` is deliberately absent: it is a fake-data smoke-test knob that breaks
-# gradient flow through the router. Peak memory runs higher without it, since expert load is no
-# longer round-robin.
+# To buy memory back for quicker testing on fewer nodes, set `full_offload = true` under `[model]`,
+# which keeps the fp32 masters, moments and gradients in CPU RAM and needs `optim_cpu_offload =
+# false` and `optim.max_norm = "None"` set alongside it; the lighter `optim_cpu_offload = true` is
+# already the default here.
 #
-# `data.batch_size` counts sequences, not tokens, and `batch_size * cp` must be divisible by
-# `world_size * micro_batch_size`. 32 is therefore the smallest legal value on 32 ranks, and
-# gives one 2048-token pack per rank per step with no gradient accumulation. The corpus is only
-# ~87k tokens, so 20 steps is already ~15 epochs.
-#
-# Cheap pre-flight before spending the full allocation: same config, one node, 4 layers. Note
-# that `--deployment.type single_node` is NOT usable here, since it does not drop this file's
-# `num_train_nodes`/`num_infer_nodes`, which then fail validation. Override the counts instead.
-#
-#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --model.debug.num-layers 4 --deployment.num-train-nodes 1 --deployment.num-infer-nodes 0 --data.batch-size 8 --max-steps 5 --no-eval --no-inference
+# There is no `[ckpt]` block. The trainer saves unconditionally at the last step, and a 43-layer
+# checkpoint (fp32 master weights plus two fp32 AdamW moments) is ~3 TiB. Add one with
+# `ckpt.output_dir` pointed at a volume that can hold it if you need the trained weights.
 
+dist_timeout_seconds = 14400
 max_steps = 20
 
 [model]
@@ -36,19 +26,13 @@ name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 impl = "custom"
 ep = 8
 
-# Kept, not a tuning choice, and needs the DeepEP extra installed. Measured on a 4-layer
-# single-node run: the default torch dispatch deadlocked every rank (NCCL watchdog, 480s with no
-# collective progress), while DeepEP completed 5 steps with nan_count=0.
-#
-# The reason originally recorded here no longer holds. It cited DeepEPExpertParallel in
-# trainer/distributed/expert_parallel.py, and argued that only DeepEP hoists the token dispatch
-# into MoE.forward() and so keeps its collectives outside the activation-checkpoint boundary that
-# `ac.mode = "full"` re-executes during backward. PR #3411 deleted that class, moved every backend
-# behind one TokenDispatcher.run() call inside MoE.forward(), and dropped the routed_experts
-# selective-AC target, so the asymmetry the explanation rested on is gone. Whether the torch
-# dispatch still deadlocks on the new runtime has not been retested; DeepEP stays until it is.
+# Torch all-to-all, not DeepEP. At full depth DeepEP dies on the first backward with
+# "RuntimeError: Autograd not support dtype: Byte", raised from `Tensor.float()` in
+# `DeepEPTokenDispatcher.combine` while the activation-checkpoint recompute replays through a
+# `__torch_dispatch__` mode that hands back a uint8 tensor. Reproduced deterministically on 4
+# nodes against the same weights and conversion cache this config trains on.
 [model.moe.dispatch]
-type = "deepep"
+type = "torch"
 
 [model.ac]
 freq = 1
@@ -64,51 +48,14 @@ batch_size = 32
 [optim]
 lr = 1e-5
 
-[eval]
-interval = 10
-num_examples = 32
-
-[eval.sampling]
-max_completion_tokens = 256
-
-[[eval.source]]
-name = "reverse-text"
-env.taskset.id = "reverse-text"
-env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
-
-# NCCL and NIXL broadcast need convert_layer_to_vllm_kernel, which this port does not implement.
-[weight_broadcast]
-type = "filesystem"
-# The trainer broadcasts v0 weights before step 1 and errors out if no receiver joins in time. The
-# receiver is the inference server, and `use_deep_gemm` makes it JIT ~1261 kernels on first boot:
-# measured at ~12 min here, against the 1200s default. Widened so a cold or slower box has room.
-timeout = 3600
-
-[inference]
-# Note: we found `use_deep_gemm = false` is broken on SM120 where mHC pre-norm GEMM falls back to
-# a TileLang kernel whose forward is silently wrong above 1024 tokens, and the checkpoint's
-# UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
-use_deep_gemm = true
-
-[inference.vllm]
-tensor_parallel_size = 8
-enable_expert_parallel = true
-# Both required by DeepSeek V4's sparse-MLA KV layout, not tuning choices. See inference.toml.
-kv_cache_dtype = "fp8"
-block_size = 256
-max_model_len = 8192
-
-[ckpt]
-
 [monitors.wandb]
 project = "deepseek-v4-flash"
 name = "deepseek-v4-flash-sft"
 
+# `num_infer_nodes` defaults to 0, so this allocates 4 nodes and runs only the trainer.
 [deployment]
 type = "multi_node"
 num_train_nodes = 4
-num_infer_nodes = 1
 
 [slurm]
 job_name = "ds-v4-sft"
