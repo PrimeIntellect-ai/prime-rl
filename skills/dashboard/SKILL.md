@@ -80,8 +80,8 @@ switches it to step mode, which shows the cohort that shipped at one step (for
 eval work, the step that produced the policy it measured — the left and right
 arrow keys walk the step bar). Per-token overlays cover advantage, entropy, the
 trainer/inference logprob mismatch, the IPO stable mask, and the loss and content
-masks; when the selected overlay colours nothing, a note above the transcript
-names the input the episode is missing. Use optional `trace` and `branch` indices
+masks; an overlay the open episode cannot colour is greyed out in the selector and
+names the input it is missing. Use optional `trace` and `branch` indices
 for multi-agent traces and `highlight` entries shaped as `{node, quote,
 reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.

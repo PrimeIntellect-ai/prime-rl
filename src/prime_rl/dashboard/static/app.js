@@ -2533,20 +2533,16 @@ function signalNote(trace, path, signal, scales) {
   return [`${label.toLowerCase()} is empty`, `No token on this branch is in ${label.toLowerCase()}.`];
 }
 
-function signalNoteHtml(trace, path, signal, scales) {
-  const note = signalNote(trace, path, signal, scales);
-  return note ? `<div class="signal-note"><b>${esc(note[0])}</b><span>${esc(note[1])}</span></div>` : "";
-}
-
-/* Grey the overlays this episode cannot show, each with the reason it cannot, so the
-   choice is informed before it is made. They stay selectable: the preference is
-   sticky across episodes, and a reader setting up the next episode must still be able
-   to pick one the open episode happens not to carry. */
-function markSignalAvailability(trace, path, scales) {
+/* Disable the overlays this episode cannot show, each labelled with the reason, and
+   return the one to actually render with. The selection stays as the reader left it -
+   it is sticky across episodes - so an episode that cannot honour it falls back to
+   plain text here and picks the choice back up on an episode that carries it. */
+function resolveSignal(trace, path, scales) {
   const select = $("#token-signal");
   let unavailable = 0;
   for (const option of select.options) {
     const note = option.value ? signalNote(trace, path, option.value, scales) : null;
+    option.disabled = !!note;
     if (note) {
       option.dataset.reason = note[0];
       option.title = note[1];
@@ -2560,6 +2556,7 @@ function markSignalAvailability(trace, path, scales) {
   if (unavailable === select.options.length - 1) select.dataset.note = "no token overlay available";
   else delete select.dataset.note;
   syncDressedSelects();
+  return select.selectedOptions[0]?.disabled ? "" : select.value;
 }
 
 function renderTokenNode(node, signal, scales) {
@@ -2700,7 +2697,6 @@ function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
   const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
   if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
-  const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
   const unavailable = {
@@ -2711,17 +2707,16 @@ function renderedTokensHtml(trace, branches) {
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
   const scales = episodeSignalScales(trace);
-  markSignalAvailability(trace, path, scales);
-  const note = signalNoteHtml(trace, path, signal, scales);
+  const signal = resolveSignal(trace, path, scales);
   if (signal && tokenCount) {
     const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
-    return errors + note + renderedBoxHtml(tokenCount, body, selected?.text != null);
+    return errors + renderedBoxHtml(tokenCount, body, selected?.text != null);
   }
   if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return errors + emptyState(title, detail);
   }
-  return errors + note + renderedBoxHtml(selected.token_count, esc(selected.text), true);
+  return errors + renderedBoxHtml(selected.token_count, esc(selected.text), true);
 }
 
 /* the whole point of this view is the sequence, so it is always open and leads with
@@ -2805,15 +2800,12 @@ function renderMessages(ep, trace, branches) {
     container.innerHTML = renderedTokensHtml(trace, branches);
     return;
   }
-  const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   const scales = episodeSignalScales(trace);
-  markSignalAvailability(trace, path, scales);
-  const noteHtml = signalNoteHtml(trace, path, signal, scales);
-  const signalPaints = !noteHtml;
+  const signal = resolveSignal(trace, path, scales);
   const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
   const callsByNode = new Map();
   for (const item of indexedCalls) {
@@ -2868,12 +2860,11 @@ function renderMessages(ep, trace, branches) {
     // message, whole, and says why it is uncoloured
     const overlayable = !!node.token_ids?.length;
     const showingTokens = !contentMarked && signal && overlayable;
-    // mark a sampled entry the signal skipped, but only when it reached others: when it
-    // reached none, the note above the transcript says so once. A prompt entry carries
-    // no sampled token, so leaving it uncoloured is the expected result, not a gap.
-    if (signal && signalPaints) {
+    // mark the entries a signal skipped. A prompt entry carries no sampled token, so
+    // leaving it uncoloured is the expected result, not a gap.
+    if (signal) {
       if (!overlayable) chips.push("no tokens to overlay");
-      else if (node.sampled && !paintedCount(node, signal, scales)) chips.push("not covered");
+      else if (node.sampled && !paintedCount(node, signal, scales, 1)) chips.push("not covered");
     }
     const whole = reasoning ? `${reasoningText(reasoning)}\n\n${text}`.trim() : text;
     const body = contentMarked
@@ -2918,7 +2909,6 @@ function renderMessages(ep, trace, branches) {
     .join("");
   container.innerHTML =
     errorsHtml +
-    noteHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
