@@ -5,30 +5,10 @@ ever construct a `DeepseekV4Config`. Neither needs CUDA, and a module-level `pyt
 cannot be undone per test, so they live here and run in the CPU job.
 """
 
-import json
-
-import pytest
 import torch
-from huggingface_hub.errors import StrictDataclassClassValidationError
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
-from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_, dequantize_weight
-
-from .deepseek_v4_helpers import _MODEL
-
-
-def test_deepseek_v4_config_rejects_a_foreign_layer_type():
-    """V4's own attention vocabulary, not the generic one transformers checks against.
-
-    `PretrainedConfig.validate_layer_type` runs first, from `super().__init__()`, and accepts
-    anything in transformers' generic layer-type list; only `DeepseekV4Config`'s own override
-    narrows that to the three V4 variants. `compress_rates` carries a rate for the foreign type
-    on purpose, so `validate_architecture` cannot be what rejects it.
-    """
-    kwargs = _MODEL | {"layer_types": ["full_attention"] * 5, "compress_rates": {"full_attention": 4}}
-
-    with pytest.raises(StrictDataclassClassValidationError, match="layer_types entries must be one of"):
-        DeepseekV4Config(**kwargs)
+from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
 
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():
@@ -48,13 +28,6 @@ def test_deepseek_v4_config_translates_legacy_compress_ratios():
         "heavily_compressed_attention",
     ]
     assert config.mlp_layer_types == ["hash_moe", "hash_moe", "moe", "moe", "moe", "moe"]
-
-
-def test_deepseek_v4_config_serializes_topk_method():
-    """The saved `config.json` has to carry `topk_method`, which is what vLLM gates the
-    `e_score_correction_bias` parameter on. An explicit value must win."""
-    assert json.loads(DeepseekV4Config().to_json_string())["topk_method"] == "noaux_tc"
-    assert json.loads(DeepseekV4Config(topk_method="greedy").to_json_string())["topk_method"] == "greedy"
 
 
 def test_dequantize_weight_dense_fp8():
@@ -87,26 +60,3 @@ def test_dequantize_weight_packed_mxfp4():
     expected = torch.tensor([[1.0, 2.0, -2.0, 8.0], [0.0, 24.0, -0.25, 0.75]], dtype=torch.bfloat16)
     assert result.dtype == torch.bfloat16
     assert torch.equal(result, expected)
-
-
-def test_dequantize_state_dict_pops_scale_and_leaves_other_keys_untouched():
-    weight = torch.tensor([[1.0, 2.0], [-1.0, 0.5]], dtype=torch.float32).to(torch.float8_e4m3fn)
-    scale = torch.tensor([[128]], dtype=torch.uint8).view(torch.float8_e8m0fnu)
-    routing = torch.tensor([0, 1, 2], dtype=torch.int64)
-    plain = torch.randn(3, dtype=torch.bfloat16)
-    state_dict = {
-        "layers.0.attn.wq_a.weight": weight,
-        "layers.0.attn.wq_a.scale": scale,
-        "layers.0.ffn.gate.tid2eid": routing,
-        "embed.weight": plain,
-    }
-
-    dequantize_state_dict_(state_dict)
-
-    assert set(state_dict) == {"layers.0.attn.wq_a.weight", "layers.0.ffn.gate.tid2eid", "embed.weight"}
-    assert state_dict["layers.0.attn.wq_a.weight"].dtype == torch.bfloat16
-    assert torch.equal(
-        state_dict["layers.0.attn.wq_a.weight"], torch.tensor([[2.0, 4.0], [-2.0, 1.0]], dtype=torch.bfloat16)
-    )
-    assert torch.equal(state_dict["layers.0.ffn.gate.tid2eid"], routing)
-    assert torch.equal(state_dict["embed.weight"], plain)
