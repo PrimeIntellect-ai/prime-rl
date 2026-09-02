@@ -1477,10 +1477,13 @@ def read_episode_at(path: Path, line: int, at: tuple[int, int] | None = None) ->
 
 
 def episode_at(run_dir: Path, line: int) -> tuple[int, int] | None:
-    """Where the written index puts an episode: ``(chunk, offset)``, or None without one."""
+    """Where the written index puts an episode: ``(chunk, offset)``. None only when the
+    stream has no index; an index that exists is authoritative for what lines there are."""
     rows = written_index(run_dir)
-    if rows is None or not 1 <= line <= len(rows):
+    if rows is None:
         return None
+    if not 1 <= line <= len(rows):
+        raise HTTPException(404, "episode line out of range")
     row = rows[line - 1]
     return row.get("chunk", 0), row.get("offset", 0)
 
