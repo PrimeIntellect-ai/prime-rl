@@ -2,9 +2,9 @@
 the stream to browse it.
 
 The file monitor writes a row as each episode lands, when the record is already in
-hand and summarising it is nearly free, and records the byte offset it wrote the
-episode at so a reader can seek straight to one. A stream another producer wrote has
-no index, so its reader derives the same rows itself.
+hand and summarising it is nearly free, and records the chunk and byte offset it wrote
+the episode at so a reader can seek straight to one. A stream another producer wrote
+has no index, so its reader derives the same rows itself.
 """
 
 
@@ -124,10 +124,11 @@ def _episode_duration(info: dict, timing: dict[str, float]) -> float | None:
     return sum(phases) if phases else None
 
 
-def index_row(line: int, rec: dict, offset: int) -> dict:
+def index_row(line: int, rec: dict, chunk: int, offset: int) -> dict:
     """The row the file monitor writes. The nested reward/metric/timing maps are left
     out: only the per-episode series view needs them, and they dominate the size."""
     row = summarize_episode(line, rec, offset)
+    row["chunk"] = chunk
     for key in ("rewards", "metrics", "timing"):
         row.pop(key, None)
     return row

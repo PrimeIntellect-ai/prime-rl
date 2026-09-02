@@ -304,9 +304,6 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
-    filter_zero_advantages: bool = True
-    """Remove zero-advantage RL tokens after collecting a batch, before shipping it."""
-
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
@@ -553,6 +550,9 @@ class OrchestratorConfig(BaseConfig):
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+
+    constant_trainer_batch_size: bool = True
+    """Require each batch to reach its effective sample target."""
 
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""

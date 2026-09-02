@@ -5,8 +5,8 @@ is an update naming the trace: an ``info`` dict merged into the trace's own, plu
 per-token streams over a branch, full-length across the branch's token prefix (nulls
 mark unknown positions, so a stream never depends on the producer's loss mask).
 
-Each producer appends its own file under the trace directory's ``annotations/``, so
-every file has exactly one writer. Readers fold the updates onto the arrival records
+Each producer appends its own stream under the trace directory's ``annotations/``, so
+every stream has exactly one writer. Readers fold the updates onto the arrival records
 in write order, newest wins.
 """
 
@@ -18,11 +18,11 @@ STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
 
 
-def update_index_row(update: dict[str, Any], offset: int) -> dict[str, Any]:
+def update_index_row(update: dict[str, Any], chunk: int, offset: int) -> dict[str, Any]:
     """An update's scalars plus where its record sits. The per-token streams stay in
-    the annotation file: a reader browsing a run needs the scalars, and only the
+    the annotation stream: a reader browsing a run needs the scalars, and only the
     episode it opens needs the streams."""
-    return {"trace_id": update.get("trace_id"), "offset": offset, "info": update.get("info") or {}}
+    return {"trace_id": update.get("trace_id"), "chunk": chunk, "offset": offset, "info": update.get("info") or {}}
 
 
 def make_update(

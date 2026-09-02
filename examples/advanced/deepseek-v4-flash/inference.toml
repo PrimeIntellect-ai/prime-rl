@@ -1,0 +1,35 @@
+# Standalone vLLM serving pre-flight: does this cluster's vLLM serve the real DeepSeek V4 Flash
+# checkpoint at all, independent of the trainer? Uses vLLM's own native DeepSeek V4 support, not
+# this repo's trainer port. Run directly on one allocated 8xH200 node (no [slurm] block):
+#
+#   uv run inference @ examples/advanced/deepseek-v4-flash/inference.toml
+#
+# Then check /health and a /v1/chat/completions request from another shell on the same node, and
+# confirm a coherent response before trusting the model for a real run.
+#
+# Reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
+
+# Mandatory for the fp8 checkpoint, not an optimization: without it the UE8M0-scaled fp8 weights
+# route to a CUTLASS kernel that crashes on boot. That crash was observed during SM120 bring-up and
+# has not been re-tested on Hopper, but the vLLM recipe sets the flag on every NVIDIA configuration.
+# The mHC pre-norm GEMM does not need it on H200: measured there, the TileLang fallback matches the
+# reference to 1.3e-06 relative at every token count, including the >= 1024 block-M kernel.
+use_deep_gemm = true
+
+[server]
+port = 8000
+
+[vllm]
+model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 8192
+# Required, not a tuning choice. Every DeepSeek V4 attention class sets
+# `use_fp8_ds_mla_layout = True`, and the sparse-MLA layout then asserts
+# "DeepseekV4 fp8_ds_mla layout only supports fp8 kv-cache" against the `auto` default. The vLLM
+# recipe sets it on every vendor and every architecture.
+kv_cache_dtype = "fp8"
+# Recipe-derived rather than measured here: every NVIDIA configuration in the vLLM recipe pairs
+# the fp8 KV cache with this block size.
+block_size = 256

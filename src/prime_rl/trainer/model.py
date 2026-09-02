@@ -38,6 +38,7 @@ from prime_rl.trainer.models import (
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
 )
@@ -679,6 +680,18 @@ def get_model(
             "Context parallelism with model.impl='auto' requires a supported custom PrimeRL implementation, "
             "but this architecture resolved to model.impl='hf'."
         )
+
+    # Past the check above, cp > 1 implies impl_to_use == "custom", so the model class always
+    # resolves. Queried here so a misconfigured job dies at setup rather than at the first forward.
+    if config.cp > 1:
+        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        support = cp_model_cls.cp_support(model_config)
+        if config.cp_style not in support.styles:
+            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
+            raise ValueError(
+                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
+                f"({support.reason}); {supported}."
+            )
 
     if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
         raise ValueError(

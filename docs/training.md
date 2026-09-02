@@ -58,6 +58,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | Knob | What it does |
 |---|---|
 | `orchestrator.batch_size` | Tasks per trainer step. |
+| `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
@@ -133,7 +134,9 @@ Pulled from the console logs and mirrored to W&B.
 | Source | Metric | Reading |
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
+| orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+
+The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
 ## SFT Trainer
 

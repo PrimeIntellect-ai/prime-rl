@@ -736,6 +736,38 @@ class Orchestrator:
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
+
+        active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
+        if step_time > 0 and self.wait_for_policy_time >= active_step_time:
+            get_logger().warning(
+                f"Orchestrator waited {format_time(self.wait_for_policy_time)} for policy updates, at least as long "
+                f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
+                "add more trainer nodes."
+            )
+
+        shipped_episode_ids = {episode.id for episode in batch.cohort}
+        discarded_episodes = [
+            episode
+            for episode in batch.episodes
+            if episode.id not in shipped_episode_ids and episode.id not in batch.buffered_episode_ids
+        ]
+        stale_episodes = sum(episode.id in batch.episodes.cancelled for episode in discarded_episodes)
+        errored_episodes = sum(
+            episode.id not in batch.episodes.cancelled
+            and (not episode.ok or any(trace.has_error for trace in episode.traces))
+            for episode in discarded_episodes
+        )
+        num_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled_attempts
+        num_discarded = len(discarded_episodes) + len(batch.failures) + batch.cancelled_attempts
+        num_stale = stale_episodes + batch.stale_attempts
+        num_errored = errored_episodes + len(batch.failures)
+        num_no_signal = num_discarded - num_stale - num_errored
+        if num_attempts and num_discarded / num_attempts > 0.5:
+            get_logger().warning(
+                f"Discarded {num_discarded}/{num_attempts} episodes ({num_discarded / num_attempts:.1%}): "
+                f"stale={num_stale}, errored={num_errored}, no_signal={num_no_signal}. Review max_off_policy_steps, "
+                "episode errors, and reward signal."
+            )
         self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
