@@ -551,10 +551,11 @@ class Evals:
         disp_drain = self.dispatcher.metrics.drained(train_envs=set(), eval_envs={env.name for env in self.eval_envs})
 
         parts = []
-        for env_name, step, arrived, expected, buffered in sorted(self.eval_sink.batch_progress()):
-            skipped = self.eval_source.skipped_task_count(env_name, step) * self.eval_sink.group_size_for(env_name)
-            shown_arrived = skipped + arrived
-            shown_expected = skipped + expected
+        for env_name, _step, arrived, expected, buffered in sorted(self.eval_sink.batch_progress()):
+            # ``expected`` is only the remaining suffix of a resumed epoch; add the
+            # cursor-skipped prefix back so progress shows against the full epoch.
+            total = self.eval_sink.batch_size_for(env_name)
+            shown_arrived, shown_expected = total - expected + arrived, total
             part = (
                 f"{env_name} {shown_arrived}/{shown_expected} ({shown_arrived / shown_expected:.1%})"
                 if shown_expected

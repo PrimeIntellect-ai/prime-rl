@@ -72,8 +72,6 @@ def test_eval_checkpoint_saves_only_cursor_and_resume_skips_completed_prefix(tmp
     ]
     assert eval_source.triggered_task_count("math", 0) == 1
     assert eval_source.triggered_task_count("code", 0) == 1
-    assert eval_source.skipped_task_count("math", 0) == 1
-    assert eval_source.skipped_task_count("code", 0) == 1
 
     ckpt = CheckpointManager(tmp_path)
     ckpt.save(eval_source)
@@ -99,29 +97,6 @@ def test_eval_checkpoint_rejects_step_cursor_mismatch(tmp_path) -> None:
     restored_source = EvalSource([_env("math", ["m0"])], _eval_config())
     with pytest.raises(ValueError, match="contains cursor 1, expected step 2"):
         ckpt.load(2, restored_source, path=ckpt.get_ckpt_path(1))
-
-
-def test_eval_source_counts_skipped_cursor_prefix_for_progress() -> None:
-    group_size = 4
-    eval_source = EvalSource(
-        [_env("math", ["m0", "m1", "m2"]), _env("code", ["c0", "c1"])],
-        _eval_config(),
-    )
-    eval_source.load_state_dict({"cursor": 3})
-
-    assert eval_source.trigger(0) == ["math", "code"]
-    assert _queued_tasks(eval_source) == [
-        ("code", "c1", 3),
-        ("math", "m2", 4),
-    ]
-    assert eval_source.skipped_task_count("math", 0) == 2
-    assert eval_source.skipped_task_count("code", 0) == 1
-    assert eval_source.triggered_task_count("math", 0) == 1
-    assert eval_source.triggered_task_count("code", 0) == 1
-
-    shown_arrived = eval_source.skipped_task_count("math", 0) * group_size
-    shown_expected = shown_arrived + eval_source.triggered_task_count("math", 0) * group_size
-    assert (shown_arrived, shown_expected) == (8, 12)
 
 
 def test_eval_sink_reports_expected_empty_batch_for_progress() -> None:
