@@ -2318,13 +2318,15 @@ function renderSemanticEpisodeNav() {
     ? `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
     : "episode";
   $("#tm-episode-prev").disabled = index <= 0;
-  $("#tm-episode-next").disabled = index < 0 || index >= episodes.length - 1;
+  const hasLoadedNext = index >= 0 && index < episodes.length - 1;
+  const hasUnloadedNext = index >= 0 && episodes.length < state.traces.total;
+  $("#tm-episode-next").disabled = !hasLoadedNext && !hasUnloadedNext;
 }
 
 async function stepRollout(delta) {
   let episodes = filteredRollouts();
   const idx = episodes.findIndex((e) => e.line === currentLine);
-  if (idx + delta >= episodes.length - 1) {
+  if (delta > 0 && idx + delta >= episodes.length) {
     await loadMoreEpisodes();
     episodes = filteredRollouts();
   }
