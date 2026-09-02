@@ -668,7 +668,7 @@ def train(config: TrainerConfig):
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
         active_step_time = step_time - wait_for_batch_time
-        if wait_for_batch_time >= active_step_time:
+        if progress.step > start_step and wait_for_batch_time >= active_step_time:
             logger.warning(
                 f"Trainer waited {format_time(wait_for_batch_time)} for a batch, at least as long as its "
                 f"{format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "

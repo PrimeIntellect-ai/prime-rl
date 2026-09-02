@@ -741,7 +741,11 @@ class Orchestrator:
             )
 
         shipped_episode_ids = {episode.id for episode in batch.cohort}
-        discarded_episodes = [episode for episode in batch.episodes if episode.id not in shipped_episode_ids]
+        discarded_episodes = [
+            episode
+            for episode in batch.episodes
+            if episode.id not in shipped_episode_ids and episode.id not in batch.buffered_episode_ids
+        ]
         stale_episodes = sum(episode.id in batch.episodes.cancelled for episode in discarded_episodes)
         errored_episodes = sum(
             episode.id not in batch.episodes.cancelled

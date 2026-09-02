@@ -392,6 +392,7 @@ class TrainSink:
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
+        buffered_episode_ids = {self.episode_by_trace[trace_id].id for trace_id in self.pending_batch}
         traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[int, vf.Episode] = {}
         for trace_id in selected_ids:
@@ -419,6 +420,7 @@ class TrainSink:
             cohort=cohort,
             samples=samples,
             failures=failures,
+            buffered_episode_ids=buffered_episode_ids,
             cancelled_attempts=cancelled_attempts,
             stale_attempts=stale_attempts,
         )
