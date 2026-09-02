@@ -53,6 +53,8 @@ layers), built from one `seq_lens` and carrying:
   - `position_ids`: each token's position within its own document.
   - `tok_doc_idx`: which document each token belongs to.
   - `position_embeddings`: the RoPE tables, one per rope type, evaluated at `position_ids`.
+  - `window_indices`: for each query, the indices of the tokens its local window covers. Same
+    information as `attention_mask`, but more efficient and consumed by the sparse attn kernel.
   - `compression_layouts`: one `CompressionLayout` per compress rate in the architecture.
 
 The last of those characterizes the token-compression mechanism of DeepSeek V4. We start with it
@@ -105,6 +107,7 @@ table evaluated at positions other than the ones the causal thresholds count in,
 constructed. It runs once per model forward, since none of this depends on depth.
 """
 
+import os
 from dataclasses import dataclass
 
 import torch
@@ -116,6 +119,19 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Unwei
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+_ATTN_IMPLS = frozenset({"eager", "gather"})
+
+# Temporary scaffolding for the sparse-attention rollout, deliberately not a config field.
+DSV4_ATTN_IMPL = os.environ.get("PRIME_RL_DSV4_ATTN", "eager")
+if DSV4_ATTN_IMPL not in _ATTN_IMPLS:
+    raise ValueError(f"PRIME_RL_DSV4_ATTN must be one of {sorted(_ATTN_IMPLS)}, got {DSV4_ATTN_IMPL!r}")
+
+# The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
+# `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production
+# config's `sliding_window + index_topk = 128 + 512 = 640` satisfies it for free; a toy config
+# does not, and pads with sentinel slots, which are masked and therefore semantically free.
+_SLOT_TILE = 64
 
 
 class DeepseekV4GroupedLinear(nn.Linear):
@@ -164,6 +180,39 @@ def eager_attention_with_sinks(
     scores = F.dropout(probs[..., :-1], p=dropout, training=training).to(value.dtype)
     attn_output = torch.matmul(scores, value)
     return attn_output.transpose(1, 2).contiguous()
+
+
+def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: Tensor, scale: float) -> Tensor:
+    """Attention of each query over the `n_slots` KV positions it gathers, in float32.
+
+    `q` is `(batch, seq_len, heads, head_dim)`, `kv_buf` is `(batch, n_positions, 1, head_dim)`,
+    `indices` is `(batch, seq_len, 1, n_slots)` int32 addressing `kv_buf`'s position axis, and
+    `sinks` is `(heads,)`. The output is `(batch, seq_len, heads, head_dim)` in `q.dtype`, the
+    layout `eager_attention_with_sinks` returns.
+
+    A slot holding the sentinel (the trailing zero position of `kv_buf`) is masked out, so a
+    query with a short window or fewer picks than slots costs nothing but the loads.
+
+    This materializes the `(batch, seq_len, n_slots, head_dim)` gather: at production shapes
+    (640 slots, 512 channels) that is 640 KB per token in bf16, about 42 GB at `seq_len = 65536`.
+    It is an oracle for the kernel that replaces it and a small-shape fallback, not a
+    long-context path. It runs entirely in float32 so it matches a kernel accumulating in fp32.
+    """
+    sentinel = kv_buf.shape[1] - 1
+    slot_idx = indices[:, :, 0, :].to(torch.int64)  # (b, s, k)
+    batch_idx = torch.arange(kv_buf.shape[0], device=kv_buf.device)[:, None, None]
+    keys = kv_buf[batch_idx, slot_idx, 0].float()  # (b, s, k, d)
+
+    logits = torch.einsum("bshd,bskd->bshk", q.float(), keys) * scale
+    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
+
+    # The sink logit is unscaled, as in `eager_attention_with_sinks`, which adds it after the
+    # dot products are scaled. Subtracting the row max keeps a fully sentinel row finite.
+    sink_logits = sinks.float().reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
+    combined_logits = torch.cat([logits, sink_logits], dim=-1)
+    probs = F.softmax(combined_logits - combined_logits.max(dim=-1, keepdim=True).values, dim=-1)
+
+    return torch.einsum("bshk,bskd->bshd", probs[..., :-1], keys).to(q.dtype)
 
 
 def build_sliding_window_mask(*, tok_doc_idx: Tensor, sliding_window: int, dtype: torch.dtype) -> Tensor:
@@ -253,6 +302,7 @@ class PackedContext:
     position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
     tok_doc_idx: Tensor  # (seq_len,) int64 - which document each packed token belongs to
     position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type
+    window_indices: Tensor | None  # (seq_len, sliding_window) int32 - packed token per window slot, -1 where unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
     def __post_init__(self) -> None:
@@ -262,6 +312,10 @@ class PackedContext:
             raise ValueError(
                 f"attention_mask covers {self.attention_mask.shape[-2]} query rows and position_ids "
                 f"{self.position_ids.shape[-1]} tokens, but the row has {total_tokens}"
+            )
+        if self.window_indices is not None and self.window_indices.shape[0] != total_tokens:
+            raise ValueError(
+                f"window_indices covers {self.window_indices.shape[0]} query rows, but the row has {total_tokens}"
             )
 
     @classmethod
@@ -295,6 +349,27 @@ class PackedContext:
             for layer_type in set(config.layer_types)
             if layer_type in config.compress_rates
         }
+
+        # Only the sparse attention path reads these, so an architecture without a compressed
+        # layer builds none.
+        window_indices = None
+        if compress_rates:
+            # Query `s` may read token `n` when `n` lies in `s`'s own document and within the
+            # window, `0 <= s - n < sliding_window`. Since `n <= s`, only the lower bound binds,
+            # and the document starts at `s - position_ids[s]`.
+            base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
+            slots = base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
+            # An unused slot holds `-1` here, not the pad-slot index that the sparse path marks
+            # it with downstream: that index is `S + E`, and `E` varies with the layer's compress
+            # rate while this context is depth-independent. `SparseAttnInputs.build` translates.
+            window_indices = torch.where(slots <= tok_idx[:, None], slots, -1).to(torch.int32)
+            # TODO: these slots are `base[s] + arange(W)`, so materializing an (S, W) int32 slab is
+            # redundant. A kernel taking (window_base, top_k_indices) separately would avoid it, saving
+            # 4*W bytes per token (512 at W=128, 33.5 MB at S=65536 per CSA layer) plus the per-layer
+            # concatenation, and dropping W index loads per query. Deferred: computing the window slots
+            # arithmetically requires them to fill whole slot-tiles, i.e. W % block_I == 0. Production
+            # satisfies that at W=128, but it would constrain test configs to W in {64, 128}.
+
         return cls(
             attention_mask=build_sliding_window_mask(
                 tok_doc_idx=tok_doc_idx, sliding_window=config.sliding_window, dtype=dtype
@@ -307,6 +382,7 @@ class PackedContext:
             compression_layouts={
                 rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
             },
+            window_indices=window_indices,
         )
 
     def check_position_ids(self, position_ids: Tensor) -> None:
@@ -350,6 +426,77 @@ class PackedContext:
         return same_document & (threshold.unsqueeze(-1) > layout.entry_local_idx[None, None, :])
 
 
+@dataclass(frozen=True)
+class SparseAttnInputs:
+    """The KV buffer one CSA layer gathers from, and the gather indices addressing it.
+
+    `build` constructs the two together so they stay mutually consistent and cannot drift apart.
+
+    With `S` tokens in the packed row and `E` compressed entries for this layer's rate:
+
+        kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
+                             n in [S, S + E) -> compressed entry (n - S)
+                             n = S + E       -> zeros; this position is also the sentinel index
+    """
+
+    kv_buf: Tensor  # (batch, n_positions, 1, head_dim), trailing position is the zero pad slot
+    indices: Tensor  # (batch, seq_len, 1, n_slots) int32 into kv_buf's position axis
+
+    def __post_init__(self) -> None:
+        # Shape invariants only. Asserting on index values would read the device, and this runs
+        # once per layer per step.
+        if self.kv_buf.ndim != 4 or self.kv_buf.shape[2] != 1:
+            raise ValueError(f"kv_buf must be (batch, n_positions, 1, head_dim), got {tuple(self.kv_buf.shape)}")
+        if self.indices.ndim != 4 or self.indices.shape[2] != 1:
+            raise ValueError(f"indices must be (batch, seq_len, 1, n_slots), got {tuple(self.indices.shape)}")
+        if self.indices.shape[0] != self.kv_buf.shape[0]:
+            raise ValueError(f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}")
+        if self.indices.shape[-1] % _SLOT_TILE != 0:
+            raise ValueError(f"n_slots must be a multiple of {_SLOT_TILE}, got {self.indices.shape[-1]}")
+
+    @property
+    def sentinel(self) -> int:
+        """The pad position, read off the buffer so the two cannot disagree."""
+        return self.kv_buf.shape[1] - 1
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        kv: Tensor,  # (batch, 1, seq_len, head_dim), the rotated local token stream
+        compressed_kv: Tensor,  # (batch, 1, n_entries, head_dim)
+        top_k_indices: Tensor,  # (batch, seq_len, min(index_topk, n_entries)) int64, -1 marks a surplus pick
+        window_indices: Tensor,  # (seq_len, sliding_window) int32, -1 marks an invalid slot
+        sliding_window: int,
+        index_topk: int,
+    ) -> "SparseAttnInputs":
+        """Lay out one CSA layer's gather slots: the local window first, then the indexer's picks."""
+        batch, _, seq_len, head_dim = kv.shape
+        positions = torch.cat([kv, compressed_kv], dim=2).transpose(1, 2)  # (b, S + E, 1, d)
+        # The pad slot is appended here, so the sentinel index cannot disagree with the buffer.
+        kv_buf = torch.cat([positions, positions.new_zeros(batch, 1, 1, head_dim)], dim=1).contiguous()
+        sentinel = kv_buf.shape[1] - 1
+
+        # The slot count comes from the config and never from `top_k_indices.shape[-1]`: the
+        # indexer returns only `min(index_topk, n_entries)` picks, so a shape-derived width would
+        # vary with sequence length and force the kernel to recompile per shape.
+        n_slots = ((sliding_window + index_topk + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
+        # Allocated at full width and prefilled with the sentinel, so the indices cannot be too
+        # narrow and everything the two writes below leave untouched is masked. That is what
+        # makes `n_entries < index_topk` safe.
+        indices = torch.full((batch, seq_len, 1, n_slots), sentinel, dtype=torch.int32, device=kv.device)
+        # `-1` is consumed here and never escapes into the buffer's index space.
+        indices[..., :sliding_window] = torch.where(window_indices >= 0, window_indices, sentinel).unsqueeze(1)
+        n_picks = top_k_indices.shape[-1]
+        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, sentinel)
+        indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
+        return cls(kv_buf=kv_buf, indices=indices)
+
+    def attend(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
+        """Attend `q` (batch, seq_len, heads, head_dim) over this layer's gathered slots."""
+        return sparse_attention_gather(q, self.kv_buf, self.indices, sinks, scale)
+
+
 class DeepseekV4Compressor(nn.Module):
     """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens, per the
     `CompressionLayout` specification. Schematic output:
@@ -360,8 +507,9 @@ class DeepseekV4Compressor(nn.Module):
     source tokens of entry `e`'s pooling window, and `d` runs over `head_dim`. Each entry is
     RMSNormed and rotated with the `compress` RoPE at its window's first source position, which
     is what makes it comparable with the attention block's locally rotated KV stream. `forward`
-    returns the entries alongside an additive `block_bias` saying which query may read which, for
-    `DeepseekV4Attention` to concatenate onto its local sliding window.
+    returns the entries alongside this layer's entry selection, in whatever form the layer's
+    attention path consumes: an additive `block_bias` to concatenate onto the local sliding
+    window for the dense path, the indexer's picks for the sparse one.
 
     `n_series` sets the slots `s` the gate ranges over. With `1` a token joins only its own
     window, so windows are disjoint. With `2` the projections emit two `head_dim`-wide series
@@ -518,14 +666,28 @@ class DeepseekV4Indexer(nn.Module):
         self.compressor.init_weights(init_std)
 
 
+def block_bias_from_indices(top_k_indices: Tensor, n_entries: int, dtype: torch.dtype) -> Tensor:
+    """Render the indexer's picks as the dense additive `(batch, 1, seq_len, n_entries)` bias.
+
+    `0` on the selected entries, `-inf` everywhere else. The dense and sparse attention paths
+    both start from the same index tensor, so they cannot disagree about which entries a query
+    reads.
+    """
+    batch, seq_len, _ = top_k_indices.shape
+    # The `-1` sentinels are scattered into one throwaway column that is sliced back off.
+    safe_indices = torch.where(top_k_indices >= 0, top_k_indices, torch.full_like(top_k_indices, n_entries))
+    block_bias = torch.full((batch, 1, seq_len, n_entries + 1), float("-inf"), dtype=dtype, device=top_k_indices.device)
+    block_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)
+    return block_bias[..., :n_entries]
+
+
 class DeepseekV4CSACompressor(DeepseekV4Compressor):
     """Compressed Sparse Attention compressor: the sparse long-range half of a CSA layer.
 
     Two series at a fine compress rate, with overlapping windows. A Lightning Indexer scores
-    the entries and keeps the `index_topk` best per query, and the returned `block_bias` is
-    that selection: `0` on the selected entries, `-inf` everywhere else. It needs no separate
-    causal term, because the indexer only selects entries whose source tokens all lie at or
-    before the query.
+    the entries and keeps the `index_topk` best per query, and the returned `top_k_indices` is
+    that selection, with `-1` marking a surplus pick. It needs no separate causal term, because
+    the indexer only selects entries whose source tokens all lie at or before the query.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -535,18 +697,10 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
     def forward(
         self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch, seq_len, _ = hidden_states.shape
         compressed_kv = self.compress(hidden_states, packed).unsqueeze(1)
-        compressed_len = compressed_kv.shape[2]
-
         # The indexer reads the same layout: it compresses the same source windows at a narrower
         # head dim, so its entry `e` and this compressor's entry `e` are the same window.
-        top_k_indices = self.indexer(hidden_states, q_residual, packed)
-        # The `-1` sentinels are scattered into one throwaway column that is sliced back off.
-        safe_indices = torch.where(top_k_indices >= 0, top_k_indices, torch.full_like(top_k_indices, compressed_len))
-        block_bias = compressed_kv.new_full((batch, 1, seq_len, compressed_len + 1), float("-inf"))
-        block_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)
-        return compressed_kv, block_bias[..., :compressed_len]
+        return compressed_kv, self.indexer(hidden_states, q_residual, packed)
 
     def init_weights(self, init_std: float) -> None:
         super().init_weights(init_std)
@@ -634,6 +788,60 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
+    def _eager(self, q: Tensor, kv: Tensor, attention_mask: Tensor) -> Tensor:
+        return eager_attention_with_sinks(
+            q,
+            kv,
+            kv,
+            self.sinks,
+            attention_mask,
+            scaling=self.scaling,
+            dropout=self.attention_dropout,
+            training=self.training,
+        )
+
+    def _attend(
+        self, hidden_states: Tensor, q_residual: Tensor, q: Tensor, kv: Tensor, packed: PackedContext
+    ) -> Tensor:
+        """Attend `q` (b, h, t, d) over the local KV `kv` (b, 1, t, d), plus any compressed entries.
+
+        Returns (b, t, h, d). A sliding layer sees only its window; a compressed layer reaches
+        further through its compressor's entries, either by concatenating them onto the dense
+        mask or, on the sparse path, by gathering the selected ones per query.
+        """
+        if self.compressor is None:
+            return self._eager(q, kv, packed.attention_mask)
+
+        if self.layer_type == "compressed_sparse_attention":
+            compressed_kv, top_k_indices = self.compressor(hidden_states, q_residual, packed)
+            if DSV4_ATTN_IMPL != "eager":
+                # `eager_attention_with_sinks` drops attention weights, the sparse path does not,
+                # so the two only agree at zero. The default is 0.0 but a config may set it.
+                assert self.attention_dropout == 0.0, "the sparse attention path implements no dropout"
+                inputs = SparseAttnInputs.build(
+                    kv=kv,
+                    compressed_kv=compressed_kv,
+                    top_k_indices=top_k_indices,
+                    window_indices=packed.window_indices,
+                    sliding_window=self.config.sliding_window,
+                    index_topk=self.config.index_topk,
+                )
+                # The kernel that will replace the gather reference asserts contiguity.
+                return inputs.attend(q.transpose(1, 2).contiguous(), self.sinks, self.scaling)
+            block_bias = block_bias_from_indices(top_k_indices, compressed_kv.shape[2], packed.attention_mask.dtype)
+        else:
+            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed)
+
+        kv = torch.cat([kv, compressed_kv], dim=2)  # (b, 1, t + e, d)
+        # The compressed entries live outside the local window, so the sliding mask says
+        # nothing about them; `block_bias` carries their per-query causality and the
+        # indexer's selection. Zero-padding instead would let every query read every one.
+        attention_mask = torch.cat(
+            [packed.attention_mask.expand(*block_bias.shape[:-1], -1), block_bias.to(packed.attention_mask.dtype)],
+            dim=-1,
+        )  # (b, 1, t, t + e)
+        return self._eager(q, kv, attention_mask)
+
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
         # Shape keys in the comments below:
@@ -660,29 +868,7 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)  # (b, 1, t, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
-        attention_mask = packed.attention_mask  # (1, 1, t, t)
-
-        if self.compressor is not None:
-            # (b, 1, e, d),  (b, 1, t, e)
-            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed)
-            kv = torch.cat([kv, compressed_kv], dim=2)  # (b, 1, t + e, d)
-            # The compressed entries live outside the local window, so the sliding mask says
-            # nothing about them; `block_bias` carries their per-query causality and the
-            # indexer's selection. Zero-padding instead would let every query read every one.
-            attention_mask = torch.cat(
-                [attention_mask.expand(*block_bias.shape[:-1], -1), block_bias.to(attention_mask.dtype)], dim=-1
-            )  # (b, 1, t, t + e)
-
-        attn_output = eager_attention_with_sinks(
-            q,
-            kv,
-            kv,
-            self.sinks,
-            attention_mask,
-            scaling=self.scaling,
-            dropout=self.attention_dropout,
-            training=self.training,
-        )  # (b, t, h, d)
+        attn_output = self._attend(hidden_states, q_residual, q, kv, packed)  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
@@ -709,6 +895,9 @@ __all__ = [
     "DeepseekV4Indexer",
     "DeepseekV4IndexerScorer",
     "PackedContext",
+    "SparseAttnInputs",
+    "block_bias_from_indices",
     "build_sliding_window_mask",
     "eager_attention_with_sinks",
+    "sparse_attention_gather",
 ]
