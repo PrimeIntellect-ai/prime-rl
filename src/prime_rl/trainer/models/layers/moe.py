@@ -20,6 +20,8 @@ from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
 
 _comm_stream: torch.cuda.Stream | None = None
+
+
 def _get_comm_stream() -> torch.cuda.Stream:
     # Shared global side CUDA stream to overlap MoE shared expert FNN with dispatch/combine a2a - per process.
     # A distinct stream per layer makes no sense as it allocates a lot of streams and fragments the CUDA caching allocator
@@ -441,9 +443,7 @@ class MoE(nn.Module):
             )
 
         if self._overlap_shared_expert and self.shared_expert is not None and x.is_cuda:
-            routed_output, shared_output = self._dispatch_experts_overlapped(
-                x, top_scores, selected_experts_indices
-            )
+            routed_output, shared_output = self._dispatch_experts_overlapped(x, top_scores, selected_experts_indices)
         else:
             routed_output = self.token_dispatcher.run(
                 self.prepare_expert_input(x),
