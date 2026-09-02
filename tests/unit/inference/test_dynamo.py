@@ -79,6 +79,39 @@ def test_parse_dynamo_workers_rejects_duplicate_admin_urls():
         )
 
 
+def test_parse_dynamo_workers_treats_incomplete_matching_worker_as_pending():
+    incomplete_worker = worker(1, admin_base_url="http://worker-1:8120", world_size=1)
+    incomplete_worker.pop("admin_base_url")
+
+    with pytest.raises(DynamoDiscoveryPending, match="missing required RL metadata"):
+        parse_dynamo_workers(snapshot(incomplete_worker), "Qwen/Qwen3-0.6B")
+
+
+def test_dynamo_admin_clients_retry_invalid_startup_snapshot(monkeypatch):
+    workers = parse_dynamo_workers(
+        snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
+        "Qwen/Qwen3-0.6B",
+    )
+    discover = AsyncMock(side_effect=[ValueError("temporary invalid snapshot"), workers, workers])
+    monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
+    config = ClientConfig(
+        base_url="http://dynamo-frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://dynamo-frontend:8001"},
+    )
+    admin = DynamoAdminClients(config, "Qwen/Qwen3-0.6B", poll_interval=0)
+
+    with (
+        patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()),
+    ):
+        asyncio.run(admin.wait_for_ready("Qwen/Qwen3-0.6B"))
+
+    assert discover.await_count == 3
+    asyncio.run(admin.aclose())
+
+
 def test_dynamo_admin_clients_pin_two_identical_snapshots(monkeypatch):
     workers = parse_dynamo_workers(
         snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
@@ -149,6 +182,32 @@ def test_dynamo_admin_clients_retry_transient_topology_probe(monkeypatch):
         "Qwen/Qwen3-0.6B",
     )
     discover = AsyncMock(side_effect=[pinned, pinned, httpx.ConnectError("temporary discovery failure"), pinned])
+    monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
+    config = ClientConfig(
+        base_url="http://dynamo-frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://dynamo-frontend:8001"},
+    )
+    admin = DynamoAdminClients(config, "Qwen/Qwen3-0.6B", poll_interval=0)
+
+    with (
+        patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()),
+    ):
+        asyncio.run(admin.wait_for_ready("Qwen/Qwen3-0.6B"))
+        asyncio.run(admin.ensure_topology_current())
+
+    assert discover.await_count == 4
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_clients_retry_invalid_topology_snapshot(monkeypatch):
+    pinned = parse_dynamo_workers(
+        snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
+        "Qwen/Qwen3-0.6B",
+    )
+    discover = AsyncMock(side_effect=[pinned, pinned, ValueError("temporary invalid snapshot"), pinned])
     monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
     config = ClientConfig(
         base_url="http://dynamo-frontend:8000/v1",
