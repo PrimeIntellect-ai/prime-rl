@@ -12,6 +12,7 @@ from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
@@ -424,6 +425,41 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.inference.vllm.data_parallel_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_dynamo_discovery_config_is_nested_under_client():
+    config = ClientConfig.model_validate(
+        {
+            "base_url": "http://dynamo-frontend:8000/v1",
+            "dynamo": {"discovery_url": "http://dynamo-frontend:8001"},
+        }
+    )
+
+    assert config.dynamo is not None
+    assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
+
+
+def test_external_nccl_world_size_propagates_to_both_processes():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "default"},
+                "model": {
+                    "client": {
+                        "base_url": "http://dynamo-frontend:8000/v1",
+                        "dynamo": {"discovery_url": "http://dynamo-frontend:8001"},
+                    }
+                },
+            },
+            "weight_broadcast": {"type": "nccl", "inference_world_size": 3},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.trainer.weight_broadcast.inference_world_size == 3
+    assert config.orchestrator.weight_broadcast.type == "nccl"
+    assert config.orchestrator.weight_broadcast.inference_world_size == 3
 
 
 def test_multi_node_auto_inference_parallelism():
