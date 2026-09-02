@@ -14,6 +14,8 @@ import torch
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4.quantize import (
+    _E8M0_BIAS,
+    _e8m0_scale,
     _unpack_mxfp4,
     dequantize_state_dict_,
     dequantize_weight,
@@ -201,6 +203,98 @@ def test_quantize_mxfp4_round_trips_and_packs_low_nibble_first():
     weight = torch.randn(64, 128, dtype=torch.bfloat16)
     restored = dequantize_weight(*quantize_mxfp4(weight))
     assert (restored.float() - weight.float()).abs().max() <= 2**-2 * weight.float().abs().max()
+
+
+# The e2m1 grid, and the hand-rolled MXFP4 quantizer that `quantize_mxfp4` used before it
+# delegated to `torchao`. Kept as an oracle rather than deleted: it was verified byte-identical
+# against DeepSeek's own quantizer on real checkpoint tensors, so it is the one independent
+# check that a torchao bump has not quietly changed the rounding or the scale derivation. That
+# is a failure mode with no loud symptom -- the shapes and dtypes stay right and only the model's
+# output degrades -- so it would otherwise surface on a training run, not here.
+_E2M1_MAGNITUDES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+_E2M1_MAX = 6.0
+
+
+def _reference_quantize_mxfp4(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    rows, cols = weight.shape
+    blocks = weight.float().view(rows, cols // 32, 32)
+    scale = _e8m0_scale(blocks.abs().amax(dim=-1), _E2M1_MAX)
+    scaled = (blocks / scale.float()[..., None]).clamp(-_E2M1_MAX, _E2M1_MAX).reshape(rows, cols)
+
+    # Nearest grid point, ties to even, which is what a hardware e2m1 cast does. `torch.round`
+    # cannot stand in: the grid is not uniform above 2.0.
+    magnitude = scaled.abs()
+    lower = (torch.bucketize(magnitude, _E2M1_MAGNITUDES) - 1).clamp(0, _E2M1_MAGNITUDES.numel() - 2)
+    upper = lower + 1
+    to_lower, to_upper = magnitude - _E2M1_MAGNITUDES[lower], _E2M1_MAGNITUDES[upper] - magnitude
+    take_upper = (to_upper < to_lower) | ((to_upper == to_lower) & (upper % 2 == 0))
+    index = torch.where(take_upper, upper, lower)
+
+    nibbles = (index | (torch.signbit(scaled).to(torch.int64) << 3)).to(torch.uint8)
+    return (nibbles[:, 0::2] | (nibbles[:, 1::2] << 4)).contiguous().view(torch.int8), scale
+
+
+def _e2m1_ties_and_neighbours() -> torch.Tensor:
+    """Every midpoint of the e2m1 grid, and the float32 either side of each."""
+    ties = (_E2M1_MAGNITUDES[:-1] + _E2M1_MAGNITUDES[1:]) / 2
+    below = torch.nextafter(ties, torch.tensor(0.0))
+    above = torch.nextafter(ties, torch.tensor(float("inf")))
+    return torch.cat([ties, below, above, -ties, -below, -above])
+
+
+def test_quantize_mxfp4_matches_the_hand_rolled_reference_byte_for_byte():
+    """`torchao`'s RCEIL mode against the transcription of DeepSeek's own kernel.
+
+    The tie points are the subtle half. Ties-to-even is decided one ulp at a time, and a
+    rounding mode that broke it would still round almost every random value correctly, so
+    random data alone cannot see it: hence every midpoint of the grid and both of its float32
+    neighbours, scaled so the block's own scale is exactly 1 and the grid is hit unshifted.
+
+    The `logspace` row is the other half, exercising the scale derivation across 10^12 of
+    dynamic range: `ceil(log2(amax / 6.0))` and `ceil(log2(amax)) - ceil(log2(6.0))` agree on
+    most inputs and differ across a whole block whenever they do not.
+    """
+    ties = _e2m1_ties_and_neighbours()
+    rows = {
+        "e2m1 ties and their neighbours": ties.repeat(2, 32 * 2 // ties.numel() + 1)[:, :64],
+        "exact grid points": torch.cat([_E2M1_MAGNITUDES, -_E2M1_MAGNITUDES]).repeat(2, 4),
+        "an all-zero block": torch.zeros(2, 64),
+        "logspace over 10^12": torch.randn(24, 64) * torch.logspace(-6, 6, 24)[:, None],
+    }
+    torch.manual_seed(0)
+    rows["random bfloat16"] = torch.randn(64, 256, dtype=torch.bfloat16).float()
+
+    for label, weight in rows.items():
+        packed, scale = quantize_mxfp4(weight)
+        reference_packed, reference_scale = _reference_quantize_mxfp4(weight)
+        assert torch.equal(packed.view(torch.uint8), reference_packed.view(torch.uint8)), label
+        assert torch.equal(scale.view(torch.uint8), reference_scale.view(torch.uint8)), label
+
+    # An all-zero block is the one case where torchao alone disagrees: `log2(0)` sends it to
+    # exponent -127 where DeepSeek's kernel floors amax and lands on -126. Pinned from the
+    # value side so the fix cannot be silently reverted.
+    _, zero_scale = quantize_mxfp4(torch.zeros(1, 32))
+    assert zero_scale.view(torch.uint8).item() == _E8M0_BIAS - 126
+
+
+def test_quantize_mxfp4_is_independent_along_the_leading_dims():
+    """What lets a rank quantize its own expert shard before the gather.
+
+    MXFP4's blocks run along the last dim, so an expert-batched `[E, I, H]` tensor has to
+    quantize to exactly the rows the per-expert calls produce; if it did not, the shard the
+    trainer broadcasts would not be the shard vLLM expects. This is also the invariant the
+    internal chunking rests on.
+    """
+    torch.manual_seed(0)
+    batched = torch.randn(6, 8, 96, dtype=torch.bfloat16)
+
+    packed, scale = quantize_mxfp4(batched)
+
+    assert packed.shape == (6, 8, 48) and scale.shape == (6, 8, 3)
+    for expert in range(batched.shape[0]):
+        expert_packed, expert_scale = quantize_mxfp4(batched[expert])
+        assert torch.equal(packed[expert].view(torch.uint8), expert_packed.view(torch.uint8))
+        assert torch.equal(scale[expert].view(torch.uint8), expert_scale.view(torch.uint8))
 
 
 # The families the checkpoint stores quantized, read off the real checkpoint's safetensors

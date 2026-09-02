@@ -56,6 +56,14 @@ independent claims rest on reading vLLM's code rather than on a serving run: tha
 `initialize_layerwise_reload` restores the pre-`process_weights_after_loading` layout so
 these tensors can be loaded into a running engine at all.
 
+The MXFP4 direction delegates to `torchao`'s `to_mx` under `ScaleCalculationMode.RCEIL`,
+which derives the same power-of-two scale and packs the same nibble order. That buys a GPU
+implementation, which is what makes it affordable to quantize inside the weight gather (see
+`prime_rl.utils.weights.gather_weights_parallel`) rather than on CPU afterwards; on an H200
+it runs some 300x faster per element than a CPU pass. The fp8 direction stays hand-rolled:
+torchao's MX formats are 1-D blocks along the last dim and cannot express the checkpoint's
+128x128 fp8 tiles.
+
 `prime_rl.trainer.models.fp8.quantize_to_fp8_blockwise` is deliberately not reused: it emits
 a float32 `amax / fp8_max` scale rather than a power-of-two UE8M0 one, and is shaped around
 the GLM kernel weight-transfer path.
@@ -94,6 +102,8 @@ import re
 
 import torch
 from torch import Tensor
+from torchao.prototype.mx_formats.config import ScaleCalculationMode
+from torchao.prototype.mx_formats.mx_tensor import to_mx
 
 from prime_rl.trainer.models.conversion_ops import StateDict
 
@@ -101,12 +111,14 @@ FP4_E2M1_LUT = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
     dtype=torch.float32,
 )
-_FP4_E2M1_MAGNITUDES = FP4_E2M1_LUT[:8]
-_FP4_E2M1_MAX = 6.0
 _FP8_E4M3_MAX = 448.0
 
 _FP8_BLOCK = 128
 _MXFP4_BLOCK = 32
+# Leading-dim chunk for `quantize_mxfp4`, in elements. On an H200 this holds `to_mx`'s float32
+# intermediates to 0.58 GiB on a 32-expert `[32, 2048, 4096]` shard (7.29 GiB unchunked) while
+# running as fast as the unchunked call.
+_MXFP4_CHUNK_ELEMENTS = 1 << 24
 
 _E8M0_BIAS = 127
 _E8M0_MIN_EXP, _E8M0_MAX_EXP = -127, 127
@@ -149,20 +161,6 @@ def _unpack_mxfp4(packed: Tensor) -> Tensor:
     return unpacked.reshape(*packed.shape[:-1], 2 * packed.shape[-1])
 
 
-def _round_to_e2m1(magnitude: Tensor) -> Tensor:
-    """Index into `_FP4_E2M1_MAGNITUDES` nearest each non-negative magnitude, ties to even.
-
-    Ties-to-even is what a hardware e2m1 cast does, and what DeepSeek's `T.Cast(FP4, ...)`
-    leans on. `torch.round` cannot be used: the grid is not uniform above 2.0.
-    """
-    grid = _FP4_E2M1_MAGNITUDES.to(magnitude.device)
-    lower = (torch.bucketize(magnitude, grid) - 1).clamp(0, grid.numel() - 2)
-    upper = lower + 1
-    to_lower, to_upper = magnitude - grid[lower], grid[upper] - magnitude
-    take_upper = (to_upper < to_lower) | ((to_upper == to_lower) & (upper % 2 == 0))
-    return torch.where(take_upper, upper, lower)
-
-
 def quantize_fp8_block(weight: Tensor, block_size: int = _FP8_BLOCK) -> tuple[Tensor, Tensor]:
     """Quantize a dense 2D weight to `float8_e4m3fn` with a `float8_e8m0fnu` block scale.
 
@@ -188,25 +186,48 @@ def quantize_fp8_block(weight: Tensor, block_size: int = _FP8_BLOCK) -> tuple[Te
 
 
 def quantize_mxfp4(weight: Tensor) -> tuple[Tensor, Tensor]:
-    """Quantize a 2D expert weight to packed MXFP4 with a `float8_e8m0fnu` block scale.
+    """Quantize an expert weight to packed MXFP4 with a `float8_e8m0fnu` block scale.
 
-    Returns the `int8` packing the checkpoint uses, halving the last dim, alongside a
-    `[rows, cols / 32]` scale. Values are rounded onto the e2m1 grid and packed
-    low-nibble-first, so `_unpack_mxfp4` is the exact inverse.
+    Returns the `int8` packing the checkpoint uses, halving the last dim, alongside a scale
+    with the last dim divided by 32. Values are rounded onto the e2m1 grid and packed
+    low-nibble-first, so `_unpack_mxfp4` is the exact inverse. Any leading dims are carried
+    through, so a whole expert-batched `[E, I, H]` tensor quantizes in one call: the blocks
+    run along the last dim only, so every expert is independent of the others.
+
+    `torchao`'s `RCEIL` mode derives the scale as `2 ** ceil(log2(amax / 6.0))`, the formula
+    DeepSeek's own `fast_round_scale` implements, and packs low nibble first, the order
+    `_unpack_mxfp4` decodes. Its `CEIL` mode is *not* equivalent: it computes
+    `2 ** ceil(log2(amax) - max_exp)`, which differs whenever the format's `max_pos` is not a
+    power of two, and fp4's is 6.0.
+
+    Large inputs are quantized in chunks along the leading dim. `to_mx` upcasts to float32
+    and holds several intermediates of that size, which on a whole expert shard is tens of
+    GiB; chunking bounds that at a fraction of a GiB and, measured on an H200, costs nothing.
     """
-    if weight.ndim != 2:
-        raise ValueError(f"MXFP4 quantization expects a 2D weight, got shape={tuple(weight.shape)}")
-    rows, cols = weight.shape
-    if cols % _MXFP4_BLOCK:
-        raise ValueError(f"MXFP4 input dim {cols} is not a multiple of the {_MXFP4_BLOCK}-wide scale block")
+    if weight.ndim < 2:
+        raise ValueError(f"MXFP4 quantization expects at least a 2D weight, got shape={tuple(weight.shape)}")
+    if weight.shape[-1] % _MXFP4_BLOCK:
+        raise ValueError(f"MXFP4 input dim {weight.shape[-1]} is not a multiple of the {_MXFP4_BLOCK}-wide scale block")
 
-    blocks = weight.float().view(rows, cols // _MXFP4_BLOCK, _MXFP4_BLOCK)
-    scale = _e8m0_scale(blocks.abs().amax(dim=-1), _FP4_E2M1_MAX)
-    scaled = (blocks / scale.float()[..., None]).clamp(-_FP4_E2M1_MAX, _FP4_E2M1_MAX).reshape(rows, cols)
+    data = weight if weight.dtype in (torch.bfloat16, torch.float32) else weight.float()
+    rows_per_chunk = max(1, _MXFP4_CHUNK_ELEMENTS // max(1, data[:1].numel()))
+    chunks = [
+        _quantize_mxfp4_chunk(data[start : start + rows_per_chunk]) for start in range(0, len(data), rows_per_chunk)
+    ]
+    if len(chunks) == 1:
+        return chunks[0]
+    return torch.cat([packed for packed, _ in chunks]), torch.cat([scale for _, scale in chunks])
 
-    nibbles = (_round_to_e2m1(scaled.abs()) | (torch.signbit(scaled).to(torch.int64) << 3)).to(torch.uint8)
-    packed = nibbles[:, 0::2] | (nibbles[:, 1::2] << 4)
-    return packed.contiguous().view(torch.int8), scale
+
+def _quantize_mxfp4_chunk(data: Tensor) -> tuple[Tensor, Tensor]:
+    scale, packed = to_mx(
+        data.contiguous(), torch.float4_e2m1fn_x2, _MXFP4_BLOCK, scaling_mode=ScaleCalculationMode.RCEIL
+    )
+    # torchao lets an all-zero (or subnormal-amax) block fall through to `log2(0)` and encodes
+    # the resulting exponent -127 as scale byte 0. DeepSeek's `fp4_quant_kernel` instead floors
+    # amax at `6 * 2**-126`, which is byte 1. Both dequantize such a block to zeros, but the
+    # checkpoint's own bytes are what this module reproduces everywhere else.
+    return packed.view(torch.int8), scale.view(torch.uint8).clamp(min=1).view(torch.float8_e8m0fnu)
 
 
 def dequantize_weight(weight: Tensor, scale: Tensor) -> Tensor:
