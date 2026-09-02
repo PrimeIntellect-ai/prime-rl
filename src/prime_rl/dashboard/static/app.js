@@ -2226,6 +2226,7 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let currentEvidenceView = null;
 let episodeOpenVersion = 0;
 let episodeEnrichmentVersion = 0;
 let currentTimeline = null;
@@ -2410,6 +2411,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
+  currentEvidenceView = target.evidence ?? null;
   if (traceView === "timeline") await ensureTimeline();
   renderEpisode();
   await ensureTokens();
@@ -2736,6 +2738,88 @@ function toolDefinitionsHtml(trace) {
   );
 }
 
+const TASK_SCAFFOLD_FIELDS = new Set([
+  "idx", "name", "description", "prompt", "system_prompt", "image", "workdir",
+  "network_allow", "network_block", "artifacts", "timeout", "resources",
+]);
+const TASK_EVIDENCE_FIELD_ORDER = new Map([["question", 0], ["answer", 1]]);
+
+function evidenceText(value) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function taskEvidenceHtml(trace) {
+  const data = trace.task?.data;
+  if (!data || typeof data !== "object") return "";
+  const fields = Object.entries(data)
+    .filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null)
+    .sort(
+      ([a], [b]) =>
+        (TASK_EVIDENCE_FIELD_ORDER.get(a) ?? 2) - (TASK_EVIDENCE_FIELD_ORDER.get(b) ?? 2)
+    );
+  if (!fields.length) return "";
+  const previewKeys = fields.map(([key]) => key).join(" · ");
+  const body = fields
+    .map(
+      ([key, value]) =>
+        `<section class="evidence-field"><header><span>${esc(key)}</span>` +
+        `<button class="icon-btn" data-copy-task="${esc(key)}" title="copy ${esc(key)}">${COPY_SVG}</button></header>` +
+        `<pre>${esc(evidenceText(value))}</pre></section>`
+    )
+    .join("");
+  return (
+    `<details class="task-evidence standalone" open><summary><span class="context-label">Task data</span>` +
+    `<span class="entry-preview">${esc(previewKeys)}</span><span class="entry-chev">›</span></summary>` +
+    `<div class="evidence-fields">${body}</div></details>`
+  );
+}
+
+function judgeEvidenceHtml(trace) {
+  const records = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+  if (!records.length) return "";
+  const calls = records
+    .map((record, index) => {
+      const request = record.request;
+      const response = record.response;
+      const messages = request.messages;
+      const responseText = messageText(response.message);
+      const { input, cached, output } = normalizedCallUsage(response.usage);
+      const chips = [];
+      if (request.model) chips.push(request.model);
+      if (input != null) chips.push(`${fmtCompact(input)} in`);
+      if (cached != null) chips.push(`${fmtCompact(cached)} cache`);
+      if (output != null) chips.push(`${fmtCompact(output)} out`);
+      const prompt = messages
+        .map(
+          (message, messageIndex) =>
+            `<section class="judge-message"><header><span>${String(messageIndex + 1).padStart(2, "0")}</span>` +
+            `<strong>${esc(message.role || "message")}</strong></header>` +
+            `<div>${esc(messageText(message))}</div></section>`
+        )
+        .join("");
+      const parsed = response.parsed == null
+        ? ""
+        : `<section class="judge-result parsed"><header>Parsed verdict</header><pre>${esc(evidenceText(response.parsed))}</pre></section>`;
+      return (
+        `<details class="entry judge-entry" open><summary><span class="entry-num">J${String(index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(record.name)}</span>` +
+        `<span class="entry-preview">${preview(responseText, 180)}</span>` +
+        chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("") +
+        `<button class="icon-btn" data-copy-judge="${index}" title="copy judge call">${COPY_SVG}</button>` +
+        `<span class="entry-chev">›</span></summary>` +
+        `<div class="judge-call-grid"><section class="judge-request"><header>Judge prompt</header>${prompt}</section>` +
+        `<section class="judge-result"><header>Judge response</header><pre>${esc(responseText)}</pre></section>${parsed}</div>` +
+        `</details>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="judging-divider"><span>Judging</span><span>${records.length} call${records.length === 1 ? "" : "s"}</span></div>` +
+    calls
+  );
+}
+
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
   const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
@@ -2837,6 +2921,15 @@ function renderMessages(ep, trace, branches) {
   const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
+    return;
+  }
+  if (currentEvidenceView === "task") {
+    container.innerHTML = errorsHtml + (taskEvidenceHtml(trace) || emptyState("no task data", "this trace carries no task-specific evidence"));
+    return;
+  }
+  if (currentEvidenceView === "judge") {
+    const judgesHtml = judgeEvidenceHtml(trace);
+    container.innerHTML = errorsHtml + (judgesHtml ? `<div class="judging-view">${judgesHtml}</div>` : emptyState("no judge calls", "this trace has no recorded judge evidence"));
     return;
   }
   if (state.traces.viewMode === "rendered") {
@@ -3037,6 +3130,8 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+    if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
 
     const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
     const addUsage = (field, value) => {
@@ -3238,24 +3333,39 @@ function renderEpisode() {
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
-  branchTabs.hidden = branches.length <= 1;
+  const taskFields = Object.entries(trace?.task?.data || {}).filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null);
+  const judgeCalls = Array.isArray(trace?.info?.judge_calls) ? trace.info.judge_calls : [];
+  const hasEvidence = taskFields.length > 0 || judgeCalls.length > 0;
+  branchTabs.hidden = branches.length <= 1 && !hasEvidence;
   branchTabs.innerHTML =
-    branches.length > 1
+    !branchTabs.hidden
       ? branches
-          .map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
+          .map((_, i) => `<button data-branch="${i}" class="${currentEvidenceView == null && i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
           .join("") +
-        `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+        (branches.length > 1
+          ? `<button data-branch="-1" class="${currentEvidenceView == null && currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+          : "")
       : "";
+  const evidenceTabs = $("#tm-evidence-tabs");
+  evidenceTabs.hidden = !hasEvidence;
+  evidenceTabs.innerHTML =
+    (taskFields.length
+      ? `<button data-evidence="task" class="${currentEvidenceView === "task" ? "active" : ""}">task data</button>`
+      : "") +
+    (judgeCalls.length
+      ? `<button data-evidence="judge" class="${currentEvidenceView === "judge" ? "active" : ""}">judging · ${judgeCalls.length}</button>`
+      : "");
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
   const timeline = traceView === "timeline";
-  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
+  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
   $("#tm-messages").hidden = timeline;
   $("#tm-timeline").hidden = !timeline;
-  $("#token-signal").closest(".dd-select").hidden = timeline;
-  $("#trace-view-mode").hidden = timeline;
-  $("#tm-collapse").hidden = timeline;
-  $("#tm-expand").hidden = timeline;
+  const evidence = currentEvidenceView != null;
+  $("#token-signal").closest(".dd-select").hidden = timeline || evidence;
+  $("#trace-view-mode").hidden = timeline || evidence;
+  $("#tm-collapse").hidden = timeline || evidence;
+  $("#tm-expand").hidden = timeline || evidence;
   setActive("#tm-view", "view", traceView);
   if (timeline) renderTimeline();
   else renderMessages(ep, trace, branches);
@@ -4410,11 +4520,13 @@ $("#tm-timeline").addEventListener("click", async (e) => {
     const branches = trace ? traceBranches(trace) : [];
     const branch = branches.findIndex((path) => path.includes(node));
     currentBranchIdx = branch >= 0 ? branch : -1;
+    currentEvidenceView = null;
     pendingTimelineNode = node;
     pendingTimelineCall = call;
     state.traces.viewMode = "messages";
   } else {
     currentBranchIdx = 0;
+    currentEvidenceView = null;
     pendingTimelineNode = null;
     pendingTimelineCall = call;
     if (call != null) state.traces.viewMode = "messages";
@@ -4465,11 +4577,15 @@ $("#tm-timeline").addEventListener("mouseout", (e) => {
 });
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
-  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
+  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; currentEvidenceView = null; renderEpisode(); }
 });
 $("#tm-branch-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-branch]");
-  if (btn) { currentBranchIdx = +btn.dataset.branch; renderEpisode(); }
+  if (btn) { currentBranchIdx = +btn.dataset.branch; currentEvidenceView = null; renderEpisode(); }
+});
+$("#tm-evidence-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-evidence]");
+  if (btn) { currentEvidenceView = btn.dataset.evidence; renderEpisode(); }
 });
 $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
@@ -4482,7 +4598,9 @@ $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered]");
+  const btn = e.target.closest(
+    "[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered], [data-copy-task], [data-copy-judge]"
+  );
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
@@ -4491,6 +4609,16 @@ $("#tm-messages").addEventListener("click", (e) => {
   if (btn.dataset.copy != null) {
     const node = trace.nodes?.[+btn.dataset.copy];
     if (node) copyText(messageText(node.message), btn);
+    return;
+  }
+  if (btn.dataset.copyTask != null) {
+    const value = trace.task?.data?.[btn.dataset.copyTask];
+    if (value != null) copyText(evidenceText(value), btn);
+    return;
+  }
+  if (btn.dataset.copyJudge != null) {
+    const record = trace.info?.judge_calls?.[+btn.dataset.copyJudge];
+    if (record) copyText(JSON.stringify(record, null, 2), btn);
     return;
   }
   const tools = normalizedTools(trace.tools);
