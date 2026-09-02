@@ -1,28 +1,34 @@
 """
 [DeepSeek V4 Attention Layers]
 
-The attention layers in this architecture generally begin with a few sliding-window attention
-layers (just the first two layers in V4 Flash) followed by many complex compressed attention
-variants. A sketch of the latter is below, tensors flowing downwards:
+The attention layers in this architecture generally begin with a few sliding-window attention layers
+(just the first two layers in V4 Flash) followed by interleaved complex compressed attention
+variants involving either Compressed Sparse Attention (CSA) or Heavily Compressed Attention (HCA).
+CSA compresses with a smaller window (~4 toks) and adds additional sparsity on top via a "Lightning
+Indexer", while HCA uses a more aggressive window (~128 toks) with no additional sparsity. A sketch
+of the compressed variants is below, tensors flowing downwards:
 
+                          hidden_states
                                 │
                  ┌──────────────┴──────────────┐
                  │                             │
              local KV                   long-range KV
-        sliding_window ~ 128                   │
+        sliding_window ~ 128        compress hidden states
+                 │                   into compact entries
+                 │                             │
                  │              ┌──────────────┴──────────────┐
                  │              │        (choose one)         │
                  │              │                             │
-                 │        CSA compressor              HCA compressor
-                 │        rate 4; Lightning           rate 128; every
-                 │        Indexer keeps               causally-ready
-                 │     index_topk per query                summary
+                 │             CSA                           HCA
+                 │        compress_rate ~ 4          compress_rate ~ 128
+                 │     index_topk sparsity via                │
+                 │       Lightning Indexer                    │
                  │              │                             │
                  │              └──────────────┬──────────────┘
                  │                             │
                RoPE                          RoPE
-         at token positions             at each summary's
-                 │                    first source token
+         at token positions             at each entry's
+                 │                     first token position
                  │                             │
                  └────────── concatenate ──────┘
                                 │
