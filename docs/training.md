@@ -296,7 +296,7 @@ env.agent.harness.id = "bash"
 env.taskset.id = "aime25"
 ```
 
-The run writes to `output_dir / run.name` with the same layout as training runs (`configs/attempt_<n>/`, `logs/attempt_<n>/eval.log`, `monitors/file/`), shows up in the [dashboard](#dashboard), and checkpoints its task cursor after every completed group. Relaunch with the same `--run.name` and `--resume` to skip the completed prefix. `--monitors.prime` uploads each source's finished epoch as an evaluation on the Prime Intellect platform (`PRIME_API_KEY` or `prime login`). Examples live in `examples/eval/`.
+The run writes to `output_dir / run.name` with the same layout as training runs (`configs/attempt_<n>/`, `logs/attempt_<n>/eval.log`, `monitors/file/`), shows up in the [dashboard](#dashboard), and checkpoints its task cursor after every completed group. Relaunch with the same `--run.name` and `--resume` to skip the completed prefix. `--monitors.prime` uploads each source's finished epoch as an evaluation on the Prime Intellect platform (`PRIME_API_KEY` or `prime login`). Examples live in `examples/eval/` (see its README).
 
 ## Checkpointing
 

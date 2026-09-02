@@ -11,7 +11,7 @@ import pytest
 
 from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, strip_escape_codes
+from tests.utils import strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -88,7 +88,11 @@ def eval_process(inference, run_process: Callable[..., ProcessResult], output_di
 
 @pytest.fixture(scope="module")
 def test_no_error(eval_process: ProcessResult, run_dir: Path):
-    check_no_error(eval_process, run_dir)
+    if eval_process.returncode != 0:
+        print("=== Eval Outputs ===")
+        with open(run_dir / "logs" / "latest" / "eval.log", "r") as f:
+            print(*f.readlines()[-200:], sep="")
+    assert eval_process.returncode == 0, f"Process has non-zero return code ({eval_process})"
 
 
 def test_eval_reward(eval_process: ProcessResult, test_no_error, run_dir: Path):
