@@ -23,7 +23,7 @@ Design constraints:
   ``expert_offset`` so a rank can unstack just its *local* experts into
   globally-numbered per-expert keys — no all-gather. Any op that genuinely
   needs a full tensor is the caller's responsibility to gather first (via the
-  trainer's ``_resolve_dtensors``); none of the ops here gather on their own.
+  trainer's ``resolve_dtensors``); none of the ops here gather on their own.
 * **Every op is present-guarded** — it no-ops when its inputs are absent — so
   the same per-layer op list can be emitted for every layer and simply skips
   dense / non-matching layers, exactly as the imperative loops did.
