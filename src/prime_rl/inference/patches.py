@@ -17,6 +17,77 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_bounded_sampling_mask()
+
+
+def monkey_patch_bounded_sampling_mask():
+    """Keep bounded sampling masks sparse across the device-to-host copy."""
+    from contextvars import ContextVar
+    from typing import NamedTuple
+
+    import numpy as np
+    from vllm.v1.outputs import SamplingMaskLists
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+    from vllm.v1.worker.gpu.sample.sampler import Sampler
+
+    original_call = Sampler.__call__
+    original_from_logits = SamplingMaskTensors.from_logits
+    if getattr(original_call, "_prime_rl_uses_sparse_sampling_masks", False):
+        return
+
+    max_sparse_width = 512
+    use_sparse: ContextVar[bool] = ContextVar("use_sparse_sampling_mask", default=False)
+
+    class SparseSamplingMaskTensors(NamedTuple):
+        token_ids: torch.Tensor
+        counts: torch.Tensor
+
+        def to_cpu_nonblocking(self):
+            if self.token_ids.device.type == "cpu":
+                return self
+            return SparseSamplingMaskTensors(
+                self.token_ids.to("cpu", non_blocking=True),
+                self.counts.to("cpu", non_blocking=True),
+            )
+
+        def tolists(self, num_sampled_tokens: np.ndarray) -> SamplingMaskLists:
+            sampled_rows = np.flatnonzero(num_sampled_tokens)
+            counts = self.counts.numpy()[sampled_rows]
+            offsets = np.empty(len(counts) + 1, dtype=np.int64)
+            offsets[0] = 0
+            np.cumsum(counts, dtype=np.int64, out=offsets[1:])
+            token_ids = self.token_ids.numpy()[sampled_rows]
+            token_ids = token_ids[token_ids >= 0]
+            return SamplingMaskLists(
+                token_ids=token_ids,
+                offsets=offsets,
+                cu_num_generated_tokens=np.cumsum(np.concatenate(([0], num_sampled_tokens))).tolist(),
+            )
+
+    def _call(self, logits, input_batch):
+        top_k = self.sampling_states.top_k.np[input_batch.idx_mapping_np]
+        token = use_sparse.set(self.return_sampling_mask and int(top_k.max()) <= max_sparse_width)
+        try:
+            return original_call(self, logits, input_batch)
+        finally:
+            use_sparse.reset(token)
+
+    def _from_logits(cls, logits, num_sampled_tokens):
+        if not use_sparse.get():
+            return original_from_logits(logits, num_sampled_tokens)
+
+        width = min(max_sparse_width + 1, logits.shape[1])
+        values, token_ids = logits.topk(width, dim=-1)
+        finite = torch.isfinite(values)
+        overflow = finite[:, -1:] if width > max_sparse_width else torch.zeros_like(finite[:, :1])
+        keep = finite & ~overflow & (num_sampled_tokens[:, None] > 0)
+        token_ids = token_ids.to(torch.int32).masked_fill_(~keep, -1)
+        counts = keep.sum(dim=-1, dtype=torch.int32)
+        return SparseSamplingMaskTensors(token_ids, counts)
+
+    _call._prime_rl_uses_sparse_sampling_masks = True
+    Sampler.__call__ = _call
+    SamplingMaskTensors.from_logits = classmethod(_from_logits)
 
 
 def monkey_patch_online_fp8_parameter_cast():
