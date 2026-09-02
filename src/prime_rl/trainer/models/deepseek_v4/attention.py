@@ -58,11 +58,10 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 class DeepseekV4GroupedLinear(nn.Linear):
     """Block-diagonal grouped linear, the first half of the output projection.
 
-    The stacked attention output is `num_attention_heads * head_dim` wide (32768 for
-    V4-Flash), so a direct projection to `hidden_size` would dominate the per-token cost.
-    Instead the heads are split into `n_groups` groups, each projected independently to
-    `out_features / n_groups` channels; a single follow-up linear (`o_b_proj`) mixes the
-    concatenation back to `hidden_size`.
+    The stacked attention output is `num_attention_heads * head_dim` wide, so a direct
+    projection to `hidden_size` would dominate the per-token cost. Instead the heads are split
+    into `n_groups` groups, each projected independently to `out_features / n_groups` channels;
+    a single follow-up linear (`o_b_proj`) mixes the concatenation back to `hidden_size`.
 
     Input is `[..., n_groups, in_features_per_group]`, output `[..., n_groups, out_features / n_groups]`.
     """
@@ -133,18 +132,20 @@ class CompressionLayout:
     """Per-document compressed-entry layout for one compress rate.
 
     An entry is one compressed KV vector: a compressor pools a window of `compress_rate`
-    consecutive source tokens into a single `head_dim` vector, and the attention block reads the
-    resulting series as extra keys and values beside its local sliding window. Document `d` of
-    length `L_d` owns `L_d // compress_rate` entries, and its trailing `L_d % compress_rate` tokens
-    are dropped. CSA's compressor also pools the previous entry's window, so its entries overlap
-    and its first entry per document has no predecessor to pool; `is_first` marks those.
+    consecutive tokens of the packed input sequence, the entry's source tokens, into a single
+    `head_dim` vector, and the attention block reads the resulting series as extra keys and values
+    beside its local sliding window. Document `doc` of length `L_doc` owns `L_doc // compress_rate`
+    entries, and its trailing `L_doc % compress_rate` tokens are dropped. A two-series compressor
+    also pools the previous entry's window, so its entries overlap and its first entry per
+    document has no predecessor to pool; `is_first` marks those.
 
     Every entry has to belong to exactly one document: one that straddled a boundary would blend
     two independent documents, and one numbered from the start of the packed sequence could not be
     compared against a per-document causal threshold. This carries both, precomputed once per rate
     and shared by every layer that uses it.
 
-    `seq_lens` has no batch dimension, so one layout describes every sequence in the batch.
+    None of these fields has a batch dimension, so one layout describes every sequence in the
+    batch.
     """
 
     src_idx: Tensor  # [n_entries, compress_rate] int64 - source token index in the packed sequence
@@ -158,9 +159,9 @@ class CompressionLayout:
 def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_tokens: int) -> CompressionLayout:
     """Lay out the compressed entries of a packed sequence, document by document.
 
-    Document `d` of length `L_d` gets `L_d // compress_rate` entries; entry `j` covers the
-    `compress_rate` source tokens starting at `cu_seqlens[d] + j * compress_rate`. The
-    trailing `L_d % compress_rate` tokens get no entry, exactly as the unpacked case drops
+    Document `doc` of length `L_doc` gets `L_doc // compress_rate` entries; its entry `e` covers
+    the `compress_rate` source tokens starting at `cu_seqlens[doc] + e * compress_rate`. The
+    trailing `L_doc % compress_rate` tokens get no entry, exactly as the unpacked case drops
     its trailing partial window; they stay visible through the local sliding window.
 
     A packed sequence whose every document is shorter than `compress_rate` yields zero entries,
@@ -192,21 +193,19 @@ def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_token
 
 @dataclass(frozen=True)
 class PackedContext:
-    """Every artifact a layer derives from the packed sequence's document map, carried together.
+    """The sliding mask, the query positions, and one `CompressionLayout` per compress rate in use.
 
-    The sliding mask, the query positions and the compressed-entry layouts all encode the same
-    boundaries, and they are only correct together. Passed as three optional arguments they can
-    contradict each other: a mask built without `cu_seqlens` spans documents while a layout does
-    not, and a sequence-global `position_ids` feeds `causal_threshold` a count that a per-document
-    `entry_local` cannot be compared against. Neither mistake is reachable through `build`, which
-    derives all three from one `cu_seqlens`.
-
-    Built once per model forward and shared by every layer, since none of it depends on depth.
+    All three encode the same document boundaries and are only correct together. As separate
+    arguments they can contradict each other: a mask built without `cu_seqlens` spans documents
+    while a layout does not, and a sequence-global `position_ids` feeds `causal_threshold` a
+    count that a per-document `entry_local` cannot be compared against. `build` derives all three
+    from one `cu_seqlens`, so neither mistake is reachable. It runs once per model forward, since
+    none of this depends on depth.
     """
 
-    attention_mask: Tensor
-    position_ids: Tensor
-    compression_layouts: dict[int, CompressionLayout]
+    attention_mask: Tensor  # [1, 1, seq_len, seq_len] additive - causal, local window, document-clipped
+    position_ids: Tensor  # [batch, seq_len] int64 - token position within its own document
+    compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
     def __post_init__(self) -> None:
         total_tokens = self.position_ids.shape[-1]
@@ -265,35 +264,59 @@ def get_token_entry_causal_mask(layout: CompressionLayout, threshold: Tensor) ->
 
 
 class DeepseekV4Compressor(nn.Module):
-    """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens.
+    """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens, per the
+    `CompressionLayout` specification. Schematic output:
 
-    `kv_proj` and `gate_proj` emit `2 * head_dim` features per token, read as two
-    independent series: `Ca = [..., :head_dim]` and `Cb = [..., head_dim:]`. Compressed
-    entry `w` pools window `w - 1`'s `Ca` slice together with window `w`'s `Cb` slice, so
-    the pooling window is `2 * compress_rate` wide with stride `compress_rate` and
-    consecutive entries overlap. The first entry of a document has no predecessor, so its
-    `Ca` half is gated with `-inf` and contributes nothing.
+        `C[e,d] = sum_s softmax_s(gate[e,s,d] + position_bias[s,d]) * kv[e,s,d]`
 
-    Every entry is rotated with the `compress` RoPE at the absolute position of its own
-    window's first source token, which is what makes it comparable with the attention
-    block's locally rotated KV stream once the two are concatenated.
+    `kv` and `gate` are this compressor's own projections of the hidden state, gathered at the
+    source tokens of entry `e`'s pooling window, and `d` runs over `head_dim`. Each entry is
+    RMSNormed and rotated with the `compress` RoPE at its window's first source position, which
+    is what makes it comparable with the attention block's locally rotated KV stream. `forward`
+    returns the entries alongside an additive `block_bias` saying which query may read which, for
+    `DeepseekV4Attention` to concatenate onto its local sliding window.
 
-    Both halves of Compressed Sparse Attention are built on this: the CSA compressor runs
-    it at `config.head_dim`, the Lightning Indexer runs it over the same windows at the
-    much narrower `config.index_head_dim`.
+    `n_series` sets the slots `s` the gate ranges over. With `1` a token joins only its own
+    window, so windows are disjoint. With `2` the projections emit two `head_dim`-wide series
+    `Ca` and `Cb`, and entry `e` pools `Ca` from entry `e - 1`'s tokens together with `Cb` from
+    its own, so windows overlap at stride `compress_rate`; a document's first entry has no
+    predecessor, so its `Ca` slots are gated with `-inf`.
     """
 
     rope_layer_type = "compress"
 
-    def __init__(self, config: DeepseekV4Config, head_dim: int):
+    def __init__(self, config: DeepseekV4Config, head_dim: int, compress_rate: int, n_series: int):
         super().__init__()
-        self.compress_rate = config.compress_rates["compressed_sparse_attention"]
+        if n_series not in (1, 2):
+            raise ValueError(f"n_series must be 1 or 2, got {n_series}")
+        self.compress_rate = compress_rate
         self.head_dim = head_dim
-        self.kv_proj = nn.Linear(config.hidden_size, 2 * head_dim, bias=False)
-        self.gate_proj = nn.Linear(config.hidden_size, 2 * head_dim, bias=False)
-        self.position_bias = nn.Parameter(torch.zeros(self.compress_rate, 2 * head_dim))
+        self.n_series = n_series
+        self.kv_proj = nn.Linear(config.hidden_size, n_series * head_dim, bias=False)
+        self.gate_proj = nn.Linear(config.hidden_size, n_series * head_dim, bias=False)
+        self.position_bias = nn.Parameter(torch.zeros(compress_rate, n_series * head_dim))
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
+
+    def _overlap_with_previous_window(
+        self, kv: torch.Tensor, gate: torch.Tensor, layout: CompressionLayout
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Widen each entry from `compress_rate` slots to `2 * compress_rate`, the `n_series == 2` case."""
+        n_entries = layout.src_idx.shape[0]
+
+        # Shift the `Ca` series one entry later so entry `e` sees entry `e - 1`'s. The first
+        # entry of every document has no predecessor, and the entry sitting before it in the
+        # packed sequence belongs to another document, so both halves are cleared: the gate to
+        # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
+        # zero softmax weight against a non-finite value would still yield NaN.
+        previous = (torch.arange(n_entries, device=kv.device) - 1).clamp(min=0)
+        first_entry = layout.is_first[None, :, None, None]
+        previous_kv = kv[:, previous, :, : self.head_dim].masked_fill(first_entry, 0.0)
+        previous_gate = gate[:, previous, :, : self.head_dim].masked_fill(first_entry, float("-inf"))
+        return (
+            torch.cat([previous_kv, kv[..., self.head_dim :]], dim=2),
+            torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2),
+        )
 
     def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout) -> torch.Tensor:
         """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
@@ -301,26 +324,15 @@ class DeepseekV4Compressor(nn.Module):
         `layout` decides which source tokens each entry pools.
         """
         batch = hidden_states.shape[0]
-        n_entries = layout.src_idx.shape[0]
 
         kv = self.kv_proj(hidden_states)[:, layout.src_idx]
         gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
-
-        # Shift the `Ca` series one entry later so entry `w` sees entry `w - 1`'s. The first
-        # entry of every document has no predecessor, and the entry sitting before it in the
-        # packed sequence belongs to another document, so both halves are cleared: the gate to
-        # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
-        # zero softmax weight against a non-finite value would still yield NaN.
-        previous = (torch.arange(n_entries, device=hidden_states.device) - 1).clamp(min=0)
-        first_entry = layout.is_first[None, :, None, None]
-        previous_kv = kv[:, previous, :, : self.head_dim].masked_fill(first_entry, 0.0)
-        previous_gate = gate[:, previous, :, : self.head_dim].masked_fill(first_entry, float("-inf"))
-        pooled_kv = torch.cat([previous_kv, kv[..., self.head_dim :]], dim=2)
-        pooled_gate = torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2)
+        if self.n_series == 2:
+            kv, gate = self._overlap_with_previous_window(kv, gate, layout)
 
         # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
-        weights = pooled_gate.softmax(dim=2, dtype=torch.float32).to(pooled_kv.dtype)
-        compressed = self.kv_norm((pooled_kv * weights).sum(dim=2))
+        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
+        compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         cos, sin = self.rotary_emb(compressed, layout.entry_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
         return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
@@ -328,7 +340,7 @@ class DeepseekV4Compressor(nn.Module):
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped `[batch, seq_len]`.
 
-        Entry `w` pools source tokens up to index `(w + 1) * compress_rate - 1`, so it only
+        Entry `e` pools source tokens up to index `(e + 1) * compress_rate - 1`, so it only
         becomes readable once the query has reached that token.
         """
         return (position_ids + 1) // self.compress_rate
@@ -340,12 +352,13 @@ class DeepseekV4Compressor(nn.Module):
 
 
 class DeepseekV4IndexerScorer(nn.Module):
-    """Lightning-Indexer score `sum_h w_th * ReLU(q_th . k_s)` of query `t` against entry `s`.
+    """Lightning-Indexer score `score[t,e] = sum_h w[t,h] * ReLU(q[t,h,d] * k[e,d])`.
 
-    The per-head weights `w_th` are read straight off the hidden state rather than from a
-    query/key interaction, which is what makes the whole scorer one matmul deep. It runs
-    in fp32: the scores only ever feed a top-k, so the extra width is cheap and it keeps
-    near-ties from being decided by bf16 rounding.
+    Query token `t` against compressed entry `e`, over indexer heads `h` and `index_head_dim`
+    channels `d`. The per-head weights `w[t,h]` come off the hidden state directly rather than
+    from a query-key interaction, which keeps the scorer one matmul deep. It runs in fp32: the
+    scores only feed a top-k, so the width costs little and near-ties are not decided by bf16
+    rounding.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -362,23 +375,27 @@ class DeepseekV4IndexerScorer(nn.Module):
         return (scores * weights.unsqueeze(-1)).sum(dim=2)
 
 
-class DeepseekV4Indexer(DeepseekV4Compressor):
+class DeepseekV4Indexer(nn.Module):
     """Lightning Indexer: picks the `index_topk` compressed entries each query may read.
 
-    It repeats the CSA compressor's compression at the much narrower `index_head_dim`,
-    scores the queries against those cheap compressed keys, and returns indices into the
-    *outer* compressor's entries. Both compressions share `compress_rate` and the
-    `compress` RoPE base, so entry `w` here indexes the same source window as entry `w`
-    there, and the scores stay translation invariant in the query-key distance.
+    It owns a compressor at the narrow `index_head_dim` and scores each query against its
+    entries. The indices it returns address the entries of the compressor that owns it: both
+    share `compress_rate` and the `compress` RoPE base, so entry `e` in one covers the same
+    source tokens as entry `e` in the other, and the scores depend only on the query-key
+    distance.
 
-    Each query gets `min(index_topk, entries)` picks. A query early in the sequence has
-    fewer readable entries than that, and its surplus picks come back as `-1`.
+    Each query gets `min(index_topk, entries)` picks. An early query has fewer entries whose
+    source tokens all lie at or before it, and its surplus picks come back as `-1`.
     """
 
     def __init__(self, config: DeepseekV4Config):
-        super().__init__(config, config.index_head_dim)
+        super().__init__()
+        self.head_dim = config.index_head_dim
         self.num_heads = config.index_n_heads
         self.index_topk = config.index_topk
+        self.compressor = DeepseekV4Compressor(
+            config, self.head_dim, config.compress_rates["compressed_sparse_attention"], n_series=2
+        )
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.scorer = DeepseekV4IndexerScorer(config)
 
@@ -390,11 +407,11 @@ class DeepseekV4Indexer(DeepseekV4Compressor):
         layout: CompressionLayout,
     ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
-        compressed_kv = self.compress(hidden_states, layout)
+        compressed_kv = self.compressor.compress(hidden_states, layout)
         compressed_len = compressed_kv.shape[1]
         top_k = min(self.index_topk, compressed_len)
 
-        cos, sin = self.rotary_emb(hidden_states, position_ids, self.rope_layer_type)
+        cos, sin = self.compressor.rotary_emb(hidden_states, position_ids, self.compressor.rope_layer_type)
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
         q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
 
@@ -402,25 +419,30 @@ class DeepseekV4Indexer(DeepseekV4Compressor):
         if compressed_len == 0:
             return scores.topk(top_k, dim=-1).indices
 
-        readable = get_token_entry_causal_mask(layout, self.causal_threshold(position_ids)).expand_as(scores)
+        threshold = self.compressor.causal_threshold(position_ids)
+        readable = get_token_entry_causal_mask(layout, threshold).expand_as(scores)
         scores = scores.masked_fill(~readable, float("-inf"))
         top_k_indices = scores.topk(top_k, dim=-1).indices
         # An early query has fewer than `top_k` readable entries, so top-k still hands back
         # masked-out ones. Mark those `-1` rather than letting them leak into attention.
         return torch.where(readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, -1))
 
+    def init_weights(self, init_std: float) -> None:
+        self.compressor.init_weights(init_std)
+
 
 class DeepseekV4CSACompressor(DeepseekV4Compressor):
     """Compressed Sparse Attention compressor: the sparse long-range half of a CSA layer.
 
-    Returns the compressed history as extra KV entries for the attention block to
-    concatenate onto its local sliding window, plus the additive `block_bias` that decides
-    which query reads which of them: `0` for the entries its indexer selected, `-inf`
-    everywhere else.
+    Two series at a fine compress rate, with overlapping windows. A Lightning Indexer scores
+    the entries and keeps the `index_topk` best per query, and the returned `block_bias` is
+    that selection: `0` on the selected entries, `-inf` everywhere else. It needs no separate
+    causal term, because the indexer only selects entries whose source tokens all lie at or
+    before the query.
     """
 
     def __init__(self, config: DeepseekV4Config):
-        super().__init__(config, config.head_dim)
+        super().__init__(config, config.head_dim, config.compress_rates["compressed_sparse_attention"], n_series=2)
         self.indexer = DeepseekV4Indexer(config)
 
     def forward(
@@ -435,7 +457,7 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
         compressed_len = compressed_kv.shape[2]
 
         # The indexer shares this layout: it compresses the same source windows at a narrower
-        # head dim, so its entry `n` and this compressor's entry `n` are the same window.
+        # head dim, so its entry `e` and this compressor's entry `e` are the same window.
         top_k_indices = self.indexer(hidden_states, q_residual, position_ids, layout)
         # The `-1` sentinels are scattered into one throwaway column that is sliced back off.
         safe_indices = torch.where(top_k_indices >= 0, top_k_indices, torch.full_like(top_k_indices, compressed_len))
@@ -448,50 +470,16 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
         self.indexer.init_weights(init_std)
 
 
-class DeepseekV4HCACompressor(nn.Module):
+class DeepseekV4HCACompressor(DeepseekV4Compressor):
     """Heavily Compressed Attention compressor: the dense long-range half of an HCA layer.
 
-    It pools every non-overlapping window of `compress_rate` (128) tokens into a single
-    entry, `C_w = sum_j softmax(gate_j + position_bias_j) * kv_j` over the window's tokens
-    `j`, then rotates the entry with the `compress` RoPE at its window's first source
-    position, which is what makes it comparable with the attention block's locally rotated
-    KV stream.
-
-    Both differences from `DeepseekV4CSACompressor` pull in the same direction. The windows
-    do not overlap, so `kv_proj` / `gate_proj` / `position_bias` stay `head_dim` wide (CSA
-    doubles them to carry two series) and no entry depends on its predecessor. And there is
-    no Lightning Indexer, so every query reads every entry its position has made causally
-    readable: the returned `block_bias` carries that threshold and nothing else.
+    One series at a coarse compress rate, with disjoint windows. There is no indexer: a query
+    reads every entry whose source tokens all lie at or before it, and the returned
+    `block_bias` carries that rule.
     """
 
-    rope_layer_type = "compress"
-
     def __init__(self, config: DeepseekV4Config):
-        super().__init__()
-        self.compress_rate = config.compress_rates["heavily_compressed_attention"]
-        self.head_dim = config.head_dim
-        self.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
-        self.gate_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
-        self.position_bias = nn.Parameter(torch.zeros(self.compress_rate, self.head_dim))
-        self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
-
-    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout) -> torch.Tensor:
-        """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
-
-        `layout` decides which source tokens each entry pools.
-        """
-        batch = hidden_states.shape[0]
-
-        kv = self.kv_proj(hidden_states)[:, layout.src_idx]
-        gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
-
-        # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
-        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
-        compressed = self.kv_norm((kv * weights).sum(dim=2))
-
-        cos, sin = self.rotary_emb(compressed, layout.entry_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
-        return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+        super().__init__(config, config.head_dim, config.compress_rates["heavily_compressed_attention"], n_series=1)
 
     def forward(
         self,
@@ -505,18 +493,9 @@ class DeepseekV4HCACompressor(nn.Module):
         compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
-        # Entry `j` of a document pools its source tokens up to local index
-        # `(j + 1) * compress_rate - 1`, so it only becomes readable once the query has
-        # reached that token of its own document.
-        threshold = (position_ids + 1) // self.compress_rate
-        readable = get_token_entry_causal_mask(layout, threshold).unsqueeze(1)
+        readable = get_token_entry_causal_mask(layout, self.causal_threshold(position_ids)).unsqueeze(1)
         block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
         return compressed_kv, block_bias.masked_fill_(~readable, float("-inf"))
-
-    def init_weights(self, init_std: float) -> None:
-        # `init_std` is unused: the projections are initialized by the caller and the
-        # position bias starts at zero, i.e. a uniform gate over the pooling window.
-        nn.init.zeros_(self.position_bias)
 
 
 COMPRESSOR_CLASSES = {
@@ -542,8 +521,7 @@ class DeepseekV4Attention(nn.Module):
 
     Every layer type runs that same core over its local sliding window. The two compressed
     types additionally own a `compressor` whose output is concatenated onto the local KV,
-    which is how a layer sees past the window: CSA reads a sparse top-k of finely
-    compressed entries, HCA reads all of its heavily compressed ones.
+    which is how a layer sees past the window.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int):

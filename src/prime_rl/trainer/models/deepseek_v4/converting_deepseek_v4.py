@@ -55,19 +55,18 @@ def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
             Rename(f"{c}.ape", f"{c}.position_bias"),
         ]
     if layer_type == "compressed_sparse_attention":
-        # The indexer's own (much narrower) internal compressor: on disk it nests as
-        # `indexer.compressor.*`; PrimeRL's `DeepseekV4Indexer` inherits the compressor base
-        # directly, so its `kv_proj`/`gate_proj`/`kv_norm`/`position_bias` sit straight on
-        # `compressor.indexer`, one nesting level shallower than the on-disk layout.
+        # The indexer's own (much narrower) internal compressor nests as `indexer.compressor.*`
+        # on both sides. The one structural difference left is that PrimeRL hangs the indexer
+        # off the CSA compressor rather than beside it, so the whole subtree moves one level in.
         idx = f"{p}.self_attn.indexer"
         cidx = f"{c}.indexer"
         ops += [
             Rename(f"{idx}.wq_b.weight", f"{cidx}.q_b_proj.weight"),
             Rename(f"{idx}.weights_proj.weight", f"{cidx}.scorer.weights_proj.weight"),
-            Rename(f"{idx}.compressor.wkv.weight", f"{cidx}.kv_proj.weight"),
-            Rename(f"{idx}.compressor.wgate.weight", f"{cidx}.gate_proj.weight"),
-            Rename(f"{idx}.compressor.norm.weight", f"{cidx}.kv_norm.weight"),
-            Rename(f"{idx}.compressor.ape", f"{cidx}.position_bias"),
+            Rename(f"{idx}.compressor.wkv.weight", f"{cidx}.compressor.kv_proj.weight"),
+            Rename(f"{idx}.compressor.wgate.weight", f"{cidx}.compressor.gate_proj.weight"),
+            Rename(f"{idx}.compressor.norm.weight", f"{cidx}.compressor.kv_norm.weight"),
+            Rename(f"{idx}.compressor.ape", f"{cidx}.compressor.position_bias"),
         ]
     return ops
 
