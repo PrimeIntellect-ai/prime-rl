@@ -25,7 +25,72 @@ from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10
+
+class ZeroOutputBudget:
+    """Abort a run that keeps finalizing groups without ever shipping a sample.
+
+    Only CLEAN finalized units advance the budget: completed, error-free episodes (or their
+    tokens) that produced no admitted payload — all-equal rewards, curriculum rejections,
+    staleness drops. Errored episodes and dispatch failures never count: they mean the
+    environment or its infrastructure is down, not that the task mix carries no signal, and an
+    outage must stall the run rather than kill it. ``max_windows=None`` disables the abort; the
+    warning still fires once per batch equivalent.
+    """
+
+    def __init__(self, target: int, max_windows: int | None) -> None:
+        assert target > 0
+        self.target = target
+        self.max_windows = max_windows
+        self.units = 0
+        self.reported_windows = 0
+
+    def record(self, units: int) -> None:
+        self.units += units
+        windows = self.units // self.target
+        if windows <= self.reported_windows:
+            return
+        self.reported_windows = windows
+        limit = f"{windows}/{self.max_windows}" if self.max_windows is not None else f"{windows}, abort disabled"
+        get_logger().warning(
+            f"No admitted train payload after {self.units} clean finalized units "
+            f"(consecutive zero-output batch equivalents: {limit}); errored episodes and dispatch "
+            "failures are not counted"
+        )
+        if self.max_windows is not None and windows >= self.max_windows:
+            raise RuntimeError(
+                f"{windows} consecutive zero-output batch equivalents — "
+                "check the curriculum admission policy, task difficulty, and staleness drops."
+            )
+
+    def reset(self) -> None:
+        self.units = 0
+        self.reported_windows = 0
+
+
+def zero_output_units(
+    group: list[vf.Episode],
+    survivors: list[vf.Trace],
+    *,
+    n_owed: int,
+    n_errored: int,
+    batch_mode: bool,
+    seq_len: int,
+) -> int:
+    """Clean finalized units a payload-less group contributes to the zero-output budget.
+
+    ``n_owed`` is the group's full episode budget (arrived + failed to dispatch + cancelled), so
+    dropped groups advance the budget at the same rate as fully-delivered ones; ``n_errored``
+    (errored traces, errored empty episodes, dispatch failures) is excluded. Trainable survivors
+    are error-free by construction and count first; otherwise the arrived error-free traces; and
+    for a group that delivered nothing clean, the still-owed clean episodes (e.g. a stale drop).
+    """
+    clean_traces = [trace for episode in group for trace in episode.traces if not trace.has_error]
+    clean_owed = max(n_owed - n_errored, 0)
+    if batch_mode:
+        return len(survivors) or len(clean_traces) or clean_owed
+    survivor_tokens = sum(trace.num_total_tokens for trace in survivors)
+    clean_tokens = sum(trace.num_total_tokens for trace in clean_traces)
+    return survivor_tokens or clean_tokens or seq_len * clean_owed
 
 
 def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None) -> int:
@@ -104,8 +169,9 @@ class TrainSink:
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
-        self.zero_output_units = 0
-        self.reported_zero_output_windows = 0
+        target = batch_size if batch_size is not None else token_batch_size
+        assert target is not None
+        self.zero_output = ZeroOutputBudget(target, config.max_zero_output_batches)
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -256,7 +322,7 @@ class TrainSink:
         # decision is not a task result.
         if cancellation is not None and cancellation.reason == "stale":
             self.pending_episodes.extend(group, admitted=False, cancelled=True)
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed=n_owed, n_errored=num_errored)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
@@ -269,7 +335,7 @@ class TrainSink:
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
             self.pending_episodes.extend(group, admitted=admitted)
-            self._record_zero_output(group, survivors, n_owed)
+            self._record_zero_output(group, survivors, n_owed=n_owed, n_errored=num_errored)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
@@ -300,7 +366,7 @@ class TrainSink:
 
         self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
         if not samples_by_trace:
-            self._record_zero_output(group, survivors, n_owed)
+            self._record_zero_output(group, survivors, n_owed=n_owed, n_errored=num_errored)
             return
 
         self.pending_batch.update(samples_by_trace)
@@ -319,10 +385,9 @@ class TrainSink:
         # trainer plus a tight bound could void groups forever without ever
         # tripping the abort.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed=n_owed, n_errored=num_errored)
             return
-        self.zero_output_units = 0
-        self.reported_zero_output_windows = 0
+        self.zero_output.reset()
 
     def _trace(self, trace_id: str) -> vf.Trace:
         episode = self.episode_by_trace[trace_id]
@@ -331,36 +396,19 @@ class TrainSink:
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
-    def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
-        """``n_owed`` counts the group's full episode budget (arrived +
-        cancelled), so dropped groups advance the zero-output budget at the
-        same rate as fully-delivered ones."""
-        if self.batch_size is not None:
-            returned_traces = sum(len(episode.traces) for episode in group)
-            self.zero_output_units += len(survivors) or returned_traces or n_owed
-        else:
-            survivor_tokens = sum(trace.num_total_tokens for trace in survivors)
-            episode_tokens = sum(episode.num_total_tokens for episode in group)
-            self.zero_output_units += survivor_tokens or episode_tokens or self.config.seq_len * n_owed
-        self._check_zero_output_budget()
-
-    def _check_zero_output_budget(self) -> None:
-        target = self.batch_size if self.batch_size is not None else self.token_batch_size
-        assert target is not None
-        windows = self.zero_output_units // target
-        if windows <= self.reported_zero_output_windows:
-            return
-        self.reported_zero_output_windows = windows
-        get_logger().warning(
-            f"No admitted train payload after {self.zero_output_units} finalized units "
-            f"(consecutive zero-output batch equivalents: "
-            f"{windows}/{MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS})"
-        )
-        if windows >= MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS:
-            raise RuntimeError(
-                f"{windows} consecutive zero-output batch equivalents — "
-                "check the curriculum admission policy, task difficulty, and staleness drops."
+    def _record_zero_output(
+        self, group: list[vf.Episode], survivors: list[vf.Trace], *, n_owed: int, n_errored: int
+    ) -> None:
+        self.zero_output.record(
+            zero_output_units(
+                group,
+                survivors,
+                n_owed=n_owed,
+                n_errored=n_errored,
+                batch_mode=self.batch_size is not None,
+                seq_len=self.config.seq_len,
             )
+        )
 
     def process_batch(self) -> TrainBatch:
         items = list(self.pending_batch.items())

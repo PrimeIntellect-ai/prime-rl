@@ -554,6 +554,9 @@ class OrchestratorConfig(BaseConfig):
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
+    max_zero_output_batches: int | None = Field(10, ge=1)
+    """Abort after this many consecutive batch-equivalents of clean finalized episodes (completed without error) that produced no trainable sample — all-equal rewards, curriculum rejections, or staleness drops. Errored episodes and dispatch failures do not count, so an environment or sandbox outage stalls the run instead of killing it. ``None`` disables the abort; the warning still fires."""
+
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
