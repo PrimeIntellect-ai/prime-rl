@@ -148,6 +148,9 @@ class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Explicit external inference world size. Required when it cannot be derived from a managed inference deployment."""
+
 
 class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
@@ -468,6 +471,8 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+        if self.orchestrator.model.client.dynamo is not None and self.weight_broadcast.type != "nccl":
+            raise ValueError("Dynamo discovery requires weight_broadcast.type = 'nccl' in the A1 integration")
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
@@ -475,11 +480,26 @@ class RLConfig(BaseConfig):
                 "have no disk artifact to load from."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
+            derived_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
-                else 1
+                else None
             )
+            configured_world_size = (
+                self.weight_broadcast.inference_world_size
+                if isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig)
+                else None
+            )
+            if (
+                configured_world_size is not None
+                and derived_world_size is not None
+                and configured_world_size != derived_world_size
+            ):
+                raise ValueError(
+                    f"weight_broadcast.inference_world_size ({configured_world_size}) does not match the managed "
+                    f"inference topology ({derived_world_size})"
+                )
+            inference_world_size = configured_world_size or derived_world_size or 1
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,

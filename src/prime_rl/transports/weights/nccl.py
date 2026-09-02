@@ -1,4 +1,5 @@
 import pickle
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Callable, Generator, cast
 
@@ -201,7 +202,25 @@ class NCCLWeightReceiver(WeightReceiver):
     trainer enter the collective, so the handshake can never race a stale
     marker."""
 
+    def __init__(
+        self,
+        broadcast_dir: Path,
+        config: NCCLWeightBroadcastConfig,
+        admin_clients,
+        model_name: str,
+        *,
+        worker_world_sizes: tuple[int, ...] | None = None,
+        use_collective_rpc: bool = False,
+        topology_guard: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(broadcast_dir, config, admin_clients, model_name)
+        self.worker_world_sizes = worker_world_sizes
+        self.use_collective_rpc = use_collective_rpc
+        self.topology_guard = topology_guard
+
     async def initialize(self) -> None:
+        if self.topology_guard is not None:
+            await self.topology_guard()
         await init_nccl_broadcast(
             self.admin_clients,
             self.config.host,
@@ -209,12 +228,17 @@ class NCCLWeightReceiver(WeightReceiver):
             self.config.timeout,
             inference_world_size=self.config.inference_world_size,
             quantize_in_weight_transfer=self.config.quantize_in_weight_transfer,
+            worker_world_sizes=self.worker_world_sizes,
+            use_collective_rpc=self.use_collective_rpc,
         )
 
     async def receive(self, step: int) -> None:
+        if self.topology_guard is not None:
+            await self.topology_guard()
         await update_weights(
             self.admin_clients,
             self.step_dir(step),
             step=step,
             on_paused=lambda: self._ack(step),
+            use_collective_rpc=self.use_collective_rpc,
         )

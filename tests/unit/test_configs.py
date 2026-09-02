@@ -12,8 +12,8 @@ from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
@@ -460,6 +460,20 @@ def test_external_nccl_world_size_propagates_to_both_processes():
     assert config.trainer.weight_broadcast.inference_world_size == 3
     assert config.orchestrator.weight_broadcast.type == "nccl"
     assert config.orchestrator.weight_broadcast.inference_world_size == 3
+
+
+def test_dynamo_discovery_rejects_non_nccl_weight_broadcast():
+    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "default"},
+                    "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
+                },
+                "weight_broadcast": {"type": "filesystem"},
+            }
+        )
 
 
 def test_multi_node_auto_inference_parallelism():

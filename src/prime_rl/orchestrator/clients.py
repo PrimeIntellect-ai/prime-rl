@@ -4,6 +4,7 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal, Protocol
 
 import httpx
 import verifiers.v1 as vf
@@ -15,6 +16,18 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+
+class AdminPlane(Protocol):
+    clients: list[AsyncClient]
+    worker_world_sizes: tuple[int, ...] | None
+    use_collective_rpc: bool
+
+    async def wait_for_ready(self, model_name: str) -> None: ...
+
+    async def ensure_topology_current(self) -> None: ...
+
+    async def aclose(self) -> None: ...
 
 
 class PrefillScorer:
@@ -84,6 +97,9 @@ class AdminClients:
     ``init_nixl_broadcast`` and the metrics collector's role list index into
     it."""
 
+    worker_world_sizes: tuple[int, ...] | None = None
+    use_collective_rpc = False
+
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
@@ -110,6 +126,17 @@ class AdminClients:
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
+
+    async def ensure_topology_current(self) -> None:
+        """Static admin URLs have no discovery topology to revalidate."""
+
+
+def setup_policy_admin_clients(client_config: ClientConfig, model_name: str) -> AdminPlane:
+    if client_config.dynamo is not None:
+        from prime_rl.inference.dynamo import DynamoAdminClients
+
+        return DynamoAdminClients(client_config, model_name)
+    return AdminClients(client_config)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -259,6 +286,54 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
+def _rank_offsets(worker_world_sizes: tuple[int, ...], inference_world_size: int) -> tuple[int, ...]:
+    if any(isinstance(size, bool) or size <= 0 for size in worker_world_sizes):
+        raise ValueError("Worker world sizes must be positive integers")
+    discovered_world_size = sum(worker_world_sizes)
+    if discovered_world_size != inference_world_size:
+        raise ValueError(
+            f"Discovered worker world sizes ({discovered_world_size}) do not match "
+            f"inference_world_size ({inference_world_size})"
+        )
+    offsets: list[int] = []
+    next_offset = 0
+    for worker_world_size in worker_world_sizes:
+        offsets.append(next_offset)
+        next_offset += worker_world_size
+    return tuple(offsets)
+
+
+async def _collective_rpc(
+    client: AsyncClient,
+    *,
+    method: Literal["init_broadcaster", "update_weights_from_path"],
+    timeout: int | float,
+    args: list[object],
+) -> None:
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception(
+            lambda error: isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+        ),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        reraise=True,
+    ):
+        with attempt:
+            response = await asyncio.wait_for(
+                client.post(
+                    "/collective_rpc",
+                    json={
+                        "method": method,
+                        "timeout": timeout,
+                        "args": args,
+                        "kwargs": {},
+                    },
+                ),
+                timeout=max(1.0, float(timeout) + 10.0),
+            )
+            response.raise_for_status()
+
+
 async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
@@ -305,8 +380,9 @@ async def update_weights(
     weight_dir: Path | None,
     step: int = 0,
     on_paused: Callable[[], None] | None = None,
+    use_collective_rpc: bool = False,
 ) -> None:
-    """Update weights on static inference servers.
+    """Update weights on inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
     weight update, then resumes. This ensures all DP workers are idle and can
@@ -316,10 +392,33 @@ async def update_weights(
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
     ``orchestrator/envs.py``), so KV computed under old weights is never reused.
+
+    The Dynamo collective-RPC path resumes only after every worker succeeds. A failed
+    transfer leaves the pinned worker set paused so rollout cannot continue on mixed weights.
     """
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
+    if use_collective_rpc and weight_dir_posix is None:
+        raise ValueError("Prime NCCL collective RPC updates require a weight directory")
+
     await _pause_engines(admin_clients, step=step)
+    if use_collective_rpc:
+        if on_paused is not None:
+            on_paused()
+        await asyncio.gather(
+            *[
+                _collective_rpc(
+                    admin_client,
+                    method="update_weights_from_path",
+                    timeout=UPDATE_WEIGHTS_TIMEOUT_S,
+                    args=[weight_dir_posix],
+                )
+                for admin_client in admin_clients
+            ]
+        )
+        await _resume_engines(admin_clients)
+        return
+
     try:
         if on_paused is not None:
             on_paused()
@@ -400,6 +499,8 @@ async def init_nccl_broadcast(
     timeout: int,
     inference_world_size: int,
     quantize_in_weight_transfer: bool = False,
+    worker_world_sizes: tuple[int, ...] | None = None,
+    use_collective_rpc: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -408,6 +509,39 @@ async def init_nccl_broadcast(
     gets a unique rank in the NCCL broadcast group.
     """
     logger = get_logger()
+
+    if use_collective_rpc:
+        if worker_world_sizes is None:
+            raise ValueError("Dynamo NCCL initialization requires per-worker world sizes")
+        if len(worker_world_sizes) != len(admin_clients):
+            raise ValueError(
+                f"Dynamo discovered {len(worker_world_sizes)} worker sizes for {len(admin_clients)} admin clients"
+            )
+        rank_offsets = _rank_offsets(worker_world_sizes, inference_world_size)
+        logger.info(
+            f"Initializing Dynamo NCCL broadcast: {len(admin_clients)} servers, "
+            f"inference_world_size={inference_world_size}, worker_world_sizes={worker_world_sizes}"
+        )
+        await asyncio.gather(
+            *[
+                _collective_rpc(
+                    admin_client,
+                    method="init_broadcaster",
+                    timeout=timeout,
+                    args=[
+                        host,
+                        port,
+                        rank_offset,
+                        inference_world_size,
+                        timeout,
+                        quantize_in_weight_transfer,
+                        "default",
+                    ],
+                )
+                for admin_client, rank_offset in zip(admin_clients, rank_offsets)
+            ]
+        )
+        return
 
     gpus_per_server = inference_world_size // len(admin_clients)
 

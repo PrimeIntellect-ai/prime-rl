@@ -8,12 +8,14 @@ from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
+    AdminClients,
     _is_retryable_lora_error,
     _rank_offsets,
     check_health,
     init_nccl_broadcast,
     load_lora_adapter,
     setup_client,
+    setup_policy_admin_clients,
     update_weights,
 )
 
@@ -134,6 +136,15 @@ def successful_response() -> MagicMock:
     return response
 
 
+def test_policy_admin_factory_preserves_static_clients():
+    admin = setup_policy_admin_clients(ClientConfig(), "Qwen/Qwen3-0.6B")
+
+    assert isinstance(admin, AdminClients)
+    assert admin.worker_world_sizes is None
+    assert admin.use_collective_rpc is False
+    asyncio.run(admin.aclose())
+
+
 def test_rank_offsets_are_cumulative_for_heterogeneous_workers():
     assert _rank_offsets((2, 1, 3), inference_world_size=6) == (0, 2, 3)
 
@@ -185,7 +196,8 @@ def test_collective_rpc_weight_update_uses_prime_worker_method(tmp_path):
     client.post.return_value = successful_response()
     step_dir = tmp_path / "step_1"
 
-    asyncio.run(update_weights([client], step_dir, step=1, use_collective_rpc=True))
+    with patch("prime_rl.orchestrator.clients.asyncio.wait_for", wraps=asyncio.wait_for) as bounded_wait:
+        asyncio.run(update_weights([client], step_dir, step=1, use_collective_rpc=True))
 
     assert [call.args[0] for call in client.post.await_args_list] == ["/pause", "/collective_rpc", "/resume"]
     collective_call = client.post.await_args_list[1]
@@ -195,6 +207,7 @@ def test_collective_rpc_weight_update_uses_prime_worker_method(tmp_path):
         "args": [step_dir.as_posix()],
         "kwargs": {},
     }
+    assert bounded_wait.await_args.kwargs["timeout"] == 730.0
 
 
 def test_collective_rpc_update_failure_keeps_engines_paused(tmp_path):
@@ -212,3 +225,21 @@ def test_collective_rpc_update_failure_keeps_engines_paused(tmp_path):
         asyncio.run(update_weights([client], tmp_path / "step_1", step=1, use_collective_rpc=True))
 
     assert [call.args[0] for call in client.post.await_args_list] == ["/pause", "/collective_rpc"]
+
+
+def test_collective_rpc_transport_timeout_is_bounded_and_keeps_engines_paused(tmp_path):
+    client = AsyncMock()
+    client.post.return_value = successful_response()
+
+    async def expire(awaitable, *, timeout):
+        awaitable.close()
+        raise TimeoutError(f"expired after {timeout}")
+
+    with (
+        patch("prime_rl.orchestrator.clients.asyncio.wait_for", side_effect=expire) as bounded_wait,
+        pytest.raises(TimeoutError, match="expired after 730.0"),
+    ):
+        asyncio.run(update_weights([client], tmp_path / "step_1", step=1, use_collective_rpc=True))
+
+    assert [call.args[0] for call in client.post.call_args_list] == ["/pause", "/collective_rpc"]
+    assert bounded_wait.call_count == 1

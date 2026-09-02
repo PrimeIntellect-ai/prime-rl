@@ -17,6 +17,7 @@ def worker(instance_id: int, *, admin_base_url: str, world_size: int, model: str
         "component": "backend",
         "endpoint": "rl",
         "instance_id": instance_id,
+        "transport": {"nats_tcp": f"nats://worker-{instance_id}:4222"},
         "request_plane_url": "dyn://dynamo.backend.rl",
         "system_url": f"http://worker-{instance_id}:8081",
         "admin_base_url": admin_base_url,
@@ -41,6 +42,7 @@ def test_parse_dynamo_workers_validates_and_orders_topology():
 
     assert [item.instance_id for item in parsed] == [3, 9]
     assert [item.world_size for item in parsed] == [2, 1]
+    assert parsed[0].transport == {"nats_tcp": "nats://worker-3:4222"}
 
 
 @pytest.mark.parametrize(
@@ -96,6 +98,7 @@ def test_dynamo_admin_clients_pin_two_identical_snapshots(monkeypatch):
     assert discover.await_count == 4
     assert admin.worker_world_sizes == (1,)
     assert admin.use_collective_rpc is True
+    assert admin.worker_extension_cls == "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker"
     assert str(admin.clients[0].base_url) == "http://worker-1:8120"
     assert "authorization" not in admin.clients[0].headers
     asyncio.run(admin.aclose())
