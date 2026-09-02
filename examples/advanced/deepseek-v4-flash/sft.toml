@@ -1,18 +1,56 @@
 # Real-data SFT for deepseek-ai/DeepSeek-V4-Flash-0731 at full depth (all 43 layers, no
-# `debug.num_layers` truncation) on 4 train nodes. Trainer only: no online eval, no inference
-# node, and so no weight broadcast. Tested on 8xH200. 
+# `debug.num_layers` truncation) across 4 train nodes plus 1 inference node for online eval.
+# Tested on 8xH200.
 #
 #   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
 #
-# Note: on 4 8xH200 nodes, this config is near the memory limit, using ~94%+ GPU memory. 
+# This run is a weight-broadcast test as much as a training run, and it is shaped to fail before
+# it spends the allocation. The evals process rendezvouses with the trainer's v0 broadcast
+# (`sync_startup`, `evals/evals.py`) and loads it through vLLM's real `load_weights` before step
+# 1, then fires every eval source against those weights at step 0. A broken broadcast therefore
+# surfaces at startup rather than at the first `eval.interval`:
 #
-# `dist_timeout_seconds = 14400` is needed on any run that has to build the HF -> prime-rl
-# conversion cache, which takes far longer than the 3600s default.
+#   - a wrongly shaped or wrongly named tensor (routed-expert shape mismatch, or a `KeyError` on
+#     a name vLLM's mapper does not produce) raises inside `/update_weights` and takes the run
+#     down before any optimizer step;
+#   - a correctly shaped but numerically wrong broadcast (bf16 landing in an fp8 parameter, whose
+#     stale boot-time `weight_scale_inv` then rescales it) is silent on the transport and shows
+#     up only as garbage or NaN in the step-0 eval scores.
 #
-# To buy memory back for quicker testing on fewer nodes, set `full_offload = true` under `[model]`,
+# Two settings keep that gate armed, and both are load-bearing. `eval.skip_first_step` must stay
+# unset, and `cancel_on_new_checkpoint` must stay false: with the default, a step-0 eval is
+# cancelled the instant a later broadcast lands, and since the inference server takes ~20 min to
+# boot while the trainer needs seconds per step, the trainer is always several steps ahead by the
+# time the gate fires. Observed cancelling itself after 7ms, 0/32 completed.
+#
+# Warm the HF -> prime-rl conversion cache before running this. The evals process waits at most
+# 1200s for v0 to appear (`STARTUP_BROADCAST_TIMEOUT_S`, not settable from here) and building the
+# cache takes far longer, so a cold-cache run dies waiting on its own trainer:
+#
+#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --max-steps 1 --no-eval --no-inference --deployment.num-infer-nodes 0
+#
+# `dist_timeout_seconds = 14400` is what makes that cache-building run survive; the 3600s default
+# is not enough.
+#
+# Cheaper pre-flight, one train node and 4 layers, which exercises the whole broadcast path at a
+# fraction of the cost. `--deployment.type single_node` is NOT usable: it does not drop this
+# file's node counts, which then fail validation, so override the counts instead. The conversion
+# cache is not layer-count agnostic, so a cache built this way must not be reused at full depth.
+#
+#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --model.debug.num-layers 4 --deployment.num-train-nodes 1 --data.batch-size 8 --max-steps 2
+#
+# Read that pre-flight for what it is: `debug.num_layers` truncates the trainer but not the
+# inference server, which still boots all 43 layers from the hub. The 39 layers the broadcast
+# does not carry keep their boot weights, vLLM logs "Failed to load weights" once per submodule
+# in each of them, and `/update_weights` still returns 200. So it proves the tensor *format* is
+# one vLLM's real loaders accept, and proves nothing about a full-depth broadcast. Its eval
+# scores are meaningless for the same reason, which leaves the silent-corruption half untested.
+#
+# Note: on 4 8xH200 nodes, the trainer is near the memory limit, using ~94%+ GPU memory. To buy
+# memory back for quicker testing on fewer nodes, set `full_offload = true` under `[model]`,
 # which keeps the fp32 masters, moments and gradients in CPU RAM and needs `optim_cpu_offload =
-# false` and `optim.max_norm = "None"` set alongside it; the lighter `optim_cpu_offload = true` is
-# already the default here.
+# false` and `optim.max_norm = "None"` set alongside it; the lighter `optim_cpu_offload = true`
+# is already the default here.
 #
 # There is no `[ckpt]` block. The trainer saves unconditionally at the last step, and a 43-layer
 # checkpoint (fp32 master weights plus two fp32 AdamW moments) is ~3 TiB. Add one with
@@ -48,14 +86,56 @@ batch_size = 32
 [optim]
 lr = 1e-5
 
+# The step-0 firing is the broadcast gate described above; the later interval-aligned ones only
+# track training. Shrink `num_examples` if the gate itself costs too much of the allocation.
+[eval]
+interval = 10
+num_examples = 32
+# See the header: without this the step-0 broadcast gate cancels itself before it runs.
+cancel_on_new_checkpoint = false
+
+[eval.sampling]
+max_completion_tokens = 256
+
+[[eval.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+# Filesystem is the only transport this model can broadcast over. NCCL needs two sender-side
+# fixes and NIXL cannot express a value-transforming step at all; see the "Not implemented" list
+# in `src/prime_rl/trainer/models/deepseek_v4/quantize.py`.
+[weight_broadcast]
+type = "filesystem"
+# The trainer broadcasts v0 before step 1 and errors out if no receiver joins in time. The
+# receiver is the inference server, and `use_deep_gemm` makes it JIT ~1261 kernels on first boot:
+# measured at ~12 min here, against the 1200s default. Widened so a cold or slower box has room.
+# This is the one deliberate slow path: a receiver that never boots costs the full hour.
+timeout = 3600
+
+[inference]
+# Note: we found `use_deep_gemm = false` is broken on SM120 where mHC pre-norm GEMM falls back to
+# a TileLang kernel whose forward is silently wrong above 1024 tokens, and the checkpoint's
+# UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
+use_deep_gemm = true
+
+[inference.vllm]
+tensor_parallel_size = 8
+enable_expert_parallel = true
+# Both required by DeepSeek V4's sparse-MLA KV layout, not tuning choices. See inference.toml.
+kv_cache_dtype = "fp8"
+block_size = 256
+max_model_len = 8192
+
 [monitors.wandb]
 project = "deepseek-v4-flash"
 name = "deepseek-v4-flash-sft"
 
-# `num_infer_nodes` defaults to 0, so this allocates 4 nodes and runs only the trainer.
 [deployment]
 type = "multi_node"
 num_train_nodes = 4
+num_infer_nodes = 1
 
 [slurm]
 job_name = "ds-v4-sft"
