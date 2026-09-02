@@ -7,6 +7,11 @@ from transformers.modeling_utils import PreTrainedModel
 CPStyle = Literal["ring", "ulysses"]
 ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
 
+# Suffix pairing a scale with its weight between `quantize_shard_for_weight_transfer` and
+# `convert_to_hf`. A colon cannot occur in a module path, so the pair cannot be mistaken for a
+# real parameter whose own name ends in "scale" -- DeepSeek V4 has several.
+WEIGHT_TRANSFER_SCALE_SUFFIX = ":scale"
+
 
 @dataclass(frozen=True)
 class CPSupport:
@@ -55,6 +60,24 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         value. Default is the identity.
         """
         return state_dict
+
+    def quantize_shard_for_weight_transfer(self, name: str, shard: Tensor) -> tuple[Tensor, Tensor] | None:
+        """Quantize one dim-0 shard of a parameter, on its own device, ahead of the all-gather.
+
+        Where ``quantize_for_weight_transfer`` re-encodes a whole gathered state dict on CPU,
+        this claims parameters one at a time, while they are still sharded across ranks and
+        still on the accelerator. Only claim a parameter whose encoding is independent along
+        dim 0: the caller all-gathers the result as if it were the original shard, so a format
+        whose blocks run along the last dim qualifies and anything reducing over dim 0 does not.
+
+        Returns ``(weight, scale)``, or ``None`` to leave the parameter on the plain gather.
+        The scale is gathered alongside the weight and reaches ``convert_to_hf`` under
+        ``name + WEIGHT_TRANSFER_SCALE_SUFFIX``, which is where the model decides what the
+        checkpoint calls its sibling. The decision must follow from ``name`` alone and come out
+        the same on every rank, because the gathers it commits the caller to are collective.
+        Default is to claim nothing.
+        """
+        return None
 
     @classmethod
     def from_config(cls, config, **kwargs):
@@ -182,4 +205,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]
+__all__ = ["ALL_CP_STYLES", "WEIGHT_TRANSFER_SCALE_SUFFIX", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]

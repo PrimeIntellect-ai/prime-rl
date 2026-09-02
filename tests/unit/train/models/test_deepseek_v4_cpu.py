@@ -12,6 +12,7 @@ import re
 import pytest
 import torch
 
+from prime_rl.trainer.models.base import WEIGHT_TRANSFER_SCALE_SUFFIX
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4.quantize import (
     _E8M0_BIAS,
@@ -415,6 +416,63 @@ def test_quantize_for_weight_transfer_only_fires_for_a_quantized_checkpoint(on_d
     model.config.quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
     quantized = model.quantize_for_weight_transfer(dict(on_disk_state_dict))
     assert quantized["layers.0.attn.wq_a.weight"].dtype == torch.float8_e4m3fn
+
+
+def test_pre_quantized_expert_shards_reach_the_same_bytes_as_the_cpu_path():
+    """The wire format must not depend on where the experts were quantized.
+
+    `gather_weights_parallel` hands the routed experts to
+    `quantize_shard_for_weight_transfer` while they are still sharded and on the accelerator,
+    so `convert_to_hf` receives a `(weight, scale)` pair under one prime key and has to walk
+    the scale through the same expert unstack and `mlp.` -> `ffn.` rename as its weight. The
+    check that matters is not that some scale key appears, but that the whole broadcast comes
+    out byte-identical to quantizing everything on CPU afterwards, which is the path the
+    branch already verified against the real checkpoint.
+    """
+    torch.manual_seed(0)
+    model = DeepseekV4ForCausalLM._from_config(DeepseekV4Config(**_MODEL))
+    model.config.quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
+    state_dict = dict(model.state_dict())
+
+    expected = model.quantize_for_weight_transfer(model.convert_to_hf(dict(state_dict)))
+
+    claimed, gathered = 0, {}
+    for key, value in state_dict.items():
+        quantized = model.quantize_shard_for_weight_transfer(key, value)
+        if quantized is None:
+            gathered[key] = value
+            continue
+        claimed += 1
+        gathered[key], gathered[key + WEIGHT_TRANSFER_SCALE_SUFFIX] = quantized
+    actual = model.quantize_for_weight_transfer(model.convert_to_hf(gathered))
+
+    assert claimed == 3 * sum("mlp.experts.gate_proj" in key for key in state_dict), "not every MoE layer was claimed"
+    assert actual.keys() == expected.keys()
+    for key, value in expected.items():
+        # `torch.equal` has no kernel for the float8 dtypes, and the bytes are the point anyway.
+        if value.dtype.itemsize == 1:
+            assert torch.equal(actual[key].view(torch.uint8), value.view(torch.uint8)), key
+        else:
+            assert torch.equal(actual[key], value), key
+
+    # The hyper-connection parameters really are named `...scale`, so the borrowed suffix has
+    # to be one no module path can produce, and they have to survive untouched.
+    assert any(key.endswith("hc_attn_scale") for key in expected)
+
+
+def test_quantize_shard_for_weight_transfer_claims_nothing_without_a_quantization_config():
+    """Same gate as `quantize_for_weight_transfer`: the plain `bfloat16` mini checkpoint, and
+    every other model, has to keep broadcasting exactly what it trained."""
+    model = DeepseekV4ForCausalLM._from_config(DeepseekV4Config(**_MODEL))
+    experts = "model.layers.2.mlp.experts.gate_proj"
+    shard = model.state_dict()[experts]
+
+    assert model.quantize_shard_for_weight_transfer(experts, shard) is None
+
+    model.config.quantization_config = {"quant_method": "fp8"}
+    assert model.quantize_shard_for_weight_transfer(experts, shard) is not None
+    assert model.quantize_shard_for_weight_transfer("model.layers.2.mlp.router.gate.weight", shard) is None
+    assert model.quantize_shard_for_weight_transfer("model.layers.2.attn_hc.scale", shard) is None
 
 
 def test_quantize_state_dict_refuses_the_fp8_expert_layout():

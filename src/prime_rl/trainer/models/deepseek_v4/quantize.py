@@ -272,6 +272,10 @@ def quantize_state_dict_(state_dict: StateDict, expert_dtype: str = "fp4") -> No
     (e.g. `layers.0.attn.wq_a.weight`, `layers.0.ffn.experts.0.w1.weight`), which is what
     `convert_to_hf` emits. Keys outside the two patterns are left untouched. Safe on a
     rank-partial state dict: every weight is quantized on its own.
+
+    A weight that already has its `.scale` sibling was quantized before the gather, by
+    `DeepseekV4PreTrainedModel.quantize_shard_for_weight_transfer`, and is skipped. That makes
+    this idempotent, and leaves it as the path for whatever the model did not claim there.
     """
     if expert_dtype == "fp8":
         raise NotImplementedError(
@@ -282,6 +286,9 @@ def quantize_state_dict_(state_dict: StateDict, expert_dtype: str = "fp4") -> No
         raise ValueError(f"Unsupported DeepSeek V4 expert_dtype={expert_dtype!r}")
 
     for key in [k for k in state_dict if k.endswith(".weight")]:
+        scale_key = key.removesuffix(".weight") + ".scale"
+        if scale_key in state_dict:
+            continue
         if _FP8_WEIGHTS.match(key):
             weight, scale = quantize_fp8_block(state_dict[key])
         elif _MXFP4_WEIGHTS.match(key):
@@ -289,7 +296,7 @@ def quantize_state_dict_(state_dict: StateDict, expert_dtype: str = "fp4") -> No
         else:
             continue
         state_dict[key] = weight
-        state_dict[key.removesuffix(".weight") + ".scale"] = scale
+        state_dict[scale_key] = scale
 
 
 def dequantize_state_dict_(state_dict: StateDict) -> None:

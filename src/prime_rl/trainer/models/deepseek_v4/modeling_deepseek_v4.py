@@ -8,6 +8,8 @@ embedding all the way to `hc_head`, which collapses them back before the final n
 
 from __future__ import annotations
 
+import re
+
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
@@ -15,13 +17,13 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import WEIGHT_TRANSFER_SCALE_SUFFIX, CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
-from prime_rl.trainer.models.deepseek_v4.quantize import dequantize_state_dict_, quantize_state_dict_
+from prime_rl.trainer.models.deepseek_v4.quantize import dequantize_state_dict_, quantize_mxfp4, quantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
@@ -105,6 +107,12 @@ KEEP_IN_FP32_MODULES = (
 )
 
 
+# The prime-side routed experts, expert-batched as `[E, I, H]`. Anchored at the end and
+# tolerant of a leading wrapper prefix (`torch.compile` adds `_orig_mod.`), because this runs
+# on raw `state_dict()` keys, before `resolve_fqn`.
+_ROUTED_EXPERT_WEIGHTS = re.compile(r"(?:^|\.)layers\.\d+\.mlp\.experts\.(?:gate_proj|down_proj|up_proj)$")
+
+
 class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
     config_class = DeepseekV4Config
@@ -174,6 +182,42 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         """
         dequantize_state_dict_(state_dict)
         return super().convert_to_prime(state_dict)
+
+    def quantize_shard_for_weight_transfer(self, name: str, shard: Tensor) -> tuple[Tensor, Tensor] | None:
+        """MXFP4 a routed-expert shard where it already lives, instead of on CPU after the gather.
+
+        The routed experts are ~98% of everything this model re-quantizes for the wire, and
+        every parallelism shards them over the expert dim while MXFP4's blocks run 32-wide
+        along the last one. The two axes are disjoint, so a shard encodes to exactly the rows
+        the gathered tensor would have had, and the work lands on the GPUs, spread over the
+        ranks holding the shards, rather than on one CPU per layer.
+
+        The remaining families, and these same experts whenever they reach the transport
+        unquantized, are still handled by `quantize_state_dict_`.
+        """
+        if getattr(self.config, "quantization_config", None) is None or not _ROUTED_EXPERT_WEIGHTS.search(name):
+            return None
+        return quantize_mxfp4(shard)
+
+    def convert_to_hf(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Convert to HF format, carrying any pre-quantized scale to its on-disk `.scale` sibling.
+
+        A scale produced by `quantize_shard_for_weight_transfer` arrives under its weight's own
+        key, and has to follow that weight through the expert unstack and the `mlp.` -> `ffn.`
+        rename. That is exactly the chain the weight itself runs, so the scales are run through
+        it a second time under the borrowed weight keys and renamed at the end. Teaching the
+        chain about paired tensors instead was rejected on purpose: `Stack` and the other
+        `ConvOp`s are one-key-in, one-key-out, and every model pays for that generality.
+        """
+        scales = {
+            key: state_dict.pop(key) for key in [k for k in state_dict if k.endswith(WEIGHT_TRANSFER_SCALE_SUFFIX)]
+        }
+        converted = super().convert_to_hf(state_dict)
+        if scales:
+            borrowed = {key.removesuffix(WEIGHT_TRANSFER_SCALE_SUFFIX): scale for key, scale in scales.items()}
+            for key, scale in super().convert_to_hf(borrowed).items():
+                converted[key.removesuffix(".weight") + ".scale"] = scale
+        return converted
 
     def quantize_for_weight_transfer(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Re-quantize an on-disk-named state dict into the formats vLLM builds its parameters in.

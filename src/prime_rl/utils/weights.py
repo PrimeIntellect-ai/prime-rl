@@ -18,6 +18,7 @@ from transformers.utils import (
     SAFE_WEIGHTS_NAME,
 )
 
+from prime_rl.trainer.models.base import WEIGHT_TRANSFER_SCALE_SUFFIX, PreTrainedModelPrimeRL
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -171,7 +172,45 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+def _shards_only_along_dim0(value: DTensor) -> bool:
+    """Whether ``value``'s local shard is whole slices of dim 0 and nothing else.
+
+    This is what lets a per-shard encoding be all-gathered as if it were the original tensor.
+    Expert weights are ``[E, I, H]`` and see two shardings at once: ``ExpertWeightParallel``
+    puts ``Shard(0)`` on the EP mesh dim and ``fully_shard`` adds a ``_StridedShard(0)`` on the
+    FSDP one. Both cut along ``E``, but the test is on the shapes rather than the placements
+    because ``_StridedShard`` is not a ``Shard`` subclass and ``is_shard(0)`` answers False for
+    it. Matching the global tensor in every dim but the first is the property that actually
+    matters and it holds however those placements are spelled. ``Partial`` leaves the shape
+    alone but not the values, so it is excluded on its own.
+    """
+    if any(placement.is_partial() for placement in value.placements):
+        return False
+    return value.to_local().shape[1:] == value.shape[1:]
+
+
+def _all_gather_shard_like(source: DTensor, local: Tensor) -> Tensor:
+    """All-gather ``local`` as though it were ``source``'s local shard.
+
+    ``local`` must come from ``source.to_local()`` via an operation that mixes no dim-0
+    neighbours, so ``source``'s own mesh and placements reassemble it; only the trailing dims
+    may differ. The global shape is passed explicitly because ``from_local`` would otherwise
+    infer it as the local size times the mesh size, which is wrong for an uneven shard. A
+    one-byte float is gathered as its bytes: NCCL has no float8 datatype and raises outright
+    on ``float8_e8m0fnu``.
+    """
+    dtype = local.dtype
+    if dtype.is_floating_point and dtype.itemsize == 1:
+        local = local.view(torch.uint8)
+    shape = torch.Size((source.shape[0], *local.shape[1:]))
+    stride = torch.empty(shape, device="meta").stride()
+    gathered = DTensor.from_local(local, source.device_mesh, source.placements, shape=shape, stride=stride)
+    return gathered.full_tensor().view(dtype)
+
+
+def gather_weights_parallel(
+    model: nn.Module, dtype: torch.dtype = torch.bfloat16, quantize_for_transfer: bool = False
+) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
@@ -186,8 +225,20 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     ``fn``/``base``/``scale`` are fp32, and its loader silently casts a bf16 tensor
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
+
+    Under ``quantize_for_transfer`` a model may additionally claim a parameter through
+    ``quantize_shard_for_weight_transfer``, in which case each rank encodes its own shard
+    before the gather and the pair travels in the compact format instead of ``bfloat16``,
+    spreading the encoding across the ranks holding the shards and shrinking what the gather
+    and the D2H copy move. Whether a parameter is claimed depends only on its name, so every
+    rank runs the same collectives in the same order, and a model that claims a parameter
+    sharded any other way is an error rather than a quiet fall back to the plain gather. It is
+    off by default because that encoding is a wire format: ``tools/convert_dcp_to_bf16.py``
+    shares this gather and has to keep exporting plain ``bfloat16``, quantized source
+    checkpoint or not.
     """
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    quantize_shard = getattr(model, "quantize_shard_for_weight_transfer", None) if quantize_for_transfer else None
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
@@ -196,13 +247,31 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
         for key, value in model.state_dict().items():
+            scale = None
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)
-                value = cast(DTensor, value.to(target_dtype)).full_tensor()
+                source = cast(DTensor, value.to(target_dtype))
+                quantized = quantize_shard(key, source.to_local()) if quantize_shard is not None else None
+                if quantized is None:
+                    value = source.full_tensor()
+                else:
+                    if not _shards_only_along_dim0(source):
+                        raise ValueError(
+                            f"{key} was claimed by quantize_shard_for_weight_transfer, but its local shard is "
+                            f"{tuple(source.to_local().shape)} of {tuple(source.shape)} under "
+                            f"{source.placements}: a per-shard encoding can only be gathered back when the "
+                            "shard is whole slices of dim 0"
+                        )
+                    quantized_weight, quantized_scale = quantized
+                    value = _all_gather_shard_like(source, quantized_weight)
+                    scale = _all_gather_shard_like(source, quantized_scale)
             if owners[key] != world.rank:
                 continue
-            partial[resolve_fqn(model, key)] = value.to("cpu")
+            fqn = resolve_fqn(model, key)
+            partial[fqn] = value.to("cpu")
+            if scale is not None:
+                partial[fqn + WEIGHT_TRANSFER_SCALE_SUFFIX] = scale.to("cpu")
         dist.barrier()
 
     if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in partial.keys()):
