@@ -2,7 +2,9 @@
 
 This directory is an empirical prototype validating two claims that were originally derived from
 reading PyTorch's dynamo/AOTAutograd source, not from actually running anything. `quant_cache_tensor.py`
-implements the design below; `test_quant_cache_tensor.py` checks it. Claim 1 (a live cache dict inside
+implements the design below; `test_quant_cache_tensor_eager.py` and `test_quant_cache_tensor_compile.py`
+check it (shared toy op/kernel definitions live in `fake_kernels.py`, the reset fixture in
+`conftest.py`). Claim 1 (a live cache dict inside
 `__torch_dispatch__` is unsound under `torch.compile`) is checked by `test_quant_cache_tensor_under_compile`.
 Claim 2 (`torch.compile`'s CSE pass already dedupes redundant quantize calls for free, no subclass needed)
 is checked by `test_cse_dedupes_sibling_calls_under_compile` and `test_eager_does_not_dedupe_for_contrast`.
