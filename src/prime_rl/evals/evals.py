@@ -552,8 +552,6 @@ class Evals:
 
         parts = []
         for env_name, _step, arrived, expected, buffered in sorted(self.eval_sink.batch_progress()):
-            # ``expected`` is only the remaining suffix of a resumed epoch; add the
-            # cursor-skipped prefix back so progress shows against the full epoch.
             total = self.eval_sink.batch_size_for(env_name)
             shown_arrived, shown_expected = total - expected + arrived, total
             part = (
