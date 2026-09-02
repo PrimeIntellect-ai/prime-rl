@@ -93,6 +93,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     token_group_alignment=grouped_gemm.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
+            moe.set_overlap_shared_expert(dispatch.overlap_shared_expert)
         elif isinstance(dispatch, DeepEPMoEDispatchConfig):
             from prime_rl.trainer.distributed.deepep import DeepEPTokenDispatcher
 
