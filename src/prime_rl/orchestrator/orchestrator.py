@@ -325,7 +325,7 @@ class Orchestrator:
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
-                config.eval,
+                skip_first_step=config.eval.skip_first_step,
                 is_resumed=self.resume_step is not None,
             )
             if config.eval is not None and self.eval_envs is not None

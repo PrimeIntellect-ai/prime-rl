@@ -328,7 +328,9 @@ class TrainConfig(BaseConfig):
         return self
 
 
-class EvalConfig(BaseConfig):
+class EvalSourcesConfig(BaseConfig):
+    """Eval sources and the group-level defaults they inherit."""
+
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
@@ -340,6 +342,46 @@ class EvalConfig(BaseConfig):
 
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
+
+    @model_validator(mode="after")
+    def resolve_env_defaults(self):
+        """Resolve per-env overrides: inherit group-level sampling, num_examples and
+        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        group_sampling = self.sampling.model_dump()
+        for source in self.source:
+            if "sampling" not in source.model_fields_set:
+                source.sampling = EvalSamplingConfig(**group_sampling)
+            else:
+                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
+                source.sampling = EvalSamplingConfig(**merged)
+            if "num_examples" not in source.model_fields_set:
+                source.num_examples = self.num_examples
+            if "group_size" not in source.model_fields_set:
+                source.group_size = self.group_size
+        return self
+
+    @model_validator(mode="after")
+    def validate_non_empty_sources(self):
+        if not self.source:
+            raise ValueError(
+                "At least one eval source is required. Add a source block "
+                "(e.g. [[source]] or [[orchestrator.eval.source]]) or drop the eval block entirely to disable eval."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [source.resolved_name for source in self.source]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(
+                f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
+            )
+        return self
+
+
+class EvalConfig(EvalSourcesConfig):
+    """Eval sources evaluated on a step interval next to training."""
 
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
@@ -354,42 +396,11 @@ class EvalConfig(BaseConfig):
     exit where all evals already completed."""
 
     @model_validator(mode="after")
-    def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples,
-        group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
-        group_sampling = self.sampling.model_dump()
+    def resolve_env_intervals(self):
+        """Per-env intervals inherit the group-level interval."""
         for source in self.source:
-            if "sampling" not in source.model_fields_set:
-                source.sampling = EvalSamplingConfig(**group_sampling)
-            else:
-                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
-                source.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in source.model_fields_set:
-                source.num_examples = self.num_examples
-            if "group_size" not in source.model_fields_set:
-                source.group_size = self.group_size
             if "interval" not in source.model_fields_set:
                 source.interval = self.interval
-        return self
-
-    @model_validator(mode="after")
-    def validate_non_empty_sources(self):
-        if not self.source:
-            raise ValueError(
-                "EvalConfig must define at least one source. Either drop the "
-                "[orchestrator.eval] block entirely (to disable eval) or "
-                "add a [[orchestrator.eval.source]] block."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_unique_env_names(self):
-        env_names = [source.resolved_name for source in self.source]
-        duplicates = [n for n in env_names if env_names.count(n) > 1]
-        if duplicates:
-            raise ValueError(
-                f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
-            )
         return self
 
 

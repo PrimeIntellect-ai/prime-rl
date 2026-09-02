@@ -57,5 +57,10 @@ class Monitor(ABC):
         """Log trace updates — post-hoc facts about traces this run already logged.
         Monitors that only carry scalars ignore them."""
 
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+        """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,
+        errored ones included. Fires once per epoch, after the episodes streamed through
+        ``log``. Monitors that carry episodes as they arrive ignore it."""
+
     async def finalize(self) -> None:
         """Finalize run."""

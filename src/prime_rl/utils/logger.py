@@ -2,6 +2,7 @@ import json as json_module
 import logging
 import sys
 import traceback
+from pathlib import Path
 from typing import Any
 
 # Global logger instance
@@ -101,7 +102,11 @@ def setup_logger(
     log_level: str = "info",
     tag: str | None = None,
     json_logging: bool = False,
+    log_file: Path | None = None,
 ):
+    """Install the prime-rl logger: a console sink (colorized, or JSON lines with
+    ``json_logging``) and, with ``log_file``, a plain-text file sink for processes that
+    no launcher redirects."""
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 
@@ -157,6 +162,14 @@ def setup_logger(
         logger.add(json_sink, level=log_level.upper(), enqueue=True)
     else:
         logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+    if log_file is not None:
+        # The console format carries raw ANSI codes; the file gets a plain layout.
+        logger.add(
+            log_file,
+            format="{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}",
+            level=log_level.upper(),
+            colorize=False,
+        )
 
     # Disable critical logging
     logger.critical = lambda _: None

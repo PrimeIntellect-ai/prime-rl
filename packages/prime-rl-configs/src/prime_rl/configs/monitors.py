@@ -48,6 +48,11 @@ class PrimeMonitorConfig(BaseConfig):
     """Run name shown on the platform. Inherits ``run.name`` when unset."""
 
 
+class PrimeEvalMonitorConfig(BaseConfig):
+    name: str | None = None
+    """Evaluation name shown on the platform. Inherits ``run.name`` when unset."""
+
+
 class MonitorsConfig(BaseConfig):
     wandb: WandbMonitorConfig | None = None
     """Log metrics to Weights & Biases. Off by default; enable with ``--monitors.wandb``."""
@@ -59,3 +64,8 @@ class MonitorsConfig(BaseConfig):
 class OrchestratorMonitorsConfig(MonitorsConfig):
     prime: PrimeMonitorConfig | None = None
     """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
+
+
+class EvalsMonitorsConfig(MonitorsConfig):
+    prime: PrimeEvalMonitorConfig | None = None
+    """Upload every eval source's finished epoch as an evaluation on the Prime Intellect platform. If None, disabled."""
