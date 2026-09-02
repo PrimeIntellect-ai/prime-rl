@@ -11,15 +11,6 @@ from prime_rl.inference.dynamo import (
     parse_dynamo_workers,
 )
 
-
-@pytest.fixture(autouse=True)
-def mock_worker_extension_validation(monkeypatch):
-    monkeypatch.setattr(
-        "prime_rl.inference.dynamo.worker_extension_class_path",
-        lambda *_args, **_kwargs: "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
-    )
-
-
 def worker(instance_id: int, *, admin_base_url: str, world_size: int, model: str = "Qwen/Qwen3-0.6B") -> dict:
     return {
         "namespace": "dynamo",

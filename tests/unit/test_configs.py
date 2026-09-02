@@ -439,7 +439,7 @@ def test_dynamo_discovery_config_is_nested_under_client():
     assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
 
 
-def test_external_nccl_world_size_propagates_to_both_processes():
+def test_external_nccl_world_size_is_derived_from_deployment():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -452,7 +452,8 @@ def test_external_nccl_world_size_propagates_to_both_processes():
                     }
                 },
             },
-            "weight_broadcast": {"type": "nccl", "inference_world_size": 3},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 3},
+            "weight_broadcast": {"type": "nccl"},
         }
     )
 
@@ -462,39 +463,42 @@ def test_external_nccl_world_size_propagates_to_both_processes():
     assert config.orchestrator.weight_broadcast.inference_world_size == 3
 
 
-def test_dynamo_discovery_rejects_non_nccl_weight_broadcast():
-    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
+def test_external_nccl_world_size_cannot_be_configured_separately():
+    with pytest.raises(ValidationError, match="inference_world_size"):
         RLConfig.model_validate(
             {
                 "trainer": {},
-                "orchestrator": {
-                    "renderer": {"name": "default"},
-                    "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
-                },
-                "weight_broadcast": {"type": "filesystem"},
+                "orchestrator": {"renderer": {"name": "default"}},
+                "weight_broadcast": {"type": "nccl", "inference_world_size": 3},
             }
         )
 
 
-def test_standalone_orchestrator_rejects_dynamo_with_non_nccl_weight_broadcast():
-    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
-        OrchestratorConfig.model_validate(
-            {
+def test_dynamo_discovery_preserves_filesystem_weight_broadcast():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
                 "renderer": {"name": "default"},
                 "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
-                "weight_broadcast": {"type": "filesystem"},
-            }
-        )
+            },
+            "weight_broadcast": {"type": "filesystem"},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "filesystem"
+    assert config.orchestrator.weight_broadcast.type == "filesystem"
 
 
-def test_standalone_orchestrator_rejects_dynamo_with_default_weight_broadcast():
-    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "default"},
-                "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
-            }
-        )
+def test_standalone_orchestrator_allows_dynamo_with_legacy_weight_broadcast():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "default"},
+            "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
+        }
+    )
+
+    assert config.weight_broadcast.type == "filesystem"
 
 
 def test_multi_node_auto_inference_parallelism():
