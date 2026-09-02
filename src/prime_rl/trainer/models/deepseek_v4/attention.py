@@ -126,7 +126,7 @@ class DeepseekV4GroupedLinear(nn.Linear):
     into `n_groups` groups, each projected independently to `out_features / n_groups` channels;
     a single follow-up linear (`o_b_proj`) mixes the concatenation back to `hidden_size`.
 
-    Input is `[..., n_groups, in_features_per_group]`, output `[..., n_groups, out_features / n_groups]`.
+    Input is `(..., n_groups, in_features_per_group)`, output `(..., n_groups, out_features / n_groups)`.
     """
 
     def __init__(self, in_features_per_group: int, out_features: int, n_groups: int, bias: bool = False):
@@ -167,7 +167,7 @@ def eager_attention_with_sinks(
 
 
 def build_sliding_window_mask(*, tok_doc_idx: Tensor, sliding_window: int, dtype: torch.dtype) -> Tensor:
-    """Additive `[1, 1, seq_len, seq_len]` mask over query rows and key columns.
+    """Additive `(1, 1, seq_len, seq_len)` mask over query rows and key columns.
 
     A key is readable when it lies in the query's own document and within the `sliding_window`
     tokens up to and including the query.
@@ -199,9 +199,9 @@ class CompressionLayout:
     along with its local sliding window.
     """
 
-    entry_tok_idx: Tensor  # [n_entries, compress_rate] int64 - token index in the packed sequence, per entry
-    entry_doc_idx: Tensor  # [n_entries] int64 - which document each entry belongs to
-    entry_local_idx: Tensor  # [n_entries] int64 - entry index within its own document
+    entry_tok_idx: Tensor  # (n_entries, compress_rate) int64 - token index in the packed sequence, per entry
+    entry_doc_idx: Tensor  # (n_entries,) int64 - which document each entry belongs to
+    entry_local_idx: Tensor  # (n_entries,) int64 - entry index within its own document
 
     @classmethod
     def build(cls, *, cu_seqlens: Tensor, compress_rate: int) -> "CompressionLayout":
@@ -249,9 +249,9 @@ class PackedContext:
     none of this depends on depth.
     """
 
-    attention_mask: Tensor  # [1, 1, seq_len, seq_len] additive - causal, local window, document-clipped
-    position_ids: Tensor  # [1, seq_len] int64 - token position within its own document
-    tok_doc_idx: Tensor  # [seq_len] int64 - which document each packed token belongs to
+    attention_mask: Tensor  # (1, 1, seq_len, seq_len) additive - causal, local window, document-clipped
+    position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
+    tok_doc_idx: Tensor  # (seq_len,) int64 - which document each packed token belongs to
     position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
@@ -329,7 +329,7 @@ class PackedContext:
             )
 
     def token_entry_causal_mask(self, compress_rate: int, threshold: Tensor) -> Tensor:
-        """`[1, seq_len, n_entries]` bool: which compressed entries each query token may read.
+        """`(1, seq_len, n_entries)` bool: which compressed entries each query token may read.
 
         Element `[0, t, e]` is true when query token `t` may read entry `e` of the rate's layout.
         Both of these have to hold:
@@ -406,7 +406,7 @@ class DeepseekV4Compressor(nn.Module):
         )
 
     def compress(self, hidden_states: torch.Tensor, packed: PackedContext) -> torch.Tensor:
-        """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
+        """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`.
 
         The layout at this compressor's own rate decides which source tokens each entry pools.
         """
@@ -459,7 +459,7 @@ class DeepseekV4IndexerScorer(nn.Module):
         self.weights_proj = nn.Linear(config.hidden_size, config.index_n_heads, bias=False)
 
     def forward(self, q: torch.Tensor, compressed_kv: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Score `q` `[batch, seq, heads, dim]` against `compressed_kv` `[batch, entries, dim]`."""
+        """Score `q` `(batch, seq, heads, dim)` against `compressed_kv` `(batch, entries, dim)`."""
         scores = torch.matmul(q.float(), compressed_kv.transpose(-1, -2).float().unsqueeze(1))
         scores = F.relu(scores) * self.softmax_scale
         weights = self.weights_proj(hidden_states).float() * self.weights_scaling
@@ -636,28 +636,42 @@ class DeepseekV4Attention(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-        cos, sin = packed.position_embeddings[self.rope_layer_type]
+        # Shape keys in the comments below:
+        #
+        # - `b`: batch
+        # - `t`: token in the packed row
+        # - `h`: attention head
+        # - `d`: head_dim
+        # - `e`: compressed entry
+        # - `r`: q_lora_rank
+        # - `g`: o_groups
+        # - `l`: o_lora_rank
+        #
+        # `hidden_states` is (b, t, hidden_size).
 
-        q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
-        q = self.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, -1, d): the -1 is h for q, 1 for kv
+        cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
+
+        q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
+        q = self.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)  # (b, h, t, d)
         q = apply_rotary_pos_emb_interleaved(self.q_b_norm(q), cos, sin)
 
-        kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)
+        kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)  # (b, 1, t, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
-        attention_mask = packed.attention_mask
+        attention_mask = packed.attention_mask  # (1, 1, t, t)
 
         if self.compressor is not None:
+            # (b, 1, e, d),  (b, 1, t, e)
             compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed)
-            kv = torch.cat([kv, compressed_kv], dim=2)
+            kv = torch.cat([kv, compressed_kv], dim=2)  # (b, 1, t + e, d)
             # The compressed entries live outside the local window, so the sliding mask says
             # nothing about them; `block_bias` carries their per-query causality and the
             # indexer's selection. Zero-padding instead would let every query read every one.
             attention_mask = torch.cat(
                 [attention_mask.expand(*block_bias.shape[:-1], -1), block_bias.to(attention_mask.dtype)], dim=-1
-            )
+            )  # (b, 1, t, t + e)
 
         attn_output = eager_attention_with_sinks(
             q,
@@ -668,14 +682,15 @@ class DeepseekV4Attention(nn.Module):
             scaling=self.scaling,
             dropout=self.attention_dropout,
             training=self.training,
-        )
+        )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
         attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
 
+        # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
-        return self.o_b_proj(grouped), None
+        return self.o_b_proj(grouped), None  # (b, t, hidden_size)
 
     def init_weights(self, init_std: float) -> None:
         # `init_std` is only passed through: the sinks are the only parameter this owns

@@ -19,7 +19,7 @@ class DeepseekV4UnweightedRMSNorm(nn.Module):
 class DeepseekV4HyperConnection(nn.Module):
     """Manifold-constrained hyper-connection (mHC) around one sublayer.
 
-    The residual is `hc_mult` parallel streams shaped `[B, S, hc_mult, hidden_size]`.
+    The residual is `hc_mult` parallel streams shaped `(B, S, hc_mult, hidden_size)`.
     A single projection of the normalized, flattened streams produces three gates:
 
     - `pre`: weights that collapse the streams into the single sequence fed to the

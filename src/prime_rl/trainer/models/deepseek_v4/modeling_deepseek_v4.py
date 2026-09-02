@@ -2,7 +2,7 @@
 
 This is where the pieces built in `attention.py`, `moe.py`, `hyperconnections.py` and
 `rotary.py` come together. The one structural surprise is the residual: it is not a single
-stream but `hc_mult` parallel ones, carried as `[batch, seq, hc_mult, hidden]` from the
+stream but `hc_mult` parallel ones, carried as `(batch, seq, hc_mult, hidden)` from the
 embedding all the way to `hc_head`, which collapses them back before the final norm.
 """
 

@@ -36,10 +36,10 @@ def apply_rotary_pos_emb_interleaved(
 
     Args:
         x: Tensor whose last dimension is the head dimension.
-        cos: Half-width cosines, shape `[batch, seq, rope_dim / 2]`.
+        cos: Half-width cosines, shape `(batch, seq, rope_dim / 2)`.
         sin: Half-width sines, same shape as `cos`.
         unsqueeze_dim: Axis of `x` that `cos` / `sin` must broadcast over. Use `1` for a
-            `[batch, heads, seq, head_dim]` layout and `2` for `[batch, seq, heads, head_dim]`.
+            `(batch, heads, seq, head_dim)` layout and `2` for `(batch, seq, heads, head_dim)`.
     """
     cos = cos.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
     sin = sin.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
