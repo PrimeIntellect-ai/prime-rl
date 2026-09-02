@@ -1,170 +1,10 @@
-import pytest
 import torch
 from torch._dynamo.backends.common import aot_autograd
 from torch._dynamo.testing import CompileCounterWithBackend
 from torch._functorch.partitioners import min_cut_rematerialization_partition
 
+from prime_rl.experimental.quant_ckpt.fake_kernels import QuantLinear, _calls
 from prime_rl.experimental.quant_ckpt.quant_cache_tensor import QuantCacheTensor
-
-_calls: dict[str, int] = {}
-
-
-@torch.library.custom_op("proto::fake_quantize", mutates_args=())
-def fake_quantize(x: torch.Tensor, scale: float) -> torch.Tensor:
-    _calls["fake_quantize"] = _calls.get("fake_quantize", 0) + 1
-    return (x * scale).to(torch.float16)
-
-
-@fake_quantize.register_fake
-def _(x: torch.Tensor, scale: float) -> torch.Tensor:
-    return x.new_empty(x.shape, dtype=torch.float16)  # meta only — must NOT touch _calls
-
-
-def _setup_ctx(ctx, inputs, output):
-    ctx.input_dtype = inputs[0].dtype
-
-
-def _backward(ctx, grad_output):
-    return grad_output.to(ctx.input_dtype), None  # straight-through estimator
-
-
-fake_quantize.register_autograd(_backward, setup_context=_setup_ctx)
-QuantCacheTensor.register_cacheable_op(torch.ops.proto.fake_quantize.default, key_fn=lambda args, kwargs: args[1])
-
-
-@pytest.fixture(autouse=True)
-def _reset():
-    _calls.clear()
-    torch._dynamo.reset()
-    yield
-
-
-# --- Eager tests ---
-
-
-def test_cache_hit_avoids_recompute():
-    x = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-    torch.ops.proto.fake_quantize(x, 2.0)
-    torch.ops.proto.fake_quantize(x, 2.0)
-    assert _calls["fake_quantize"] == 1
-
-
-def test_different_keys_dont_collide():
-    x = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-    torch.ops.proto.fake_quantize(x, 2.0)
-    torch.ops.proto.fake_quantize(x, 3.0)
-    assert _calls["fake_quantize"] == 2
-
-
-def test_rewrap_preserves_cache_through_reshape_contiguous_detach():
-    x = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-
-    chain_a = x.reshape(2, 8).contiguous().detach()
-    torch.ops.proto.fake_quantize(chain_a, 2.0)
-
-    chain_b = x.reshape(2, 8).contiguous().detach()
-    torch.ops.proto.fake_quantize(chain_b, 2.0)
-
-    assert _calls["fake_quantize"] == 1
-
-
-def test_unregistered_op_strips_wrapper():
-    x = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-    result = x + 1
-    assert not isinstance(result, QuantCacheTensor)
-
-
-def test_separate_instances_dont_share_cache():
-    x1 = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-    x2 = QuantCacheTensor.from_tensor(torch.randn(4, 4))
-    torch.ops.proto.fake_quantize(x1, 2.0)
-    torch.ops.proto.fake_quantize(x2, 2.0)
-    assert _calls["fake_quantize"] == 2
-
-
-# --- Cross-Function backward-time sharing (eager) ---
-#
-# Realistic case: an unfused SwiGLU MLP, w1 (gate_proj) and w3 (up_proj) both consuming
-# the same input activation h. In fp8_linear.py's Float8BlockwiseLinear, x is quantized
-# once per GEMM layout it's needed in: a row-major cast for the forward matmul (Y=X@W),
-# and a genuinely *different* op — a transposed-layout cast — for the weight-gradient
-# matmul (dW=dY^T@X). So w1 and w3 each create two independent dedup opportunities: their
-# forwards both want the row-major cast of h, and their backwards (wgrad) both want the
-# transposed-layout cast of h. These are two separate cache entries (different op key),
-# not one merged count.
-
-
-@torch.library.custom_op("proto::fake_quantize_fwd", mutates_args=())
-def fake_quantize_fwd(x: torch.Tensor, scale: float) -> torch.Tensor:
-    _calls["fake_quantize_fwd"] = _calls.get("fake_quantize_fwd", 0) + 1
-    return (x * scale).to(torch.float16)
-
-
-@fake_quantize_fwd.register_fake
-def _(x: torch.Tensor, scale: float) -> torch.Tensor:
-    return x.new_empty(x.shape, dtype=torch.float16)
-
-
-@torch.library.custom_op("proto::fake_quantize_wgrad", mutates_args=())
-def fake_quantize_wgrad(x: torch.Tensor, scale: float) -> torch.Tensor:
-    _calls["fake_quantize_wgrad"] = _calls.get("fake_quantize_wgrad", 0) + 1
-    return (x * scale).to(torch.float16)
-
-
-@fake_quantize_wgrad.register_fake
-def _(x: torch.Tensor, scale: float) -> torch.Tensor:
-    return x.new_empty(x.shape, dtype=torch.float16)
-
-
-QuantCacheTensor.register_cacheable_op(torch.ops.proto.fake_quantize_fwd.default, key_fn=lambda args, kwargs: args[1])
-QuantCacheTensor.register_cacheable_op(
-    torch.ops.proto.fake_quantize_wgrad.default, key_fn=lambda args, kwargs: args[1]
-)
-
-
-class QuantLinear(torch.autograd.Function):
-    # Stand-in for Float8BlockwiseLinear, invoked once per branch (w1, w3).
-    @staticmethod
-    def forward(ctx, h, weight):
-        ctx.save_for_backward(h, weight)
-        h_fwd_q = torch.ops.proto.fake_quantize_fwd(h, 2.0)
-        return h_fwd_q.float() @ weight
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        h, weight = ctx.saved_tensors
-        h_wgrad_q = torch.ops.proto.fake_quantize_wgrad(h, 2.0)
-        grad_h = grad_output @ weight.T
-        grad_weight = h_wgrad_q.float().T @ grad_output
-        return grad_h, grad_weight
-
-
-def test_fwd_and_wgrad_quantize_dedup_independently_across_sibling_calls():
-    torch.manual_seed(0)
-    raw_h = torch.randn(4, 3, requires_grad=True)
-    h = QuantCacheTensor.from_tensor(raw_h)
-    w1 = torch.randn(3, 5, requires_grad=True)
-    w3 = torch.randn(3, 5, requires_grad=True)
-
-    out_w1 = QuantLinear.apply(h, w1)
-    out_w3 = QuantLinear.apply(h, w3)
-    assert _calls["fake_quantize_fwd"] == 1  # w1's and w3's forward share one cast
-    assert "fake_quantize_wgrad" not in _calls  # backward hasn't run yet
-
-    (out_w1.sum() + out_w3.sum()).backward()
-
-    assert _calls["fake_quantize_fwd"] == 1  # unchanged: no new forward calls
-    assert _calls["fake_quantize_wgrad"] == 1  # w1's and w3's wgrad share one cast
-
-    # Correctness, not just call count: the shared cache must hand back the right value.
-    ref_h_wgrad_q = (raw_h * 2.0).to(torch.float16).float()
-    ref_grad_w1 = ref_h_wgrad_q.T @ torch.ones_like(out_w1)
-    ref_grad_w3 = ref_h_wgrad_q.T @ torch.ones_like(out_w3)
-    assert torch.equal(w1.grad, ref_grad_w1)
-    assert torch.equal(w3.grad, ref_grad_w3)
-
-
-# --- Compile tests ---
 
 
 def test_cse_dedupes_sibling_calls_under_compile():
@@ -219,8 +59,9 @@ def test_cse_dedupes_sibling_calls_under_compile():
 def test_cse_dedupes_fwd_and_wgrad_across_sibling_calls_under_compile():
     # Compile equivalent of test_fwd_and_wgrad_quantize_dedup_independently_across_sibling_calls:
     # same w1/w3 sharing one h, but here there's no QuantCacheTensor at all — h is a plain
-    # tensor, and QuantLinear (defined above) is compiled directly. Checks that compile gets
-    # both dedups (fwd-layout cast, wgrad-layout cast) for free, same as claim 2 predicts.
+    # tensor, and QuantLinear (defined in fake_kernels) is compiled directly. Checks that
+    # compile gets both dedups (fwd-layout cast, wgrad-layout cast) for free, same as
+    # claim 2 predicts.
     def fn(h, w1, w3):
         y1 = QuantLinear.apply(h, w1)
         y3 = QuantLinear.apply(h, w3)
