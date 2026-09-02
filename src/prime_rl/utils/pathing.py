@@ -87,7 +87,7 @@ def format_log_message(
     log_dir: Path,
     trainer: bool = False,
     orchestrator: bool = False,
-    online_evals: bool = False,
+    online_eval: bool = False,
     inference: bool = False,
     job_log: bool = False,
     train_env_names: list[str] | None = None,
@@ -112,8 +112,8 @@ def format_log_message(
         log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
-    if online_evals:
-        log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/online-evals.log")
+    if online_eval:
+        log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/online-eval.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
@@ -215,7 +215,7 @@ def get_file_monitor_dir(output_dir: Path) -> Path:
 
 
 def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "evals"
+    return output_dir / "eval"
 
 
 def get_broadcast_dir(output_dir: Path) -> Path:

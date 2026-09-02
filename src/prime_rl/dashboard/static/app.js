@@ -1585,7 +1585,7 @@ const LOG_PANES = [
   { comp: "trainer", title: "trainer", match: (f) => f.component === "trainer" },
   { comp: "orch", title: "orchestrator", match: (f) => f.component === "orch" },
   { comp: "infer", title: "inference", match: (f) => f.component === "infer" },
-  { comp: "evals", title: "evals", match: (f) => f.component === "evals" },
+  { comp: "eval", title: "eval", match: (f) => f.component === "eval" },
   { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
 

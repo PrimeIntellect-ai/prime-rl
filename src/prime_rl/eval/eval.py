@@ -11,15 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from prime_rl import monitors
-from prime_rl.configs.evals import EvalsConfig
-from prime_rl.evals.ckpt import CheckpointManager
-from prime_rl.evals.runner import EvalRunner
+from prime_rl.configs.eval import EvalConfig
+from prime_rl.eval.ckpt import CheckpointManager
+from prime_rl.eval.runner import EvalRunner
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
 
 
-class Evals:
-    def __init__(self, config: EvalsConfig, log_dir: Path) -> None:
+class Eval:
+    def __init__(self, config: EvalConfig, log_dir: Path) -> None:
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.run_dir, log_dir=log_dir)
         self.ckpt_manager = CheckpointManager(config.run_dir)
@@ -29,7 +29,7 @@ class Evals:
         config = self.config
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
-            producer="evals",
+            producer="eval",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
@@ -42,7 +42,7 @@ class Evals:
         eval_source = self.runner.eval_source
         if config.resume is not None:
             if config.resume.dir is not None:
-                self.ckpt_manager.load(config.resume.dir_step, eval_source, path=config.resume.dir / "evals")
+                self.ckpt_manager.load(config.resume.dir_step, eval_source, path=config.resume.dir / "eval")
             else:
                 self.ckpt_manager.load(config.resume.step or self.ckpt_manager.latest_step(), eval_source)
             self.last_saved_cursor = eval_source.cursor
@@ -75,11 +75,11 @@ class Evals:
 
 
 @clean_exit
-async def run_evals(config: EvalsConfig, log_dir: Path) -> None:
-    evals = Evals(config, log_dir)
+async def run_eval(config: EvalConfig, log_dir: Path) -> None:
+    evaluation = Eval(config, log_dir)
     try:
-        await evals.run()
+        await evaluation.run()
         # Finalize only on a clean exit — a crashed run must not mark itself completed.
         await monitors.finalize()
     finally:
-        await evals.runner.stop()
+        await evaluation.runner.stop()

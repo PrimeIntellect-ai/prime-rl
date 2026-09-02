@@ -1,0 +1,11 @@
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+num_examples = 16
+dashboard = false
+
+[[source]]
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[sampling]
+max_completion_tokens = 256

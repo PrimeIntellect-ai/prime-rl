@@ -380,7 +380,7 @@ class EvalSourcesConfig(BaseConfig):
         return self
 
 
-class EvalConfig(EvalSourcesConfig):
+class ScheduledEvalConfig(EvalSourcesConfig):
     """Eval sources evaluated on a step interval next to training."""
 
     interval: int = Field(100, ge=1)
@@ -521,7 +521,7 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    eval: EvalConfig | None = None
+    eval: ScheduledEvalConfig | None = None
     """Evaluation configuration."""
 
     log: LogConfig = LogConfig()

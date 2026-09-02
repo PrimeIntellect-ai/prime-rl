@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from prime_rl.evals.ckpt import CheckpointManager
+from prime_rl.eval.ckpt import CheckpointManager
 from prime_rl.orchestrator.eval_source import EvalSource
 
 

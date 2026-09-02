@@ -66,6 +66,6 @@ class OrchestratorMonitorsConfig(MonitorsConfig):
     """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
 
 
-class EvalsMonitorsConfig(MonitorsConfig):
+class EvalMonitorsConfig(MonitorsConfig):
     prime: PrimeEvalMonitorConfig | None = None
     """Upload every eval source's finished epoch as an evaluation on the Prime Intellect platform. If None, disabled."""

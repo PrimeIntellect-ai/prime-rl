@@ -3,8 +3,8 @@ from pathlib import Path
 
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalsMonitorsConfig, MonitorsConfig
-from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalConfig, EvalSourcesConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import ClientConfig, LogConfig, ResumeConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -49,8 +49,8 @@ class CheckpointConfig(BaseConfig):
     """Keep at most this many cursor checkpoints on disk. None keeps all of them."""
 
 
-class EvalsConfig(ServedEvalConfig):
-    """``uv run evals``: evaluate the configured sources once against a live inference
+class EvalConfig(ServedEvalConfig):
+    """``uv run eval``: evaluate the configured sources once against a live inference
     server, then exit. Every source's env server is spawned by the evals process unless
     the source sets ``serve.address``."""
 
@@ -90,7 +90,7 @@ class EvalsConfig(ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: EvalsMonitorsConfig = EvalsMonitorsConfig()
+    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     @property
@@ -115,7 +115,7 @@ class EvalsConfig(ServedEvalConfig):
         return self
 
 
-class EvalsEvalConfig(EvalConfig, ServedEvalConfig):
+class SFTEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
     """The ``[eval]`` block of the ``sft`` entrypoint: interval-driven eval sources
     against the inference server that receives the trainer's weight broadcasts."""
 
@@ -125,8 +125,8 @@ class EvalsEvalConfig(EvalConfig, ServedEvalConfig):
     while it waits for slow evals."""
 
 
-class OnlineEvalsConfig(EvalsEvalConfig):
-    """``online-evals``: watch a broadcasts directory for the trainer's weight broadcasts,
+class OnlineEvalConfig(SFTEvalConfig):
+    """``online-eval``: watch a broadcasts directory for the trainer's weight broadcasts,
     move the inference server onto each of them, and run the due eval sources against the
     updated weights. The ``sft`` launcher writes this config from its ``[eval]`` block;
     with ``weight_broadcast.type = "filesystem"`` it also works standalone against any

@@ -2,7 +2,7 @@
 # sandbox; the solver runs the bash harness in docker too.
 #
 #   export PRIME_API_KEY=<your Prime Inference key>
-#   uv run evals @ examples/evals/agentic-judge.toml
+#   uv run eval @ examples/eval/agentic-judge.toml
 
 model = "deepseek/deepseek-v4-flash"
 num_examples = 2

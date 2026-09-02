@@ -1,0 +1,21 @@
+# wordle - the textarena taskset pinned to Wordle, the engine playing the user.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run eval @ examples/eval/wordle.toml
+
+model = "deepseek/deepseek-v4-flash"
+num_examples = 5
+group_size = 2
+
+[client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[concurrency]
+min_inflight = 8
+max_inflight = 8
+
+[[source]]
+env.taskset.id = "wordle"
+env.player.max_turns = 8
+env.player.harness.id = "null"

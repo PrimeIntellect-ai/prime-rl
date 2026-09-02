@@ -1,7 +1,7 @@
-"""Launcher for ``uv run evals``: one epoch of every configured eval source.
+"""Launcher for ``uv run eval``: one epoch of every configured eval source.
 
-Defers heavy ML imports until after the config is parsed, so ``evals --help``
-short-circuits. The implementation lives in ``prime_rl.evals.evals``.
+Defers heavy ML imports until after the config is parsed, so ``eval --help``
+short-circuits. The implementation lives in ``prime_rl.eval.eval``.
 """
 
 import asyncio
@@ -14,14 +14,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from prime_rl.configs.evals import EvalsConfig
+from prime_rl.configs.eval import EvalConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.process import set_proc_title
 
 USAGE = """\
-usage: uv run evals [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [-o DIR] [options]
-       uv run evals @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
-       uv run evals @ eval.toml --run.name <name> --resume                 resume an interrupted run
+usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [-o DIR] [options]
+       uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
+       uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
 
 Shorthands for a single-source run:
   <taskset-id>             the taskset of the run's only source
@@ -44,7 +44,7 @@ def parse_value(raw: str) -> Any:
 
 
 def expand_shorthands(argv: list[str]) -> list[str]:
-    """Rewrite the single-source shorthands into flags ``EvalsConfig`` parses.
+    """Rewrite the single-source shorthands into flags ``EvalConfig`` parses.
 
     ``<taskset-id>`` and ``--env.<path> <value>`` describe the run's only source and fold
     into one JSON ``--source`` flag (pydantic-config has no list-index paths, so
@@ -99,16 +99,16 @@ def toml_defines_source(path: Path) -> bool:
 
 
 def main():
-    set_proc_title("Evals")
+    set_proc_title("Eval")
     argv = sys.argv[1:]
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(EvalsConfig)
+        cli(EvalConfig)
         return
     # The typed parse sees the expanded flags; the launch artifacts keep the command as typed.
     sys.argv = [sys.argv[0], *expand_shorthands(argv)]
-    config = cli(EvalsConfig)
+    config = cli(EvalConfig)
     sys.argv = [sys.argv[0], *argv]
 
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
@@ -127,19 +127,19 @@ def main():
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
-    write_launch_artifacts(config_dir, "evals")
-    (config_dir / "evals.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    write_launch_artifacts(config_dir, "eval")
+    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
 
-    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_dir / "evals.log")
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_dir / "eval.log")
     logger.info(f"Wrote config to {config_dir}")
     if config.dry_run:
         logger.success("Dry run complete. To start the evals, remove --dry-run from your command.")
         return
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
-    from prime_rl.evals.evals import run_evals
+    from prime_rl.eval.eval import run_eval
 
-    asyncio.run(run_evals(config, log_dir))
+    asyncio.run(run_eval(config, log_dir))
     log_dashboard_url(logger, dashboard_url)
 
 

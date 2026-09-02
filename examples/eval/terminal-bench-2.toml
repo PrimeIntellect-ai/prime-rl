@@ -1,0 +1,23 @@
+# terminal-bench-2 - a few named tasks with the bash harness in prime sandboxes,
+# with whole-rollout retries for provider and sandbox errors.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run eval @ examples/eval/terminal-bench-2.toml
+
+model = "deepseek/deepseek-v4-flash"
+
+[client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[concurrency]
+min_inflight = 4
+max_inflight = 4
+
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.taskset.tasks = ["fix-git", "hello-world"]
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["ProviderError", "SandboxError"]

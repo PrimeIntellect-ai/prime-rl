@@ -61,14 +61,14 @@ mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
 
 {% if prl_run_id %}
-# Trainer and online-evals log to one shared W&B run. The trainer creates the run,
-# and the online-evals process finalizes it after the final epoch.
+# Trainer and online-eval log to one shared W&B run. The trainer creates the run,
+# and the online-eval process finalizes it after the final epoch.
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
-export WANDB_SHARED_FINISHER=online-evals
+export WANDB_SHARED_FINISHER=online-eval
 export WANDB_PROGRAM="uv run sft"
 {% endif %}
 
@@ -196,18 +196,18 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
         # Online evals drive inference through the router and send admin operations
         # directly to each engine.
-{%- for key, value in online_evals_env_vars.items() %}
+{%- for key, value in online_eval_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {%- endfor %}
         (
-            PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-evals uv run online-evals \
-                @ $CONFIG_DIR/online_evals.json \
+            PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-eval uv run online-eval \
+                @ $CONFIG_DIR/online_eval.json \
                 --client.base-url $INFER_URLS \
                 --client.admin-base-url $ADMIN_URLS \
 {%- if use_nccl_broadcast %}
                 --weight-broadcast.host $MASTER_ADDR \
 {%- endif %}
-                2>&1 | tee $LOG_DIR/online-evals.log
+                2>&1 | tee $LOG_DIR/online-eval.log
             COMPONENT_CODE=$?
             if [ "$COMPONENT_CODE" -eq 0 ]; then
                 touch "$EVAL_DONE" || exit $?

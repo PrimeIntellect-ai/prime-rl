@@ -1,12 +1,11 @@
-# gsm8k - grade-school math with the bash harness, a few tasks with several
-# rollouts each, against DeepSeek V4 Flash on Prime Inference.
+# best-of-n - pair the reusable best-of-n env with gsm8k: 8 attempts per task,
+# scored as pass@k / rejection sampling.
 #
 #   export PRIME_API_KEY=<your Prime Inference key>
-#   uv run evals @ examples/evals/gsm8k.toml
+#   uv run eval @ examples/eval/best-of-n.toml
 
 model = "deepseek/deepseek-v4-flash"
 num_examples = 5
-group_size = 3
 
 [client]
 base_url = "https://api.pinference.ai/api/v1"
@@ -17,5 +16,8 @@ min_inflight = 8
 max_inflight = 8
 
 [[source]]
+env.id = "best-of-n"
+env.n = 8
 env.taskset.id = "gsm8k"
-env.agent.harness.id = "bash"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"

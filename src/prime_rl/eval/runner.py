@@ -1,5 +1,5 @@
-"""EvalRunner: the eval engine shared by ``evals`` (one epoch against the served weights)
-and ``online-evals`` (an epoch per weight broadcast).
+"""EvalRunner: the eval engine shared by ``eval`` (one epoch against the served weights)
+and ``online-eval`` (an epoch per weight broadcast).
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only ``Dispatcher``
 admits episodes under the adaptive ``ConcurrencyController``, fed by the
@@ -24,7 +24,7 @@ from pathlib import Path
 from subprocess import Popen
 
 from prime_rl import monitors
-from prime_rl.configs.evals import EvalsConfig, OnlineEvalsConfig
+from prime_rl.configs.eval import EvalConfig, OnlineEvalConfig
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -59,7 +59,7 @@ POLL_INTERVAL_S = 2.0
 
 
 class EvalRunner:
-    def __init__(self, config: EvalsConfig | OnlineEvalsConfig, *, run_dir: Path, log_dir: Path) -> None:
+    def __init__(self, config: EvalConfig | OnlineEvalConfig, *, run_dir: Path, log_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
         self.log_dir = log_dir
@@ -155,7 +155,7 @@ class EvalRunner:
         await self.inference_metrics.start()
 
         self.periodic_logger = PeriodicLogger(
-            name="Evals",
+            name="Eval",
             collect=self.collect_pipeline_view,
             metric_keys=[
                 *list(self.dispatcher.gauges().keys()),

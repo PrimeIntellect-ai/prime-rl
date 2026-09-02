@@ -1,0 +1,32 @@
+# gsm8k with the rlm harness in a sized docker sandbox, explicit sampling, and the
+# taskset's test split - every knob a run usually needs, in one file.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run eval @ examples/eval/rlm-docker.toml
+
+model = "deepseek/deepseek-v4-flash"
+num_examples = 5
+group_size = 2
+
+[client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[concurrency]
+min_inflight = 8
+max_inflight = 8
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_completion_tokens = 2048
+reasoning_effort = "medium"
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.taskset.split = "test"
+env.agent.harness.id = "rlm"
+env.agent.runtime.type = "docker"
+env.agent.runtime.cpu = 4
+env.agent.runtime.memory = 8
+env.agent.max_turns = 20

@@ -15,9 +15,9 @@ import asyncio
 from pathlib import Path
 
 from prime_rl import monitors
-from prime_rl.configs.evals import OnlineEvalsConfig
+from prime_rl.configs.eval import OnlineEvalConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
-from prime_rl.evals.runner import POLL_INTERVAL_S, EvalRunner
+from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps
@@ -28,8 +28,8 @@ from prime_rl.utils.utils import clean_exit
 STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
-class OnlineEvals:
-    def __init__(self, config: OnlineEvalsConfig, log_dir: Path) -> None:
+class OnlineEval:
+    def __init__(self, config: OnlineEvalConfig, log_dir: Path) -> None:
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.output_dir, log_dir=log_dir)
         # The last weight-broadcast step already handled (evaluated or skipped).
@@ -40,7 +40,7 @@ class OnlineEvals:
         config = self.config
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
-            producer="online-evals",
+            producer="online-eval",
             wandb=config.monitors.wandb,
             file=config.monitors.file,
             output_dir=config.output_dir,
@@ -84,13 +84,13 @@ class OnlineEvals:
 
         if config.resume_step is None:
             # The first trigger fires every env (policy v0) unless ``skip_first_step``.
-            await self.maybe_run_evals(step=0)
+            await self.maybe_run_eval(step=0)
         elif config.retrigger_on_resume:
             # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
             # evals); the startup rendezvous above already loaded its weights. The
             # final broadcast force-fires every env, exactly like the watch loop below.
             is_final = config.max_steps is not None and config.resume_step >= config.max_steps
-            await self.maybe_run_evals(step=config.resume_step, force=is_final)
+            await self.maybe_run_eval(step=config.resume_step, force=is_final)
 
         get_logger().info(f"Watching {config.broadcasts_dir} for new weight broadcasts (max_steps={config.max_steps})")
         while True:
@@ -124,7 +124,7 @@ class OnlineEvals:
                     self.last_step = max(self.last_step, step)
                     continue
                 is_final = config.max_steps is not None and step >= config.max_steps
-                await self.maybe_run_evals(step=step, reload_weights=True, force=is_final)
+                await self.maybe_run_eval(step=step, reload_weights=True, force=is_final)
             if config.max_steps is not None and self.last_step >= config.max_steps:
                 break
             await asyncio.sleep(POLL_INTERVAL_S)
@@ -156,7 +156,7 @@ class OnlineEvals:
         }
         return due - set(steps)
 
-    async def maybe_run_evals(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
+    async def maybe_run_eval(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),
         reloading the inference weights first. No-op when no env is due — except
         that a live transport's broadcast must always be received (the trainer
@@ -193,11 +193,11 @@ class OnlineEvals:
 
 
 @clean_exit
-async def run_online_evals(config: OnlineEvalsConfig, log_dir: Path) -> None:
-    evals = OnlineEvals(config, log_dir)
+async def run_online_eval(config: OnlineEvalConfig, log_dir: Path) -> None:
+    evaluation = OnlineEval(config, log_dir)
     try:
-        await evals.run()
+        await evaluation.run()
         # Finalize only on a clean exit — a crashed run must not mark the run completed.
         await monitors.finalize()
     finally:
-        await evals.runner.stop()
+        await evaluation.runner.stop()

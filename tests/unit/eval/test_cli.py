@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from prime_rl.entrypoints.evals import expand_shorthands
+from prime_rl.entrypoints.eval import expand_shorthands
 
 
 def test_expand_shorthands_folds_taskset_and_env_into_one_source() -> None:

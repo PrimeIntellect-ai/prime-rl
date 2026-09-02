@@ -42,7 +42,7 @@ except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
-MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log", "online-evals.log"}
+MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log", "online-eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
@@ -239,9 +239,7 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
         return "sft", read_json(configs / "sft.json")
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
-    if (configs / "evals.json").exists():
-        return "eval", read_json(configs / "evals.json")
-    if (configs / "eval.json").exists():  # verifiers `uv run eval` run dir
+    if (configs / "eval.json").exists():
         return "eval", read_json(configs / "eval.json")
     return "other", {}
 
@@ -350,9 +348,8 @@ def log_component(rel: Path) -> tuple[str, str]:
             "trainer.log": ("trainer", "trainer"),
             "orchestrator.log": ("orch", "orchestrator"),
             "inference.log": ("infer", "inference"),
-            "evals.log": ("evals", "evals"),
-            "online-evals.log": ("evals", "online-evals"),
-            "eval.log": ("evals", "eval"),
+            "eval.log": ("eval", "eval"),
+            "online-eval.log": ("eval", "online-eval"),
         }.get(parts[0], ("other", parts[0]))
     if parts[0] == "trainer":
         if parts[1] == "torchrun":  # trainer/torchrun/<rdzv>/attempt_0/<rank>/std{out,err}.log
@@ -399,7 +396,7 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
             add(path, component, label)
     # Include unscoped env logs from runs created before attempt-scoped eval logging.
     for path in sorted((run_dir / "logs" / "envs").rglob("*.log")):
-        add(path, f"env:{path.stem}", f"{path.stem} (evals)")
+        add(path, f"env:{path.stem}", f"{path.stem} (eval)")
     return {"attempt": attempt_num, "attempts": attempts, "files": files}
 
 
@@ -430,7 +427,7 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl", "sft", "eval", "evals", "online_evals", "orchestrator", "trainer", "inference"]
+CONFIG_ORDER = ["rl", "sft", "eval", "online_eval", "orchestrator", "trainer", "inference"]
 
 
 def config_rank(name: str) -> tuple[int, str]:

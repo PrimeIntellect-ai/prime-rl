@@ -8,7 +8,7 @@ from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.evals import EvalsEvalConfig
+from prime_rl.configs.eval import SFTEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -203,7 +203,7 @@ class SFTConfig(BaseConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
-    eval: EvalsEvalConfig | None = None
+    eval: SFTEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
     server that receives the trainer's weight broadcasts. If None, no online evals run."""
 
@@ -437,7 +437,7 @@ class SFTConfig(BaseConfig):
                 "Online evals are configured without an [inference] block - the launcher will not "
                 f"start an inference server. Make sure one is running at eval.client.base_url "
                 f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
-                "otherwise the online-evals process will hang waiting for it. If a router fronts the "
+                "otherwise the online-eval process will hang waiting for it. If a router fronts the "
                 "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
                 "(pause/update_weights/resume) must bypass the router.",
                 stacklevel=2,
