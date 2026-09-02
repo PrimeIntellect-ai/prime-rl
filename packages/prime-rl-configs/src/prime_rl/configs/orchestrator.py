@@ -518,12 +518,6 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    @model_validator(mode="after")
-    def validate_dynamo_weight_broadcast(self):
-        if self.model.client.dynamo is not None and self.weight_broadcast.type != "nccl":
-            raise ValueError("Dynamo discovery requires weight_broadcast.type = 'nccl' in the A1 integration")
-        return self
-
     monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 

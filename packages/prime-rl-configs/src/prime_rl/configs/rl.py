@@ -148,9 +148,6 @@ class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
-    inference_world_size: int | None = Field(None, ge=1)
-    """Explicit external inference world size. Required when it cannot be derived from a managed inference deployment."""
-
 
 class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
@@ -314,21 +311,6 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
-    @model_validator(mode="before")
-    @classmethod
-    def propagate_explicit_weight_broadcast_to_dynamo_orchestrator(cls, data):
-        if not isinstance(data, dict) or not isinstance(data.get("orchestrator"), dict):
-            return data
-        orchestrator = data["orchestrator"]
-        model = orchestrator.get("model")
-        client = model.get("client") if isinstance(model, dict) else None
-        if not isinstance(client, dict) or client.get("dynamo") is None:
-            return data
-        weight_broadcast = data.get("weight_broadcast")
-        if weight_broadcast is None or "weight_broadcast" in orchestrator:
-            return data
-        return {**data, "orchestrator": {**orchestrator, "weight_broadcast": weight_broadcast}}
-
     @model_validator(mode="after")
     def auto_setup_infer_nodes(self):
         if self.deployment.type != "multi_node":
@@ -486,8 +468,6 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
-        if self.orchestrator.model.client.dynamo is not None and self.weight_broadcast.type != "nccl":
-            raise ValueError("Dynamo discovery requires weight_broadcast.type = 'nccl' in the A1 integration")
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
@@ -495,26 +475,13 @@ class RLConfig(BaseConfig):
                 "have no disk artifact to load from."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            derived_world_size = (
+            inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
-                else None
+                else self.deployment.num_infer_gpus
+                if self.deployment.type == "single_node"
+                else 1
             )
-            configured_world_size = (
-                self.weight_broadcast.inference_world_size
-                if isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig)
-                else None
-            )
-            if (
-                configured_world_size is not None
-                and derived_world_size is not None
-                and configured_world_size != derived_world_size
-            ):
-                raise ValueError(
-                    f"weight_broadcast.inference_world_size ({configured_world_size}) does not match the managed "
-                    f"inference topology ({derived_world_size})"
-                )
-            inference_world_size = configured_world_size or derived_world_size or 1
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,

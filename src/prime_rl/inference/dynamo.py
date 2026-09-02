@@ -11,7 +11,6 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.inference.vllm.worker_extension import worker_extension_class_path
 from prime_rl.orchestrator.clients import check_health, maybe_check_has_model, setup_admin_clients
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
@@ -178,7 +177,6 @@ class DynamoAdminClients:
         self._poll_interval = poll_interval
         self._timeout = client_config.wait_for_ready_timeout
         self._headers = _discovery_headers(client_config)
-        self.worker_extension_cls = worker_extension_class_path("nccl", validate_import=True)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
         self.workers: tuple[DynamoWorker, ...] = ()
