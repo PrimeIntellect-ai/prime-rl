@@ -413,7 +413,7 @@ demo_key = "demonstration"
 
 Scoring runs before curriculum admission, so a rollout that is later rejected still costs its reference compute.
 
-By default, zero-advantage RL tokens are removed before samples count toward the batch target. The orchestrator collects replacement samples, so rollout-based batches contain `orchestrator.batch_size` training traces. Samples that still carry CE or reference-KL components are retained, while pure zero-advantage RL samples are not shipped. Removing an RL token also removes its trainer/inference mismatch-KL contribution. Set `orchestrator.train.filter_zero_advantages = false` to retain them.
+By default, zero-advantage RL tokens are removed before samples count toward the batch target. The orchestrator collects replacement samples, so rollout-based batches contain `orchestrator.batch_size` training traces. Set `orchestrator.constant_trainer_batch_size = false` to filter after collection without replacement. This can improve orchestrator throughput, but it produces smaller trainer batches when samples have no signal. Samples that still carry CE or reference-KL components are retained, while pure zero-advantage RL samples are not shipped. Removing an RL token also removes its trainer/inference mismatch-KL contribution. Set `orchestrator.train.filter_zero_advantages = false` to retain them.
 
 ## Curricula
 
