@@ -1,0 +1,3 @@
+# Raw per-point JSON is regenerable by `sweep.sh`; the committed artifact is `measured.md`.
+*.json
+!.gitignore
