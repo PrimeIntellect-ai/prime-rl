@@ -29,7 +29,6 @@ from prime_rl.trainer.models.deepseek_v4.attention import (
     CompressionLayout,
     DeepseekV4CSACompressor,
     DeepseekV4HCACompressor,
-    build_compression_layout,
 )
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -358,7 +357,7 @@ def _layout(doc_lens: tuple[int, ...], compress_rate: int) -> CompressionLayout:
     """The layout `DeepseekV4Model` would build for a row laid out as `doc_lens`."""
     total = sum(doc_lens)
     cu_seqlens, _ = get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=total)
-    return build_compression_layout(cu_seqlens, compress_rate, total)
+    return CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=compress_rate, total_tokens=total)
 
 
 def _doc_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
@@ -498,7 +497,7 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):  # noqa: F811
 def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):  # noqa: F811
     """CSA's long-range pathway stays inside the querying token's own document.
 
-    `causal_threshold` counts entries per document and `build_compression_layout` numbers and
+    `causal_threshold` counts entries per document and `CompressionLayout.build` numbers and
     pools them per document to match, so the entries a query at local position 4 of the second
     document may read are its own document's, not the ones pooled from the first.
     """

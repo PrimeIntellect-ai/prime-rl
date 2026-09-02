@@ -155,40 +155,57 @@ class CompressionLayout:
     entry_pos: Tensor  # [n_entries] int64 - == entry_local * compress_rate, the compress-RoPE position
     doc_of_token: Tensor  # [seq_len] int64 - which document each packed token belongs to
 
+    @classmethod
+    def build(cls, *, cu_seqlens: Tensor, compress_rate: int, total_tokens: int) -> "CompressionLayout":
+        """Lay out the compressed entries of a packed sequence, document by document.
 
-def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_tokens: int) -> CompressionLayout:
-    """Lay out the compressed entries of a packed sequence, document by document.
+        Document `doc` of length `L_doc` gets `L_doc // compress_rate` entries; its entry `e` covers
+        the `compress_rate` source tokens starting at `cu_seqlens[doc] + e * compress_rate`. The
+        trailing `L_doc % compress_rate` tokens get no entry, exactly as the unpacked case drops
+        its trailing partial window; they stay visible through the local sliding window.
 
-    Document `doc` of length `L_doc` gets `L_doc // compress_rate` entries; its entry `e` covers
-    the `compress_rate` source tokens starting at `cu_seqlens[doc] + e * compress_rate`. The
-    trailing `L_doc % compress_rate` tokens get no entry, exactly as the unpacked case drops
-    its trailing partial window; they stay visible through the local sliding window.
+        A packed sequence whose every document is shorter than `compress_rate` yields zero entries,
+        which is well-formed: the compressors then contribute nothing beyond their local window.
+        """
+        device = cu_seqlens.device
+        starts = cu_seqlens[:-1].to(torch.int64)
+        lengths = cu_seqlens[1:].to(torch.int64) - starts
+        counts = lengths // compress_rate
 
-    A packed sequence whose every document is shorter than `compress_rate` yields zero entries,
-    which is well-formed: the compressors then contribute nothing beyond their local window.
-    """
-    device = cu_seqlens.device
-    starts = cu_seqlens[:-1].to(torch.int64)
-    lengths = cu_seqlens[1:].to(torch.int64) - starts
-    counts = lengths // compress_rate
+        entry_doc = torch.repeat_interleave(torch.arange(counts.numel(), device=device), counts)
+        first_entry_of_doc = counts.cumsum(0) - counts
+        entry_local = torch.arange(int(counts.sum()), device=device) - first_entry_of_doc[entry_doc]
+        entry_pos = entry_local * compress_rate
+        src_idx = starts[entry_doc, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
 
-    entry_doc = torch.repeat_interleave(torch.arange(counts.numel(), device=device), counts)
-    first_entry_of_doc = counts.cumsum(0) - counts
-    entry_local = torch.arange(int(counts.sum()), device=device) - first_entry_of_doc[entry_doc]
-    entry_pos = entry_local * compress_rate
-    src_idx = starts[entry_doc, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
+        tokens = torch.arange(total_tokens, device=device)
+        doc_of_token = torch.searchsorted(cu_seqlens[1:].to(tokens.dtype), tokens, right=True)
 
-    tokens = torch.arange(total_tokens, device=device)
-    doc_of_token = torch.searchsorted(cu_seqlens[1:].to(tokens.dtype), tokens, right=True)
+        return cls(
+            src_idx=src_idx,
+            entry_doc=entry_doc,
+            entry_local=entry_local,
+            is_first=entry_local == 0,
+            entry_pos=entry_pos,
+            doc_of_token=doc_of_token,
+        )
 
-    return CompressionLayout(
-        src_idx=src_idx,
-        entry_doc=entry_doc,
-        entry_local=entry_local,
-        is_first=entry_local == 0,
-        entry_pos=entry_pos,
-        doc_of_token=doc_of_token,
-    )
+    def token_entry_causal_mask(self, threshold: Tensor) -> Tensor:
+        """`[batch, seq_len, n_entries]` bool: which compressed entries each query token may read.
+
+        Element `[b, t, e]` is true when query token `t` may read compressed entry `e`. Both of
+        these have to hold:
+
+        - `e` belongs to `t`'s own document, so no query reads another document's history;
+        - `e` closed before `t` arrived, i.e. its index within that document is below
+          `threshold[b, t]`, the count of entries the query's position has completed.
+
+        `threshold` is `[batch, seq_len]` and counts per document, so it is compared against
+        `entry_local` and not against the sequence-global entry number; those two coordinate
+        systems disagree for every document after the first.
+        """
+        same_document = self.doc_of_token[None, :, None] == self.entry_doc[None, None, :]
+        return same_document & (threshold.unsqueeze(-1) > self.entry_local[None, None, :])
 
 
 @dataclass(frozen=True)
@@ -240,27 +257,10 @@ class PackedContext:
             ),
             position_ids=position_ids,
             compression_layouts={
-                rate: build_compression_layout(cu_seqlens, rate, total_tokens) for rate in compress_rates
+                rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate, total_tokens=total_tokens)
+                for rate in compress_rates
             },
         )
-
-
-def get_token_entry_causal_mask(layout: CompressionLayout, threshold: Tensor) -> Tensor:
-    """`[batch, seq_len, n_entries]` bool: which compressed entries each query token may read.
-
-    Element `[b, t, e]` is true when query token `t` may read compressed entry `e`. Both of
-    these have to hold:
-
-    - `e` belongs to `t`'s own document, so no query reads another document's history;
-    - `e` closed before `t` arrived, i.e. its index within that document is below
-      `threshold[b, t]`, the count of entries the query's position has completed.
-
-    `threshold` is `[batch, seq_len]` and counts per document, so it is compared against
-    `layout.entry_local` and not against the sequence-global entry number; those two
-    coordinate systems disagree for every document after the first.
-    """
-    same_document = layout.doc_of_token[None, :, None] == layout.entry_doc[None, None, :]
-    return same_document & (threshold.unsqueeze(-1) > layout.entry_local[None, None, :])
 
 
 class DeepseekV4Compressor(nn.Module):
@@ -420,7 +420,7 @@ class DeepseekV4Indexer(nn.Module):
             return scores.topk(top_k, dim=-1).indices
 
         threshold = self.compressor.causal_threshold(position_ids)
-        readable = get_token_entry_causal_mask(layout, threshold).expand_as(scores)
+        readable = layout.token_entry_causal_mask(threshold).expand_as(scores)
         scores = scores.masked_fill(~readable, float("-inf"))
         top_k_indices = scores.topk(top_k, dim=-1).indices
         # An early query has fewer than `top_k` readable entries, so top-k still hands back
@@ -493,7 +493,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
         compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
-        readable = get_token_entry_causal_mask(layout, self.causal_threshold(position_ids)).unsqueeze(1)
+        readable = layout.token_entry_causal_mask(self.causal_threshold(position_ids)).unsqueeze(1)
         block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
         return compressed_kv, block_bias.masked_fill_(~readable, float("-inf"))
 
@@ -621,8 +621,6 @@ __all__ = [
     "DeepseekV4Indexer",
     "DeepseekV4IndexerScorer",
     "PackedContext",
-    "build_compression_layout",
     "build_sliding_window_mask",
     "eager_attention_with_sinks",
-    "get_token_entry_causal_mask",
 ]
