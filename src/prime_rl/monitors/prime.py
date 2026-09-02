@@ -15,17 +15,17 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 BASE_URL_VAR = "PRIME_API_BASE"
+# How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
+# default (300 s) is sized for eval sample batches; a crashed training process should
+# not linger that long, and a clean finish rarely has more than the last step queued.
+FINISH_TIMEOUT = 60.0
 
 
 def _base_url() -> str | None:
-    """$PRIME_API_BASE historically points at the RFT API root
-    (``.../api/v1/rft``); the SDK takes the platform base URL and appends
-    ``/api/v1`` itself, so strip what it re-adds. Unset means the SDK
-    resolves it (``~/.prime/config.json``, then the production default)."""
+    """$PRIME_API_BASE historically points at the RFT API root (``.../api/v1/rft``);
+    the SDK takes the platform base URL. Unset means the SDK resolves it."""
     base = os.getenv(BASE_URL_VAR)
-    if not base:
-        return None
-    return base.rstrip("/").removesuffix("/rft").removesuffix("/api/v1")
+    return base.rstrip("/").removesuffix("/rft") if base else None
 
 
 class PrimeMonitor(Monitor):
@@ -71,17 +71,16 @@ class PrimeMonitor(Monitor):
             # pre-SDK register sent for a config-less init.
             init_kwargs = {"name": self.config.name, "model": "unknown"}
 
-        # A configured monitor must work (see monitors.setup), so mode="online":
-        # a missing key ("set PRIME_API_KEY or run `prime login`") or a team
-        # outside the external-runs allowlist raises here instead of training
-        # silently untracked. $PRIME_RUNS_MODE=disabled stays the explicit
-        # opt-out, honoured because mode="online" would override it.
-        disabled = os.getenv(pr.MODE_ENV, "").strip().lower() == "disabled"
+        # A configured monitor must work (see monitors.setup), so the default is
+        # mode="online": a missing key or a team outside the external-runs allowlist
+        # raises here instead of training silently untracked. $PRIME_RUNS_MODE=disabled
+        # stays the explicit opt-out.
         self.run = await asyncio.to_thread(
             pr.init,
             kind="train",
-            mode="disabled" if disabled else "online",
+            mode=os.getenv(pr.MODE_ENV) or "online",
             base_url=_base_url(),
+            finish_timeout=FINISH_TIMEOUT,
             **init_kwargs,
         )
         if self.run.url:
@@ -96,9 +95,9 @@ class PrimeMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        # A queue put. The SDK stamps `_timestamp` on every row, so step=None
-        # rows (e.g. inference metrics) keep a time anchor.
-        self.run.log_metrics(metrics, step=step)
+        # A queue put that can block briefly under backpressure - off the loop. The SDK
+        # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
+        await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Only the trained cohort ships to the platform. The upload cadence
