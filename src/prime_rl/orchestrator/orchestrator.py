@@ -220,15 +220,8 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # The run identity every episode carries. With a platform run it is the platform's id,
-        # so Prime Traces can be queried by the run the dashboard shows; otherwise the
-        # launcher-set $PRL_RUN_ID (W&B keeps that either way), or a local one when standalone.
-        prime = monitors.get(monitors.PrimeMonitor)
-        self.run_id = (
-            prime.run.id
-            if isinstance(prime, monitors.PrimeMonitor) and prime.run.mode == "online"
-            else os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
-        )
+        # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
+        self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")

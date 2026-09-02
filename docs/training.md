@@ -384,7 +384,7 @@ Or set it in TOML:
 name = "my-experiment"
 ```
 
-The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. A process that exits without finishing is reported as crashed. Episodes are stamped with the platform run's id, so the run's traces can be queried by the id the dashboard shows; W&B keeps the launcher's `PRL_RUN_ID`.
+The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. A process that exits without finishing is reported as crashed. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
 
 Requires `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. A configured monitor must work: a missing key or a team outside the allowlist fails the launch. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
