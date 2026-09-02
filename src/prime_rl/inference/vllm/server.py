@@ -15,7 +15,6 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.vllm.worker_extension import worker_extension_class_path
 from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
@@ -55,6 +54,13 @@ def engine_client(request: Request) -> EngineClient:
 
 def models(request: Request) -> OpenAIServingModels:
     return request.app.state.openai_serving_models
+
+
+WORKER_EXTENSION_CLS = {
+    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+}
 
 
 @router.post("/pause")
@@ -224,7 +230,7 @@ def server(config: InferenceConfig):
     validate_parsed_serve_args(args)
 
     # Set the worker extension class based on the broadcast backend
-    args.worker_extension_cls = worker_extension_class_path(config.weight_broadcast.type, validate_import=True)
+    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

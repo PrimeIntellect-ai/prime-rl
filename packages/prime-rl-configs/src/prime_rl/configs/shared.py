@@ -192,12 +192,6 @@ class ClientConfig(BaseConfig):
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
 
-    @model_validator(mode="after")
-    def validate_admin_discovery(self):
-        if self.dynamo is not None and self.admin_base_url is not None:
-            raise ValueError("dynamo discovery cannot be combined with static admin_base_url")
-        return self
-
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
