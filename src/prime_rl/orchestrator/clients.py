@@ -14,6 +14,7 @@ from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attemp
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.inference.admin import AdminPlane
 from prime_rl.utils.logger import get_logger
 
 
@@ -107,9 +108,62 @@ class AdminClients:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
+    async def initialize_nccl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        await init_nccl_broadcast(
+            self.clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            quantize_in_weight_transfer,
+        )
+
+    async def initialize_nixl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        await init_nixl_broadcast(
+            self.clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            session_id,
+        )
+
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        *,
+        step: int = 0,
+        on_paused: Callable[[], None] | None = None,
+    ) -> None:
+        await update_weights(self.clients, weight_dir, step=step, on_paused=on_paused)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
+        await load_lora_adapter(self.clients, lora_name, lora_path)
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
+
+
+def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+    """Build the control plane for a policy inference deployment."""
+    return AdminClients(client_config)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:

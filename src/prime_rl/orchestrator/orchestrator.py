@@ -36,10 +36,11 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.inference.admin import AdminPlane
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -119,7 +120,7 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     clients: InferenceClient | None
-    admin_clients: AdminClients | None
+    admin_clients: AdminPlane | None
     sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -208,7 +209,7 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_clients = AdminClients(config.model.client)
+        self.admin_clients = setup_admin_plane(config.model.client, config.model.name)
 
         await monitors.setup(
             producer="orch",
@@ -307,7 +308,7 @@ class Orchestrator:
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
-            admin_clients=self.admin_clients.clients,
+            admin_plane=self.admin_clients,
             model_name=config.model.name,
         )
         await self.receiver.initialize()

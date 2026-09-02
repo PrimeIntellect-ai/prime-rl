@@ -6,7 +6,14 @@ import httpx
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.orchestrator.clients import _is_retryable_lora_error, check_health, load_lora_adapter, setup_client
+from prime_rl.orchestrator.clients import (
+    AdminClients,
+    _is_retryable_lora_error,
+    check_health,
+    load_lora_adapter,
+    setup_admin_plane,
+    setup_client,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -47,6 +54,22 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_admin_plane_owns_weight_update_dispatch():
+    admin_plane = setup_admin_plane(ClientConfig(), "test-model")
+    assert isinstance(admin_plane, AdminClients)
+
+    with patch("prime_rl.orchestrator.clients.update_weights", new=AsyncMock()) as update:
+        asyncio.run(admin_plane.update_weights(Path("/test/weights"), step=3))
+
+    update.assert_awaited_once_with(
+        admin_plane.clients,
+        Path("/test/weights"),
+        step=3,
+        on_paused=None,
+    )
+    asyncio.run(admin_plane.aclose())
 
 
 def test_setup_client_creates_renderer_client():

@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import final
 
 import torch.nn as nn
-from httpx import AsyncClient
 
 from prime_rl.configs.trainer import WeightBroadcastConfig
+from prime_rl.inference.admin import AdminPlane
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
@@ -115,19 +115,19 @@ class WeightReceiver(ABC):
     watcher, the orchestrator's startup rendezvous, and the evals process all
     drive the same object instead of hand-rolling transport branches. The
     engines' in-process receive hooks are its data plane, reached through the
-    admin clients."""
+    admin plane."""
 
     def __init__(
         self,
         broadcast_dir: Path,
         config: WeightBroadcastConfig,
-        admin_clients: list[AsyncClient],
+        admin_plane: AdminPlane,
         model_name: str,
     ) -> None:
         self.logger = get_logger()
         self.broadcast_dir = broadcast_dir
         self.config = config
-        self.admin_clients = admin_clients
+        self.admin_plane = admin_plane
         self.model_name = model_name
 
     async def initialize(self) -> None:

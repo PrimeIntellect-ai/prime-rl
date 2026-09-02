@@ -36,8 +36,9 @@ from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.evals.ckpt import CheckpointManager
+from prime_rl.inference.admin import AdminPlane
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -99,7 +100,7 @@ class Evals:
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
         self.clients: InferenceClient | None = None
-        self.admin_clients: AdminClients | None = None
+        self.admin_clients: AdminPlane | None = None
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
@@ -125,7 +126,7 @@ class Evals:
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.eval.client, model_name=config.model)
-        self.admin_clients = AdminClients(config.eval.client)
+        self.admin_clients = setup_admin_plane(config.eval.client, config.model)
 
         self.spawn_env_servers()
 
@@ -148,7 +149,7 @@ class Evals:
             self.receiver = setup_weight_receiver(
                 config.online.broadcasts_dir,
                 weight_broadcast,
-                admin_clients=self.admin_clients.clients,
+                admin_plane=self.admin_clients,
                 model_name=config.model,
             )
             await self.receiver.initialize()
