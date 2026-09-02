@@ -790,11 +790,10 @@ mark.hit {
 .tl-time { color: var(--grey-5); font-size: 11px; }
 .tl-time .muted { display: block; font-size: 9.5px; }
 .tl-outcome { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; font-size: 9.5px; }
-.tl-state, .tl-reward { border: 1px solid var(--grey-3); padding: 1px 5px; white-space: nowrap; }
+.tl-state { border: 1px solid var(--grey-3); padding: 1px 5px; white-space: nowrap; }
 .tl-state.completed { color: var(--positive); }
 .tl-state.failed { color: var(--negative); }
 .tl-state.running { color: var(--infra); }
-.tl-reward { color: var(--chart-3); }
 .tl-tooltip {
   position: fixed;
   z-index: 60;

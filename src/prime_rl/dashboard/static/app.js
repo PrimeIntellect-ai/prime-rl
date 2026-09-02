@@ -3278,8 +3278,7 @@ function timelineLaneHtml(lane, start, total) {
     `${model}</span></div>` +
     `<div class="tl-track">${grids}${spans}</div>` +
     `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
-    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
-    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span></div></div>`
   );
 }
 
