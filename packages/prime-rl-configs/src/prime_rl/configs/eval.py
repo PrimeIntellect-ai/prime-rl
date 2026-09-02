@@ -67,7 +67,7 @@ class EvalConfig(ServedEvalConfig):
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    output_dir: Path = Field(default_factory=default_output_dir, validation_alias=AliasChoices("output_dir", "o"))
+    output_dir: Path = Field(default_factory=default_output_dir)
     """Directory that groups related runs. Each run writes its artifacts (traces, logs,
     checkpoints) to ``output_dir / run.name``. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 

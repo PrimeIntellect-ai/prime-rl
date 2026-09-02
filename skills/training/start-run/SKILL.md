@@ -108,7 +108,7 @@ uv run eval @ eval.toml --run.name my-eval                        # multi-source
 uv run eval @ eval.toml --run.name my-eval --resume               # resume the interrupted run
 ```
 
-Shorthands (single-source runs): `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n` `num_examples`, `-r` `group_size`, `-m` `model`, `-o` `output_dir`, `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
+Shorthands (single-source runs): `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n` `num_examples`, `-r` `group_size`, `-m` `model`, `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
 
 Minimal multi-source `eval.toml`:
 

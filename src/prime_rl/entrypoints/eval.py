@@ -19,7 +19,7 @@ from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.process import set_proc_title
 
 USAGE = """\
-usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [-o DIR] [options]
+usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [options]
        uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
 

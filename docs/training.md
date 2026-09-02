@@ -275,7 +275,7 @@ uv run eval gsm8k -c 8 --env.agent.harness.id bash \
 uv run eval @ eval.toml --run.name my-eval                          # several [[source]] blocks
 ```
 
-Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block, `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, `-o` the output dir, and `-c N` pins the concurrency band. Against an endpoint without vLLM `/metrics` (an external API) the band must be pinned; against vLLM it adapts to KV usage like the orchestrator's. Multi-source runs use a TOML:
+Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block, `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band. Against an endpoint without vLLM `/metrics` (an external API) the band must be pinned; against vLLM it adapts to KV usage like the orchestrator's. Multi-source runs use a TOML:
 
 ```toml
 model = "Qwen/Qwen3-4B"

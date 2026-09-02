@@ -14,21 +14,24 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
 from prime_cli.core.config import Config as PrimeConfig
-from verifiers.v1.utils.platform import build_samples, credentials, json_bytes, run_metrics
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.platform import (
+    API_KEY_VAR,
+    EMPTY_SAMPLES_PAYLOAD_BYTES,
+    MAX_SAMPLES_PAYLOAD_BYTES,
+    build_samples,
+    credentials,
+    json_bytes,
+    run_metrics,
+)
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import sanitize
 
 BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
 BASE_URL_VAR = "PRIME_API_BASE"
-API_KEY_VAR = "PRIME_API_KEY"
-
-# Repeated /samples posts append; match the platform's request ceiling.
-MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
-EMPTY_SAMPLES_PAYLOAD_BYTES = len(b'{"samples":[]}')
 
 SAMPLE_SCHEMA = pa.schema(
     [

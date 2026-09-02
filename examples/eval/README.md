@@ -4,7 +4,7 @@ Each file is a complete `uv run eval @ examples/eval/<name>.toml` run against Pr
 (`PRIME_API_KEY`, pinned concurrency since external APIs expose no vLLM metrics). Point
 `[client]` at a local `uv run inference` server and drop the `[concurrency]` pin to let the band
 adapt. `uv run eval -h` lists the single-source shorthands (`<taskset-id>`, `--env.<field>`,
-`-n`, `-r`, `-c`, `-m`, `-o`).
+`-n`, `-r`, `-c`, `-m`).
 
 | File | Shows |
 |---|---|
