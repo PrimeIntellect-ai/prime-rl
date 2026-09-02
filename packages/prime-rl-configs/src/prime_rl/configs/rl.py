@@ -478,6 +478,8 @@ class RLConfig(BaseConfig):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
+                else self.deployment.num_infer_gpus
+                if self.deployment.type == "single_node"
                 else 1
             )
             common_config = dict(
