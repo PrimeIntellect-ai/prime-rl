@@ -37,6 +37,11 @@ class FileMonitorConfig(BaseConfig):
     plain text). Sealed chunks use seekable frames: a reader still lands on one line,
     and ``zstd -dcf stream/* | jq`` reads a whole stream."""
 
+    float_decimals: int | None = 4
+    """Decimals kept for per-token float streams (logprobs, entropies, advantages) in
+    trace and annotation records; ``None`` keeps every digit. Training reads the wire,
+    not the records, so this only trades record size against overlay precision."""
+
 
 class PrimeMonitorConfig(BaseConfig):
     name: str | None = None

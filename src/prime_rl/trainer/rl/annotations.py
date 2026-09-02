@@ -10,10 +10,6 @@ from torch import Tensor
 from prime_rl import monitors
 from prime_rl.monitors.file.traces.update import make_update
 
-RECORD_FLOAT_DECIMALS = 4
-"""The precision verifiers gives per-token floats in a record
-(``verifiers.v1.graph.RECORD_FLOAT_DECIMALS``); the trainer does not import verifiers."""
-
 
 class AnnotationWriter:
     """Collects the trainer's per-token streams (recomputed logprobs, entropies) during
@@ -27,8 +23,9 @@ class AnnotationWriter:
     records to rank 0, the only rank running monitors. CP ranks past the first
     accumulate nothing since they share their micro batches."""
 
-    def __init__(self, parallel_dims: Any, world: Any) -> None:
+    def __init__(self, parallel_dims: Any, world: Any, float_decimals: int | None) -> None:
         self.world = world
+        self.float_decimals = float_decimals
         self.is_duplicate_rank = parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0
         self._pending: list[dict[str, Any]] = []
 
@@ -42,8 +39,8 @@ class AnnotationWriter:
         sequence_lengths = micro_batch["sequence_lengths"]
         loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
         env_names = micro_batch["env_names"]
-        trainer_logprobs = _tensor_to_floats(model_output["logprobs"])
-        entropies = _tensor_to_floats(model_output["entropy"])
+        trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
+        entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
 
         start = 0
         for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
@@ -84,8 +81,10 @@ class AnnotationWriter:
         asyncio.run(monitors.log_annotations(records))
 
 
-def _tensor_to_floats(tensor: Tensor) -> list[float | None]:
+def _tensor_to_floats(tensor: Tensor, decimals: int | None) -> list[float | None]:
     """Rounded like the record's own logprobs: the streams only ever colour an overlay,
     and full-precision digits are the least compressible bytes a run writes."""
     values = tensor.detach().to(dtype=torch.float32, device="cpu").reshape(-1).tolist()
-    return [round(value, RECORD_FLOAT_DECIMALS) if math.isfinite(value) else None for value in values]
+    if decimals is None:
+        return [value if math.isfinite(value) else None for value in values]
+    return [round(value, decimals) if math.isfinite(value) else None for value in values]

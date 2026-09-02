@@ -182,7 +182,7 @@ cheap: a consumer browses them instead of the streams, and seeks by the chunk an
 offset they carry to read a single episode or its token streams. Both are derived, so
 deleting them only costs a reader the work of rebuilding what it needs. The stream
 holds native `vf.Episode` records (training tensors excluded; per-token floats rounded
-to 4 decimals), one line per episode in arrival order, whatever kind of work it did —
+to `monitors.file.float_decimals`, 4 by default), one line per episode in arrival order, whatever kind of work it did —
 including trace-less failures, curriculum-rejected work, and work that never enters a
 batch, so it is crash-durable. Each record carries its provenance: `env` (`id` plus the
 orchestrator's `name`), full `task`, `group` (`id`), and `run`.

@@ -79,7 +79,7 @@ class FileMonitor(Monitor):
             # while it is already in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
             for episode in episodes:
-                record = episode.to_record()
+                record = episode.to_record(float_decimals=self.config.float_decimals)
                 chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
                 self._logged += 1
                 index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))

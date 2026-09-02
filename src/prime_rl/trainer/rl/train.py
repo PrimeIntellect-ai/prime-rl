@@ -258,7 +258,9 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    annotation_writer = AnnotationWriter(parallel_dims, world)
+    annotation_writer = AnnotationWriter(
+        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
