@@ -154,7 +154,7 @@ All metrics print to the console log (and W&B when configured).
 
 The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window and reports stale, errored, and no-signal counts.
 
-`orchestrator.constant_trainer_batch_size` defaults to `true`. It replaces samples removed by zero-advantage filtering. Set it to `false` for faster collection with variable trainer batch sizes.
+`orchestrator.constant_trainer_batch_size` defaults to `true`. It keeps each rollout batch at `orchestrator.batch_size` effective episodes. Set it to `false` for faster collection with variable trainer batch sizes.
 
 For live vLLM stats, query Prometheus directly:
 

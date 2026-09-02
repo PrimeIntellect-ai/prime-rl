@@ -293,7 +293,7 @@ class TrainSink:
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
-            if self.config.train.filter_zero_advantages and self.config.constant_trainer_batch_size:
+            if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
@@ -383,7 +383,7 @@ class TrainSink:
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
-        if self.config.train.filter_zero_advantages and not self.config.constant_trainer_batch_size:
+        if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
                 trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
                 for trace_id, samples in selected
