@@ -232,6 +232,12 @@
       <div class="seg" id="tm-view">
         <button data-view="transcript" class="active">Transcript</button>
         <button data-view="timeline">Timeline</button>
+        <button data-view="semantic">Semantic</button>
+      </div>
+      <div id="tm-semantic-nav" class="tm-semantic-nav" hidden>
+        <button id="tm-episode-prev" class="btn tm-nav" title="previous episode">‹</button>
+        <span id="tm-episode-label"></span>
+        <button id="tm-episode-next" class="btn tm-nav" title="next episode">›</button>
       </div>
       <div class="spacer"></div>
       <div class="seg" id="trace-view-mode">
@@ -258,6 +264,14 @@
     </div>
     <div id="tm-messages"></div>
     <div id="tm-timeline" hidden></div>
+    <aside id="sg-inspector" hidden>
+      <div class="sg-inspector-head">
+        <span id="sg-inspector-title">Model call</span>
+        <button id="sg-inspector-close" class="btn" title="close inspector">✕</button>
+      </div>
+      <div id="sg-inspector-body"></div>
+      <button id="sg-open-transcript" class="btn">open in transcript</button>
+    </aside>
   </section>
   <aside id="tm-right">
     <div class="tm-head"><span class="tm-title">Overview</span></div>

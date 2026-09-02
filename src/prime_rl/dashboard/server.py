@@ -991,6 +991,7 @@ def timeline_lane(
             "total_input_tokens": total_input_tokens,
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
+            "latest_context_tokens": context_lengths[-1] if context_lengths else None,
             "max_context_tokens": max(context_lengths, default=None),
             "total_tokens": total_tokens,
             "cost": total("cost"),
@@ -999,8 +1000,237 @@ def timeline_lane(
     }
 
 
+def trace_semantic_edges(trace: dict, trace_index: int) -> list[dict]:
+    """Resolve persisted ``MessageNode.semantic_parents`` into timeline edges."""
+    nodes = trace.get("nodes") or []
+    call_order = {
+        node_index: call_index
+        for call_index, call in enumerate(trace.get("calls") or [])
+        if isinstance((node_index := call.get("node")), int) and 0 <= node_index < len(nodes)
+    }
+    call_nodes = set(call_order)
+    edges = []
+    for target_node, node in enumerate(nodes):
+        if target_node not in call_nodes:
+            continue
+        for link in node.get("semantic_parents") or []:
+            source_node = link.get("node")
+            edge_type = link.get("type")
+            if source_node not in call_nodes or not isinstance(edge_type, str):
+                continue
+            edges.append(
+                {
+                    "trace_index": trace_index,
+                    "source_node": source_node,
+                    "target_node": target_node,
+                    "type": edge_type,
+                }
+            )
+    if not edges:
+        return []
+
+    incoming = {edge["target_node"] for edge in edges}
+    for target_node in sorted(call_nodes - incoming, key=call_order.get):
+        source_node = physical_continuation_source(nodes, call_nodes, target_node)
+        if source_node is None or call_order[source_node] >= call_order[target_node]:
+            continue
+        edges.append(
+            {
+                "trace_index": trace_index,
+                "source_node": source_node,
+                "target_node": target_node,
+                "type": "continuation",
+                "inferred": True,
+            }
+        )
+    return edges
+
+
+def physical_continuation_source(nodes: list[dict], call_nodes: set[int], target_node: int) -> int | None:
+    """Recover a missing continuation only from a completed tool round-trip."""
+    between = []
+    visited = {target_node}
+    cursor = nodes[target_node].get("parent")
+    while isinstance(cursor, int) and 0 <= cursor < len(nodes) and cursor not in visited:
+        if cursor in call_nodes:
+            source_node = cursor
+            break
+        visited.add(cursor)
+        between.append(cursor)
+        cursor = nodes[cursor].get("parent")
+    else:
+        return None
+
+    source_message = nodes[source_node].get("message") or {}
+    tool_call_ids = {
+        tool_call.get("id")
+        for tool_call in source_message.get("tool_calls") or []
+        if isinstance(tool_call, dict) and isinstance(tool_call.get("id"), str)
+    }
+    if not tool_call_ids or not between:
+        return None
+    for node_index in between:
+        message = nodes[node_index].get("message") or {}
+        if message.get("role") != "tool" or message.get("tool_call_id") not in tool_call_ids:
+            return None
+    return source_node
+
+
+def semantic_context_lanes(
+    trace: dict,
+    trace_index: int,
+    role: str,
+    edges: list[dict],
+) -> list[dict]:
+    """Project continuation components as execution-context timeline lanes.
+
+    ``continuation`` keeps calls in one context. ``subagent_call`` creates a child
+    agent, while ``compaction`` starts a new context for the same agent. Other edge
+    labels remain visible but do not invent session semantics.
+    """
+    nodes = trace.get("nodes") or []
+    call_nodes = {
+        node_index
+        for call in trace.get("calls") or []
+        if isinstance((node_index := call.get("node")), int) and 0 <= node_index < len(nodes)
+    }
+    if not call_nodes or not edges:
+        return []
+
+    representatives = {node_index: node_index for node_index in call_nodes}
+
+    def find(node_index: int) -> int:
+        while representatives[node_index] != node_index:
+            representatives[node_index] = representatives[representatives[node_index]]
+            node_index = representatives[node_index]
+        return node_index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            representatives[right_root] = left_root
+
+    for edge in edges:
+        if edge["type"] == "continuation":
+            union(edge["source_node"], edge["target_node"])
+
+    components: dict[int, set[int]] = {}
+    for node_index in call_nodes:
+        components.setdefault(find(node_index), set()).add(node_index)
+    component_for = {
+        node_index: component for component, node_indexes in components.items() for node_index in node_indexes
+    }
+
+    component_activities = {
+        component: activity_spans(trace, node_indexes) for component, node_indexes in components.items()
+    }
+
+    def component_start(component: int) -> float:
+        activities = component_activities[component]
+        starts = [span["started_at"] for span in activities if span["started_at"] is not None]
+        timestamps = [
+            nodes[node_index].get("timestamp")
+            for node_index in components[component]
+            if nodes[node_index].get("timestamp") is not None
+        ]
+        return min(starts or timestamps, default=float("inf"))
+
+    ordered_components = sorted(components, key=lambda component: (component_start(component), component))
+    cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
+    created_components = {
+        component_for[edge["target_node"]] for edge in cross_edges if edge["type"] in {"subagent_call", "compaction"}
+    }
+    root_components = [component for component in ordered_components if component not in created_components]
+
+    # component -> (agent label, depth, context index)
+    identities: dict[int, tuple[str, int, int]] = {}
+    unlinked_components = set()
+    if root_components:
+        identities[root_components[0]] = (role, 0, 0)
+        for index, component in enumerate(root_components[1:], start=1):
+            identities[component] = (f"unlinked {index}", 0, 0)
+            unlinked_components.add(component)
+
+    subagent_number = 0
+    changed = True
+    while changed:
+        changed = False
+        for edge in cross_edges:
+            source = component_for[edge["source_node"]]
+            target = component_for[edge["target_node"]]
+            if source not in identities or target in identities:
+                continue
+            agent_label, depth, context_index = identities[source]
+            if edge["type"] == "subagent_call":
+                subagent_number += 1
+                identities[target] = (f"subagent {subagent_number}", depth + 1, 0)
+            elif edge["type"] == "compaction":
+                identities[target] = (agent_label, depth, context_index + 1)
+            else:
+                continue
+            changed = True
+
+    unlinked_index = len(unlinked_components)
+    for component in ordered_components:
+        if component not in identities:
+            unlinked_index += 1
+            identities[component] = (f"unlinked {unlinked_index}", 0, 0)
+            unlinked_components.add(component)
+
+    lanes = []
+    for component in ordered_components:
+        agent_label, depth, context_index = identities[component]
+        activities = component_activities[component]
+        start = component_start(component)
+        end = max(
+            [span["ended_at"] for span in activities if span.get("ended_at") is not None]
+            + [
+                nodes[node_index].get("timestamp")
+                for node_index in components[component]
+                if nodes[node_index].get("timestamp") is not None
+            ],
+            default=None,
+        )
+        completed = bool(trace.get("is_completed"))
+        label = f"{agent_label} · context {context_index}"
+        lifecycle = (
+            [
+                {
+                    "kind": "agent",
+                    "label": label,
+                    "track": "lifecycle",
+                    "started_at": start,
+                    "ended_at": end if completed else None,
+                    "status": "completed" if completed else "running",
+                }
+            ]
+            if start != float("inf")
+            else []
+        )
+        lane = timeline_lane(
+            trace,
+            trace_index,
+            label=label,
+            depth=depth + 1,
+            branch=True,
+            lifecycle=lifecycle,
+            activities=activities,
+        )
+        lane["context"] = {
+            "agent": agent_label,
+            "index": context_index,
+        }
+        if component in unlinked_components:
+            lane["context"]["unlinked"] = True
+        lanes.append(lane)
+    return lanes
+
+
 def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
+    semantic_lane_groups = []
+    semantic_edges = []
     for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
         branch_paths = branch_node_paths(nodes)
@@ -1085,9 +1315,22 @@ def project_episode_timeline(episode: dict) -> dict:
             )
         branches.sort(key=lambda item: (item[0] if item[0] is not None else float("inf"), item[1]))
         lane_groups.append((parent, [lane for _, _, lane in branches]))
+        trace_edges = trace_semantic_edges(trace, trace_index)
+        semantic_lanes = semantic_context_lanes(trace, trace_index, role, trace_edges)
+        if semantic_lanes:
+            semantic_lane_groups.append((parent, semantic_lanes))
+            semantic_edges.extend(trace_edges)
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
-    return {"lanes": lanes}
+    semantic_lane_groups.sort(
+        key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf")
+    )
+    semantic_lanes = [lane for parent, children in semantic_lane_groups for lane in (parent, *children)]
+    return {
+        "lanes": lanes,
+        "semantic_lanes": semantic_lanes,
+        "semantic_edges": semantic_edges,
+    }
 
 
 NICE_BINS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]

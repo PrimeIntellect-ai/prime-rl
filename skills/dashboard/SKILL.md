@@ -15,6 +15,22 @@ The Config and Logs views default to `latest (attempt <n>)`. Select an attempt
 to inspect the immutable config or log files from an earlier launch. The Config
 view shows a copyable launch command above the launch TOML or resolved JSON.
 
+The trace viewer has separate **Transcript**, **Timeline**, and **Semantic**
+views. Timeline is a wall-clock Gantt of physical prefix branches. Semantic
+projects Verifiers `MessageNode.semantic_parents` as a top-to-bottom causal
+graph of model calls, including subagent calls, returns, compactions, and custom
+edge types. Calls occupy compact causal ranks within bounded agent lanes: the
+root stays centered, concurrent children fan out symmetrically, and child slots
+are reused after return, so graph width reflects peak agent concurrency rather
+than total subagents. Compaction starts a visibly separate context segment.
+For display only, a missing continuation is recovered when the physical parent
+chain proves a completed tool round-trip; fragments that still cannot be placed
+are shown explicitly as unlinked instead of being presented as contexts.
+Hover or click an agent or context label to see its latest and peak prompt
+lengths first, followed by cumulative token processing and cost. Exact timing
+remains available on model-call hover and in Timeline. Traces without semantic
+parents keep the other views and disable Semantic.
+
 Every dashboard instance serves the dirs it was started with **plus** every dir
 in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`, re-read
 live). Launchers (`rl`, `sft`) register their output dir on every
