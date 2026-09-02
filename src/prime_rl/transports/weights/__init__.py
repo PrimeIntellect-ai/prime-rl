@@ -46,6 +46,10 @@ def setup_weight_receiver(
     use_collective_rpc: bool = False,
     topology_guard: Callable[[], Awaitable[None]] | None = None,
 ) -> WeightReceiver:
+    if config.type != "nccl" and (
+        worker_world_sizes is not None or use_collective_rpc or topology_guard is not None
+    ):
+        raise ValueError("Dynamo discovery requires the NCCL weight receiver")
     if config.type == "nccl":
         return NCCLWeightReceiver(
             broadcast_dir,

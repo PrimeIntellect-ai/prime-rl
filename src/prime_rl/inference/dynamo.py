@@ -246,9 +246,29 @@ class DynamoAdminClients:
     async def ensure_topology_current(self) -> None:
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        workers = await self._discover()
-        if topology_fingerprint(workers) != self._fingerprint:
-            raise RuntimeError("Dynamo worker topology changed after initialization")
+        previous_changed_fingerprint: tuple[tuple[object, ...], ...] | None = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                workers = await self._discover()
+                fingerprint = topology_fingerprint(workers)
+                if fingerprint == self._fingerprint:
+                    return
+                if fingerprint == previous_changed_fingerprint:
+                    raise RuntimeError("Dynamo worker topology changed after initialization")
+                previous_changed_fingerprint = fingerprint
+                last_error = None
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code < 500:
+                    raise
+                last_error = error
+            except (DynamoDiscoveryPending, httpx.TransportError) as error:
+                last_error = error
+            if attempt < 2:
+                await asyncio.sleep(self._poll_interval)
+        if last_error is not None:
+            raise RuntimeError("Could not verify the pinned Dynamo topology") from last_error
+        raise RuntimeError("Dynamo topology changed but could not be confirmed")
 
     async def aclose(self) -> None:
         unique_clients = {id(client): client for client in [*self._frontend_clients, *self.clients]}

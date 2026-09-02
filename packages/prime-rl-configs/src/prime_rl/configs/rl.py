@@ -314,6 +314,21 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
+    @model_validator(mode="before")
+    @classmethod
+    def propagate_explicit_weight_broadcast_to_dynamo_orchestrator(cls, data):
+        if not isinstance(data, dict) or not isinstance(data.get("orchestrator"), dict):
+            return data
+        orchestrator = data["orchestrator"]
+        model = orchestrator.get("model")
+        client = model.get("client") if isinstance(model, dict) else None
+        if not isinstance(client, dict) or client.get("dynamo") is None:
+            return data
+        weight_broadcast = data.get("weight_broadcast")
+        if weight_broadcast is None or "weight_broadcast" in orchestrator:
+            return data
+        return {**data, "orchestrator": {**orchestrator, "weight_broadcast": weight_broadcast}}
+
     @model_validator(mode="after")
     def auto_setup_infer_nodes(self):
         if self.deployment.type != "multi_node":
