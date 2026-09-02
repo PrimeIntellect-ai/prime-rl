@@ -101,11 +101,11 @@ def resolve_dtensors(
 
 
 # TODO: NCCL broadcast does not yet work for DeepSeek V4. It needs the wire re-quantization the
-# filesystem sender gets from `quantize_state_dict_for_transfer`, and it needs one defect fixed
-# here first: `preprocess_layer_checkpoint` below decides the state-dict format from the per-layer
-# bucket instead of the model's full key set. The "Not implemented" list in
+# filesystem sender gets from `quantize_state_dict_for_transfer`. The "Not implemented" list in
 # `prime_rl/trainer/models/deepseek_v4/quantize.py` spells that out, plus the receiver-side
-# blockers.
+# blockers. `preprocess_layer_checkpoint` deciding the format from each bucket rather than the
+# model's full key set is no longer fatal here, but it is still why `is_prime_state_dict` has to
+# carry a non-layer clause.
 def preprocess_layer_checkpoint(
     model: nn.Module,
     layer_state_dict: dict[str, Tensor],

@@ -203,8 +203,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         """Convert to HF format, carrying any pre-quantized scale to its on-disk `.scale` sibling.
 
         A scale produced by `quantize_shard_for_weight_transfer` arrives under its weight's own
-        key, and has to follow that weight through the expert unstack and the `mlp.` -> `ffn.`
-        rename. That is exactly the chain the weight itself runs, so the scales are run through
+        key, and has to follow that weight through the expert unstack and on into the on-disk
+        naming. That is exactly the chain the weight itself runs, so the scales are run through
         it a second time under the borrowed weight keys and renamed at the end. Teaching the
         chain about paired tensors instead was rejected on purpose: `Stack` and the other
         `ConvOp`s are one-key-in, one-key-out, and every model pays for that generality.

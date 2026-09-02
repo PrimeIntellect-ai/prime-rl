@@ -75,14 +75,13 @@ conversions between per-key HF and PrimeRL names, whereas these passes merge and
 
 Not implemented, and not to be inferred as working:
 
-- **NCCL broadcast, sender bug (fatal).** `preprocess_layer_checkpoint`
-  (`prime_rl/transports/weights/nccl.py`) evaluates `is_prime_state_dict` on the per-layer
-  bucket. DeepSeek V4's predicate matches `mlp.router.gate.weight` / `mlp.shared_expert.`,
-  neither of which is in the non-layer bucket, so that bucket falls through to
-  `transformers.core_model_loading.revert_weight_conversion`. `model.hc_head.hc_fn` /
-  `hc_base` / `hc_scale` then reach vLLM unrenamed and `KeyError` at step 0. The fix is to
-  decide from the model's full key set, as `prime_rl.utils.weights.convert_state_dict_to_hf`
-  already does.
+- **NCCL broadcast, no re-quantization.** Nothing in `prime_rl/transports/weights/nccl.py`
+  calls `quantize_state_dict_for_transfer`, so the routed experts and the fp8 linears go out
+  bf16 into parameters vLLM built for MXFP4 and fp8, which is the defect this module exists
+  to keep off the wire. The receiver side can take it: the metadata is pickled per broadcast,
+  so an added `.scale` key needs no agreement ahead of time, and vLLM's own mapper already
+  renames those siblings. `int8` broadcasts natively; a `float8_e8m0fnu` scale does not, and
+  would need the same `uint8` view `prime_rl.utils.weights._all_gather_shard_like` uses.
 - **NCCL broadcast, `moe_backend` and `data_parallel_size`.** `moe_backend` must stay
   `"auto"`: `deep_gemm_mega_moe` selects `DeepseekV4MegaMoEExperts`, whose `finalize_weights`
   nulls the expert weights and early-returns forever after, so a second `load_weights`
