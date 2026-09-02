@@ -476,6 +476,27 @@ def test_dynamo_discovery_rejects_non_nccl_weight_broadcast():
         )
 
 
+def test_standalone_orchestrator_rejects_dynamo_with_non_nccl_weight_broadcast():
+    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "default"},
+                "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
+                "weight_broadcast": {"type": "filesystem"},
+            }
+        )
+
+
+def test_standalone_orchestrator_rejects_dynamo_with_default_weight_broadcast():
+    with pytest.raises(ValidationError, match="Dynamo discovery requires weight_broadcast.type = 'nccl'"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "default"},
+                "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}},
+            }
+        )
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {

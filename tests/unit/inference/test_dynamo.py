@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from prime_rl.configs.shared import ClientConfig
@@ -9,6 +10,14 @@ from prime_rl.inference.dynamo import (
     DynamoDiscoveryPending,
     parse_dynamo_workers,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_worker_extension_validation(monkeypatch):
+    monkeypatch.setattr(
+        "prime_rl.inference.dynamo.worker_extension_class_path",
+        lambda *_args, **_kwargs: "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
+    )
 
 
 def worker(instance_id: int, *, admin_base_url: str, world_size: int, model: str = "Qwen/Qwen3-0.6B") -> dict:
@@ -113,7 +122,7 @@ def test_dynamo_admin_clients_fail_closed_on_topology_drift(monkeypatch):
         snapshot(worker(2, admin_base_url="http://worker-2:8120", world_size=1)),
         "Qwen/Qwen3-0.6B",
     )
-    discover = AsyncMock(side_effect=[pinned, pinned, changed])
+    discover = AsyncMock(side_effect=[pinned, pinned, changed, changed])
     monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
     config = ClientConfig(
         base_url="http://dynamo-frontend:8000/v1",
@@ -131,4 +140,60 @@ def test_dynamo_admin_clients_fail_closed_on_topology_drift(monkeypatch):
         with pytest.raises(RuntimeError, match="topology changed"):
             asyncio.run(admin.ensure_topology_current())
 
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_clients_retry_transient_topology_probe(monkeypatch):
+    pinned = parse_dynamo_workers(
+        snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
+        "Qwen/Qwen3-0.6B",
+    )
+    discover = AsyncMock(side_effect=[pinned, pinned, httpx.ConnectError("temporary discovery failure"), pinned])
+    monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
+    config = ClientConfig(
+        base_url="http://dynamo-frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://dynamo-frontend:8001"},
+    )
+    admin = DynamoAdminClients(config, "Qwen/Qwen3-0.6B", poll_interval=0)
+
+    with (
+        patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()),
+    ):
+        asyncio.run(admin.wait_for_ready("Qwen/Qwen3-0.6B"))
+        asyncio.run(admin.ensure_topology_current())
+
+    assert discover.await_count == 4
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_clients_ignore_unconfirmed_topology_drift(monkeypatch):
+    pinned = parse_dynamo_workers(
+        snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
+        "Qwen/Qwen3-0.6B",
+    )
+    changed = parse_dynamo_workers(
+        snapshot(worker(2, admin_base_url="http://worker-2:8120", world_size=1)),
+        "Qwen/Qwen3-0.6B",
+    )
+    discover = AsyncMock(side_effect=[pinned, pinned, changed, pinned])
+    monkeypatch.setattr("prime_rl.inference.dynamo.discover_dynamo_workers", discover)
+    config = ClientConfig(
+        base_url="http://dynamo-frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://dynamo-frontend:8001"},
+    )
+    admin = DynamoAdminClients(config, "Qwen/Qwen3-0.6B", poll_interval=0)
+
+    with (
+        patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()),
+    ):
+        asyncio.run(admin.wait_for_ready("Qwen/Qwen3-0.6B"))
+        asyncio.run(admin.ensure_topology_current())
+
+    assert discover.await_count == 4
     asyncio.run(admin.aclose())
