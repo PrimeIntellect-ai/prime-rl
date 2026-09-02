@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl runs — the `rl`, `sft`, `inference`, `evals`, and `online-evals` entrypoints, their config classes, CLI shorthands, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
 ---
 
 # Start a run
@@ -97,40 +97,58 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## `evals` — multi-env evals
 
-Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
+Runs one epoch of every configured eval source against a live inference server, then exits. The evals process spawns one env server per source (unless the source sets `serve.address`), sizes concurrency with the same adaptive controller as `[orchestrator.concurrency]`, streams every episode through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and checkpoints the task cursor after every completed group so an interrupted run resumes with `--resume`.
 
 ```bash
-uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
-uv run evals @ eval.toml
+uv run inference --vllm.model Qwen/Qwen3-4B                      # start inference separately
+uv run evals gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B                    # single source via shorthands
+uv run evals gsm8k -c 4 --env.agent.harness.id bash \
+  --client.base_url https://api.pinference.ai/api/v1 --client.api_key_var PRIME_API_KEY
+uv run evals @ eval.toml --run.name my-eval                        # multi-source TOML
+uv run evals @ eval.toml --run.name my-eval --resume               # resume the interrupted run
 ```
 
-Minimal standalone `eval.toml`:
+Shorthands (single-source runs): `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n` `num_examples`, `-r` `group_size`, `-m` `model`, `-o` `output_dir`, `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run evals -h` lists them.
+
+Minimal multi-source `eval.toml`:
 
 ```toml
 model = "Qwen/Qwen3-4B"
-
-[eval.client]
-base_url = "http://localhost:8000/v1"
-
-[eval.concurrency]  # adaptive; same controller as [orchestrator.concurrency]
-min_inflight = 8
-max_inflight = 128
-
-[[eval.source]]
 num_examples = 32   # always cap eval size for smokes
 group_size = 4
+
+[client]
+base_url = "http://localhost:8000/v1"
+
+[concurrency]       # adaptive against vLLM; pin with min_inflight = max_inflight
+max_inflight = 128
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "bash"
+
+[[source]]
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[ckpt]               # optional: make a standalone eval resumable
-interval = 10        # completed task groups between cursor saves
+[monitors.prime]    # optional: upload each source's epoch as a platform evaluation
 ```
 
-- Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/latest/envs/eval/{name}.log`.
-- External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
+- Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`); `configs/attempt_N/`, `logs/attempt_N/{evals.log,envs/eval/<name>.log}`, `monitors/file/`, `checkpoints/step_<cursor>/evals/progress.pt` (only the newest kept). `--clean` wipes a used run dir, `--dry-run` writes the config and exits, `--no-dashboard` skips the dashboard daemon.
+- Resume: cursor checkpoints are on by default (`[ckpt]`, `interval` counts completed task groups, `keep_last` prunes older cursors). Relaunch with the same `--run.name` and `--resume` (or `--resume.step N` / `--resume.dir path/to/checkpoints/step_N`) to skip the completed prefix; partially completed groups are retried. Disable saving with `--no-ckpt`.
+- Env servers: spawned by the evals process at `tcp://127.0.0.1:<env_server_base_port + index>`; logs at `{run_dir}/logs/latest/envs/eval/{name}.log`.
+- External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`-c N`). Examples: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2, `agent.timeout.rollout = 3600`), `examples/evals/{gsm8k,wordle,agentic-judge}.toml`.
+- Platform: `--monitors.prime` (needs `PRIME_API_KEY` or `prime login`) creates one evaluation per source on app.primeintellect.ai once its epoch finishes and logs the URL.
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
-- Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
+- Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`, shared engine `src/prime_rl/evals/runner.py`)
+
+## `online-evals` — SFT online evals
+
+Spawned by the `sft` launcher next to the trainer when the SFT config has an `[eval]` block: watches `broadcasts/step_{n}` for the trainer's weight broadcasts, moves the inference server onto each one, and runs the due sources against the updated weights (config `OnlineEvalsConfig` = the SFT `[eval]` block + `model`, `broadcasts_dir`, `max_steps`, `resume_step`, `weight_broadcast`). Launcher-managed SFT evals use NCCL weight broadcast by default; LoRA and external inference use filesystem broadcast. By default a newer checkpoint cancels unfinished episodes from the prior eval; set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. With `weight_broadcast.type = "filesystem"` the process also runs standalone (`uv run online-evals @ online_evals.toml`) against any trainer that writes `broadcasts/step_{n}` with the broadcast markers. No cursor checkpoints: the process is coupled to the trainer's live broadcast lifecycle. Logs at `{run_dir}/logs/latest/online-evals.log`.
+
+- Config: `OnlineEvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
+- Entrypoint: `src/prime_rl/entrypoints/online_evals.py` (implementation: `src/prime_rl/evals/online.py`)
 
 ## Exporting checkpoints
 
@@ -143,7 +161,8 @@ Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). 
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
-| `evals` | Multi-env evals | Standalone evals / SFT online evals |
+| `evals` | Multi-env evals against a live server | Offline evals |
+| `online-evals` | Evals per weight broadcast | SFT online evals (launcher-spawned) |
 
 ## Key paths
 

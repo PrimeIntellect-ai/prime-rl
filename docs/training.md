@@ -17,6 +17,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
+- [Evals](#evals)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
@@ -37,6 +38,8 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
+| `uv run evals` | Multi-env evals against a live inference server. | One epoch per source, adaptive concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Evals](#evals). |
+| `uv run online-evals` | Evals per trainer weight broadcast. | Spawned by `uv run sft` for [Online Evals](#online-evals); standalone only with filesystem broadcasts. |
 | `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at a derived loopback address); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
 ## RL Trainer
@@ -201,17 +204,17 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the evals process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env server per eval source, and an `online-evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-evals process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and evals process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and online-evals process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
 type = "multi_node"
 num_train_nodes = 2  # trainer nodes
-num_infer_nodes = 1  # inference pool + evals
+num_infer_nodes = 1  # inference pool + online evals
 
 [inference.vllm]
 tensor_parallel_size = 8
@@ -220,7 +223,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The shared script passes the trainer rank-0 hostname directly to the evals process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, evals never sees a final broadcast, so the job remains active until walltime. Trainer and evals log to one shared W&B run. The trainer creates it, and evals finalizes it.
+The shared script passes the trainer rank-0 hostname directly to the online-evals process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, online-evals never sees a final broadcast, so the job remains active until walltime. Trainer and online-evals log to one shared W&B run. The trainer creates it, and online-evals finalizes it.
 
 ### SFT-Specific Knobs
 
@@ -259,6 +262,41 @@ Pulled from the console log and mirrored to W&B.
 | `perf/mfu` | MFU |
 | `perf/peak_memory` | peak GPU memory (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
+
+## Evals
+
+`uv run evals` evaluates one or more environments against a live inference server (a `uv run inference` vLLM server or an external OpenAI-compatible API) and exits after one epoch per source. It reuses the orchestrator's eval pipeline: env servers are spawned per source, episodes are admitted under the adaptive concurrency controller, and every episode streams into the run's trace stream and metrics.
+
+```bash
+uv run inference --vllm.model Qwen/Qwen3-4B
+uv run evals gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B                      # single source
+uv run evals gsm8k -c 8 --env.agent.harness.id bash \
+  --client.base_url https://api.pinference.ai/api/v1 --client.api_key_var PRIME_API_KEY
+uv run evals @ eval.toml --run.name my-eval                          # several [[source]] blocks
+```
+
+Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block, `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, `-o` the output dir, and `-c N` pins the concurrency band. Against an endpoint without vLLM `/metrics` (an external API) the band must be pinned; against vLLM it adapts to KV usage like the orchestrator's. Multi-source runs use a TOML:
+
+```toml
+model = "Qwen/Qwen3-4B"
+num_examples = 32
+group_size = 4
+
+[client]
+base_url = "http://localhost:8000/v1"
+
+[concurrency]
+max_inflight = 128
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "bash"
+
+[[source]]
+env.taskset.id = "aime25"
+```
+
+The run writes to `output_dir / run.name` with the same layout as training runs (`configs/attempt_<n>/`, `logs/attempt_<n>/evals.log`, `monitors/file/`), shows up in the [dashboard](#dashboard), and checkpoints its task cursor after every completed group. Relaunch with the same `--run.name` and `--resume` to skip the completed prefix. `--monitors.prime` uploads each source's finished epoch as an evaluation on the Prime Intellect platform (`PRIME_API_KEY` or `prime login`). Examples live in `examples/evals/`.
 
 ## Checkpointing
 
@@ -331,7 +369,8 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 <run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
-├── evals.log                    # SFT online-eval process
+├── evals.log                    # `uv run evals` process
+├── online-evals.log             # SFT online-eval process
 ├── inference.log                # symlink → inference/node_0.log on multi-node
 ├── trainer/
 │   ├── node_*.log               # per-node trainer stdout (multi-node only)
@@ -347,7 +386,7 @@ Env logs are the first place to look for env-side errors (most user code lives t
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <run_dir>/logs/latest/{trainer,orchestrator,evals,inference}.log
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,evals,online-evals,inference}.log
 tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
 tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```
