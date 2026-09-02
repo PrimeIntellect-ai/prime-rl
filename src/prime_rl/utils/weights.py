@@ -112,6 +112,18 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
         return revert_weight_conversion(model, state_dict)
 
 
+def quantize_state_dict_for_transfer(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Re-encode an HF-format state dict for the wire, per the model's own hook.
+
+    Applied after ``convert_state_dict_to_hf`` and only inside a transport. Every model
+    except one leaves the dict alone; DeepSeek V4 re-quantizes to the fp8 and MXFP4 formats
+    its checkpoint stores, because that is what vLLM allocated its parameters as.
+    """
+    if isinstance(model, PreTrainedModelPrimeRL):
+        return model.quantize_for_weight_transfer(state_dict)
+    return state_dict
+
+
 def resolve_fqn(model: nn.Module, key: str) -> str:
     """Resolve a state-dict key to the parameter's canonical fully-qualified name.
 

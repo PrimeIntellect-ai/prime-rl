@@ -43,6 +43,19 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return False
 
+    def quantize_for_weight_transfer(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Re-encode an HF-format state dict into the representation the inference engine expects.
+
+        Wire representation only, never a saved checkpoint: this runs inside the transport,
+        after ``convert_to_hf``, so ``dcp_save`` and the HF export path never see it. Where
+        ``keep_in_fp32_for_weight_transfer`` picks a dtype per tensor, this picks a whole
+        representation, which is what a checkpoint quantized on disk needs: vLLM builds its
+        parameters from that checkpoint's ``quantization_config``, so a dequantized broadcast
+        does not fit them. Implementations may mutate in-place; callers must use the return
+        value. Default is the identity.
+        """
+        return state_dict
+
     @classmethod
     def from_config(cls, config, **kwargs):
         """Public from_config that mirrors the Auto class API."""

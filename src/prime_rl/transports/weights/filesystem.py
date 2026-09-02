@@ -12,6 +12,7 @@ from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
+    quantize_state_dict_for_transfer,
     save_state_dict,
     save_state_dict_parallel,
 )
@@ -54,6 +55,7 @@ class FileSystemWeightSender(WeightSender):
             dist.barrier()
             state_dict = gather_weights_parallel(model)
             state_dict = convert_state_dict_to_hf(model, state_dict)
+            state_dict = quantize_state_dict_for_transfer(model, state_dict)
             self.logger.debug(f"Saving weights to {step_dir}")
             save_state_dict_parallel(state_dict, step_dir)
 

@@ -19,9 +19,9 @@ from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
-from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
+from prime_rl.trainer.models.deepseek_v4.quantize import dequantize_state_dict_, quantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
@@ -174,6 +174,18 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         """
         dequantize_state_dict_(state_dict)
         return super().convert_to_prime(state_dict)
+
+    def quantize_for_weight_transfer(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Re-quantize an on-disk-named state dict into the formats vLLM builds its parameters in.
+
+        Gated on `quantization_config`, which `PretrainedConfig` only sets when the source
+        `config.json` carries one. The plain-`bfloat16` mini test checkpoint has none, so it
+        broadcasts untouched, exactly as `dequantize_state_dict_` leaves it untouched on the way in.
+        """
+        if getattr(self.config, "quantization_config", None) is None:
+            return state_dict
+        quantize_state_dict_(state_dict, getattr(self.config, "expert_dtype", "fp4"))
+        return state_dict
 
     def init_buffers_post_meta(self) -> None:
         # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
