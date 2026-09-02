@@ -603,8 +603,7 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
 # `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
 # `original_seq_len > 0`, so a pure sliding-window layer gets plain RoPE at `rope_theta` and every
 # compressed layer gets YaRN at `compress_rope_theta`. vLLM's `build_deepseek_v4_rope` branches the
-# base but not the scaling, which `monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers`
-# corrects.
+# base but not the scaling, which `monkey_patch_deepseek_v4_per_layer_rope` corrects.
 #
 # The real checkpoint's beta range and factor, but a reduced `original_max_position_embeddings`:
 # the cos/sin cache is `original_max * factor` rows of fp32, which at the checkpoint's 65536 would
@@ -662,30 +661,60 @@ def _vllm_rope_freqs(rotary_emb) -> torch.Tensor:
     return torch.atan2(sin, cos)
 
 
+# The four `rope_parameters` shapes a DeepSeek V4 config.json can carry. The real checkpoint
+# ships the flat legacy `rope_scaling`; HF's own `DeepseekV4Config` and this repo's port both
+# write the nested `main`/`compress` schema, which vLLM's config shim cannot read. The unscaled
+# pair is what a checkpoint with no YaRN at all produces, and is the case upstream would
+# otherwise build as a plain `RotaryEmbedding` whose cache follows the ambient dtype.
+_ROPE_NESTED_PLAIN = {"rope_type": "default", "partial_rotary_factor": 0.125}
+_ROPE_SHAPES = {
+    "flat-yarn": lambda: {"rope_scaling": dict(_ROPE_SCALING)},
+    "nested-yarn": lambda: {
+        "rope_parameters": {
+            "main": dict(_ROPE_NESTED_PLAIN),
+            "compress": {**_ROPE_SCALING, "partial_rotary_factor": 0.125},
+        }
+    },
+    "flat-unscaled": lambda: {},
+    "nested-unscaled": lambda: {
+        "rope_parameters": {"main": dict(_ROPE_NESTED_PLAIN), "compress": dict(_ROPE_NESTED_PLAIN)}
+    },
+}
+_ROPE_SCALED_SHAPES = frozenset({"flat-yarn", "nested-yarn"})
+
+
 @pytest.fixture
 def vllm_rope_builder():
     """`build_deepseek_v4_rope`, patched, under the live vLLM config its `CustomOp` base asserts on.
 
     The builder is resolved off the module at call time rather than bound at import, because the
-    patch rebinds that attribute.
+    patch rebinds that attribute. Configs go through vLLM's own `patch_rope_parameters`, the same
+    normalization the engine runs: it renames the legacy `type` key and, for the nested schema,
+    injects a top-level `rope_type="default"` beside the sub-dicts.
     """
     from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.model_executor.layers import rotary_embedding
     from vllm.models.deepseek_v4.common import rope as dsv4_rope
+    from vllm.transformers_utils.config import patch_rope_parameters
     from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
+    from vllm.utils.torch_utils import set_default_torch_dtype
 
-    from prime_rl.inference.patches import monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers
+    from prime_rl.inference.patches import monkey_patch_deepseek_v4_per_layer_rope
 
-    monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers()
+    monkey_patch_deepseek_v4_per_layer_rope()
+    rotary_embedding._ROPE_DICT.clear()
 
-    def build(compress_ratio: int, rope_parameters: dict | None = None):
+    def build(compress_ratio: int, shape: str):
         config = VllmDeepseekV4Config(
-            rope_scaling=dict(_ROPE_SCALING) if rope_parameters is None else None,
-            rope_parameters=rope_parameters,
             rope_theta=_ROPE_THETA,
             compress_rope_theta=_COMPRESS_ROPE_THETA,
             max_position_embeddings=_ROPE_MAX_POSITION,
+            **_ROPE_SHAPES[shape](),
         )
-        with set_current_vllm_config(VllmConfig()):
+        patch_rope_parameters(config)
+        # Model init runs under the model dtype (`vllm/model_executor/model_loader/base_loader.py`),
+        # which is what would leave an unscaled config with a bf16 cache.
+        with set_default_torch_dtype(torch.bfloat16), set_current_vllm_config(VllmConfig()):
             return dsv4_rope.build_deepseek_v4_rope(
                 config,
                 head_dim=_ROPE_HEAD_DIM,
@@ -697,47 +726,36 @@ def vllm_rope_builder():
     return build
 
 
-def _assert_reference_rope(builder, rope_parameters=None):
+@pytest.mark.parametrize("shape", list(_ROPE_SHAPES))
+def test_deepseek_v4_vllm_rope_matches_the_reference(vllm_rope_builder, shape):
     """Sliding-window layers take plain RoPE at `rope_theta`, compressed layers YaRN at theirs.
 
     Both are asserted together: neutralizing YaRN on the sliding layers must not disturb the
-    compressed layers, which vLLM already gets right.
+    compressed layers, which vLLM already gets right. All four on-disk schemas are covered
+    because the patch has to normalize each of them into something upstream can build.
     """
-    sliding = _vllm_rope_freqs(builder(compress_ratio=1, rope_parameters=rope_parameters))
-    compressed = _vllm_rope_freqs(builder(compress_ratio=4, rope_parameters=rope_parameters))
+    from vllm.model_executor.layers import rotary_embedding
 
-    torch.testing.assert_close(sliding, _reference_rope_freqs(0, _ROPE_THETA), atol=1e-6, rtol=0)
+    sliding = vllm_rope_builder(compress_ratio=1, shape=shape)
+    compressed = vllm_rope_builder(compress_ratio=4, shape=shape)
+
+    # `vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py` asserts fp32.
+    assert sliding.cos_sin_cache.dtype is torch.float32
+    assert compressed.cos_sin_cache.dtype is torch.float32
+
+    torch.testing.assert_close(_vllm_rope_freqs(sliding), _reference_rope_freqs(0, _ROPE_THETA), atol=1e-6, rtol=0)
     torch.testing.assert_close(
-        compressed,
-        _reference_rope_freqs(_ROPE_ORIGINAL_MAX_POSITION, _COMPRESS_ROPE_THETA),
+        _vllm_rope_freqs(compressed),
+        _reference_rope_freqs(_ROPE_ORIGINAL_MAX_POSITION * (shape in _ROPE_SCALED_SHAPES), _COMPRESS_ROPE_THETA),
         atol=1e-6,
         rtol=0,
     )
 
-
-def test_deepseek_v4_vllm_rope_matches_the_reference(vllm_rope_builder):
-    """The flat legacy `rope_scaling` the real checkpoint ships."""
-    _assert_reference_rope(vllm_rope_builder)
-
-
-def test_deepseek_v4_vllm_rope_matches_the_reference_from_nested_parameters(vllm_rope_builder):
-    """A `save_pretrained` round trip nests `rope_parameters` under `main`/`compress` keys.
-
-    vLLM's config shim assumes a flat dict, so transformers injects a top-level
-    `rope_type="default"` beside the sub-dicts and `build_deepseek_v4_rope` drops YaRN from every
-    layer. The patch reads the `compress` sub-dict instead.
-    """
-    nested = {
-        "main": {"rope_type": "default", "rope_theta": _ROPE_THETA, "partial_rotary_factor": 0.125},
-        "compress": {
-            **_ROPE_SCALING,
-            "rope_type": "yarn",
-            "rope_theta": _COMPRESS_ROPE_THETA,
-            "partial_rotary_factor": 0.125,
-            "attention_factor": 1.0,
-        },
-    }
-    _assert_reference_rope(vllm_rope_builder, rope_parameters=nested)
+    # One rope per distinct `rope_theta`, and no more: `get_rope`'s cache key has to stay
+    # hashable. An unhashable key silently defeats memoization, which costs one 256 MB fp32
+    # cos/sin cache per attention layer on the real checkpoint instead of two in total.
+    assert len(rotary_embedding._ROPE_DICT) == 2
+    assert vllm_rope_builder(compress_ratio=1, shape=shape) is sliding
 
 
 # Everything below works one mechanism at a time, below the assembled-model level the tests above
