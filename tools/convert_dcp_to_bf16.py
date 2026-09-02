@@ -117,7 +117,16 @@ def setup_single_process_env() -> None:
 
 
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
-    """Save model config, generation config, processor and tokenizer next to the weights."""
+    """Save model config, generation config, processor and tokenizer next to the weights.
+
+    Known inconsistency for checkpoints that were quantized on disk: the config is written
+    verbatim, so a DeepSeek V4 Flash export carries the source `quantization_config` and
+    `expert_dtype` next to plain bf16 tensors with no `.scale` siblings. Serving that directory
+    makes vLLM allocate fp8 and MXFP4 parameters the weights do not fit, which is the same
+    failure `trainer/models/deepseek_v4/quantize.py` exists to keep off the broadcast path:
+    loud on the routed experts, silent on the fp8 linears. Quantize the export with
+    `tools/convert_bf16_to_fp8.py`, or strip those two keys, before serving one.
+    """
     model.config.save_pretrained(output_dir)
     if model.generation_config:
         # training sets use_cache=False which can conflict with cache_implementation —
