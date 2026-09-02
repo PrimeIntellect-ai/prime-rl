@@ -439,6 +439,19 @@ def test_dynamo_discovery_config_is_nested_under_client():
     assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
 
 
+def test_dynamo_discovery_can_coexist_with_static_admin_urls():
+    config = ClientConfig.model_validate(
+        {
+            "admin_base_url": ["http://vllm-admin:8100/v1"],
+            "dynamo": {"discovery_url": "http://dynamo-frontend:8001"},
+        }
+    )
+
+    assert config.admin_base_url == ["http://vllm-admin:8100/v1"]
+    assert config.dynamo is not None
+    assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
+
+
 def test_external_nccl_world_size_is_derived_from_deployment():
     config = RLConfig.model_validate(
         {
