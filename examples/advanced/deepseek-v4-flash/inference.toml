@@ -9,9 +9,11 @@
 #
 # Reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 
-# Mandatory for DeepSeek V4, not an optimization: without it the mHC pre-norm GEMM falls back to a
-# TileLang kernel that is silently wrong above 1024 tokens per forward on SM120, and the
-# checkpoint's UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
+# Mandatory for the fp8 checkpoint, not an optimization: without it the UE8M0-scaled fp8 weights
+# route to a CUTLASS kernel that crashes on boot. That crash was observed during SM120 bring-up and
+# has not been re-tested on Hopper, but the vLLM recipe sets the flag on every NVIDIA configuration.
+# The mHC pre-norm GEMM does not need it on H200: measured there, the TileLang fallback matches the
+# reference to 1.3e-06 relative at every token count, including the >= 1024 block-M kernel.
 use_deep_gemm = true
 
 [server]

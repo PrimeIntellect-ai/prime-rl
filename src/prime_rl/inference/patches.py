@@ -219,23 +219,24 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     ``DeepseekV4FlashInferMLAAttention``, ``DeepseekV4FlashInferSM120Attention``)
     implement ``_o_proj`` by calling ``deep_gemm_fp8_o_proj``
     (``vllm/models/deepseek_v4/nvidia/ops/o_proj.py``), which dereferences
-    ``wo_a.weight_scale_inv`` and hands the result to DeepGEMM's ``fp8_einsum``.
-    There is no branch on quant config or weight dtype, and ``_o_proj`` is an
-    ``@abstractmethod`` dispatched purely by platform subclass, so no attention
-    backend routes around it. A bf16 checkpoint therefore fails with
+    ``wo_a.weight_scale``, falling back to ``wo_a.weight_scale_inv``, and hands
+    the result to DeepGEMM's ``fp8_einsum``. There is no branch on quant config
+    or weight dtype, and ``_o_proj`` is an ``@abstractmethod`` dispatched purely
+    by platform subclass, so no attention backend routes around it. A bf16
+    checkpoint has neither attribute and therefore fails with
     ``AttributeError: 'ColumnParallelLinear' object has no attribute
     'weight_scale_inv'``.
 
-    The FP8 path is genuinely unreachable on some supported hardware. On SM120
-    (RTX PRO 6000 Blackwell) DeepGEMM 2.5.0 has no block-scaled FP8 kernels at
-    all, even though vLLM's ``support_deep_gemm()`` claims capability family 120
-    (``vllm/platforms/cuda.py:665-671``). Measured directly: ``fp8_gemm_nt``
-    fails in DeepGEMM's layout dispatch, ``transform_sf_into_required_layout``
-    fails for the UE8M0 scale format that the same GPU's
-    ``is_deep_gemm_e8m0_used()`` selects, and ``fp8_einsum`` fails on the exact
-    tensors this op builds. So online block quantization
-    (``--quantization fp8_per_block``, which does produce a correct
-    ``weight_scale_inv``) still cannot make the FP8 kernel run there.
+    Quantizing is not an answer, because nothing quantizes by default:
+    ``[inference.vllm] quantization`` is unset, which leaves vLLM to infer the
+    scheme from the checkpoint. bf16 DeepSeek V4 checkpoints are a first-class
+    artifact here, written by ``tools/convert_fp8_to_bf16.py``,
+    ``tools/convert_dcp_to_bf16.py``, and trainer exports, and they carry no
+    scales for the op to find. Passing ``--quantization fp8_per_block`` does
+    produce a correct ``weight_scale_inv`` and is a genuine alternative on
+    hardware whose DeepGEMM build has block-scaled FP8 kernels, but it changes
+    the served numerics, so it is a deployment decision rather than a fix for
+    serving the bf16 weights as given.
 
     Only the unquantized case is redirected: an FP8 weight keeps using vLLM's own
     kernel, so a real FP8-serialized checkpoint behaves exactly as before. The
