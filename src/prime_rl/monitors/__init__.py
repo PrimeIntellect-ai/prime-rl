@@ -122,6 +122,15 @@ async def log(
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
+async def log_annotations(updates: list[dict[str, Any]]) -> None:
+    """Log trace updates to all registered monitors."""
+    for monitor in MONITORS:
+        try:
+            await monitor.log_annotations(updates)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+
+
 async def finalize() -> None:
     """Finalize the run on all registered monitors."""
     for monitor in MONITORS:

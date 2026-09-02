@@ -16,7 +16,7 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
@@ -136,6 +136,19 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     _can_record_outputs = {
         "hidden_states": Qwen3_5DecoderLayer,
     }
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        # VLM configs nest the layer schedule under `text_config`.
+        text_config = getattr(config, "text_config", config)
+        if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
+            return CPSupport(
+                frozenset({"ulysses"}),
+                "ring CP is a softmax-attention algorithm and cannot run this model's DeltaNet "
+                "layers, whereas ulysses' all-to-all on Q/K/V leaves the linear-attention kernel "
+                "unchanged",
+            )
+        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
