@@ -13,10 +13,15 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
+from prime_rl.configs.monitors import (
+    FileMonitorConfig,
+    PrimeEvalMonitorConfig,
+    PrimeMonitorConfig,
+    WandbMonitorConfig,
+)
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.prime import PrimeMonitor
+from prime_rl.monitors.prime import PrimeEvalMonitor, PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import format_time, get_logger
@@ -28,6 +33,7 @@ __all__ = [
     "Monitor",
     "WandbMonitor",
     "PrimeMonitor",
+    "PrimeEvalMonitor",
     "FileMonitor",
     "setup",
     "get",
@@ -41,7 +47,7 @@ MONITORS: list[Monitor] = []
 
 async def setup(
     wandb: WandbMonitorConfig | None = None,
-    prime: PrimeMonitorConfig | None = None,
+    prime: PrimeMonitorConfig | PrimeEvalMonitorConfig | None = None,
     file: FileMonitorConfig | None = None,
     *,
     output_dir: Path,
@@ -49,7 +55,7 @@ async def setup(
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
-    overview_flavor: Literal["rl", "sft"] = "rl",
+    overview_flavor: Literal["rl", "sft", "eval"] = "rl",
 ) -> None:
     """Construct, initialize, and register one monitor per non-None config.
 
@@ -63,7 +69,9 @@ async def setup(
         return
 
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
-    if prime is not None:
+    if isinstance(prime, PrimeEvalMonitorConfig):
+        monitors.append(("prime", PrimeEvalMonitor(prime), dict(config=run_config)))
+    elif prime is not None:
         monitors.append(("prime", PrimeMonitor(prime), dict(config=run_config)))
     if wandb is not None:
         monitors.append(
@@ -127,6 +135,15 @@ async def log_annotations(updates: list[dict[str, Any]]) -> None:
     for monitor in MONITORS:
         try:
             await monitor.log_annotations(updates)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+
+
+async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+    """Log one finished eval epoch to all registered monitors."""
+    for monitor in MONITORS:
+        try:
+            await monitor.log_eval_epoch(env_name, step, episodes)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 

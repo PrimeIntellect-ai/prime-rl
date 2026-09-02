@@ -63,9 +63,9 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.
+Source lists are set in TOML. The CLI has no list-index paths (`--orchestrator.eval.source.0.env.taskset.id` does not parse); a whole list can be passed as JSON (`--orchestrator.eval.source '[{"env": {"taskset": {"id": "reverse-text"}}}]'`), which replaces the list wholesale.
 
-The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server), e.g. `--eval.source.0.env.taskset.id reverse-text`.
+The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server). The `evals` entrypoint flattens it further: `[[source]]`, `[client]`, `[concurrency]`, `num_examples`, `group_size` at the top level, plus the single-source shorthands `uv run evals <taskset-id> --env.<field> <value> -n N -r N -c N -m MODEL` (see the `start-run` skill).
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 

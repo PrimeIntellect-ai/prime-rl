@@ -1,0 +1,21 @@
+# gsm8k - grade-school math with the bash harness, a few tasks with several
+# rollouts each, against DeepSeek V4 Flash on Prime Inference.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run evals @ examples/evals/gsm8k.toml
+
+model = "deepseek/deepseek-v4-flash"
+num_examples = 5
+group_size = 3
+
+[client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[concurrency]
+min_inflight = 8
+max_inflight = 8
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "bash"

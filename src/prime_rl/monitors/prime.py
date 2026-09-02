@@ -14,9 +14,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
 from prime_cli.core.config import Config as PrimeConfig
-from verifiers.v1.utils.platform import build_samples
+from verifiers.v1.utils.platform import build_samples, credentials, json_bytes, run_metrics
 
-from prime_rl.configs.monitors import PrimeMonitorConfig
+from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -25,6 +25,10 @@ from prime_rl.utils.utils import sanitize
 BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
 BASE_URL_VAR = "PRIME_API_BASE"
 API_KEY_VAR = "PRIME_API_KEY"
+
+# Repeated /samples posts append; match the platform's request ceiling.
+MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+EMPTY_SAMPLES_PAYLOAD_BYTES = len(b'{"samples":[]}')
 
 SAMPLE_SCHEMA = pa.schema(
     [
@@ -117,6 +121,111 @@ class PrimeMonitor(Monitor):
 
     async def finalize(self) -> None:
         await self.run.finalize()
+
+
+class PrimeEvalMonitor(Monitor):
+    """Uploads each finished eval epoch as an evaluation on the Prime platform
+    (``/evaluations/``: create, push samples, finalize). Metrics and streamed episodes
+    are not forwarded; the platform evaluation is the finished epoch."""
+
+    config: PrimeEvalMonitorConfig
+
+    async def init(self, config: BaseConfig | None = None) -> None:
+        api_key, api_base, frontend_url, team_id = credentials()
+        if not api_key:
+            raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
+        self.api_key = api_key
+        self.api_url = f"{api_base}/api/v1"
+        self.frontend_url = frontend_url
+        self.team_id = team_id
+        self.run_id = os.getenv("PRL_RUN_ID")
+        self.model: str = config.model if config is not None else "unknown"
+        self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
+        self._tasks: set[asyncio.Task] = set()
+        self.logger.info("Uploading finished eval epochs to the Prime platform")
+
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        pass
+
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+        pass
+
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+        async def upload() -> None:
+            try:
+                url = await asyncio.to_thread(self.upload, env_name, step, episodes)
+                self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {url}")
+            except Exception as e:
+                self.logger.warning(f"Failed to upload {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+
+        task = asyncio.get_running_loop().create_task(upload())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def upload(self, env_name: str, step: int, episodes: list[vf.Episode]) -> str:
+        """Create the evaluation, push its samples in request-sized batches and finalize
+        it; return the viewer URL. Runs in a worker thread."""
+        source = self.sources[env_name]
+        name = self.config.name if len(self.sources) == 1 else f"{self.config.name}--{env_name}"
+        traces = [trace for episode in episodes for trace in episode.traces]
+        metrics = run_metrics(episodes, traces)
+        metadata = {
+            "framework": "prime-rl",
+            "run_id": self.run_id,
+            "model": self.model,
+            "step": step,
+            "num_examples": len({trace.task.data.idx for trace in traces}),
+            "rollouts_per_example": source.group_size,
+            **metrics,
+        }
+        team = {"team_id": self.team_id} if self.team_id else {}
+        samples = build_samples(episodes)
+        batches: list[list[dict[str, Any]]] = [[]]
+        payload_bytes = EMPTY_SAMPLES_PAYLOAD_BYTES
+        for sample in samples:
+            sample_bytes = json_bytes(sample)
+            if EMPTY_SAMPLES_PAYLOAD_BYTES + sample_bytes > MAX_SAMPLES_PAYLOAD_BYTES:
+                raise ValueError(
+                    f"sample {sample['sample_id']} exceeds the platform request limit ({sample_bytes} bytes)"
+                )
+            if batches[-1] and payload_bytes + 1 + sample_bytes > MAX_SAMPLES_PAYLOAD_BYTES:
+                batches.append([])
+                payload_bytes = EMPTY_SAMPLES_PAYLOAD_BYTES
+            batches[-1].append(sample)
+            payload_bytes += (1 if len(batches[-1]) > 1 else 0) + sample_bytes
+
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        with httpx.Client(base_url=self.api_url, headers=headers, timeout=300.0) as client:
+
+            def post(path: str, body: dict) -> dict:
+                response = client.post(path, json=body)
+                response.raise_for_status()
+                return response.json()
+
+            env_id = post("/environmentshub/resolve", {"name": source.env.taskset.id, **team})["data"]["id"]
+            eval_id = post(
+                "/evaluations/",
+                {
+                    "name": name,
+                    "environments": [{"id": env_id}],
+                    "model_name": self.model,
+                    "dataset": source.env.taskset.id,
+                    "framework": "prime-rl",
+                    "metadata": metadata,
+                    "metrics": metrics,
+                    "tags": [],
+                    **team,
+                },
+            )["evaluation_id"]
+            for batch in batches:
+                body = json.dumps({"samples": batch}, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                client.post(f"/evaluations/{eval_id}/samples", content=body.encode("utf-8")).raise_for_status()
+            post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
+        return f"{self.frontend_url}/dashboard/evaluations/{eval_id}"
+
+    async def finalize(self) -> None:
+        # Drain in-flight uploads before the process exits.
+        await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
 class TrainRun:

@@ -1,0 +1,23 @@
+# agentic-judge - a judge agent verifies each gsm8k attempt in its own docker
+# sandbox; the solver runs the bash harness in docker too.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run evals @ examples/evals/agentic-judge.toml
+
+model = "deepseek/deepseek-v4-flash"
+num_examples = 2
+
+[client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[concurrency]
+min_inflight = 4
+max_inflight = 4
+
+[[source]]
+env.id = "agentic-judge"
+env.taskset.id = "gsm8k"
+env.solver.harness.id = "bash"
+env.solver.runtime.type = "docker"
+env.judge.model = "z-ai/glm-5.2"

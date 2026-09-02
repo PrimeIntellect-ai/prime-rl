@@ -42,7 +42,7 @@ except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
-MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
+MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log", "online-evals.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
@@ -239,6 +239,8 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
         return "sft", read_json(configs / "sft.json")
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
+    if (configs / "evals.json").exists():
+        return "eval", read_json(configs / "evals.json")
     if (configs / "eval.json").exists():  # verifiers `uv run eval` run dir
         return "eval", read_json(configs / "eval.json")
     return "other", {}
@@ -256,6 +258,25 @@ def metrics_file(run_dir: Path) -> Path:
 def step_numbers(run_dir: Path) -> list[int]:
     """The steps a cohort shipped at — what a run's progress is measured in."""
     return sorted({step for _, step in effective_steps(run_dir)})
+
+
+def eval_env(config: dict) -> str | None:
+    """The taskset(s) of an eval run: prime-rl's ``[[source]]`` list, else the single
+    ``[env]`` of a verifiers run."""
+    sources = config.get("source") or []
+    if sources:
+        return "+".join(((s.get("env") or {}).get("taskset") or {}).get("id") or "?" for s in sources)
+    return ((config.get("env") or {}).get("taskset") or {}).get("id")
+
+
+def eval_total_episodes(config: dict) -> int | None:
+    sources = config.get("source") or []
+    if sources:
+        # ``num_examples = -1`` means the whole taskset: unknown up front.
+        if any((s.get("num_examples") or -1) < 0 for s in sources):
+            return None
+        return sum(s["num_examples"] * (s.get("group_size") or 1) for s in sources) or None
+    return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -288,8 +309,8 @@ def run_meta(run_dir: Path) -> dict:
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "has_validation": run_type == "sft" and config.get("val") is not None,
-        "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
-        "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
+        "env": eval_env(config),
+        "total_episodes": eval_total_episodes(config),
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
@@ -330,6 +351,7 @@ def log_component(rel: Path) -> tuple[str, str]:
             "orchestrator.log": ("orch", "orchestrator"),
             "inference.log": ("infer", "inference"),
             "evals.log": ("evals", "evals"),
+            "online-evals.log": ("evals", "online-evals"),
             "eval.log": ("evals", "eval"),
         }.get(parts[0], ("other", parts[0]))
     if parts[0] == "trainer":
@@ -408,7 +430,7 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl", "sft", "eval", "evals", "orchestrator", "trainer", "inference"]
+CONFIG_ORDER = ["rl", "sft", "eval", "evals", "online_evals", "orchestrator", "trainer", "inference"]
 
 
 def config_rank(name: str) -> tuple[int, str]:

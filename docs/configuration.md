@@ -100,14 +100,12 @@ Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one i
 CLI takes a JSON literal. TOML uses a table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.train.source.0.args \
-  '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
+uv run rl @ rl.toml --env-vars '{"HF_HUB_OFFLINE": "1"}'
 ```
 
 ```toml
-[[orchestrator.train.source]]
-args.dataset_name = "openai/gsm8k"
-args.dataset_subset = "main"
+[env_vars]
+HF_HUB_OFFLINE = "1"
 ```
 
 ### Optional Sub-Configs

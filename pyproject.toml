@@ -42,6 +42,7 @@ inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
 evals = "prime_rl.entrypoints.evals:main"
+online-evals = "prime_rl.entrypoints.online_evals:main"
 env-server = "prime_rl.entrypoints.env_server:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
 
