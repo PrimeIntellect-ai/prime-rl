@@ -1080,14 +1080,12 @@ def _assert_layout_is_consistent(layout: CompressionLayout, doc_lens: tuple[int,
     def as_tensor(values: list, dtype: torch.dtype = torch.long) -> torch.Tensor:
         return torch.tensor(values, dtype=dtype, device="cuda")
 
-    assert torch.equal(layout.entry_doc, as_tensor(expected_doc)), "entries are not ordered document by document"
-    assert torch.equal(layout.entry_local, as_tensor(expected_local)), "entries are not numbered within a document"
-    assert torch.equal(layout.src_idx, as_tensor(expected_src).reshape(-1, compress_rate)), (
+    assert torch.equal(layout.entry_doc_idx, as_tensor(expected_doc)), "entries are not ordered document by document"
+    assert torch.equal(layout.entry_local_idx, as_tensor(expected_local)), "entries are not numbered within a document"
+    assert torch.equal(layout.entry_tok_idx, as_tensor(expected_src).reshape(-1, compress_rate)), (
         "an entry pools source tokens outside its own document's window"
     )
-    assert torch.equal(layout.entry_pos, layout.entry_local * compress_rate), "entry_pos must be a local position"
-    assert torch.equal(layout.is_first, layout.entry_local == 0), "is_first must mark entry 0 of each document"
-    assert torch.equal(layout.doc_of_token, _doc_ids(doc_lens)), "doc_of_token must follow the document lengths"
+    assert torch.equal(layout.tok_doc_idx, _doc_ids(doc_lens)), "tok_doc_idx must follow the document lengths"
 
 
 def _assert_compress_matches_per_document(
@@ -1179,7 +1177,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, doc_le
 
     assert _entry_counts(doc_lens, compress_rate) == expected_counts
     if sum(expected_counts) < sum(doc_lens) // compress_rate:
-        assert layout.src_idx.shape[0] == sum(expected_counts), (
+        assert layout.entry_tok_idx.shape[0] == sum(expected_counts), (
             "a row-global compression would emit more entries than this, so the probe is not vacuous"
         )
     _assert_compress_matches_per_document(module.compressor, doc_lens, compress_rate, layout)

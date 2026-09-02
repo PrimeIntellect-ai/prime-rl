@@ -2,8 +2,8 @@
 
 Two scales live here. `_MODEL` builds the whole assembled model, at `_MODEL_BATCH`/`_MODEL_SEQ`;
 `_HC`, `_ATTN` and `_MOE` build one mechanism at a time, at the smaller
-`_MODULE_BATCH`/`_MODULE_SEQ`. The two sequence lengths are not interchangeable: every
-`entry_pos` literal in the packed tests is written against `_MODULE_SEQ`, and that value is what
+`_MODULE_BATCH`/`_MODULE_SEQ`. The two sequence lengths are not interchangeable: every entry
+position the packed tests assume is written against `_MODULE_SEQ`, and that value is what
 makes `index_topk` smaller than the entry count and leaves a gap between the sliding window and
 HCA's first readable entry.
 
