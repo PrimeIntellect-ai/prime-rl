@@ -130,17 +130,23 @@ def main():
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
 
-    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_dir / "eval.log")
+    log_file = log_dir / "eval.log"
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
     logger.info(f"Wrote config to {config_dir}")
     if config.dry_run:
-        logger.success("Dry run complete. To start the evals, remove --dry-run from your command.")
+        logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
         return
 
+    names = ", ".join(source.resolved_name for source in config.source)
+    logger.info(f"Starting eval of {names} with {config.model} ({config.client.base_url})")
+    logger.info(f"Logs:\n  {'Eval:':<18}tail -F {log_file}\n  {'Envs:':<18}tail -F {log_dir}/envs/eval/*.log")
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
+    log_dashboard_url(logger, dashboard_url)
     from prime_rl.eval.eval import run_eval
 
+    # The console shows results and problems from here on; the log file keeps everything.
+    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="SUCCESS")
     asyncio.run(run_eval(config, log_dir))
-    log_dashboard_url(logger, dashboard_url)
 
 
 if __name__ == "__main__":

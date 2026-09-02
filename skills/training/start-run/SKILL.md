@@ -100,10 +100,9 @@ curl http://localhost:8000/v1/chat/completions \
 Runs one epoch of every configured eval source against a live inference server, then exits. The evals process spawns one env server per source (unless the source sets `serve.address`), sizes concurrency with the same adaptive controller as `[orchestrator.concurrency]`, streams every episode through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and checkpoints the task cursor after every completed group so an interrupted run resumes with `--resume`.
 
 ```bash
-uv run inference --vllm.model Qwen/Qwen3-4B                      # start inference separately
-uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B                    # single source via shorthands
-uv run eval gsm8k -c 4 --env.agent.harness.id bash \
-  --client.base_url https://api.pinference.ai/api/v1 --client.api_key_var PRIME_API_KEY
+uv run eval gsm8k -n 32 -r 4 -c 8                                # Prime Inference (default client + model), pinned band
+uv run inference --vllm.model Qwen/Qwen3-4B                      # or a local vLLM server ...
+uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1   # ... adaptive band
 uv run eval @ eval.toml --run.name my-eval                        # multi-source TOML
 uv run eval @ eval.toml --run.name my-eval --resume               # resume the interrupted run
 ```
@@ -138,7 +137,8 @@ env.agent.runtime.type = "subprocess"
 - Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`); `configs/attempt_N/`, `logs/attempt_N/{eval.log,envs/eval/<name>.log}`, `monitors/file/`, `checkpoints/step_<cursor>/evals/progress.pt` (only the newest kept). `--clean` wipes a used run dir, `--dry-run` writes the config and exits, `--no-dashboard` skips the dashboard daemon.
 - Resume: cursor checkpoints are on by default (`[ckpt]`, `interval` counts completed task groups, `keep_last` prunes older cursors). Relaunch with the same `--run.name` and `--resume` (or `--resume.step N` / `--resume.dir path/to/checkpoints/step_N`) to skip the completed prefix; partially completed groups are retried. Disable saving with `--no-ckpt`.
 - Env servers: spawned by the evals process at `tcp://127.0.0.1:<env_server_base_port + index>`; logs at `{run_dir}/logs/latest/envs/eval/{name}.log`.
-- External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`-c N`). Examples: `examples/eval/` (README lists them: gsm8k, wordle, wiki-search, terminal-bench-2, best-of-n, agentic-judge, rlm-docker, swe).
+- Defaults: model `deepseek/deepseek-v4-flash` on Prime Inference (`PRIME_API_KEY`, else the `prime login` config). External inference APIs (no vLLM `/metrics`) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`-c N`).
+- Console: the launcher prints the start line, log paths and dashboard URL, then only per-env results and warnings; `logs/latest/eval.log` has everything. Examples: `examples/eval/` (README lists them: gsm8k, wordle, wiki-search, terminal-bench-2, best-of-n, agentic-judge, rlm-docker, swe).
 - Platform: `--monitors.prime` (needs `PRIME_API_KEY` or `prime login`) creates one evaluation per source on app.primeintellect.ai once its epoch finishes and logs the URL.
 - Config: `EvalConfig` (`packages/prime-rl-configs/src/prime_rl/configs/eval.py`)
 - Entrypoint: `src/prime_rl/entrypoints/eval.py` (implementation: `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`)

@@ -49,14 +49,21 @@ class CheckpointConfig(BaseConfig):
     """Keep at most this many cursor checkpoints on disk. None keeps all of them."""
 
 
+PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
+
+
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
-    server, then exit. Every source's env server is spawned by the evals process unless
-    the source sets ``serve.address``."""
+    server, then exit. Every source's env server is spawned by the eval process unless
+    the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
+    ``prime login``); point ``client.base_url`` at a vLLM server for adaptive concurrency."""
 
-    model: str = Field("Qwen/Qwen3-0.6B", validation_alias=AliasChoices("model", "m"))
-    """Name the inference server serves the model under — the ``model`` field of every
-    eval request and the startup model check."""
+    model: str = Field("deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m"))
+    """Model id — the ``model`` field of every eval request and the startup model check."""
+
+    client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
+    """Client of the inference server. Defaults to Prime Inference; external APIs expose
+    no vLLM ``/metrics``, so pin the concurrency there (``-c N``)."""
 
     num_examples: int = Field(-1, validation_alias=AliasChoices("num_examples", "n"))
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""

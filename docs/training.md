@@ -268,14 +268,13 @@ Pulled from the console log and mirrored to W&B.
 `uv run eval` evaluates one or more environments against a live inference server (a `uv run inference` vLLM server or an external OpenAI-compatible API) and exits after one epoch per source. It reuses the orchestrator's eval pipeline: env servers are spawned per source, episodes are admitted under the adaptive concurrency controller, and every episode streams into the run's trace stream and metrics.
 
 ```bash
+uv run eval gsm8k -n 32 -r 4 -c 8                                    # Prime Inference (the default client)
 uv run inference --vllm.model Qwen/Qwen3-4B
-uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B                      # single source
-uv run eval gsm8k -c 8 --env.agent.harness.id bash \
-  --client.base_url https://api.pinference.ai/api/v1 --client.api_key_var PRIME_API_KEY
+uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1
 uv run eval @ eval.toml --run.name my-eval                          # several [[source]] blocks
 ```
 
-Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block, `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band. Against an endpoint without vLLM `/metrics` (an external API) the band must be pinned; against vLLM it adapts to KV usage like the orchestrator's. Multi-source runs use a TOML:
+Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block, `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band. The default client is Prime Inference (`PRIME_API_KEY`, else the `prime login` config) with `deepseek/deepseek-v4-flash`. Against an endpoint without vLLM `/metrics` (an external API) the band must be pinned; against vLLM it adapts to KV usage like the orchestrator's. Multi-source runs use a TOML:
 
 ```toml
 model = "Qwen/Qwen3-4B"

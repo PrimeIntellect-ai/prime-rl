@@ -11,9 +11,6 @@
 
 model = "deepseek/deepseek-v4-flash"
 
-[client]
-base_url = "https://api.pinference.ai/api/v1"
-api_key_var = "PRIME_API_KEY"
 
 [concurrency]
 min_inflight = 32

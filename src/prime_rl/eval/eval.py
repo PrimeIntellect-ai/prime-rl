@@ -56,7 +56,7 @@ class Eval:
             get_logger().info("Nothing to evaluate - every task group is already completed")
         self.save_checkpoint(force=True)
         await self.runner.drain()
-        get_logger().success("Evals finished!")
+        get_logger().success("Eval finished!")
 
     def on_group_completed(self, source_index: int) -> None:
         if self.runner.eval_source.mark_completed(source_index):

@@ -95,11 +95,11 @@ class EvalRunner:
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.source, config.env_addresses)
         await self.eval_envs.start()
-        get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
+        get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
         await self.admin_clients.wait_for_ready(config.model)
-        get_logger().success("Inference pool ready")
+        get_logger().info("Inference pool ready")
 
         self.eval_source = EvalSource(self.eval_envs, skip_first_step=skip_first_step, is_resumed=is_resumed)
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
@@ -151,7 +151,7 @@ class EvalRunner:
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
                     "pin the concurrency with `-c N` (concurrency.min_inflight = max_inflight = N)."
                 )
-            get_logger().warning(f"No engine metrics - running with concurrency pinned at {concurrency.min_inflight}")
+            get_logger().info(f"No engine metrics - running with concurrency pinned at {concurrency.min_inflight}")
         await self.inference_metrics.start()
 
         self.periodic_logger = PeriodicLogger(

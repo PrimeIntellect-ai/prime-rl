@@ -17,6 +17,17 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
+def resolve_api_key(api_key_var: str) -> str:
+    """The API key named by ``api_key_var``; ``PRIME_API_KEY`` also falls back to the prime
+    CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
+    api_key = os.environ.get(api_key_var)
+    if not api_key and api_key_var == "PRIME_API_KEY":
+        from prime_cli.core.config import Config as PrimeConfig
+
+        api_key = PrimeConfig().api_key
+    return api_key or "EMPTY"
+
+
 class PrefillScorer:
     """Prefill-scores token ids against a pool's endpoint, lazily resolving
     a single OpenAI client from the pool's train client config."""
@@ -31,7 +42,7 @@ class PrefillScorer:
             # for these chat-completions teacher configs.
             self._client = AsyncOpenAI(
                 base_url=config.base_url,
-                api_key=os.environ.get(config.api_key_var) or "EMPTY",
+                api_key=resolve_api_key(config.api_key_var),
                 default_headers=config.headers or None,
             )
         return await prefill_logprobs(self._client, model, token_ids)
@@ -164,8 +175,8 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
         }
         headers = {**client_config.headers, **env_headers}
-        api_key = os.getenv(client_config.api_key_var, "EMPTY")
-        if api_key and api_key != "EMPTY":
+        api_key = resolve_api_key(client_config.api_key_var)
+        if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
         # Strip /v1 suffix since admin endpoints are at root level

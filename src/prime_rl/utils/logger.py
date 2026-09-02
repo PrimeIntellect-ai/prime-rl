@@ -103,10 +103,12 @@ def setup_logger(
     tag: str | None = None,
     json_logging: bool = False,
     log_file: Path | None = None,
+    console_level: str | None = None,
 ):
     """Install the prime-rl logger: a console sink (colorized, or JSON lines with
     ``json_logging``) and, with ``log_file``, a plain-text file sink for processes that
-    no launcher redirects."""
+    no launcher redirects. ``console_level`` raises the console sink's threshold above
+    ``log_level`` (the file keeps everything), e.g. to show only results and warnings."""
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 
@@ -159,9 +161,9 @@ def setup_logger(
 
     # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
-        logger.add(json_sink, level=log_level.upper(), enqueue=True)
+        logger.add(json_sink, level=(console_level or log_level).upper(), enqueue=True)
     else:
-        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+        logger.add(sys.stdout, format=format, level=(console_level or log_level).upper(), colorize=True)
     if log_file is not None:
         # The console format carries raw ANSI codes; the file gets a plain layout.
         logger.add(

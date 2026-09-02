@@ -1,9 +1,9 @@
 # Eval examples
 
-Each file is a complete `uv run eval @ examples/eval/<name>.toml` run against Prime Inference
-(`PRIME_API_KEY`, pinned concurrency since external APIs expose no vLLM metrics). Point
-`[client]` at a local `uv run inference` server and drop the `[concurrency]` pin to let the band
-adapt. `uv run eval -h` lists the single-source shorthands (`<taskset-id>`, `--env.<field>`,
+Each file is a complete `uv run eval @ examples/eval/<name>.toml` run against Prime Inference, the
+default client (`PRIME_API_KEY` or `prime login`; pinned concurrency since external APIs expose no
+vLLM metrics). Set `client.base_url` to a local `uv run inference` server and drop the
+`[concurrency]` pin to let the band adapt. `uv run eval -h` lists the single-source shorthands (`<taskset-id>`, `--env.<field>`,
 `-n`, `-r`, `-c`, `-m`).
 
 | File | Shows |
@@ -20,8 +20,7 @@ adapt. `uv run eval -h` lists the single-source shorthands (`<taskset-id>`, `--e
 The shorthand equivalents, for single-source runs:
 
 ```bash
-uv run eval gsm8k -n 5 -r 3 -c 8 -m deepseek/deepseek-v4-flash --env.agent.harness.id bash \
-  --client.base_url https://api.pinference.ai/api/v1 --client.api_key_var PRIME_API_KEY
+uv run eval gsm8k -n 5 -r 3 -c 8 --env.agent.harness.id bash
 uv run eval gsm8k --env.id best-of-n --env.n 8 ...
 uv run eval terminal-bench-2 --env.taskset.tasks '["fix-git"]' --env.agent.harness.id bash ...
 uv run eval gsm8k --env.agent.harness.id rlm --env.agent.runtime.type docker --env.agent.runtime.cpu 4 ...
