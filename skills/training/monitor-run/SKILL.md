@@ -50,15 +50,15 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 - `{run_dir}/configs/latest/` — the current attempt's command, launch TOML, and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
+- `{run_dir}/monitors/file/` — the metrics, and the traces with the annotations about them (see Episodes below).
 
 ### Dashboard
 
 `uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
 once) serves a local web dashboard at `http://localhost:7788` with four views per run:
 metrics (the W&B overview sections, read from `metrics.jsonl`), per-attempt config
-files, a rollout trace viewer with a per-token advantage/logprob view, and merged
-component logs. It only reads the run dirs — safe to run against a live run.
+files, a rollout trace viewer with per-token overlays (advantage, trainer logprob,
+entropy, KL mismatch, stable/loss/content masks), and merged component logs. It only reads the run dirs — safe to run against a live run.
 `--port`/`--host` pick the bind address; a taken port automatically bumps to the next
 free one, so several dashboards run side by side without coordination. GPU deps live
 behind the `gpu` extra, so `uv sync --extra dashboard && uv run dashboard` works
@@ -162,27 +162,47 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/rollouts/step_{n}/{train,eval}/all/traces.jsonl        # appended per episode as it completes
-{run_dir}/rollouts/step_{n}/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{run_dir}/monitors/file/metrics.jsonl                              # every metric row, tagged by producer
+{run_dir}/monitors/file/traces/stream.jsonl                        # every episode, appended as it arrives
+{run_dir}/monitors/file/traces/stream.index.jsonl                  # one compact row per episode, with its byte offset
+{run_dir}/monitors/file/traces/annotations/{producer}.jsonl        # trace updates: orch ship-time facts, trainer per-token streams
+{run_dir}/monitors/file/traces/annotations/{producer}.index.jsonl  # each update's scalars and where its record sits
 ```
 
-JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
-`all` gets every completed episode as it arrives — including trace-less failures,
-curriculum-rejected work, and work that never enters a batch — so it is crash-durable.
-`effective` contains the admitted clean trainable traces grouped into their original episodes
-(eval: the non-errored trainable epoch cohort). Each record carries its provenance at the
-episode level: `env` (`id` plus the orchestrator's `name`), full `task`, `group` (`id`),
-and `run`. Training-run records discriminate train/eval work and include dispatch
-step plus an optional live-policy version span. Traces retain their own task,
-verifiers, agent, and runtime fields.
+Everything the file monitor dumps lives under `monitors/file/`; nothing is written
+there when the monitor is off. The traces and everything written about them sit under
+`traces/`, and every index is named for the stream it indexes and sits beside it. Those
+indexes are what keep reading a run cheap: a consumer browses them instead of the
+streams, and seeks by the offsets they carry to read a single episode or its token
+streams. Both are derived, so deleting them only costs a reader the work of rebuilding
+what it needs. `stream.jsonl` is a stream of native `vf.Episode`
+records (training tensors excluded), one line per episode in arrival order, whatever
+kind of work it did — including trace-less failures, curriculum-rejected work, and
+work that never enters a batch, so it is crash-durable. Each record carries its
+provenance: `env` (`id` plus the orchestrator's `name`), full `task`, `group` (`id`),
+and `run`.
+
+A trace has several steps, so each is stamped as its own event rather than implied by
+where the record sits. The file monitor stamps `info.kind` and `info.dispatch`/
+`info.arrival` (`{step, time}` each) as an episode lands; the ship-time annotation adds
+`info.effective` and `info.ship` — the orchestrator step whose batch shipped the
+cohort, or for eval the step that produced the policy it measured. Staleness is
+`ship.step - dispatch.step`. Only `effective` ties to a step; `all` is the whole stream.
+
+Everything learned after arrival is an append-only trace update keyed by `trace_id`,
+one file per producer so each has a single writer: the orchestrator records cohort
+membership, the scalar advantage and per-branch advantage streams; the trainer records
+its recomputed per-token logprobs and entropies. Readers fold the updates onto the
+stream records, newest winning.
 
 ```bash
-wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
-jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
+wc -l {run_dir}/monitors/file/traces/stream.jsonl
+jq '.traces[].rewards' {run_dir}/monitors/file/traces/stream.jsonl
+jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/monitors/file/traces/stream.jsonl
+jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).
 
 ### Common failure modes
 

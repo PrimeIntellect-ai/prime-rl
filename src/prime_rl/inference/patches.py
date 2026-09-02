@@ -234,8 +234,7 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
             raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
         if config.use_v2_model_runner:
             raise ValueError(
-                "The V2 model runner does not support routed experts capture - "
-                "set VLLM_USE_V2_MODEL_RUNNER=0 (the prime-rl launcher does this automatically)."
+                "Routed-expert capture with NIXL requires the V1 model runner. Set VLLM_USE_V2_MODEL_RUNNER=0."
             )
 
         # vLLM rejects every KV connector, but our P/D path uses NIXL and

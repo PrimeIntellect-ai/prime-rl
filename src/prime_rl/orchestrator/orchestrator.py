@@ -37,6 +37,7 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before tr
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
+from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -559,6 +560,7 @@ class Orchestrator:
                 raise ValueError("Orchestrated episode is missing training-run provenance")
             kind = episode.run.work.type
             step = episode.run.work.step if kind == "eval" else self.progress.step
+            stamp_arrival([episode], kind, step)
             await monitors.log([episode], step, kind, "all")
 
             if kind == "eval":
@@ -649,9 +651,11 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # The effective (clean, trained-on) subset is logged at ship time; the full arrival
-        # window already streamed into the ``all`` cohort on arrival.
+        # The effective (clean, trained-on) subset is logged at ship time as annotation
+        # records against each trace's arrival record - membership, advantages, the step
+        # it shipped at - never a second episode copy.
         await monitors.log(effective.vf_episodes, step, "train", "effective")
+        await monitors.log_annotations(stamp_batch(effective.vf_episodes, step))
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -908,6 +912,7 @@ class Orchestrator:
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         if batch.episodes.effective:
             await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")

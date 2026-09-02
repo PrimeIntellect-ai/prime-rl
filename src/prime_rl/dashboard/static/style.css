@@ -135,9 +135,26 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 .dd-opt:hover { background: var(--grey-2); color: var(--grey-6); }
 .dd-opt.active { color: var(--accent); }
 .dd-opt.disabled { color: var(--grey-3); cursor: default; }
+/* an option with nothing to offer greys out and names its reason */
+.dd-opt.unavailable { display: flex; justify-content: space-between; gap: 28px; }
+.dd-opt.unavailable:hover { background: none; color: var(--grey-3); }
+.dd-why { color: var(--grey-3); }
+.dd-note {
+  padding: 5px 12px 7px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+}
+.dd-btn.unavailable { color: var(--grey-4); }
 .dd-menu {
   position: absolute;
   top: 34px;
+  /* anchor to the trigger's left edge: without it the menu lays out from its
+     static position and runs off the side of the window */
+  left: 0;
   z-index: 40;
   background: var(--grey-1);
   border: 1px solid var(--grey-3);
@@ -792,7 +809,8 @@ mark.hit {
 .tl-tooltip dd { color: var(--grey-6); margin: 0; }
 .tl-tooltip-hint { color: var(--grey-4); border-top: 1px solid var(--hairline); margin-top: 9px; padding-top: 7px; font-size: 9.5px; }
 
-.trace-errors { margin-top: auto; padding-top: 12px; }
+/* the banners lead the transcript, so they stand off the first entry */
+.trace-errors { margin-top: auto; padding-top: 12px; margin-bottom: 14px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
@@ -892,7 +910,7 @@ details.sub .sub-name { font-weight: 500; color: var(--grey-6); }
 details.sub > .entry-body { border-top: 1px solid var(--hairline); }
 
 /* tool definitions are model context, but deliberately sit outside numbered messages */
-details.tool-definitions, details.rendered-transcript {
+details.tool-definitions, .rendered-transcript {
   border: 1px solid var(--grey-3);
   margin-bottom: 12px;
   background: rgba(183, 166, 250, 0.025);
@@ -1091,3 +1109,72 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   font-size: 12px;
 }
 #view-toast .toast-text { color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+/* filter & sort popover */
+.dd-filters { min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
+.dd-sec {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--grey-4);
+  border-bottom: 1px solid var(--grey-3);
+  padding-bottom: 3px;
+  margin-top: 2px;
+}
+.dd-filters .dd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
+/* controls sit right, sized to their content, so the label reads as the row's subject */
+.dd-filters .dd-row select, .dd-filters .dd-row .dd-select, .dd-filters .dd-row .seg { margin-left: auto; }
+.dd-filters .dd-row .dd-btn { justify-content: space-between; gap: 8px; }
+.dd-filters .t-label { white-space: nowrap; }
+
+/* episodes-finished histogram */
+#trace-chart { padding: 8px 12px 4px; border-bottom: 1px solid var(--grey-2); }
+#trace-chart .chart-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+#trace-chart .chart-title { font-size: 12px; font-weight: 600; }
+#trace-hist { overflow-x: auto; }
+#trace-hist svg { display: block; max-width: 100%; }
+.hbar { fill: var(--accent); opacity: 0.7; cursor: pointer; }
+.hbar:hover { opacity: 1; }
+.hbar.on { opacity: 1; fill: #fff; }
+.hgrid { stroke: var(--grey-3); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.hax { fill: var(--grey-4); font-size: 10px; }
+.hval { text-anchor: end; }
+
+#episode-table td.nowrap { white-space: nowrap; }
+
+/* kind filter: each side toggles on its own, so both or one can be shown */
+.toggle-seg button { opacity: 0.4; }
+.toggle-seg button.on { opacity: 1; color: var(--accent); }
+.toggle-seg button.absent.on { color: var(--grey-4); }
+
+/* histogram hover card */
+#trace-chart { position: relative; }
+#hist-tip {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 6px 8px;
+  min-width: 150px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+#hist-tip .tip-head { color: var(--accent); margin-bottom: 4px; }
+#hist-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
+#hist-tip .tip-row span:first-child { color: var(--grey-4); }
+
+/* the label reads as the button's own name, so it takes the button's colour */
+.dd-select .dd-btn .dd-label { text-transform: uppercase; font-weight: 400; color: inherit; }
+
+/* rendered tokens: a header row over the sequence, not a disclosure */
+.rendered-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  background: var(--grey-2);
+  border-bottom: 1px solid var(--hairline);
+}

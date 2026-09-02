@@ -86,16 +86,6 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
-## RL trainer token exports
-
-For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `<run_dir>/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantages, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
-
-```toml
-enable_token_export = true
-```
-
-Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
-
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

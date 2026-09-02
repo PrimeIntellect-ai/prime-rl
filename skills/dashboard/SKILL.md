@@ -73,7 +73,9 @@ curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view 
 
 `run` is required; other fields are optional and leave unspecified UI state
 unchanged. For trace evidence, supply `step`, `kind`, and `subset` together and
-address the episode by stable `id`. Use optional `trace` and `branch` indices
+address the episode by stable `id`. The traces tab opens on the whole stream;
+`subset: "effective"` switches it to the cohort that shipped at one step. Use
+optional `trace` and `branch` indices
 for multi-agent traces and `highlight` entries shaped as `{node, quote,
 reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.
