@@ -38,7 +38,7 @@ of the compressed variants is below, tensors flowing downwards:
                                 │
                         values (= keys) softmax weighting
                                 │
-                          de-rotate output
+                          de-rotate output (undo RoPE on values = keys)
                                 │
                     grouped output projection
 """
