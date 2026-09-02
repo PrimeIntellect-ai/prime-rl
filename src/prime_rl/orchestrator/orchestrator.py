@@ -311,7 +311,9 @@ class Orchestrator:
             model_name=config.model.name,
             worker_world_sizes=self.admin_clients.worker_world_sizes,
             use_collective_rpc=self.admin_clients.use_collective_rpc,
-            topology_guard=self.admin_clients.ensure_topology_current,
+            topology_guard=(
+                self.admin_clients.ensure_topology_current if self.admin_clients.use_collective_rpc else None
+            ),
         )
         await self.receiver.initialize()
         get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")

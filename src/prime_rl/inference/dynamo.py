@@ -85,6 +85,11 @@ def parse_dynamo_workers(payload: object, model_name: str) -> tuple[DynamoWorker
             continue
         if error := raw_worker.get("error"):
             raise DynamoDiscoveryPending(f"Dynamo worker is not ready: {error}")
+        missing_metadata = [name for name in ("admin_base_url", "world_size") if raw_worker.get(name) is None]
+        if missing_metadata:
+            raise DynamoDiscoveryPending(
+                f"Dynamo worker is missing required RL metadata: {', '.join(missing_metadata)}"
+            )
         matching_workers.append(DynamoWorker.model_validate(raw_worker))
 
     if not matching_workers:
@@ -220,7 +225,7 @@ class DynamoAdminClients:
                     raise
                 previous_fingerprint = None
                 last_error = error
-            except (DynamoDiscoveryPending, httpx.TransportError) as error:
+            except (DynamoDiscoveryPending, httpx.TransportError, ValueError) as error:
                 previous_fingerprint = None
                 last_error = error
             await asyncio.sleep(self._poll_interval)
@@ -262,7 +267,7 @@ class DynamoAdminClients:
                 if error.response.status_code < 500:
                     raise
                 last_error = error
-            except (DynamoDiscoveryPending, httpx.TransportError) as error:
+            except (DynamoDiscoveryPending, httpx.TransportError, ValueError) as error:
                 last_error = error
             if attempt < 2:
                 await asyncio.sleep(self._poll_interval)
