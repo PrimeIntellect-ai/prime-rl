@@ -371,7 +371,7 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Platform Monitoring
 
-Register a run on the Prime Intellect platform and stream training metrics and episodes to its dashboard. Bare flag uses defaults:
+Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
 
 ```bash
 uv run rl @ rl.toml --monitors.prime
