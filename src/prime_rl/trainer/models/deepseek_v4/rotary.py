@@ -2,9 +2,14 @@ from collections.abc import Callable
 
 import torch
 from torch import nn
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+# The rope types whose inverse frequencies are fixed once computed. The two left out,
+# `dynamic` and `longrope`, rescale theirs per forward against the running sequence length,
+# which the buffers below, written once in `__init__`, never do.
+_SUPPORTED_ROPE_TYPES = frozenset({"default", "linear", "llama3", "proportional", "yarn"})
 
 
 def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
@@ -55,6 +60,11 @@ class DeepseekV4RotaryEmbedding(nn.Module):
 
     Because the rotation is interleaved, `forward` returns `cos` / `sin` at half the
     rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them.
+
+    `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
+    `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
+    outside `_SUPPORTED_ROPE_TYPES` is refused at construction, rather than rotating at
+    frequencies that were meant to be rescaled and never were.
     """
 
     def __init__(self, config: DeepseekV4Config, device: torch.device | None = None):
@@ -68,6 +78,12 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         self.rope_type: dict[str, str] = {}
         for layer_type in self.layer_types:
             self.rope_type[layer_type] = config.rope_parameters[layer_type]["rope_type"]
+            if self.rope_type[layer_type] not in _SUPPORTED_ROPE_TYPES:
+                raise ValueError(
+                    f"rope type {self.rope_type[layer_type]!r} on {layer_type!r} is not supported; "
+                    f"the supported types are {sorted(_SUPPORTED_ROPE_TYPES)}, whose inverse "
+                    "frequencies are computed once here and never rescaled per forward"
+                )
             inv_freq, attention_scaling = self._rope_init_fn(layer_type)(config, device, layer_type=layer_type)
             self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
             self.register_buffer(f"{layer_type}_original_inv_freq", inv_freq.clone(), persistent=False)
@@ -112,16 +128,16 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         return inv_freq, 1.0
 
     @torch.no_grad()
-    @dynamic_rope_update
     def forward(
-        self, x: torch.Tensor, position_ids: torch.Tensor, layer_type: str
+        self, position_ids: torch.Tensor, layer_type: str, *, dtype: torch.dtype
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        device = position_ids.device
         inv_freq = getattr(self, f"{layer_type}_inv_freq")
         attention_scaling = getattr(self, f"{layer_type}_attention_scaling")
-        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
+        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(device)
         position_ids_expanded = position_ids[:, None, :].float()
 
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
+        device_type = device.type if isinstance(device.type, str) and device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):  # Force float32
             # No `cat([freqs, freqs])`: interleaved RoPE needs one theta per pair, and
             # `apply_rotary_pos_emb_interleaved` widens cos/sin next to the rotation.
@@ -129,7 +145,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             cos = freqs.cos() * attention_scaling
             sin = freqs.sin() * attention_scaling
 
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+        return cos.to(dtype=dtype), sin.to(dtype=dtype)
 
 
 __all__ = [

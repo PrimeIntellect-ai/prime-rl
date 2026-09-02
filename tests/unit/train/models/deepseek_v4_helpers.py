@@ -22,7 +22,6 @@ from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import default_dtype
 
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
@@ -219,12 +218,16 @@ def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
 
 def _inputs() -> tuple[torch.Tensor, torch.Tensor]:
     input_ids = torch.randint(0, _MODEL["vocab_size"], (_MODEL_BATCH, _MODEL_SEQ), device="cuda")
-    position_ids = torch.arange(_MODEL_SEQ, device="cuda").unsqueeze(0).expand(_MODEL_BATCH, -1)
-    return input_ids, position_ids
+    return input_ids, _seq_positions(input_ids).expand(_MODEL_BATCH, -1)
 
 
 def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
     return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+
+
+def _seq_positions(input_ids: torch.Tensor) -> torch.Tensor:
+    """Document-local positions of the single-document row `_seq_lens` describes."""
+    return torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
 
 
 def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
@@ -252,30 +255,10 @@ def prime_attention_config() -> DeepseekV4Config:
     return DeepseekV4Config(**_ATTN)
 
 
-def _position_ids() -> torch.Tensor:
-    return torch.arange(_MODULE_SEQ, device="cuda").unsqueeze(0).expand(_MODULE_BATCH, -1)
-
-
 def _hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hidden = torch.randn(_MODULE_BATCH, _MODULE_SEQ, _ATTN["hidden_size"])
     return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
-
-
-def _position_embeddings(
-    position_ids: torch.Tensor | None = None, dtype: torch.dtype = torch.bfloat16
-) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """The `main` and `compress` rotary tables for `position_ids`, defaulting to the unpacked row.
-
-    `dtype` is the tables' and has to match the module the caller runs, so the fp32 packing
-    comparisons are not silently handed bf16 cosines.
-    """
-    position_ids = _position_ids() if position_ids is None else position_ids
-    prime_config = prime_attention_config()
-    with torch.device("cuda"), default_dtype(dtype):
-        rotary = DeepseekV4RotaryEmbedding(prime_config)
-        probe = torch.zeros(*position_ids.shape, _ATTN["hidden_size"])
-    return {rope_type: rotary(probe, position_ids, rope_type) for rope_type in ("main", "compress")}
 
 
 def prime_attention(layer_idx: int = _SLIDING_LAYER, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
@@ -320,32 +303,23 @@ def prime_hash_moe() -> nn.Module:
     return module
 
 
-def _cu_seqlens(doc_lens: tuple[int, ...]) -> torch.Tensor:
-    return get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=sum(doc_lens))[0]
-
-
-def _packed_position_ids(doc_lens: tuple[int, ...], batch: int = _MODULE_BATCH) -> torch.Tensor:
-    positions = torch.cat([torch.arange(length, device="cuda") for length in doc_lens])
-    return positions.unsqueeze(0).expand(batch, -1)
-
-
-def _compress_rates(module: nn.Module) -> set[int]:
-    """The rates an attention layer needs a layout for: its compressor's, or none at all."""
-    return set() if module.compressor is None else {module.compressor.compress_rate}
-
-
-def _packed_context(module: nn.Module, doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
-    """The context `DeepseekV4Model` would hand `module` for a row laid out as `doc_lens`.
+def _packed_context(
+    doc_lens: tuple[int, ...], dtype: torch.dtype, config: DeepseekV4Config | None = None
+) -> PackedContext:
+    """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     `_SINGLE_DOC` gives back the single-document context, which is what the unpacked half of a
-    packing comparison runs at. `dtype` is the mask's, and has to be the one the caller runs at.
+    packing comparison runs at. `dtype` types the mask and the rotary tables, and has to be the
+    one the caller runs at. `config` decides the sliding window and which compress rates get a
+    layout, so it has to be the config the caller's module was built from; it defaults to the
+    single-mechanism `_ATTN` one.
     """
+    config = prime_attention_config() if config is None else config
+    with torch.device("cuda"), default_dtype(dtype):
+        rotary = DeepseekV4RotaryEmbedding(config)
     return PackedContext.build(
-        cu_seqlens=_cu_seqlens(doc_lens),
-        position_ids=_packed_position_ids(doc_lens),
-        total_tokens=sum(doc_lens),
-        compress_rates=_compress_rates(module),
-        sliding_window=_ATTN["sliding_window"],
+        rotary_emb=rotary,
+        seq_lens=torch.tensor(doc_lens, device="cuda"),
         dtype=dtype,
         device=torch.device("cuda"),
     )

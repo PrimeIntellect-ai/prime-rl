@@ -25,7 +25,6 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
@@ -54,7 +53,6 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
         *,
@@ -63,11 +61,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         dtype = hidden_states.dtype
 
         post, comb, collapsed = self.attn_hc(hidden_states)
-        attn_output, _ = self.self_attn(
-            self.input_layernorm(collapsed),
-            position_embeddings=position_embeddings,
-            packed=packed,
-        )
+        attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
         hidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(
             comb.to(dtype).transpose(-1, -2), hidden_states
         )
@@ -218,6 +212,20 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Token ids. Threaded down to every decoder layer, not just the embedding: the
             bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
+        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Each token's position within its own document. Only checked, never consulted: the
+            positions every rotation and every causal threshold reads are derived from
+            `seq_lens`, so the two cannot disagree.
+
+            NOTE: omitting it is not the same as having no positions. `inject_prime_lm_head`
+            rebinds this model's forward and substitutes a 1-based `arange(1, N + 1)`, which is
+            wrong for V4 twice over, since entries are numbered and rotated from 0: it shifts
+            every query-entry RoPE distance by one and admits an entry whose last source token
+            is one past the query. `check_position_ids` rejects it, so a caller that passes
+            nothing gets a `ValueError` rather than a working default.
+
+            TODO: make that substitution 0-based, matching HF's convention and every other
+            model's own fallback, after which an omitted `position_ids` would just be accepted.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
@@ -238,41 +246,25 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        if position_ids is None:
-            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-
-        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-        )
 
         # Every layer type attends over the same local window; the compressed variants add their
         # own out-of-window entries and the per-query bias that gates them. One layout per distinct
         # compress rate, shared by every layer that pools at that rate; sliding layers own no
         # compressor and contribute no rate.
         packed = PackedContext.build(
-            cu_seqlens=cu_seqlens,
-            position_ids=position_ids,
-            total_tokens=inputs_embeds.shape[1],
-            compress_rates={
-                self.config.compress_rates[layer_type]
-                for layer_type in set(self.config.layer_types)
-                if layer_type in self.config.compress_rates
-            },
-            sliding_window=self.config.sliding_window,
+            rotary_emb=self.rotary_emb,
+            seq_lens=seq_lens,
             dtype=inputs_embeds.dtype,
             device=inputs_embeds.device,
         )
-        position_embeddings = {
-            rope_type: self.rotary_emb(inputs_embeds, position_ids, rope_type)
-            for rope_type in self.rotary_emb.layer_types
-        }
+        if position_ids is not None:
+            packed.check_position_ids(position_ids)
 
         hidden_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
-                position_embeddings=position_embeddings,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
