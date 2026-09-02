@@ -19,12 +19,14 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from itertools import groupby
 from pathlib import Path
 
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
@@ -518,13 +520,30 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 # ------------------------------------------------------------------------ rollouts
 
 
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
 def traces_file(run_dir: Path) -> Path | None:
-    """The run's episode stream. prime-rl dumps it through the file monitor; a
-    verifiers ``uv run eval`` run writes its own at the run root."""
-    for path in (get_trace_stream(run_dir), run_dir / "traces.jsonl"):
-        if path.is_file() and path.stat().st_size > 0:
-            return path
+    """The run's episode stream: the chunk directory the file monitor writes, browsed
+    through its index, or the single ``traces.jsonl`` a verifiers ``uv run eval`` run
+    writes at the run root."""
+    stream = get_trace_stream(run_dir)
+    if _file_size(get_index_path(stream)) > 0:
+        return stream
+    bare = run_dir / "traces.jsonl"
+    if bare.is_file() and bare.stat().st_size > 0:
+        return bare
     return None
+
+
+def stream_version(path: Path) -> int:
+    """What a stream's readers key their caches on. Both shapes are append-only, so
+    a size is a version: the index for a chunked stream, the file itself for a bare one."""
+    return _file_size(get_index_path(path)) if path.is_dir() else _file_size(path)
 
 
 def require_stream(run_dir: Path) -> Path:
@@ -590,6 +609,11 @@ def line_offsets(path: Path) -> list[int]:
 
 
 def episode_summaries(path: Path) -> list[dict]:
+    """Every episode's full summary, nested reward/metric/timing maps included. Parsed
+    from the records themselves, resuming from the last one summarised, and persisted
+    so a revisit skips the parse."""
+    if path.is_dir():
+        return chunked_summaries(path)
     offsets = line_offsets(path)
     with _lock:
         cached_count, summaries = _lru_get(_summaries_cache, path) or (0, [])
@@ -616,6 +640,39 @@ def episode_summaries(path: Path) -> list[dict]:
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
     write_sidecar(path, summaries)
+    return summaries
+
+
+def chunked_summaries(stream: Path) -> list[dict]:
+    """The summaries of a chunked stream: its index says where each record sits, so the
+    walk opens each chunk once and seeks record to record."""
+    index = get_index_path(stream)
+    rows = index_rows(index) or []
+    with _lock:
+        cached_count, summaries = _lru_get(_summaries_cache, stream) or (0, [])
+        if cached_count > len(rows):
+            cached_count, summaries = 0, []
+    if cached_count == 0:
+        loaded = load_sidecar(index)
+        if loaded is not None:
+            summaries = loaded[: len(rows)]
+            cached_count = len(summaries)
+    if cached_count == len(rows):
+        with _lock:
+            _lru_put(_summaries_cache, stream, (cached_count, summaries))
+        return summaries
+    summaries = list(summaries[:cached_count])
+    for chunk, chunk_rows in groupby(rows[cached_count:], key=lambda row: row.get("chunk", 0)):
+        with open_chunk(stream, chunk) as f:
+            for row in chunk_rows:
+                f.seek(row.get("offset", 0))
+                try:
+                    summaries.append(summarize_episode(row["line"], orjson.loads(f.readline())))
+                except orjson.JSONDecodeError:
+                    summaries.append({"line": row["line"], "id": None, "error": "unparseable"})
+    with _lock:
+        _lru_put(_summaries_cache, stream, (len(rows), summaries))
+    write_sidecar(index, summaries)
     return summaries
 
 
@@ -717,54 +774,17 @@ def timeline_reward(trace: dict) -> float | None:
     )
 
 
-def _file_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return -1
-
-
-def annotations_files(run_dir: Path) -> list[Path]:
-    """The annotation records themselves, one file per producer — their indexes are
-    named for them, so a name that is already an index is one of those."""
+def annotation_streams(run_dir: Path) -> list[Path]:
+    """The annotation streams, one chunk directory per producer, each indexed beside it."""
     directory = get_annotations_dir(run_dir)
     if not directory.is_dir():
         return []
-    return sorted(path for path in directory.glob("*.jsonl") if not path.name.endswith(".index.jsonl"))
+    return sorted(path for path in directory.iterdir() if path.is_dir())
 
 
-def annotation_source(data: Path) -> Path:
-    """The file a producer's rows are read from: its index when it wrote one, else the
-    records themselves. Whatever depends on those rows versions itself by this file's
-    size - the record file can grow before its index row is flushed, and a version
-    taken from it would miss the index completing."""
-    index = get_index_path(data)
-    return index if index.is_file() else data
-
-
-def annotation_rows(data: Path) -> list[dict]:
-    """A producer's updates as index rows - ``{trace_id, info, offset}`` - read from its
-    index when it wrote one, and derived from the records themselves when it did not."""
-    rows = index_rows(get_index_path(data))
-    if rows is not None:
-        return rows
-    size = data.stat().st_size
-    with _lock:
-        cached = _lru_get(_index_cache, data)
-    if cached and cached[0] == size:
-        return cached[1]
-    rows, offset = [], 0
-    with data.open("rb") as f:
-        for raw in f:
-            try:
-                update = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                break
-            rows.append({"trace_id": update.get("trace_id"), "info": update.get("info"), "offset": offset})
-            offset += len(raw)
-    with _lock:
-        _lru_put(_index_cache, data, (size, rows))
-    return rows
+def annotation_rows(stream: Path) -> list[dict]:
+    """A producer's updates as its index rows - ``{trace_id, info, chunk, offset}``."""
+    return index_rows(get_index_path(stream)) or []
 
 
 def annotation_index(run_dir: Path) -> dict[str, dict]:
@@ -773,8 +793,8 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     Reads the producers' indexes when they exist, so answering "which cohort, what
     credit" never touches the token streams — they can outweigh the traces themselves.
     A producer that wrote no index is read in full."""
-    files = annotations_files(run_dir)
-    key = tuple((data.name, _file_size(annotation_source(data))) for data in files)
+    files = annotation_streams(run_dir)
+    key = tuple((data.name, stream_version(data)) for data in files)
     cache_key = get_annotations_dir(run_dir)
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
@@ -785,17 +805,17 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     # the previous one must not see it change size under it.
     consumed, index = ({}, {}) if cached is None else (dict(cached[2]), dict(cached[1]))
 
-    def note(trace_id: str | None, info: dict, data: Path, offset: int) -> None:
+    def note(trace_id: str | None, info: dict, data: Path, chunk: int, offset: int) -> None:
         if not trace_id:
             return
         entry = index.setdefault(trace_id, {"info": {}, "at": []})
         entry["info"].update(info)
-        entry["at"].append((data, offset))
+        entry["at"].append((data, chunk, offset))
 
     for data in files:
         rows = annotation_rows(data)
         for row in rows[consumed.get(data, 0) :]:
-            note(row.get("trace_id"), row.get("info") or {}, data, row.get("offset", 0))
+            note(row.get("trace_id"), row.get("info") or {}, data, row.get("chunk", 0), row.get("offset", 0))
         consumed[data] = len(rows)
     with _lock:
         _lru_put(_annotations_cache, cache_key, (key, index, consumed))
@@ -806,9 +826,9 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
     """Every update recorded against one trace, read by seeking to each record."""
     entry = annotation_index(run_dir).get(trace_id)
     updates = []
-    for path, offset in (entry or {}).get("at", []):
+    for stream, chunk, offset in (entry or {}).get("at", []):
         try:
-            with path.open("rb") as f:
+            with open_chunk(stream, chunk) as f:
                 f.seek(offset)
                 updates.append(orjson.loads(f.readline()))
         except (OSError, orjson.JSONDecodeError):
@@ -1132,12 +1152,8 @@ def episode_rows(run_dir: Path) -> list[dict]:
     path = traces_file(run_dir)
     if path is None:
         return []
-    files = annotations_files(run_dir)
-    key = (
-        _file_size(stream_index_file(run_dir)),
-        path.stat().st_size,
-        *(_file_size(annotation_source(f)) for f in files),
-    )
+    files = annotation_streams(run_dir)
+    key = (stream_version(path), *(stream_version(f) for f in files))
     with _lock:
         cached = _lru_get(_rows_cache, run_dir)
     if cached and cached[0] == key:
@@ -1322,7 +1338,7 @@ def list_rollouts(run: str) -> dict:
 def stream_etag(run_dir: Path, path: Path) -> str:
     """What a listing depends on: the stream, and the annotations that give its rows
     their cohort and credit. Both are append-only, so their sizes are the version."""
-    return f"{path.stat().st_size}-{sum(_file_size(annotation_source(f)) for f in annotations_files(run_dir))}"
+    return f"{stream_version(path)}-{sum(stream_version(f) for f in annotation_streams(run_dir))}"
 
 
 def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
@@ -1439,15 +1455,19 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
-    """One episode. A written index carries the byte offset, so reading it never
-    touches the rest of the stream."""
-    if offset is None:
+def read_episode_at(path: Path, line: int, at: tuple[int, int] | None = None) -> dict:
+    """One episode. A written index says which chunk and byte offset it sits at, so
+    reading it never touches the rest of the stream; a bare file is scanned for its
+    line offsets instead."""
+    if at is None:
         offsets = line_offsets(path)
         if not 1 <= line <= len(offsets):
             raise HTTPException(404, "episode line out of range")
-        offset = offsets[line - 1]
-    with path.open("rb") as f:
+        f, offset = path.open("rb"), offsets[line - 1]
+    else:
+        chunk, offset = at
+        f = open_chunk(path, chunk)
+    with f:
         f.seek(offset)
         try:
             return orjson.loads(f.readline())
@@ -1456,11 +1476,13 @@ def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
             raise HTTPException(422, f"episode {line} is unparseable") from error
 
 
-def episode_offset(run_dir: Path, line: int) -> int | None:
+def episode_at(run_dir: Path, line: int) -> tuple[int, int] | None:
+    """Where the written index puts an episode: ``(chunk, offset)``, or None without one."""
     rows = written_index(run_dir)
     if rows is None or not 1 <= line <= len(rows):
         return None
-    return rows[line - 1].get("offset")
+    row = rows[line - 1]
+    return row.get("chunk", 0), row.get("offset", 0)
 
 
 @app.get("/api/runs/{run}/episodes/{line}")
@@ -1473,7 +1495,7 @@ def get_episode(
     """One episode, by its line in the stream, with every annotation folded on."""
     run_dir = get_run_dir(run)
     path = require_stream(run_dir)
-    rec = read_episode_at(path, line, episode_offset(run_dir, line))
+    rec = read_episode_at(path, line, episode_at(run_dir, line))
     # only the opened episode's streams are read, by seeking to each of its records
     for trace in rec.get("traces") or []:
         updates = trace_updates(run_dir, trace.get("id") or "")
@@ -1687,7 +1709,7 @@ async def view_events() -> "StreamingResponse":
 @app.get("/api/runs/{run}/episodes/{line}/timeline")
 def get_episode_timeline(run: str, line: int) -> dict:
     run_dir = get_run_dir(run)
-    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_offset(run_dir, line)))
+    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
 
 
 # -------------------------------------------------------------------------- static

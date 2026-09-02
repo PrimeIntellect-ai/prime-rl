@@ -28,6 +28,15 @@ class FileMonitorConfig(BaseConfig):
     """Path of the metrics JSONL file, relative to the file monitor's directory under the
     component's ``output_dir`` (``monitors/file/``; absolute paths win)."""
 
+    chunk_bytes: int = 5 * 1024**3
+    """Size at which a trace stream (the episodes, each producer's annotations) rolls to
+    a new numbered chunk file. A line never spans chunks."""
+
+    compress: bool = True
+    """Seal full chunks with zstd once the stream rolls past them (the live chunk stays
+    plain text). Sealed chunks use seekable frames: a reader still lands on one line,
+    and ``zstd -dcf stream/* | jq`` reads a whole stream."""
+
 
 class PrimeMonitorConfig(BaseConfig):
     name: str | None = None

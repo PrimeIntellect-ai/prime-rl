@@ -756,6 +756,7 @@ def train(config: TrainerConfig):
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")
+    asyncio.run(monitors.finalize())
 
     # Stop metrics/health server if configured
     if metrics_server is not None:

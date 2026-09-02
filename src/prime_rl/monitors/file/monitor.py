@@ -4,13 +4,14 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_file_monitor_dir
@@ -38,6 +39,7 @@ class FileMonitor(Monitor):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
+        self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
@@ -54,6 +56,14 @@ class FileMonitor(Monitor):
             row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
+    def _stream(self, directory: Path) -> tuple[ChunkedJsonl, BinaryIO]:
+        """A stream and its index, opened on first use and kept open. Writers flush the
+        stream before the index: a row a reader sees points at a record it can read."""
+        if directory not in self._streams:
+            stream = ChunkedJsonl(directory, self.config.chunk_bytes, self.config.compress)
+            self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
+        return self._streams[directory]
+
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Append each episode to the trace stream as it completes — every episode is
         serialized exactly once, in arrival order, whatever its kind, so an in-progress
@@ -64,45 +74,42 @@ class FileMonitor(Monitor):
             return
 
         def write() -> None:
-            path = get_trace_stream(self.output_dir)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            stream, index = self._stream(get_trace_stream(self.output_dir))
             # An index row goes out with every episode: summarising the record here,
             # while it is already in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
-            with open(path, "ab") as f, open(get_index_path(path), "ab") as index:
-                offset = f.tell()
-                for episode in episodes:
-                    record = episode.to_record()
-                    line = orjson.dumps(record, default=str, option=OPTS)
-                    f.write(line)
-                    self._logged += 1
-                    index.write(orjson.dumps(index_row(self._logged, record, offset), default=str, option=OPTS))
-                    offset += len(line)
+            for episode in episodes:
+                record = episode.to_record()
+                chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
+                self._logged += 1
+                index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+            stream.flush()
+            index.flush()
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
-        # Awaited (not fire-and-forget) so appends to one file never interleave.
+        # Awaited (not fire-and-forget) so appends to one stream never interleave.
         await asyncio.to_thread(write)
 
     async def log_annotations(self, updates: list[dict[str, Any]]) -> None:
-        """Append trace updates to this producer's annotation file — one writer per
-        file, so producers never interleave."""
+        """Append trace updates to this producer's annotation stream — one writer per
+        stream, so producers never interleave."""
         if not updates:
             return
 
         def write() -> None:
-            path = get_annotations_dir(self.output_dir) / f"{self.producer or 'unknown'}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
+            stream, index = self._stream(get_annotations_dir(self.output_dir) / (self.producer or "unknown"))
             # the scalars go to a sibling index so a reader can answer "which cohort,
             # what credit" without touching the token streams
-            with open(path, "ab") as f, open(get_index_path(path), "ab") as index:
-                offset = f.tell()
-                for update in updates:
-                    line = orjson.dumps(update, option=OPTS)
-                    f.write(line)
-                    index.write(orjson.dumps(update_index_row(update, offset), option=OPTS))
-                    offset += len(line)
+            for update in updates:
+                chunk, offset = stream.append(orjson.dumps(update, option=OPTS))
+                index.write(orjson.dumps(update_index_row(update, chunk, offset), option=OPTS))
+            stream.flush()
+            index.flush()
 
         await asyncio.to_thread(write)
 
     async def finalize(self) -> None:
+        for stream, index in self._streams.values():
+            stream.close()
+            index.close()
         self.logger.info(f"Finalized metrics at {self.path}")

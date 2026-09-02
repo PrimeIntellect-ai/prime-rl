@@ -10,12 +10,18 @@ from torch import Tensor
 from prime_rl import monitors
 from prime_rl.monitors.file.traces.update import make_update
 
+RECORD_FLOAT_DECIMALS = 4
+"""The precision verifiers gives per-token floats in a record
+(``verifiers.v1.graph.RECORD_FLOAT_DECIMALS``); the trainer does not import verifiers."""
+
 
 class AnnotationWriter:
     """Collects the trainer's per-token streams (recomputed logprobs, entropies) during
     a step and logs them as trace updates — one record per trained sequence, keyed by
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix
-    so readers can fold them onto trace nodes without knowing the trainer's loss mask.
+    so readers can fold them onto trace nodes without knowing the trainer's loss mask;
+    positions outside that mask hold null, since a fold keeps sampled tokens only and a
+    run of nulls costs nothing once the stream is sealed.
 
     ``export`` accumulates locally per micro batch; ``flush`` gathers every rank's
     records to rank 0, the only rank running monitors. CP ranks past the first
@@ -50,8 +56,9 @@ class AnnotationWriter:
                 end -= 1
             if end <= span_start or not any(loss_mask[span_start:end]):
                 continue
-            logprob_span = trainer_logprobs[span_start:end]
-            entropy_span = entropies[span_start:end]
+            trained = loss_mask[span_start:end]
+            logprob_span = [v if m else None for v, m in zip(trainer_logprobs[span_start:end], trained)]
+            entropy_span = [v if m else None for v, m in zip(entropies[span_start:end], trained)]
             # After the right shift, a sample's first value crosses the packing boundary.
             logprob_span[0] = None
             entropy_span[0] = None
@@ -78,5 +85,7 @@ class AnnotationWriter:
 
 
 def _tensor_to_floats(tensor: Tensor) -> list[float | None]:
+    """Rounded like the record's own logprobs: the streams only ever colour an overlay,
+    and full-precision digits are the least compressible bytes a run writes."""
     values = tensor.detach().to(dtype=torch.float32, device="cpu").reshape(-1).tolist()
-    return [float(value) if math.isfinite(value) else None for value in values]
+    return [round(value, RECORD_FLOAT_DECIMALS) if math.isfinite(value) else None for value in values]

@@ -163,24 +163,29 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 
 ```
 {run_dir}/monitors/file/metrics.jsonl                              # every metric row, tagged by producer
-{run_dir}/monitors/file/traces/stream.jsonl                        # every episode, appended as it arrives
-{run_dir}/monitors/file/traces/stream.index.jsonl                  # one compact row per episode, with its byte offset
-{run_dir}/monitors/file/traces/annotations/{producer}.jsonl        # trace updates: orch ship-time facts, trainer per-token streams
+{run_dir}/monitors/file/traces/stream/00000.jsonl.zst              # every episode, appended as it arrives: sealed chunks ...
+{run_dir}/monitors/file/traces/stream/00001.jsonl                  # ... and the live one, plain text
+{run_dir}/monitors/file/traces/stream.index.jsonl                  # one compact row per episode, with its chunk and byte offset
+{run_dir}/monitors/file/traces/annotations/{producer}/00000.jsonl  # trace updates: orch ship-time facts, trainer per-token streams
 {run_dir}/monitors/file/traces/annotations/{producer}.index.jsonl  # each update's scalars and where its record sits
 ```
 
 Everything the file monitor dumps lives under `monitors/file/`; nothing is written
 there when the monitor is off. The traces and everything written about them sit under
-`traces/`, and every index is named for the stream it indexes and sits beside it. Those
-indexes are what keep reading a run cheap: a consumer browses them instead of the
-streams, and seeks by the offsets they carry to read a single episode or its token
-streams. Both are derived, so deleting them only costs a reader the work of rebuilding
-what it needs. `stream.jsonl` is a stream of native `vf.Episode`
-records (training tensors excluded), one line per episode in arrival order, whatever
-kind of work it did — including trace-less failures, curriculum-rejected work, and
-work that never enters a batch, so it is crash-durable. Each record carries its
-provenance: `env` (`id` plus the orchestrator's `name`), full `task`, `group` (`id`),
-and `run`.
+`traces/`. Each stream is a directory of numbered chunks — the writer rolls to a new
+chunk at `monitors.file.chunk_bytes` (5 GiB) and, with `monitors.file.compress` (on),
+seals the full one with zstd in the background; a finished run seals its live chunk
+too. Sealed chunks use seekable frames, so a seek still costs one frame, and
+`zstd -dcf` streams them together with the plain live chunk. Every index is named for
+the stream it indexes and sits beside it. Those indexes are what keep reading a run
+cheap: a consumer browses them instead of the streams, and seeks by the chunk and
+offset they carry to read a single episode or its token streams. Both are derived, so
+deleting them only costs a reader the work of rebuilding what it needs. The stream
+holds native `vf.Episode` records (training tensors excluded; per-token floats rounded
+to 4 decimals), one line per episode in arrival order, whatever kind of work it did —
+including trace-less failures, curriculum-rejected work, and work that never enters a
+batch, so it is crash-durable. Each record carries its provenance: `env` (`id` plus the
+orchestrator's `name`), full `task`, `group` (`id`), and `run`.
 
 A trace has several steps, so each is stamped as its own event rather than implied by
 where the record sits. The file monitor stamps `info.kind` and `info.dispatch`/
@@ -196,10 +201,10 @@ its recomputed per-token logprobs and entropies. Readers fold the updates onto t
 stream records, newest winning.
 
 ```bash
-wc -l {run_dir}/monitors/file/traces/stream.jsonl
-jq '.traces[].rewards' {run_dir}/monitors/file/traces/stream.jsonl
-jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/monitors/file/traces/stream.jsonl
-jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.jsonl
+wc -l {run_dir}/monitors/file/traces/stream.index.jsonl
+zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq '.traces[].rewards'
+zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq 'select(.ok | not) | {id, env: .env.id, errors}'
+jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orch.index.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).
