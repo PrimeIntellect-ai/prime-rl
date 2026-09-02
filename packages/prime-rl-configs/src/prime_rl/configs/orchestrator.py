@@ -578,6 +578,9 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 
+    enable_cache_salt: bool = True
+    """Salt live-policy requests by policy version to avoid prefix-cache reuse across weight updates."""
+
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
