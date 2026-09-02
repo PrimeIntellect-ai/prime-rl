@@ -43,11 +43,12 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
 
 def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client = AsyncMock()
+    admin_plane = MagicMock(clients=[mock_client])
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
@@ -56,19 +57,9 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_admin_plane_owns_weight_update_dispatch():
+def test_setup_admin_plane_uses_static_clients():
     admin_plane = setup_admin_plane(ClientConfig(), "test-model")
     assert isinstance(admin_plane, AdminClients)
-
-    with patch("prime_rl.orchestrator.clients.update_weights", new=AsyncMock()) as update:
-        asyncio.run(admin_plane.update_weights(Path("/test/weights"), step=3))
-
-    update.assert_awaited_once_with(
-        admin_plane.clients,
-        Path("/test/weights"),
-        step=3,
-        on_paused=None,
-    )
     asyncio.run(admin_plane.aclose())
 
 

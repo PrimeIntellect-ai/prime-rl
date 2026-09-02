@@ -108,54 +108,6 @@ class AdminClients:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def initialize_nccl(
-        self,
-        *,
-        host: str,
-        port: int,
-        timeout: int,
-        inference_world_size: int,
-        quantize_in_weight_transfer: bool = False,
-    ) -> None:
-        await init_nccl_broadcast(
-            self.clients,
-            host,
-            port,
-            timeout,
-            inference_world_size,
-            quantize_in_weight_transfer,
-        )
-
-    async def initialize_nixl(
-        self,
-        *,
-        host: str,
-        port: int,
-        timeout: int,
-        inference_world_size: int,
-        session_id: str,
-    ) -> None:
-        await init_nixl_broadcast(
-            self.clients,
-            host,
-            port,
-            timeout,
-            inference_world_size,
-            session_id,
-        )
-
-    async def update_weights(
-        self,
-        weight_dir: Path | None,
-        *,
-        step: int = 0,
-        on_paused: Callable[[], None] | None = None,
-    ) -> None:
-        await update_weights(self.clients, weight_dir, step=step, on_paused=on_paused)
-
-    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
-        await load_lora_adapter(self.clients, lora_name, lora_path)
-
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
@@ -355,7 +307,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
 
 
 async def update_weights(
-    admin_clients: list[AsyncClient],
+    admin_plane: AdminPlane,
     weight_dir: Path | None,
     step: int = 0,
     on_paused: Callable[[], None] | None = None,
@@ -373,7 +325,7 @@ async def update_weights(
     """
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    await _pause_engines(admin_clients, step=step)
+    await _pause_engines(admin_plane.clients, step=step)
     try:
         if on_paused is not None:
             on_paused()
@@ -385,11 +337,11 @@ async def update_weights(
                     json={"weight_dir": weight_dir_posix},
                     timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                 )
-                for admin_client in admin_clients
+                for admin_client in admin_plane.clients
             ]
         )
     finally:
-        await _resume_engines(admin_clients)
+        await _resume_engines(admin_plane.clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -416,7 +368,7 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -444,11 +396,11 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         )
         response.raise_for_status()
 
-    await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+    await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_plane.clients])
 
 
 async def init_nccl_broadcast(
-    admin_clients: list[AsyncClient],
+    admin_plane: AdminPlane,
     host: str,
     port: int,
     timeout: int,
@@ -463,6 +415,7 @@ async def init_nccl_broadcast(
     """
     logger = get_logger()
 
+    admin_clients = admin_plane.clients
     gpus_per_server = inference_world_size // len(admin_clients)
 
     logger.info(
@@ -498,7 +451,7 @@ async def init_nccl_broadcast(
 
 
 async def init_nixl_broadcast(
-    admin_clients: list[AsyncClient],
+    admin_plane: AdminPlane,
     host: str,
     port: int,
     timeout: int,
@@ -506,6 +459,7 @@ async def init_nixl_broadcast(
     session_id: str,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+    admin_clients = admin_plane.clients
     workers_per_server = inference_world_size // len(admin_clients)
 
     async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:

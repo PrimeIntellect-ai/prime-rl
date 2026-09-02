@@ -11,6 +11,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import init_nccl_broadcast, update_weights
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
@@ -201,16 +202,18 @@ class NCCLWeightReceiver(WeightReceiver):
     marker."""
 
     async def initialize(self) -> None:
-        await self.admin_plane.initialize_nccl(
-            host=self.config.host,
-            port=self.config.port,
-            timeout=self.config.timeout,
+        await init_nccl_broadcast(
+            self.admin_plane,
+            self.config.host,
+            self.config.port,
+            self.config.timeout,
             inference_world_size=self.config.inference_world_size,
             quantize_in_weight_transfer=self.config.quantize_in_weight_transfer,
         )
 
     async def receive(self, step: int) -> None:
-        await self.admin_plane.update_weights(
+        await update_weights(
+            self.admin_plane,
             self.step_dir(step),
             step=step,
             on_paused=lambda: self._ack(step),
