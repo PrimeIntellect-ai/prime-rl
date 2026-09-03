@@ -1,0 +1,688 @@
+max_steps = 1000
+seq_len = 131072
+output_dir = "/shared/parker/prime-rl-outputs"
+
+[run]
+name = "nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1"
+
+[env_vars]
+HF_HOME = "/shared/parker/huggingface"
+HF_TOKEN_PATH = "/home/parker/.cache/huggingface/token"
+UV_CACHE_DIR = "/shared/parker/uv-cache"
+CUDA_HOME = "/usr/local/cuda-12.9"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TRITON_CACHE_DIR = "/tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1-triton"
+TMPDIR = "/tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1"
+HARBOR_CACHE_DIR = "/shared/parker/harbor-cache/hillclimb-f44acccc8"
+UV_NO_SYNC = "1"
+UV_LINK_MODE = "copy"
+PYTHONPATH = "/shared/parker/worktrees/prime-envs-tb21-patched/environments/terminal/terminal_bench_2"
+
+[slurm]
+job_name = "n35l-hurd-f496-online-p8-r1"
+partition = "all"
+shared_fs = true
+project_dir = "/shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch"
+template_path = "/shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch/src/prime_rl/templates/multi_node_rl_router_tunnel_canary.sbatch.j2"
+pre_run_command = "mkdir -p /tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1 /tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1-uv-cache /shared/parker/huggingface /shared/parker/prime-rl-outputs /shared/parker/harbor-cache/hillclimb-f44acccc8 ; UV_NO_SYNC=1 timeout 120 /shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch/.venv/bin/prime sandbox delete --label \"nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1\" -y || true"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[monitors.wandb]
+project = "hillclimb"
+name = "nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 20
+keep_last = 10
+
+[resume]
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+ep = 8
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+dp_replicate = 1
+
+[trainer.model.ac]
+freq = 1
+
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+lr = 2e-06
+
+[orchestrator]
+batch_size = 512
+group_size = 32
+max_off_policy_steps = 8
+
+[orchestrator.concurrency]
+initial_inflight = 1536
+max_inflight = 2048
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "nemotron-3"
+truncate_history_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[[orchestrator.train.source]]
+name = "hillclimb-hurdle"
+
+[orchestrator.train.source.env.taskset]
+id = "hillclimb-static-rewards"
+repo = "PrimeIntellect-ai/prime-tasks-private@f052899a1ec9229611b9237ab69c0134d3a75e7f"
+registry_path = "registry.json"
+dataset = "hillclimb-binary-reward-v1"
+reward_mode = "hurdle_fraction"
+tasks = [
+    "task-ach-batch-validator-ingest-settlement-76678e79cda2",
+    "task-alert-router-gateway-secure-deploy-017be15c7bb9",
+    "task-ap-invoice-post-gating-repair-9b47d1d61de5",
+    "task-batchflow-concurrency-incident-review-7eafc4a5823e",
+    "task-batchflow-concurrency-incident-review-b0c166b725ab",
+    "task-bitterroot-elk-telemetry-recovery-cbc846549aec",
+    "task-bitterroot-elk-telemetry-recovery-corrected-0f95d71b7cd7",
+    "task-bloomfield-loyalty-stored-value-migration-0f922b4c9e4e",
+    "task-bloomfield-stored-value-lifecycle-cutover-7af308987298",
+    "task-cascade-lab-instrument-wire-compat-838cbf957a2e",
+    "task-cdr-mediation-archive-migration-aed003641f65",
+    "task-cdr-mediation-cross-switch-merge-migration-7a9ff0fd15f5",
+    "task-cdr-mediation-cross-switch-merge-migration-harde-462d0aba7dfe",
+    "task-chromatography-integrator-migration-9a4c20a8d8d1",
+    "task-coated-panel-color-release-recovery-417c7d452fe9",
+    "task-compound-registry-identity-and-leak-free-split-7cfb0ac76799",
+    "task-compound-registry-recovery-52e32a6dfbd0",
+    "task-compound-registry-recovery-d1b9f1c052a9",
+    "task-config-driven-event-reconciliation-3f78073edcae",
+    "task-crossbay-supplier-master-repair-cefd2168268c",
+    "task-crossbay-supplier-master-repair-simplified-5d9a9fdab71a",
+    "task-dataport-bundle-release-recovery-d98d6c54eecb",
+    "task-dataport-v4-release-recovery-f6657ab78289",
+    "task-dataport-v5-release-recovery-9d09ba604197",
+    "task-dataset-mirror-release-bundle-b0d96fb9b3ae",
+    "task-dual-toolchain-build-cutover-a9e2945254fd",
+    "task-edge-gateway-routes-recovery-1580cca235fc",
+    "task-edge-proxy-upstream-migration-eb2a0c932e21",
+    "task-edgegate-compact-spam-classifier-deploy-a0cc9d93cbac",
+    "task-engraving-job-recovery-simplified-f3de2590593a",
+    "task-ev-parcel-dispatch-planner-c39effccf76d",
+    "task-fieldnotes-ingest-deploy-harden-b4bf0548be0e",
+    "task-firmware-ota-manifest-recovery-23a926b968bb",
+    "task-flag-service-deploy-incident-recovery-3477bdb01bf7",
+    "task-flagroute-authority-deploy-repair-speed-correct-6fb2f98754ed",
+    "task-flow-loop-tuning-incident-recovery-5a9ecbcfb728",
+    "task-gene-synthesis-construct-qc-257acbd16823",
+    "task-gpu-serving-allocator-migration-698b78cbb5ef",
+    "task-harlowe-pos-event-store-migration-simplify-a6f233fd0ad8",
+    "task-helios-dispatch-scheduler-d689897812c3",
+    "task-helix-ota-release-integrity-recovery-18c2cab4de03",
+    "task-hplc-batch-disposition-recovery-5a152a23d17c",
+    "task-hydrophone-observation-ingest-gateway-755adcd2afdb",
+    "task-interval-meter-multizone-settlement-quality-repo-e84ec347f65e",
+    "task-interval-meter-settlement-data-quality-report-84976f81bd97",
+    "task-lab-method-expression-interpreter-dc17b98b924d",
+    "task-legacy-policy-engine-conformance-audit-d9df7a1ba4b7",
+    "task-llm-corpus-token-budget-repair-d68bb31bd0bc",
+    "task-matplan-release-discipline-gate-correction-f9a811bed966",
+    "task-matplan-supersession-scrap-recovery-88253b0c4ca9",
+    "task-merchant-daily-metrics-pipeline-orchestrator-753c1caf2b19",
+    "task-merchant-master-wal-recovery-6de9afaf31c5",
+    "task-mesa-data-release-integrity-recovery-98e9811fdf2f",
+    "task-mrp-netting-regression-tests-503d1461063d",
+    "task-northgate-payroll-prep-recovery-61fc4286f08c",
+    "task-northgate-payroll-prep-recovery-850eba509acf",
+    "task-northgate-settlement-report-repair-69be2dfd21b6",
+    "task-offer-catalog-publish-cas-6c273546367a",
+    "task-outbound-mailer-delivery-regression-suite-2255238bcfce",
+    "task-palletbay-dispatch-incident-review-fa0501f2af9c",
+    "task-policy-engine-conformance-audit-1750d636fba4",
+    "task-policy-engine-conformance-audit-81a187537017",
+    "task-prbs-equipment-read-path-validation-091398acc44e",
+    "task-prbs-generator-netlist-validation-99eeeff56f99",
+    "task-records-control-disposition-review-0a473cddda90",
+    "task-recover-delay-corrected-activation-report-0cc205d01c65",
+    "task-recover-lost-revenue-aggregation-0f10e6191d66",
+    "task-recover-lost-revenue-aggregation-e3e581b7d8e5",
+    "task-redmill-mrp-regeneration-repair-31230206ebe1",
+    "task-rtu-telemetry-parser-control-byte-audit-0cc5c0409f9c",
+    "task-seatflow-cancel-lifecycle-migration-cf998041bea1",
+    "task-seatflow-reservation-idempotency-40e24d5dc44d",
+    "task-sensor-station-reduction-recovery-9f42679761ff",
+    "task-sepa-intake-payrun-dependency-54c7b8e1046a",
+    "task-sepa-intake-payrun-dependency-a6b69c3ff474",
+    "task-settle-ingest-incident-remediation-a357090a58e0",
+    "task-settlement-incident-recovery-69bbbabac1cf",
+    "task-settlement-incident-recovery-harden-a4305412949e",
+    "task-settlement-recon-carryforward-deploy-825e5fcfd744",
+    "task-settlement-recon-service-deploy-3003354cc21a",
+    "task-shipping-fee-decision-audit-cd3aa8e784a9",
+    "task-smartmeter-settlement-findings-9894805baa00",
+    "task-splitforge-leakage-certificate-186129158e41",
+    "task-station-etl-image-recovery-4f0fe15c8c48",
+    "task-streamgauge-config-deploy-corrected-ba343bf4145c",
+    "task-streamgauge-daily-report-deploy-6c1490b0cd48",
+    "task-streamgauge-layered-config-deploy-3299c1ff9d8a",
+    "task-svccfg-authoritative-catalog-migration-6de90f266722",
+    "task-switch-cdr-consolidation-migration-ae927823811c",
+    "task-switch-cdr-consolidation-migration-invariant-rep-6ebc79a7d257",
+    "task-tally-train-v2-migration-simplified-b2f5008e2aae",
+    "task-tally-train-v2-migration-simplified-b551f070a6dc",
+    "task-tally-train-v2-migration-simplified-ef0f92a5a51d",
+    "task-tallyd-window-manifest-verify-48fd87f3ddfb",
+    "task-telemetryd-slim-runtime-migration-e779fc8f6d8c",
+    "task-tenant-resource-isolation-suite-044720ec34af",
+    "task-time-phased-mrp-feature-02835d89a3b0",
+    "task-trial-randomization-verified-deploy-004b1b181a05",
+    "task-usage-billing-report-repair-cc2877edb8a4",
+    "task-usage-billing-report-repair-reconciled-bd1e909010fb",
+    "task-vantage-clearing-monthend-recon-63757bdd87d4",
+    "task-vendor-bundle-provenance-reconstruction-b672ad9dc180",
+    "task-vendor-customer-master-ingest-c1ac777d58b9",
+    "task-vendor-feed-availability-report-a4405788a738",
+    "task-watershed-daily-qc-incident-recovery-c049ed7fba23",
+    "task-wavproc-calibrated-psd-response-6dcf2c24f4a4",
+    "task-wavproc-gain-calibrated-psd-42b6d0b988a4",
+    "task-wavproc-psd-spectrum-extend-58f467ec526d",
+    "task-weather-generation-registry-4ff040dad724",
+    "task-zone-registry-consolidation-migration-563d2a5d720b",
+    "task-gateclock-utc-timeline-build-752420e1744d",
+    "task-captioncut-alias-planner-build-8916111b-c2eeee72fffc",
+    "task-reefline-reefer-june-intake-rebuild-759d1e52bfa8",
+    "task-ssh-failed-minute-bursts-331b0d959a2d",
+    "task-oem-propagator-conformance-suite-5b55529ea2-8c741a2db2d9",
+    "task-armored-courier-dispatch-repair-ea6a647522-ef3a1e2cb589",
+    "task-argentvale-stoichiometric-batch-plan-bdcd733f-fa6b46c6df5a",
+    "task-carelink-raw-hl7-recovery-3c126543-e4344f8ef11d",
+    "task-pain001-batch-migration-b64248f58ded",
+    "task-pytorch-ckpt-v1-to-v2-trajectory-migration-91e388a6-24b628d2d1ce",
+    "task-library-battery-reserve-guard-dispatch-af2eab4d-ac70bf55d21d",
+    "task-nightingale-ext2-batch-recovery-adfdb788-f19a184f3202",
+    "task-nereid-pump-canonical-build-plan-90899e19-6df659a29215",
+    "task-pain001-cutover-batch-converter-ecd8934b171a",
+    "task-sterile-cart-clearance-counter-4bbdf1070fa2",
+    "task-specimenhub-async-queue-repair-476f3b831ef9",
+    "task-medicaid-claims-psv-resubmission-6434c442b440",
+    "task-procfs-impostor-miner-evidence-recovery-69fbd9cd-50303661fd5c",
+    "task-secure-mets-claim-bundle-recovery-ae7a779c-5d6728bfe724",
+    "task-coprime-take-opening-book-config-afe044f5-72b717787710",
+    "task-dc-site-inventory-extractor-860dd11977ff",
+    "task-mesa-dome-nightplan-feed-repair-e58b2abf3d09",
+    "task-freightkit-turnaround-exceptions-d2583517-4ea74b4624f2",
+    "task-fabplan-part-alias-queue-repair-fb664915-9c6886c2d2c5",
+    "task-forklift-pack-energy-optimizer-497fa387-6ef2b2676a35",
+    "task-library-branch-kpi-dashboard-latency-fix-6ba82eed8cd5",
+    "task-dockside-vfx-media-stager-8f3fcda0-e67f4c194f2f",
+    "task-coprime-take-opening-book-config-d50e71d8-946ff1f4cff9",
+    "task-ami-replay-safe-meter-loader-ba8c90bc-c1f83c6d3084",
+    "task-arcticlink-mrp-cutover-rebuild-786c519eb14d",
+    "task-carousel-scan-backfill-atomic-repair-b24bb1f51729",
+    "task-fabplan-part-alias-queue-repair-1328d439-e65cb09ed4ed",
+    "task-release-plan-gate-propagation-a8c003f5-cb8a570a1c8e",
+    "task-forgeline-firmware-merkle-cli-e9c01e49-f2c2fb3b8941",
+    "task-retortctl-lagged-steam-simulator-38a05e99-5f9a127f9f40",
+    "task-mrp-incident-plan-recovery-e5ad665198d8",
+    "task-tunnel-diode-bias-optimum-1c34819b-75c613b22c1c",
+    "task-fabwave-release-planner-c2826fae-558928e873af",
+    "task-claimdrop-concurrent-import-lock-e903ff88-0ba13cf24109",
+    "task-meterhub-release-reflog-audit-4c87980d4ac4",
+    "task-fabplan-part-alias-queue-repair-5f5cc1c4-8220deabb587",
+    "task-mrp-weekly-plan-repair-c87b549b40-c47e07aef35b",
+    "task-viaweave-signed-route-cache-rebuild-b7cbd1f76911",
+    "task-captionforge-alias-planner-ed43f4f0-90feb3815209",
+    "task-freightkit-turnaround-exceptions-602fe9afdcb2",
+    "task-lims-formula-atom-counts-bc957384-97a3bba8e784",
+    "task-recoval-payload-extractor-de5fab407130",
+    "task-fleetroute-planner-feasibility-repair-05fa75fbf813",
+    "task-derms-cascade-release-planner-be0f666e8f33",
+    "task-library-battery-rolling-dispatch-4b6d4aa0-83e3c280603f",
+    "task-charger-fit-relation-counter-a4021521-7ea8f40abe58",
+    "task-captionforge-canonical-plan-repair-2705cd1b2af0",
+    "task-civicfare-sdk-release-plan-42d648dd4b0b",
+    "task-northwind-gateway-release-audit-bcefe1b3d9e9",
+    "task-plategrid-qc-column-insertion-e5905e06-758c4ee3eba4",
+    "task-partner-route-collision-guard-f43cf47d-336b519f2331",
+    "task-htn2024-fhir-export-validation-73b3375eae40",
+    "task-rsyslog-trade-compliance-filtering-521f95f16142",
+    "task-glide-ode-method-verification-suite-a39a6b02-899ca3143913",
+    "task-docket-retention-importer-rebuild-a814a80bd27a",
+    "task-riverbend-u2-turnaround-shortest-schedule-c35155a6770b",
+    "task-ferry-signage-departure-config-repair-7ec43e11b110",
+    "task-cert-chain-trust-audit-854f97f259ad",
+    "task-fabwave-release-planner-bec50c55-8ce4df3baf0c",
+    "task-adpulse-pydantic2-delay-estimator-65c1196f-e4a0316d90b0",
+    "task-railfare-gtfs-venv-cli-d206e0ffcd45",
+    "task-rebate-schedule-pdf-extractor-49624e9e4c59",
+    "task-dc-migration-inventory-extractor-5163fac211d5",
+    "task-borealis-raft-failover-audit-9a91ff30-73ab06ac9bbb",
+    "task-jinglehouse-cue-meta-builder-repair-28995932-9f9e9243f9b4",
+    "task-coldchain-replay-table-rebuild-6fa09464ca4d",
+    "task-medroute-vrptw-validator-repair-85aa2d77-aaba83af3a05",
+    "task-seasonal-water-quality-findings-f7fd9f34a51c",
+    "task-lot7-gpr-utility-delivery-51d72db6fe94",
+    "task-metropulse-sparse-span-recovery-590254cc-02b935e304c4",
+    "task-mask-uniqueness-audit-production-fix-a59daf80cf6e",
+    "task-pathtrack-turnaround-spc-cleanup-6dba32fb2a23",
+    "task-nereid-pump-canonical-build-plan-f03235f2-3190d97acdcb",
+    "task-marlin-auction-feed-validator-eda59387-7798a97e0abe",
+    "task-carousel-scan-backfill-idempotent-5dfedb2f-e45d37690f67",
+    "task-lims-chain-normalizer-174014d1-a0261f7f7cd9",
+    "task-pbm-footprint-placement-counter-13042472f28b",
+    "task-fabwave-release-planner-eb0297de-519daedbdf7f",
+    "task-arcticlink-retrofit-material-plan-96e0e83d-97ce8a50f2e2",
+    "task-dc-migration-inventory-extractor-31c965fe5ad8",
+    "task-nightly-recon-repair-june-and-july-e6b9cad01b6e",
+    "task-railfare-gtfs-venv-cli-b3c26cac0ff5",
+    "task-sentinelrail-raft-opa-policy-2a69dca8-1b95f6bf5acd",
+    "task-coldroom-ext2-superblock-inventory-f403e089d56f",
+    "task-atomic-release-store-publisher-f18f2a68cc4d",
+    "task-fleet-log-timestamp-normalizer-build-580641adc6ab",
+    "task-versioned-mrp-receipt-publication-07a2b8df9c-de2a13953df3",
+    "task-viaweave-mask-route-counts-69bf4544-77cb4a20c969",
+    "task-staging-config-audit-findings-ca87b2324e87",
+    "task-metro-stop-reference-rebuild-22ec9c5c4538",
+    "task-medcart-rollout-wave-schedule-1796eea9-8fa60bd5628f",
+    "task-opsdeck-local-day-turnboard-plugin-2dadbc95-dbc8a314bb5c",
+    "task-lims-codeblob-normalization-585ad0ec-7c3dddaeef4e",
+    "task-nightly-export-handoff-consumer-contract-repair-4189900395a9",
+    "task-telemetry-probe-stale-listener-cleanup-352ac7f5-3afc8d503916",
+    "task-freightkit-turnaround-exceptions-918ed438017a",
+    "task-pillbox-version-bump-calculator-bdfbf59c0f3e",
+    "task-viaweave-mask-route-counts-3a7e3cfd-c29c11b25fdc",
+    "task-medicaid-claims-tarball-recovery-8d70b368-300ac41389cc",
+    "task-reefer-container-mpc-controller-290427f2-e7055441fbc4",
+    "task-nightingale-ext2-batch-recovery-e7a14252-21e4ec090d11",
+    "task-wiredesk-sftp-key-rotation-edfa1c0e-f8694cc02b01",
+    "task-beacon-mail-window-cli-5557fdb8-9f2bfb8d82c9",
+    "task-medilabel-capsule-verifier-91a6e85e-fb1f4f217a91",
+    "task-westmere-aeration-lag-forecast-d0c36e3f-a2e4ffb57676",
+    "task-fulfillment-scanner-proto-contract-b227acb36c17",
+    "task-tp53-variant-pipeline-grch38-migration-c587d49c7dcd",
+    "task-crm-customer-master-consolidation-550bbffee7ac",
+    "task-medlink-release-planner-9e268201-6917dfbec6a6",
+    "task-forklift-pack-energy-optimizer-38ac5d76-ac09af34a821",
+    "task-disbursements-duplicate-charge-investigation-4761922d98e9",
+    "task-isolatorwatch-sigma-anomaly-pipeline-ea273dff-87f204d4c2f2",
+    "task-prismforge-adaptive-accelerator-policy-9e0bf06e-0284d2ae8d43",
+    "task-plant-a-mrp-lifecycle-cutover-ee0885ac5756",
+    "task-dc-migration-inventory-extractor-e53a3e9a122a",
+    "task-clerk-intake-ext-exhibits-recovery-f870a8e5-be679bc996a8",
+    "task-pathway-retention-policy-resolver-d2491f38-57289b5c01b8",
+    "task-probe-grid-hamiltonian-counter-cb16eb01-be9c72e41213",
+    "task-nightingale-ext2-batch-recovery-ca5be160-1a79d9e70900",
+    "task-nightjar-canonical-upload-bundle-c668fb7a9d4e",
+    "task-wiredesk-sftp-key-rotation-61f796c4-24fc5df58937",
+    "task-waferplan-traveler-order-cli-c9737659-73d48c1037ae",
+    "task-microservice-deployment-wave-planner-6114cf45a6a7",
+    "task-battery-aware-dispatch-service-979e1a0f98-dcb33f53eb30",
+    "task-plategrid-qc-column-insertion-d97151ff-a11790b76e74",
+    "task-sepa-batch-recovery-5d808665d1f7",
+    "task-reefer-container-mpc-controller-d9fcc754-09a795b3cf0a",
+    "task-hsm-prime-lane-permutation-35b219a8-b48102db8283",
+    "task-civicpermit-route-audit-ts-migration-repair-a80a27197349",
+    "task-benefits-eligibility-engine-repair-3e79a030db76",
+    "task-riverbend-unit2-outage-schedule-5a2f8bed-ff208cfae838",
+    "task-riverton-lims-inventory-rebuild-a26226e49da1",
+    "task-mrp-pump-cell-incident-recovery-ae5b824959-ac5b62a00b3e",
+    "task-checkout-timeout-log-qualification-72294f9983e0",
+    "task-probe-grid-hamiltonian-counter-405850a08a7b",
+    "task-medcab-audit-timestamp-normalizer-73f63e3143d0",
+    "task-medicaid-claims-tarball-recovery-d8869254-f9c613b87580",
+    "task-lims-formula-atom-counts-68d49385-bdae511f7587",
+    "task-carequeue-typescript-alias-config-fa6db739-c82120942935",
+    "task-rebate-schedule-pdf-extractor-95e05babe1a1",
+    "task-overlay-merge-globber-1b50b3677d18",
+    "task-medcab-audit-timestamp-normalizer-bba05ab70b3f",
+    "task-fat16-rotor-handoff-recovery-084e9d99-6a64e41a1e06",
+    "task-canal-kids-strategy-pack-recovery-d97c9760-aa338df58289",
+    "task-park-street-gpr-two-pass-utility-delivery-93458c6762d5",
+    "task-ach-window-nacha-cli-venv-06dbb42d-e1db23c11588",
+    "task-fridgeplan-strict-config-cli-96469039-07535bdd6310",
+    "task-pathguard-policy-inheritance-build-repair-df91b9cd003a",
+    "task-nightingale-ward-policy-compiler-613ade7a-282a76d06b37",
+    "task-dc-migration-inventory-extractor-f61c5c3c85b1",
+    "task-theatre-rig-constraint-audit-90deb8a1-ef156c352f7d",
+    "task-stream-pipeline-watermark-fixes-8f9da517f62b",
+    "task-nereid-pump-canonical-build-plan-7cf215d7-869f84a8e7de",
+    "task-fleetcell-energy-optimizer-api-22506e050d3f",
+    "task-railpulse-jest-migrated-suite-de55bd55-a54188efd856",
+    "task-fridgeplan-strict-config-cli-7fe0545a-37b37d827182",
+    "task-vaxtrack-cold-chain-audit-b41f5c42-6477c73f8410",
+    "task-pain001-batch-migration-december-onboarding-cdf531e86008",
+    "task-glaciervault-mpc-release-qualification-019ec01d-b2f031d0b4ce",
+    "task-dockside-vfx-media-stager-189e8dc1-1bfe8d7efdec",
+    "task-cap-crawlq-alert-throttle-3305f8db-ecef6018309d",
+    "task-probemesh-coupon-route-counts-c952b6e2-1988bdc1e8e5",
+    "task-carelink-raw-hl7-recovery-10380c17-2485b03b7a51",
+    "task-canal-kids-strategy-pack-recovery-0bf78cd9-301152c61e20",
+    "task-mrp-release-publication-repair-79b0fde89754",
+    "task-ward-gateway-route-scan-e4f8d375-740f28233310",
+    "task-prismforge-accelerator-policy-commission-039823ef-32f2a9097a3b",
+    "task-metroreads-jq-quality-gate-a86eafc0-5551abab2d12",
+    "task-nightly-planner-dag-repair-63c2f3cd98a9",
+    "task-rxbridge-release-version-audit-bd6517e5-234919a60335",
+    "task-cabinet-batch-flock-build-bd6904f1-7184de3b0aab",
+    "task-midi-timing-engine-d99706bcfc13",
+    "task-carebridge-npm-types-config-4216b92d-77a8d5aa74ce",
+    "task-hydra-run-plan-composition-d782c0fb0f5f",
+    "task-marlin-auction-feed-validator-3de028c6-eebc4a692e5b",
+    "task-substation-roster-solver-v2-repair-88435c88b7a4",
+    "task-civicpermit-route-audit-ts-alias-repair-3ff6e519383c",
+    "task-lostbranch-dangling-auditor-288cee5a5a22",
+    "task-lims-codeblob-normalization-5e0b30db-8a30493e19fa",
+    "task-metrosign-gatewave-api-ae46e9ad-03fa7c9dc866",
+    "task-arcticlink-retrofit-material-plan-a079a14f-3183347c30b6",
+    "task-library-battery-branching-reserve-dispatch-6cbfac04-51c5aeb87d78",
+    "task-procurement-vendor-qualification-filter-775b89ececa7",
+    "task-bunkerwatch-transfer-log-api-7164102ebf42",
+    "task-fulfillment-scanner-proto-contract-c4fddd2732b0",
+    "task-riverbend-unit2-hardened-outage-schedule-802db71f-79ae310959bf",
+    "task-plategrid-qc-column-insertion-7d3de6a4-eaadb4c77e44",
+    "task-gantry-incident-recovery-agent-5d90df375a-476b3d613aac",
+    "task-fabplan-part-alias-queue-repair-c93eafde-04fca497013a",
+    "task-cap-crawlq-alert-throttle-eebaf42c-8cc3c2c55b43",
+    "task-relief-kit-procurement-solver-e8fd1543-1a9b08b60c99",
+    "task-careroute-formulary-atomic-publisher-fc9034b5-18928b13773b",
+    "task-incident-label-set-repair-d4b8f61ab969",
+    "task-clerk-intake-ext-exhibits-recovery-59c537b0-f13c6cf384af",
+    "task-spindle-guard-sigma-cli-d4e76db1-e3de9b5c2346",
+    "task-medilabel-capsule-verifier-9dc9be47-dc043c4f6a6c",
+    "task-medilabel-capsule-verifier-a4820ae3-74d20ed43c43",
+    "task-clausevault-orphan-commit-scanner-7fc5d856-e5e5892d8208",
+    "task-checkout-outage-postmortem-lite-5cd1f9faad2b",
+    "task-marketing-site-deploy-css-regression-2533c7fa3df7",
+    "task-library-branch-kpi-view-ffdf3b84-e6678b1d9a88",
+    "task-coldroom-ext2-superblock-inventory-9fff0aefebe8",
+    "task-lims-formula-atom-counts-ab06b0e7-d595d1195ea6",
+    "task-lab-site-threshold-filter-cli-1bd7ec2ac96f",
+    "task-checkout-window-pipeline-fix-0f3770a52b2d",
+    "task-park-street-gpr-utility-delivery-qc-rev2-a4e472b84684",
+    "task-mrp-net-requirements-fix-499f1f47efad",
+    "task-build-system-alias-canonicalization-94facbec1c12",
+    "task-fabwave-release-planner-d07d2791-687fe587d6f2",
+    "task-gridwatch-substation-roster-solver-a0ba1196-23e2f2e8762f",
+    "task-milltrace-unitgen-cli-be44ddc7-0d212c2bfc8c",
+    "task-ach-window-nacha-cli-venv-02d6b7d7-d3f4ed87505e",
+    "task-pbm-footprint-placement-counter-1a52ec34-255aaa506298",
+    "task-batchapi-incident-findings-32de971d418a",
+    "task-greenroute-fare-credit-build-ae63afeb-7e7c7307483c",
+    "task-bayline-arrivals-atomic-api-4a15363d361f",
+    "task-mrp-planner-incident-diagnosis-e7d78ac2d763",
+    "task-atrium-kiosk-tls-fetcher-bc8ce151-cb3fc03b553d",
+    "task-rsyslog-policy-dropin-generator-603e1a1ac20b",
+    "task-metrocare-bedboard-cache-refresh-8986ccba-2fa57f515834",
+    "task-fridgeplan-strict-config-cli-819a8686-d137a0ab297d",
+    "task-asteria-footprint-centroid-summaries-b00cebc8-ac4bb89f743b",
+    "task-lab-site-threshold-filter-cli-5ddd2d6f4f0f",
+    "task-ravenpay-deploy-wave-plan-8ddccabe676a",
+    "task-braidcell-carrier-catalog-db191e96-fd1aec65975d",
+    "task-reefline-reefer-archive-db-4563c5fe-dd990332ab4b",
+    "task-coldchain-lagged-replay-db-cd7c1e5b-6453d1293194",
+    "task-station-observation-ingest-findings-8aa618eba044",
+    "task-catalog-label-rollup-cli-efc4cee51f5d",
+    "task-bluepier-zip-drop-ingestor-0b05b099d458",
+    "task-reefline-reefer-archive-db-b3470223-266755b58e52",
+    "task-catalog-label-rollup-cli-18f8754f10a7",
+    "task-papyri-decoder-report-pipeline-5b3add04-32f5c0c8c0ab",
+    "task-coldchain-lagged-replay-db-e5642f47-358ffe4e6432",
+    "task-riverview-copy-text-claims-batch-d50a0213-2b61060f6584",
+    "task-credit-transfer-release-reconciliation-9bb16361ec-676864572c38",
+    "task-eremit-remittance-ledger-reconcile-1b6381e4cf2b",
+    "task-riverview-copy-text-claims-batch-9e84c422-b9bdcc233ba8",
+    "task-routecover-hamiltonian-csv-build-e77e12524f56",
+    "task-pain001-batch-migration-reconciliation-e702b9979a0f",
+    "task-pacs-gateway-archive-recovery-d62e93ad-53e65f22b4e9",
+    "task-ferryfeed-canonical-manifest-206473b0-2f05562ebecd",
+    "task-cargoflow-changelog-parser-fix-bfe1c801d8c9",
+    "task-fare-router-metro-east-catalog-cutover-ec11914a-713a70609aa8",
+    "task-mesa-dome-nightplan-json-config-4b4c5649-8566a04c9a7c",
+    "task-payment-reconcile-atomic-report-7b6250acd25b",
+    "task-metroflex-faregate-reconciliation-queryfix-3e61402d-e52f91cde756",
+    "task-catalog-rate-gate-config-8047d63f-23e11012e794",
+    "task-billing-ledger-migration-cutover-8e450269ae36",
+    "task-sheetmetal-profile-classification-integration-fix-f851cb14-6879af30b68d",
+    "task-settlement-pipeline-scheduler-semantics-2c2770769c3d",
+    "task-rbs-catalog-uniqueness-auditor-873026ff6b35",
+    "task-docket-retention-policy-db-245a261d-56663290537d",
+    "task-papyri-decoder-report-pipeline-b3983bae-285224ae3b97",
+    "task-mesa-dome-nightplan-json-config-2d9be3ef-5fd3cdac056b",
+    "task-sheetmetal-profile-gate-classification-fix-a9edec98799f",
+    "task-cryoroute-sdcard-carve-report-198d25a685b8",
+    "task-concurrent-log-manifest-flock-8cbd5df36d32",
+    "task-gridflex-settlement-ledger-fix-fe486e49ee4c",
+    "task-formulation-stability-archive-migration-8c6270f84-7f7dd9396d9f",
+    "task-ferryfeed-canonical-manifest-c8accba74dfd",
+    "task-ward-cart-rebalance-archive-708dd0f4-c4e9ef2ac224",
+    "task-careroute-express5-source-archive-f25cad5b-ccaac38edf80",
+    "task-remittance-exception-index-recovery-420c656642-8eecef76dc6e",
+    "task-northgate-payment-recon-pipeline-99b19fc9-5530b4febc97",
+    "task-docket-retention-policy-db-d99d05aa-8f5867e95c3b",
+    "task-ferryfeed-canonical-manifest-b7bda2d5a2ff",
+    "task-recover-batch-yield-reconciliation-f485830675-77f29f95b9b1",
+    "task-robot-staging-clearance-archive-e32088da-f40371d83abb",
+    "task-eremit-reconcile-importer-fix-03fb4e4a9eeb",
+    "task-payment-gateway-tsl-test-suite-fa81af799946",
+    "task-cadence-subscription-billing-dst-repair-a3b47da0-49e10b861cbb",
+    "task-carebridge-referral-jsonl-contract-speed-9d910a5c-bb2ec1404f2c",
+    "task-medline-chargeback-csv-config-db24aa02-bf14d8a8ab11",
+    "task-argo-night-ledger-dependency-gates-8768ccec-389a14e85772",
+    "task-scanner-sdcard-receipt-reconciliation-a6694960-88de0a57a04f",
+    "task-payment-closeout-migration-parity-e0fe4a210214",
+    "task-ward-cart-rebalance-archive-e2eabfe7-b924c842049b",
+    "task-slotgrid-column-insert-csv-repair-dcce881fc3cb",
+    "task-riverview-copy-text-claims-batch-21095576-7a40f278aa99",
+    "task-open-invoices-mart-recovery-446b7a139103",
+    "task-dockwatch-coldchain-ingest-audit-3e81f478-a4763399a43d",
+    "task-robot-staging-clearance-archive-298a5465-da498a0f9d58",
+    "task-plant-a-mrp-cutover-ledger-seams-56dde8ada57c",
+    "task-voltgrid-billing-class-backfill-e64ff2fe7461",
+    "task-db-breach-affected-user-correlation-af121ea4a226",
+    "task-pacs-gateway-archive-recovery-simplified-9180296173cc",
+    "task-riverview-copy-text-claims-batch-adcd97ca-497b74052910",
+    "task-metrofare-policy-ledger-rebuild-048a16a50809",
+    "task-meridian-claims-copy-archive-recovery-aec5f70b-50d095b2e21e",
+    "task-papyri-decoder-report-pipeline-53928ec5-bcd34d8ff221",
+    "task-mesa-dome-nightplan-json-config-33f13f90-e267169651c7",
+    "task-leaseguard-revocation-nimber-db-f7fbf229-e7e1456f4982",
+    "task-cargoflow-changelog-parser-fix-b73921c97470",
+    "task-night-ledger-argo-retry-gates-8f889f83-b095dfb5e7c9",
+    "task-fareclear-maven-reconcile-threshold-5a5fb8e3-4930cd9d1fca",
+    "task-robot-staging-clearance-archive-2859bf0e-2429481bb058",
+    "task-robot-staging-clearance-archive-bf77b409-b25b7327ed04",
+    "task-bayouwatch-zip-drop-ingester-fb28905e57d0",
+    "task-meridian-transition-ledger-recovery-43e71401-1f6e47fd9810",
+    "task-claims-etl-release-order-4aded4900e83",
+    "task-northpier-png-text-harvester-0793e225-abe7b39b3388",
+    "task-audio-batch-findings-d6e8d0b943f2",
+    "task-wayfind-png-audit-metadata-a6cf07bf-b9e622be0ea4",
+    "task-paththumb-png-audit-linker-8294f19c3bea",
+    "task-wayfind-png-audit-metadata-ttext-73b8706715b5",
+    "task-card-suit-image-label-fix-6aa640196cc8",
+    "task-pump-sensor-sigma-detector-3f72ce552187",
+    "task-batchdose-transfer-recipe-planner-1458665f-1c4bac5f4de1",
+    "task-windfarm-edge-catalog-publisher-config-941ca46e-faa1ee5f135e",
+    "task-dosetrace-infusion-log-cli-f5ca4940-59d004d41700",
+    "task-steritrace-dose-release-calculator-7a1bf972-f0d17775eeac",
+    "task-dosetrace-async-diversion-report-9773cf1d-fb2bc24574ad",
+    "task-cinderpress-kiln-spc-config-700b692b-167dae82f188",
+    "task-gulf-maine-seismic-crs-reconciliation-4dc1b760-23c8a29ffdac",
+    "task-dosetrace-normalizer-cli-repair-aaa21b00e5db",
+    "task-patient-gateway-rate-audit-b315e1fb-3a7934e3a985",
+    "task-biobank-accession-replication-recovery-b38be8b064-e4d1cf5e866e",
+    "task-helixbridge-clinical-variant-gateway-155f0f9e-938b7cd11b80",
+    "task-kilnwatch-normal-baseline-detector-858b7817da33",
+    "task-windfarm-edge-catalog-publisher-config-62386aa3-f1da5e64bbb1",
+    "task-fairframe-png-metadata-summary-7f0aad5acb55",
+    "task-transit-png-badge-indexer-0201ff29-c66b5bf53669",
+    "task-dosetrace-infusion-log-cli-350fbc9c-d63e45e9f78e",
+    "task-wayfind-png-audit-metadata-31df4f27-714913ff5bf5",
+    "task-fairframe-png-metadata-summary-7cd9b726-d38d30ee5c68",
+    "task-windfarm-edge-catalog-publisher-config-44512835-914765b821db",
+    "task-sterifill-quadratic-dose-calibration-c3d8b8a2-5b46d6f906b8",
+    "task-fairframe-png-metadata-summary-ef7e3e843bbe",
+    "task-wayfind-png-audit-metadata-4a99a041-db2b5e2b4b68",
+    "task-northpier-png-text-harvester-a2fd817b-3551d46aae1c",
+    "task-png-text-metadata-inventory-526c828feda6",
+    "task-radqc-dose-calibrator-build-f1bfafa0-512333d834bb",
+    "task-fairframe-png-metadata-summary-914784a6-6dcb83301913",
+    "task-cnc-sensor-anomaly-detector-767affd4dee9",
+    "task-wayfind-png-audit-metadata-947d6c46-204bd0fc5a9a",
+    "task-offline-edge-model-promotion-report-7808c1a2c9-b0a8c0a258aa",
+    "task-fraud-model-eval-report-reconciliation-370db8b1ffcc",
+    "task-frostline-bn-forward-report-06876284-3d275fecc46a",
+    "task-frostline-bn-forward-report-2d95318004c7",
+    "task-helios-packed-view-softmax-recovery-17b04662a59a",
+    "task-carepath-delayed-bandit-audit-e6001a4e-aaa1e037bec7",
+    "task-carepath-delayed-bandit-audit-7de268d8-54fb5b307b0f",
+    "task-frostline-bn-forward-report-374c2ad1-f4943db11464",
+    "task-triage-selective-eval-pipeline-b1251a44-061e5270f085",
+    "task-piano-midi-corpus-split-5f912656ac2d",
+    "task-healpass-token-rotation-lock-4ef3a5102ba1",
+    "task-reefnet-conv-bn-forward-ab3226e0-62bc42cdce34",
+    "task-ramp-session-token-precedence-e8727da2-c856767d4cd6",
+    "task-radiantdose-native-upsampler-7e285b62-b17adaaadc4a",
+    "task-frostline-bn-forward-report-f63110ea3731",
+    "task-refresh-token-cas-rotator-443bd4051460",
+    "task-frostline-bn-forward-report-eb8d074bbe98",
+    "task-wardlink-token-gateway-security-418940ca-b84e539d5ea6",
+    "task-ramp-session-token-precedence-755f4148-63d31651d57b",
+    "task-edge-model-promotion-time-aware-replay-1e076947b9-da15688db547",
+    "task-token-service-findings-audit-2b204d00a3ff",
+    "task-healpass-token-rotation-lock-f6f940036903",
+    "task-fraud-model-eval-pipeline-repair-d2d3c077d490",
+    "task-medconnect-refresh-token-rotation-1ba6911c-10eebe1dd62c",
+    "task-radiantdose-native-upsampler-425f71f4-5127107cfa88",
+    "task-medconnect-refresh-token-rotation-999dd2701a7d",
+    "task-medconnect-refresh-token-rotation-ae9a6767ef85",
+    "task-astervale-flagged-antenna-softmax-op-2b2076f0-262419276ceb",
+    "task-medconnect-refresh-token-rotation-63d5fb1ddb5c",
+    "task-ramp-session-token-precedence-fb30d9eb-d29c65084b9a",
+    "task-astervale-flagged-antenna-softmax-logsumexp-op-b1b9effd-a4597fc0542e",
+    "task-reefnet-conv-bn-forward-fc0281bf-0b9d115be056",
+    "task-badge-ink-qa-classifier-e1f57b162f2c",
+    "task-firmware-release-signature-and-pki-audit-97aa381c40d2",
+    "task-xxe-legacy-soap-forensics-628ae81d734a",
+    "task-casevault-acl-restore-config-04866591-ebbd68a97b77",
+    "task-clinic-intake-security-access-report-047087480e4e",
+    "task-pkigate-pem-chain-validator-35554b11-dfa8087e94fa",
+    "task-atlas-authz-engine-policy-audit-2025h1-54e93246f6fb",
+    "task-casevault-acl-restore-config-99636ffb-725d49a6086e",
+    "task-casevault-acl-restore-config-8d35356e-c56c89d31e96",
+    "task-gen-fresh-vuln-triage-e7646d12-084920dc82ff",
+    "task-eremit-xxe-ledger-reconciliation-7413c71e-d3a0f501c70f",
+    "task-prescreen-gateway-auth-cli-8d218be9-b9b9876747b3",
+    "task-atlas-authz-engine-audit-tool-2025h1-4b602e36e201",
+]
+
+[orchestrator.train.source.env.agent.harness]
+id = "terminus-2"
+version = "0.21.0"
+
+[orchestrator.train.source.env.agent.runtime]
+labels = [
+    "nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1",
+]
+
+[orchestrator.train.source.env.agent.timeout]
+rollout = 10800
+scoring = 3600
+
+[orchestrator.train.source.env.agent.retries]
+max_retries = 2
+include = ["SandboxError", "TunnelError"]
+
+[orchestrator.eval]
+interval = 20
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_k = -1
+min_p = 0.0
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2-1"
+group_size = 8
+
+[orchestrator.eval.source.env.taskset]
+id = "terminal-bench-2"
+patch_set = "prime-eval-2026-08-24"
+ignore_timeouts = true
+
+[orchestrator.eval.source.env.agent]
+max_turns = 250
+
+[orchestrator.eval.source.env.agent.harness]
+id = "terminus-2"
+version = "0.21.0"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+vm = true
+labels = ["nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1-online-eval"]
+
+[orchestrator.eval.source.env.agent.timeout]
+setup = 3600
+rollout = 7200
+finalize = 3600
+scoring = 3600
+
+[orchestrator.eval.source.env.agent.retries]
+max_retries = 2
+include = ["SandboxError", "TunnelError"]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/nemotron35-lightning-hillclimb-hurdle-frontier496-bs512-online-p8-r1-flashinfer"
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 2
+data_parallel_size = 4
+max_num_seqs = 384
+gpu_memory_utilization = 0.85
+enable_prefix_caching = true
+enable_chunked_prefill = true
+kv_cache_dtype = "fp8"
+mamba_cache_mode = "align"
+max_num_batched_tokens = 131072
+enable_expert_parallel = true
+enable_return_routed_experts = true
+
+[inference.router]
+type = "vllm-router"
+policy = "cache_aware"
