@@ -125,6 +125,7 @@ class DeepseekV4Config(PretrainedConfig):
         index_n_heads: int = 64,
         index_head_dim: int = 128,
         index_topk: int = 512,
+        dsv4_attn: str = "auto",
         num_experts_per_tok: int = 6,
         n_routed_experts: int = 256,
         n_shared_experts: int = 1,
@@ -181,6 +182,10 @@ class DeepseekV4Config(PretrainedConfig):
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk
+        # Which compressed-sparse-attention implementation the layers run: "eager", "gather",
+        # "kernel", or "auto" to let `_resolve_attn_impl` pick. Declared here so a standalone
+        # config (tests, benchmarks) carries a default without every reader supplying one.
+        self.dsv4_attn = dsv4_attn
 
         self.partial_rotary_factor = (
             partial_rotary_factor
