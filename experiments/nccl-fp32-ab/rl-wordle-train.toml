@@ -1,0 +1,54 @@
+max_steps = 100
+seq_len = 8192
+clean = true
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+# Base Qwen3.5-0.8B, not the wordle-SFT'd "PrimeIntellect/Qwen3-1.7B-Wordle-SFT" model from
+# configs/basic/wordle/rl.toml: that checkpoint is plain qwen3 architecture, which declares no
+# keep_in_fp32_for_weight_transfer keys at all (see the affected-models table in PLAN.md), so it
+# would not exercise this bug.
+name = "Qwen/Qwen3.5-0.8B"
+
+[weight_broadcast]
+type = "nccl"   # main-filesystem arm overrides this to "filesystem" on the CLI
+
+[slurm]
+partition = "all"           # the only partition on this cluster; "cluster" (the default) does not exist
+launch_modelexpress = false # ModelExpress/Redis exist for NIXL, pure failure surface here
+
+[monitors.wandb]
+project = "prl-nccl-fp32-ab"
+group = "ab-3-wordle-train"
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.train.source]]
+name = "wordle"
+env.taskset.id = "wordle"
+env.player.harness.id = "null"
+env.player.runtime.type = "subprocess"
+
+[trainer.optim]
+# A real, nonzero learning rate this time (matching the value the very first reverse-text A/B
+# used, PLAN.md's "First attempt"), so weights actually move over 100 steps of real optimization.
+# The question this variant answers, that the frozen-weight (lr=0) design in rl-wordle.toml
+# cannot: does the wire-dtype effect compound over an actual training trajectory (e.g. through
+# off-policy masking or a biased gradient direction feeding back into the policy), rather than
+# staying a fixed, single-broadcast rounding error?
+lr = 3e-6
+
+[inference]
+
+[inference.vllm]
+max_model_len = 8192
+seed = 0
+enforce_eager = true

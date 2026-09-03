@@ -1,0 +1,49 @@
+max_steps = 20
+seq_len = 2048
+clean = true
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"   # qwen3_5 dense; linear_attn.A_log is an nn.Parameter and fp32
+
+[weight_broadcast]
+type = "nccl"   # main-filesystem arm overrides this to "filesystem" on the CLI
+
+[slurm]
+partition = "all"           # the only partition on this cluster; "cluster" (the default) does not exist
+launch_modelexpress = false # ModelExpress/Redis exist for NIXL, pure failure surface here
+
+[monitors.wandb]
+project = "prl-nccl-fp32-ab"
+group = "ab-1"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+temperature = 0.6
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer.optim]
+# lr = 0 freezes every parameter across all steps (AdamW's update and its decoupled
+# weight-decay term are both scaled by lr, so both vanish). That turns the run into repeated
+# measurements of one fixed weight-transfer effect instead of a moving target confounded by
+# per-step policy drift.
+lr = 0
+
+[inference]
+
+[inference.vllm]
+max_model_len = 2048
+seed = 0
+enforce_eager = true
