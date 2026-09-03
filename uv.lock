@@ -5040,7 +5040,7 @@ all = [
     { name = "vllm", version = "0.26.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm", version = "0.26.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.0", source = { path = "/shared/parker/prime-rl-outputs/.artifacts/vllm-router/2cae1ab/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.0", source = { path = "vendor/wheels/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 dashboard = [
     { name = "fastapi" },
@@ -5054,7 +5054,7 @@ disagg = [
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.0", source = { path = "/shared/parker/prime-rl-outputs/.artifacts/vllm-router/2cae1ab/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.0", source = { path = "vendor/wheels/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 flash-attn = [
     { name = "flash-attn", version = "2.8.3+cu128torch2.11", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.22/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5183,7 +5183,7 @@ requires-dist = [
     { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm-router", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", path = "/shared/parker/prime-rl-outputs/.artifacts/vllm-router/2cae1ab/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", path = "vendor/wheels/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
@@ -8284,7 +8284,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "vllm-router"
 version = "0.2.0"
-source = { path = "/shared/parker/prime-rl-outputs/.artifacts/vllm-router/2cae1ab/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }
+source = { path = "vendor/wheels/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -8297,7 +8297,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 wheels = [
-    { filename = "vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2c3bb66e31fa2c53d6682c35087ffeddbbb58a1f467b6a41f8ea42ced1352e6f" },
+    { filename = "vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:62f25c7abe44ddd1f747dbd54f8cde2e27cb20b0c034da69b29a085a59d21164" },
 ]
 
 [package.metadata]
