@@ -495,7 +495,7 @@ class NIXLWeightReceiver(WeightReceiver):
             policy_notification(step, "ready"),
             timeout=self.config.timeout,
         )
-        await self.admin_plane.update_nixl_weights(step=step)
+        await self.admin_plane.update_weights(None, transport="nixl", step=step)
         self.nixl_agent.send_notification(
             trainer_peer,
             policy_notification(step, "complete"),

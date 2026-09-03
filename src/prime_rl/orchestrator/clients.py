@@ -4,6 +4,7 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import verifiers.v1 as vf
@@ -148,31 +149,15 @@ class AdminPlane:
             )
         )
 
-    async def update_nccl_weights(
-        self,
-        weight_dir: Path,
-        *,
-        step: int = 0,
-        on_paused: Callable[[], None] | None = None,
-    ) -> None:
-        """Receive weights through the static NCCL update endpoint."""
-        await self._update_weights(weight_dir, step=step, on_paused=on_paused)
-
-    async def update_filesystem_weights(self, weight_dir: Path, *, step: int = 0) -> None:
-        """Load weights from a checkpoint on the shared filesystem."""
-        await self._update_weights(weight_dir, step=step)
-
-    async def update_nixl_weights(self, *, step: int = 0) -> None:
-        """Trigger a weight pull from the initialized NIXL transport."""
-        await self._update_weights(None, step=step)
-
-    async def _update_weights(
+    async def update_weights(
         self,
         weight_dir: Path | None,
+        *,
+        transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Pause the inference engines, update their weights, and resume them."""
+        """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
         await _pause_engines(self.clients, step=step)
