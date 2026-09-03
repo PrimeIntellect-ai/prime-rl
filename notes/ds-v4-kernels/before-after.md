@@ -15,14 +15,35 @@ Three implementations, selected by `PRIME_RL_DSV4_ATTN`:
 
 ## Peak memory
 
-| t | eager fwd | gather fwd | kernel fwd | eager bwd | gather bwd | kernel bwd |
-|---:|---:|---:|---:|---:|---:|---:|
-| 2048 | 2.70 GB | 4.78 GB | **1.41 GB** | 3.24 GB | 8.93 GB | **1.62 GB** |
-| 4096 | 9.14 GB | 9.52 GB | **4.31 GB** | 11.29 GB | 17.67 GB | **3.04 GB** |
-| 8192 | 33.35 GB | 19.01 GB | **14.61 GB** | 42.39 GB | 35.15 GB | **5.86 GB** |
-| 12288 | 72.65 GB | 30.95 GB | **30.95 GB** | 93.49 GB | 52.63 GB | **8.69 GB** |
-| 16384 | OOM | 53.32 GB | **53.32 GB** | OOM | 70.11 GB | **11.52 GB** |
-| 24576 | OOM | OOM | **116.15 GB** | OOM | OOM | **17.18 GB** |
+Split forward from backward rather than putting ten columns on one line. `vs eager` is
+`eager / impl`, so above 1 is an improvement and below 1 is a regression; it is undefined once
+eager OOMs, which is itself the result.
+
+Forward peak:
+
+| t | eager | gather | vs eager | kernel | vs eager |
+|---:|---:|---:|---:|---:|---:|
+| 2048 | 2.70 GB | 4.78 GB | 0.56x | **1.41 GB** | **1.91x** |
+| 4096 | 9.14 GB | 9.52 GB | 0.96x | **4.31 GB** | **2.12x** |
+| 8192 | 33.35 GB | 19.01 GB | 1.75x | **14.61 GB** | **2.28x** |
+| 12288 | 72.65 GB | 30.95 GB | 2.35x | **30.95 GB** | **2.35x** |
+| 16384 | OOM | 53.32 GB | fits | **53.32 GB** | **fits** |
+| 24576 | OOM | OOM | - | **116.15 GB** | **fits** |
+
+Backward peak:
+
+| t | eager | gather | vs eager | kernel | vs eager |
+|---:|---:|---:|---:|---:|---:|
+| 2048 | 3.24 GB | 8.93 GB | 0.36x | **1.62 GB** | **2.00x** |
+| 4096 | 11.29 GB | 17.67 GB | 0.64x | **3.04 GB** | **3.71x** |
+| 8192 | 42.39 GB | 35.15 GB | 1.21x | **5.86 GB** | **7.23x** |
+| 12288 | 93.49 GB | 52.63 GB | 1.78x | **8.69 GB** | **10.76x** |
+| 16384 | OOM | 70.11 GB | fits | **11.52 GB** | **fits** |
+| 24576 | OOM | OOM | - | **17.18 GB** | **fits** |
+
+The kernel's advantage widens with `t` on both, and much faster on the backward, because eager
+carries four simultaneous score tensors there against three in the forward. `gather` is worse than
+eager at short context and only overtakes it at 8192, for the reason in the section below.
 
 | module | attn | largest `t` that fits | first `t` that OOMs |
 |---|---|---:|---:|
