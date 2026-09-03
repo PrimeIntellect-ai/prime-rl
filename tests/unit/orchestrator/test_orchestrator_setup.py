@@ -42,7 +42,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             config.model.client,
             model_name="policy-model",
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer",
             renderer_config=renderer_settings,
             pool_size=None,
         )
@@ -90,7 +90,7 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
             config.model.client,
             model_name="policy-model",
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer",
             renderer_config=renderer_settings,
             pool_size=None,
         )

@@ -27,8 +27,8 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     messages → token ids path (sft backfill, opsd scoring prefixes, echo role
     attribution) and is always built. The renderer-client sampling path is
     wired onto the pool; when no train env samples from the live policy the
-    renderer is still kept for client-side tokenization and the pool's evals
-    use plain chat-completions."""
+    renderer is still kept for client-side tokenization. This variant also
+    routes eval through the renderer for an exact train/eval pathway A/B."""
     from renderers.base import create_renderer
 
     client_config = config.model.client
@@ -43,7 +43,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         client_config,
         model_name=model_name,
         train_client_type="renderer",
-        eval_client_type="openai_chat_completions",
+        eval_client_type="renderer",
         renderer_config=config.renderer,
         pool_size=config.pool_size,
     )

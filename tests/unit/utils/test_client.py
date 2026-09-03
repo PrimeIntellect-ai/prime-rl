@@ -6,7 +6,13 @@ import httpx
 from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, check_health, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    StaticInferencePool,
+    _is_retryable_lora_error,
+    check_health,
+    load_lora_adapter,
+    setup_clients,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -123,3 +129,22 @@ def test_setup_clients_preserves_chat_client_defaults():
             headers={},
         )
     ]
+
+
+def test_static_pool_passes_renderer_config_to_eval_clients():
+    from renderers import Qwen3VLRendererConfig
+
+    renderer_settings = Qwen3VLRendererConfig()
+    pool = StaticInferencePool(
+        ClientConfig(base_url=["http://worker-a:8000/v1"]),
+        model_name="Qwen/Qwen3-VL-4B-Instruct",
+        train_client_type="renderer",
+        eval_client_type="renderer",
+        renderer_config=renderer_settings,
+        pool_size=3,
+    )
+
+    assert pool.eval_clients[0].type == "train"
+    assert pool.eval_clients[0].renderer == renderer_settings
+    assert pool.eval_clients[0].renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
+    assert pool.eval_clients[0].pool_size == 3
