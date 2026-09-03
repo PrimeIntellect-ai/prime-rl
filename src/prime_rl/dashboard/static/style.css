@@ -784,6 +784,7 @@ mark.hit {
 }
 .tl-edge-key i.subagent-call { border-color: var(--infra); }
 .tl-edge-key i.subagent-return { border-color: var(--risk); }
+.tl-edge-key i.compaction-attempt { border-color: var(--chart-2); border-top-style: dotted; }
 .tl-edge-key i.compaction { border-color: var(--chart-2); border-top-style: dashed; }
 .tl-edge-key i.custom { border-color: var(--accent); border-top-style: dotted; }
 .tl-head, .tl-lane {
@@ -903,11 +904,13 @@ mark.hit {
 .sg-edge.continuation { opacity: 0.34; }
 .sg-edge.subagent-call { stroke: var(--infra); stroke-width: 2.2; opacity: 0.9; }
 .sg-edge.subagent-return { stroke: var(--risk); stroke-width: 2.2; opacity: 0.9; }
+.sg-edge.compaction-attempt { stroke: var(--chart-2); stroke-dasharray: 2 4; opacity: 0.66; }
 .sg-edge.compaction { stroke: var(--chart-2); stroke-dasharray: 5 4; opacity: 0.9; }
 .sg-edge.custom { stroke: var(--accent); stroke-dasharray: 2 4; opacity: 0.9; }
 #sg-arrow-continuation path { fill: var(--grey-4); }
 #sg-arrow-subagent-call path { fill: var(--infra); }
 #sg-arrow-subagent-return path { fill: var(--risk); }
+#sg-arrow-compaction-attempt path { fill: var(--chart-2); }
 #sg-arrow-compaction path { fill: var(--chart-2); }
 #sg-arrow-custom path { fill: var(--accent); }
 .sg-agent-label {
@@ -997,6 +1000,22 @@ mark.hit {
   background: var(--accent);
 }
 .sg-turn:focus-visible .sg-turn-mark { outline: 1px solid var(--grey-6); outline-offset: 2px; }
+.sg-turn.compaction-attempt.accepted .sg-turn-mark {
+  outline: 1px solid var(--chart-2);
+  outline-offset: 2px;
+}
+.sg-turn.compaction-attempt.rejected .sg-turn-mark {
+  border: 1px dashed var(--chart-2);
+  background: var(--grey-1);
+  opacity: 0.72;
+}
+.sg-turn.compaction-attempt.rejected .sg-turn-index { color: var(--grey-4); }
+.sg-turn.compaction-attempt.rejected:hover .sg-turn-mark,
+.sg-turn.compaction-attempt.rejected:focus-visible .sg-turn-mark {
+  border-color: var(--grey-6);
+  background: var(--grey-2);
+  opacity: 1;
+}
 .sg-turn-run {
   position: absolute;
   z-index: 5;

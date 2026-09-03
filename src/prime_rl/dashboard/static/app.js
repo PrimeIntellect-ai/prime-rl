@@ -3386,6 +3386,7 @@ function semanticEdgeKind(type) {
   if (type === "continuation") return "continuation";
   if (type === "subagent_call") return "subagent-call";
   if (type === "subagent_return") return "subagent-return";
+  if (type === "compaction_attempt") return "compaction-attempt";
   if (type === "compaction") return "compaction";
   return "custom";
 }
@@ -3455,6 +3456,12 @@ function semanticNodeTip(event) {
     ["end", span.ended_at == null ? "unknown" : timelineClock(span.ended_at)],
     ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
+  if (event.compactionAttempt) {
+    rows.splice(2, 0,
+      ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
+      ["training", span.trainable === false ? "masked" : "included"]
+    );
+  }
   appendTimelineUsage(rows, {
     input_tokens: span.input_tokens,
     cached_tokens: span.cached_tokens,
@@ -3466,8 +3473,10 @@ function semanticNodeTip(event) {
     cost: span.cost,
   });
   return timelineTipAttr({
-    kind: "model call",
-    title: `${event.agent.label} — ${span.label}`,
+    kind: event.compactionAttempt ? "compaction attempt" : "model call",
+    title: event.compactionAttempt
+      ? `${event.agent.label} — attempt ${event.compactionAttemptIndex}`
+      : `${event.agent.label} — ${span.label}`,
     snippet: span.snippet || "",
     rows,
     hint: "Click to inspect this call. Exact wall-clock placement is available in Timeline.",
@@ -3521,6 +3530,7 @@ function renderSemanticGraph() {
       contextIndex: lane.context.index,
       unlinked: !!lane.context.unlinked,
       lane,
+      compactionAttempt: lane.compaction_attempt || null,
       events: [],
     };
     agent.segments.push(segment);
@@ -3536,6 +3546,7 @@ function renderSemanticGraph() {
         lane,
         agent,
         segment,
+        compactionAttempt: segment.compactionAttempt,
         span,
       };
       segment.events.push(event);
@@ -3550,11 +3561,31 @@ function renderSemanticGraph() {
   );
   for (const agent of agents) {
     agent.segments.sort((left, right) => left.contextIndex - right.contextIndex);
+    agent.contextSegments = agent.segments.filter((segment) => !segment.compactionAttempt);
     agent.usage = aggregateTimelineUsage(agent.segments.map((segment) => segment.lane.usage));
+    agent.contextUsage = new Map();
+    const segmentsByContext = new Map();
+    for (const segment of agent.segments) {
+      if (!segmentsByContext.has(segment.contextIndex)) {
+        segmentsByContext.set(segment.contextIndex, []);
+      }
+      segmentsByContext.get(segment.contextIndex).push(segment);
+    }
+    for (const [contextIndex, contextSegments] of segmentsByContext) {
+      agent.contextUsage.set(
+        contextIndex,
+        aggregateTimelineUsage(contextSegments.map((candidate) => candidate.lane.usage))
+      );
+    }
+    for (const segment of agent.contextSegments) {
+      segment.contextUsage = agent.contextUsage.get(segment.contextIndex);
+    }
     semanticScopeDetails.set(`agent:${agent.key}`, { kind: "agent", agent });
   }
   for (const segment of segments) {
-    semanticScopeDetails.set(`context:${segment.key}`, { kind: "context", segment });
+    if (!segment.compactionAttempt) {
+      semanticScopeDetails.set(`context:${segment.key}`, { kind: "context", segment });
+    }
   }
   events.sort(
     (left, right) =>
@@ -3600,7 +3631,7 @@ function renderSemanticGraph() {
   });
   for (const agent of agents) {
     const agentEvents = events
-      .filter((event) => event.agent === agent)
+      .filter((event) => event.agent === agent && !event.compactionAttempt)
       .sort(
         (left, right) =>
           (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
@@ -3807,10 +3838,52 @@ function renderSemanticGraph() {
     semanticNodeDetails.set(event.key, event);
   }
 
+  const attemptsBySource = new Map();
+  for (const edge of edges) {
+    if (edge.type !== "compaction_attempt") continue;
+    const sourceKey = semanticNodeKey(edge.trace_index, edge.source_node);
+    const targetKey = semanticNodeKey(edge.trace_index, edge.target_node);
+    if (!attemptsBySource.has(sourceKey)) attemptsBySource.set(sourceKey, []);
+    attemptsBySource.get(sourceKey).push(targetKey);
+  }
+  const attemptSpread = Math.min(96, laneWidth * 0.27);
+  for (const [sourceKey, targetKeys] of attemptsBySource) {
+    const source = positions.get(sourceKey);
+    if (!source) continue;
+    targetKeys.sort((leftKey, rightKey) => {
+      const left = eventByKey.get(leftKey);
+      const right = eventByKey.get(rightKey);
+      return eventOrder(left.key, right.key);
+    });
+    const acceptedIndex = targetKeys.findIndex(
+      (key) => eventByKey.get(key)?.compactionAttempt?.accepted
+    );
+    let rejectedSlot = 0;
+    targetKeys.forEach((targetKey, index) => {
+      const event = eventByKey.get(targetKey);
+      const position = positions.get(targetKey);
+      if (!event || !position) return;
+      event.compactionAttemptIndex = index + 1;
+      let offset;
+      if (acceptedIndex >= 0 && index === acceptedIndex) {
+        offset = 0;
+      } else if (acceptedIndex >= 0) {
+        offset = rejectedSlot % 2 === 0
+          ? -(Math.floor(rejectedSlot / 2) + 1)
+          : Math.floor(rejectedSlot / 2) + 1;
+        rejectedSlot += 1;
+      } else {
+        offset = index - (targetKeys.length - 1) / 2;
+      }
+      positions.set(targetKey, { x: source.x + offset * attemptSpread, y: position.y });
+    });
+  }
+
   const markerColors = {
     continuation: "#767676",
     "subagent-call": "#4a9eff",
     "subagent-return": "#ff6b4a",
+    "compaction-attempt": "#b7a6fa",
     compaction: "#b7a6fa",
     custom: "#b6ff3c",
   };
@@ -3875,7 +3948,7 @@ function renderSemanticGraph() {
   }
   const lifelines = segments
     .map((segment) => {
-      if (!segment.firstEvent || !segment.lastEvent) return "";
+      if (segment.compactionAttempt || !segment.firstEvent || !segment.lastEvent) return "";
       const first = positions.get(segment.firstEvent.key);
       const last = positions.get(segment.lastEvent.key);
       const color = PALETTE[agents.indexOf(segment.agent) % PALETTE.length];
@@ -3907,6 +3980,7 @@ function renderSemanticGraph() {
   })
     .join("");
   const agentLabels = segments
+    .filter((segment) => !segment.compactionAttempt)
     .map((segment) => {
       if (!segment.firstEvent) return "";
       const position = positions.get(segment.firstEvent.key);
@@ -3928,14 +4002,14 @@ function renderSemanticGraph() {
         kind: "agent",
         title: agentLabel,
         snippet: "",
-        rows: [["contexts", fmtNum(segment.agent.segments.length)], ...semanticUsageRows(segment.agent.usage)],
+        rows: [["contexts", fmtNum(segment.agent.contextSegments.length)], ...semanticUsageRows(segment.agent.usage)],
         hint: "Current prompt is the latest model request. Click for exact usage.",
       });
       const contextTip = timelineTipAttr({
         kind: segment.unlinked ? "unlinked calls" : "context",
         title: segment.unlinked ? agentLabel : `${agentLabel} — context ${segment.contextIndex}`,
         snippet: "",
-        rows: semanticUsageRows(segment.lane.usage),
+        rows: semanticUsageRows(segment.contextUsage || segment.lane.usage),
         hint: segment.unlinked
           ? "The trace did not provide enough lineage to place these calls."
           : "Current prompt is the latest model request. Click for exact usage.",
@@ -3957,13 +4031,19 @@ function renderSemanticGraph() {
     .map((event) => {
       const position = positions.get(event.key);
       const color = PALETTE[agents.indexOf(event.agent) % PALETTE.length];
+      const attemptClass = event.compactionAttempt
+        ? ` compaction-attempt ${event.compactionAttempt.accepted ? "accepted" : "rejected"}`
+        : "";
+      const label = event.compactionAttempt
+        ? `a${event.compactionAttemptIndex}${event.compactionAttempt.accepted ? " ✓" : " ×"}`
+        : event.span.label.replace("turn ", "t");
       return (
-        `<button class="sg-turn" style="left:${position.x - turnHitWidth / 2}px;top:${position.y - turnHitHeight / 2}px;` +
+        `<button class="sg-turn${attemptClass}" style="left:${position.x - turnHitWidth / 2}px;top:${position.y - turnHitHeight / 2}px;` +
         `width:${turnHitWidth}px;height:${turnHitHeight}px;--turn-color:${color};--turn-mark-width:${turnMarkWidth}px;` +
         `--turn-mark-height:${turnMarkHeight}px;--turn-label-offset:${turnLabelOffset}px" ` +
         `data-sg-key="${esc(event.key)}" data-tl-trace="${event.traceIndex}" data-tl-node="${event.nodeIndex}" ` +
         `data-tl-call="${event.callIndex}"${semanticNodeTip(event)}>` +
-        `<span class="sg-turn-mark"></span><span class="sg-turn-index">${esc(event.span.label.replace("turn ", "t"))}</span></button>`
+        `<span class="sg-turn-mark"></span><span class="sg-turn-index">${esc(label)}</span></button>`
       );
     })
     .join("");
@@ -4032,7 +4112,15 @@ function openSemanticCallInspector(event) {
     ["cost", span.cost == null ? "n/a" : fmtCost(span.cost)],
   ];
   if (event.inferredContinuation) rows.splice(2, 0, ["lineage", "recovered from physical tool flow"]);
-  $("#sg-inspector-title").textContent = `${event.agent.label} · ${span.label}`;
+  if (event.compactionAttempt) {
+    rows.splice(2, 0,
+      ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
+      ["training", span.trainable === false ? "masked" : "included"]
+    );
+  }
+  $("#sg-inspector-title").textContent = event.compactionAttempt
+    ? `${event.agent.label} · compaction attempt ${event.compactionAttemptIndex}`
+    : `${event.agent.label} · ${span.label}`;
   $("#sg-inspector-body").innerHTML =
     `<div class="sg-inspector-section">model call</div>` +
     semanticInspectorRows(rows) +
@@ -4051,14 +4139,14 @@ function openSemanticScopeInspector(scope) {
       `<div class="sg-inspector-section">current context</div>` +
       semanticInspectorRows(semanticContextRows(agent.usage, false)) +
       `<div class="sg-inspector-section">cumulative usage</div>` +
-      semanticInspectorRows([["contexts", fmtNum(agent.segments.length)], ...semanticCumulativeUsageRows(agent.usage, false)]) +
+      semanticInspectorRows([["contexts", fmtNum(agent.contextSegments.length)], ...semanticCumulativeUsageRows(agent.usage, false)]) +
       `<div class="sg-inspector-section">contexts</div>` +
       semanticInspectorRows(
-        agent.segments.map((segment) => [
+        agent.contextSegments.map((segment) => [
           `context ${segment.contextIndex}`,
-          segment.lane.usage?.latest_context_tokens == null
+          segment.contextUsage?.latest_context_tokens == null
             ? "n/a"
-            : `${Math.round(segment.lane.usage.latest_context_tokens).toLocaleString()} prompt · ${fmtNum(segment.lane.usage.model_calls || 0)} calls`,
+            : `${Math.round(segment.contextUsage.latest_context_tokens).toLocaleString()} prompt · ${fmtNum(segment.contextUsage.model_calls || 0)} calls`,
         ])
       );
   } else {
@@ -4068,9 +4156,9 @@ function openSemanticScopeInspector(scope) {
       : `${segment.agent.displayLabel} · context ${segment.contextIndex}`;
     $("#sg-inspector-body").innerHTML =
       `<div class="sg-inspector-section">context length</div>` +
-      semanticInspectorRows(semanticContextRows(segment.lane.usage, false)) +
+      semanticInspectorRows(semanticContextRows(segment.contextUsage || segment.lane.usage, false)) +
       `<div class="sg-inspector-section">cumulative usage</div>` +
-      semanticInspectorRows(semanticCumulativeUsageRows(segment.lane.usage, false));
+      semanticInspectorRows(semanticCumulativeUsageRows(segment.contextUsage || segment.lane.usage, false));
   }
   $("#sg-inspector").hidden = false;
 }

@@ -156,6 +156,44 @@ def test_semantic_timeline_starts_new_context_after_compaction() -> None:
     ]
 
 
+def test_semantic_timeline_keeps_rejected_and_accepted_compaction_attempts() -> None:
+    nodes = [
+        _node(None, 0.0),
+        _node(0, 2.0),
+        _node(1, 4.0, [{"node": 1, "type": "compaction_attempt"}]),
+        _node(1, 5.0, [{"node": 1, "type": "compaction_attempt"}]),
+        _node(0, 7.0, [{"node": 3, "type": "compaction"}]),
+    ]
+    nodes[2]["mask"] = [False]
+    nodes[3]["mask"] = [True]
+    calls = [
+        _call(1, 1.0, 2.0),
+        _call(2, 3.0, 4.0),
+        _call(3, 4.0, 5.0),
+        _call(4, 6.0, 7.0),
+    ]
+
+    timeline = project_episode_timeline(_episode(nodes, calls))
+    attempts = [lane for lane in timeline["semantic_lanes"] if lane.get("compaction_attempt")]
+
+    assert [attempt["compaction_attempt"]["accepted"] for attempt in attempts] == [
+        False,
+        True,
+    ]
+    assert [attempt["spans"][1]["trainable"] for attempt in attempts] == [
+        False,
+        True,
+    ]
+    assert [attempt["context"] for attempt in attempts] == [
+        {"agent": "root", "index": 0},
+        {"agent": "root", "index": 0},
+    ]
+    assert timeline["semantic_lanes"][-1]["context"] == {
+        "agent": "root",
+        "index": 1,
+    }
+
+
 def test_semantic_timeline_falls_back_to_physical_only() -> None:
     nodes = [_node(None, 0.0), _node(0, 2.0)]
     timeline = project_episode_timeline(_episode(nodes, [_call(1, 1.0, 2.0)]))
