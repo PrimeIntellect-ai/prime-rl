@@ -210,13 +210,22 @@ def test_collective_rpc_nixl_init_uses_exact_worker_offsets():
         )
     )
 
-    for client, rank_offset in zip(clients, (0, 2)):
+    for client, rank_offset, engine_world_size in zip(clients, (0, 2), (2, 1)):
         client.post.assert_awaited_once_with(
             "/collective_rpc",
             json={
                 "method": "init_broadcaster",
                 "timeout": 1200,
-                "args": ["model-express", 5555, rank_offset, 3, 1200, False, "run-a"],
+                "args": [
+                    "model-express",
+                    5555,
+                    rank_offset,
+                    3,
+                    1200,
+                    False,
+                    "run-a",
+                    engine_world_size,
+                ],
                 "kwargs": {},
             },
         )
