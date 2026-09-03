@@ -57,7 +57,14 @@ def setup_weight_receiver(
             topology_guard=topology_guard,
         )
     elif config.type == "filesystem":
-        return FileSystemWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+        return FileSystemWeightReceiver(
+            broadcast_dir,
+            config,
+            admin_clients,
+            model_name,
+            use_collective_rpc=use_collective_rpc,
+            topology_guard=topology_guard,
+        )
     elif config.type == "nixl":
         return NIXLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
     else:
