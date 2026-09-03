@@ -31,6 +31,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
+from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -1342,12 +1343,8 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
-    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
-    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
-    # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it comes from the renderer rather than the processor.
     mm_kwargs: dict[str, Tensor] | None = None,
+    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -1365,13 +1362,15 @@ def forward(
         kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
-        # Forward the per-model multimodal tensors verbatim, plus the
-        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
-        # token→modality mapping via ``mm_token_type_id_map``).
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        if "image_grid_thw" not in mm_kwargs:
+        # SFT still uses its existing eager processor path and does not provide
+        # an adapter policy yet, so preserve its current kwargs-based behavior.
+        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
+        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
+            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
+        if policy.pass_position_ids:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
