@@ -39,7 +39,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_policy_admin_clients
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -119,7 +119,7 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     clients: InferenceClient | None
-    admin_clients: AdminClients | None
+    admin_clients: AdminPlane | None
     sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -208,7 +208,7 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_clients = AdminClients(config.model.client)
+        self.admin_clients = setup_policy_admin_clients(config.model.client, config.model.name)
 
         await monitors.setup(
             producer="orch",
@@ -309,6 +309,11 @@ class Orchestrator:
             config.weight_broadcast,
             admin_clients=self.admin_clients.clients,
             model_name=config.model.name,
+            worker_world_sizes=self.admin_clients.worker_world_sizes,
+            use_collective_rpc=self.admin_clients.use_collective_rpc,
+            topology_guard=(
+                self.admin_clients.ensure_topology_current if self.admin_clients.use_collective_rpc else None
+            ),
         )
         await self.receiver.initialize()
         get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
