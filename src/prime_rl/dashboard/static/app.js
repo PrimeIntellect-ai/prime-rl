@@ -3459,7 +3459,7 @@ function semanticNodeTip(event) {
   if (event.compactionAttempt) {
     rows.splice(2, 0,
       ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
-      ["training", span.trainable === false ? "masked" : "included"]
+      ["training branch", event.compactionAttempt.accepted ? "included" : "excluded"]
     );
   }
   appendTimelineUsage(rows, {
@@ -4115,7 +4115,7 @@ function openSemanticCallInspector(event) {
   if (event.compactionAttempt) {
     rows.splice(2, 0,
       ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
-      ["training", span.trainable === false ? "masked" : "included"]
+      ["training branch", event.compactionAttempt.accepted ? "included" : "excluded"]
     );
   }
   $("#sg-inspector-title").textContent = event.compactionAttempt

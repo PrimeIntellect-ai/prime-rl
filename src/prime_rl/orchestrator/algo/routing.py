@@ -9,8 +9,9 @@ from prime_rl.transports.batch import TrainingSample
 
 
 def assign_advantages(trace: vf.Trace, values: float | list[float]) -> None:
-    """Assign credit in compact sampled-token order across the trace graph."""
-    nodes = [node for node in trace.nodes if any(node.mask)]
+    """Assign credit in compact sampled-token order across trainable graph paths."""
+    trainable_nodes = {id(node) for branch in trace.branches if branch.trainable for node in branch.nodes}
+    nodes = [node for node in trace.nodes if id(node) in trainable_nodes and any(node.mask)]
     for node in nodes:
         if len(node.mask) != len(node.token_ids):
             raise ValueError(

@@ -164,7 +164,7 @@ def test_semantic_timeline_keeps_rejected_and_accepted_compaction_attempts() -> 
         _node(1, 5.0, [{"node": 1, "type": "compaction_attempt"}]),
         _node(0, 7.0, [{"node": 3, "type": "compaction"}]),
     ]
-    nodes[2]["mask"] = [False]
+    nodes[2]["mask"] = [True]
     nodes[3]["mask"] = [True]
     calls = [
         _call(1, 1.0, 2.0),
@@ -181,7 +181,7 @@ def test_semantic_timeline_keeps_rejected_and_accepted_compaction_attempts() -> 
         True,
     ]
     assert [attempt["spans"][1]["trainable"] for attempt in attempts] == [
-        False,
+        True,
         True,
     ]
     assert [attempt["context"] for attempt in attempts] == [

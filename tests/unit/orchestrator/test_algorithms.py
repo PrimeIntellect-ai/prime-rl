@@ -239,14 +239,16 @@ def test_compaction_retries_train_only_causally_used_generations():
         ),
         MessageNode(
             parent=2,
+            semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
             message=AssistantMessage(content="rejected tool call"),
             sampled=True,
             token_ids=[4],
-            mask=[False],
+            mask=[True],
             logprobs=[-0.2],
         ),
         MessageNode(
             parent=2,
+            semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
             message=AssistantMessage(content="accepted summary"),
             sampled=True,
             token_ids=[5],
@@ -262,6 +264,7 @@ def test_compaction_retries_train_only_causally_used_generations():
         ),
         MessageNode(
             parent=5,
+            semantic_parents=[vf.ParentLink(node=4, type="compaction")],
             message=AssistantMessage(content="answer"),
             sampled=True,
             token_ids=[7],
@@ -276,6 +279,16 @@ def test_compaction_retries_train_only_causally_used_generations():
         rewards={},
         ok=True,
     )
+    branches = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert branches["rejected tool call"].trainable is False
+    assert branches["accepted summary"].trainable is True
+    assert branches["answer"].trainable is True
+
+    assign_advantages(trace, 1.0)
+    assert trace.nodes[1].advantages == [1.0]
+    assert trace.nodes[3].advantages is None
+    assert trace.nodes[4].advantages == [1.0]
+    assert trace.nodes[6].advantages == [1.0]
 
     trainable_ids = [
         token_id
