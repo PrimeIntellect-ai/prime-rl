@@ -213,7 +213,12 @@ class EnvConfig(BaseConfig):
                 if agent.timeout.rollout is not None:
                     self.legacy.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
                 if agent.max_output_tokens is not None:
-                    self.legacy.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
+                    # A legacy multi-turn environment may need a larger total
+                    # rollout budget than its per-turn sampling cap. Preserve
+                    # an explicit TOML override in legacy.extra_env_kwargs.
+                    self.legacy.extra_env_kwargs.setdefault(
+                        "max_total_completion_tokens", agent.max_output_tokens
+                    )
         return self
 
 
