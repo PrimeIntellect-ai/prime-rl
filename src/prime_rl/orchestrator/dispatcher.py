@@ -1,6 +1,7 @@
-"""RolloutDispatcher: schedules rollouts under a shared permit counter.
+"""RolloutDispatcher: schedules rollouts under train/eval permit limits.
 
-- Capacity (``max_inflight_episodes``) is shared across train + eval. One permit is
+- Train and eval have separate per-kind limits, while combined capacity is capped
+  at the larger limit. One permit is
   one episode: for a v1 env one ``run`` request, and a group-scoring task that runs
   N rollouts in one call reserves N permits (each bridged v0 rollout is its own
   single-agent episode).
@@ -132,6 +133,7 @@ class RolloutDispatcher:
         policy_pool: InferencePool,
         policy: Policy,
         max_inflight_episodes: int,
+        eval_max_inflight_episodes: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
     ) -> None:
@@ -145,7 +147,9 @@ class RolloutDispatcher:
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
-        self.max_inflight = max_inflight_episodes
+        self.max_train_inflight = max_inflight_episodes
+        self.max_eval_inflight = eval_max_inflight_episodes
+        self.max_inflight = max(max_inflight_episodes, eval_max_inflight_episodes)
         self.inflight_permits = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -189,9 +193,12 @@ class RolloutDispatcher:
     def inflight_eval_count(self) -> int:
         return sum(m.rollout_count for m in self.inflight.values() if m.kind == "eval")
 
-    @property
-    def available_permits(self) -> int:
-        return self.max_inflight - self.inflight_permits
+    def available_permits(self, kind: RolloutKind) -> int:
+        """Capacity available to ``kind``, respecting both its per-kind limit
+        and the combined inference-capacity limit."""
+        kind_inflight = self.inflight_train_count if kind == "train" else self.inflight_eval_count
+        kind_limit = self.max_train_inflight if kind == "train" else self.max_eval_inflight
+        return min(self.max_inflight - self.inflight_permits, kind_limit - kind_inflight)
 
     @property
     def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
@@ -312,9 +319,6 @@ class RolloutDispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.available_permits <= 0:
-                return
-
             if self.mode == DispatcherMode.PREFER_EVAL:
                 # PREFER_EVAL is only entered when the orchestrator triggers
                 # eval, which requires ``eval_source`` to be configured
@@ -325,11 +329,15 @@ class RolloutDispatcher:
                     # while the in-flight eval tail completes naturally
                     self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
                     continue
+                if self.available_permits("eval") <= 0:
+                    return
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
             else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
                 if not self.dispatch_allowed.is_set():
+                    return
+                if self.available_permits("train") <= 0:
                     return
                 scheduled = await self.try_schedule("train")
                 if not scheduled:
@@ -352,23 +360,24 @@ class RolloutDispatcher:
         envs = self.train_envs if kind == "train" else self.eval_envs
         if envs is None:
             return False
+        available_permits = self.available_permits(kind)
 
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.rollouts_to_schedule <= 0:
                 continue
             env = envs.get(group.env_name)
             cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
-            if cost <= self.available_permits:
+            if cost <= available_permits:
                 return await self.schedule_group_rollout(gid, group)
 
-        fresh = self.next_fresh_group(kind, envs)
+        fresh = self.next_fresh_group(kind, envs, available_permits)
         if fresh is None:
             return False
         gid = uuid.uuid4()
         self.groups[gid] = fresh
         return await self.schedule_group_rollout(gid, fresh)
 
-    def next_fresh_group(self, kind: RolloutKind, envs) -> GroupState | None:
+    def next_fresh_group(self, kind: RolloutKind, envs, available_permits: int) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty or the
         picked env's permit cost doesn't fit."""
@@ -377,7 +386,7 @@ class RolloutDispatcher:
         else:
             assert self.eval_source is not None
             source = self.eval_source
-        example = source.next_example(self.available_permits)
+        example = source.next_example(available_permits)
         if example is None:
             return None
 
@@ -485,7 +494,7 @@ class RolloutDispatcher:
 
     async def acquire(self, n: int) -> None:
         """Reserve ``n`` permits + rate-limit each one. Caller must precheck
-        ``available_permits >= n``; this is not a blocking acquire."""
+        ``available_permits(kind) >= n``; this is not a blocking acquire."""
         for _ in range(n):
             if self.rate_limiter is not None:
                 await self.rate_limiter.acquire()

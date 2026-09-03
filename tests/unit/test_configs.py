@@ -215,6 +215,18 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def test_eval_max_inflight_defaults_to_train_limit():
+    config = OrchestratorConfig.model_validate({"batch_size": 128})
+    assert config.max_inflight_episodes == 128
+    assert config.eval_max_inflight_episodes == 128
+
+
+def test_eval_max_inflight_can_exceed_train_limit():
+    config = OrchestratorConfig.model_validate({"batch_size": 128, "eval_max_inflight_episodes": 512})
+    assert config.max_inflight_episodes == 128
+    assert config.eval_max_inflight_episodes == 512
+
+
 def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
