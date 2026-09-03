@@ -1189,15 +1189,15 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
     The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
-    dtype `SparseAttnInputs.attend` accepts. Numerics belong to
+    dtype `dsv4_sparse_attn` accepts. Numerics belong to
     `test_dsv4_sparse_attn.py`, which compares the kernel against the float32 gather oracle on
     hand-built tensors; what is covered here is that the modeling code feeds the kernel inputs it
     can act on, and that nothing in `q`, the KV buffer or the indices carries the packed row's
     layout into a document's own answer.
 
-    The call count is load-bearing, not decoration: `attend` raises today rather than demoting a
-    dtype it cannot run, but without counting the calls a regression that reintroduced a fallback
-    would leave this test asserting a property of the gather reference instead.
+    The call count is load-bearing, not decoration: `dsv4_sparse_attn` raises today rather than
+    demoting a dtype it cannot run, but without counting the calls a regression that reintroduced
+    a fallback would leave this test asserting a property of the gather reference instead.
     """
     module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
     packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())
@@ -1243,9 +1243,9 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     module level and at the real Flash shapes, and it is not implied by its neighbour above, which
     compares two runs of the same path and would pass unchanged if both left a parameter at zero.
 
-    The call count is load-bearing rather than decoration: `attend` raises today instead of
-    falling back, but a regression that reintroduced a fallback would leave this asserting a
-    property of the gather reference.
+    The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today
+    instead of falling back, but a regression that reintroduced a fallback would leave this
+    asserting a property of the gather reference.
     """
     module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
     packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())

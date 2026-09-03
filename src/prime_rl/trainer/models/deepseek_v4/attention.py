@@ -123,7 +123,7 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
-    from prime_rl.trainer.models.kernels.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
@@ -148,7 +148,7 @@ def _kernel_blocker(num_heads: int, head_dim: int, dtype: torch.dtype) -> str | 
         return shape_error
     # FSDP mixed precision can make the compute dtype differ from the dtype a module is built
     # under, so the default dtype is a heuristic for `auto` only. An explicit `kernel` request
-    # still raises at forward time, in `SparseAttnInputs.attend`, on non-bfloat16 queries.
+    # still raises at forward time, in `dsv4_sparse_attn`, on non-bfloat16 queries.
     if dtype != torch.bfloat16:
         return f"the kernel runs in bfloat16 only, but the default dtype is {dtype}"
     return None
@@ -548,24 +548,6 @@ class SparseAttnInputs:
         indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
         return cls(kv_buf=kv_buf, indices=indices)
 
-    def attend(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
-        """Attend `q` (batch, seq_len, heads, head_dim) over this layer's slots, via `dsv4_sparse_attn`."""
-        if q.dtype != torch.bfloat16:
-            raise ValueError(
-                f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}. "
-                "Run the model in bfloat16 or select the 'gather' attention implementation."
-            )
-        out, _lse = dsv4_sparse_attn(q, self.kv_buf, self.indices, sinks, scale)
-        return out
-
-    def _attend_eager_gather(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
-        """Same attention as `attend`, unfused, through `sparse_attention_gather`.
-
-        "Eager" is the PyTorch sense of unfused here, not the dense-mask `eager` layer path,
-        which reaches attention without ever building these inputs.
-        """
-        return sparse_attention_gather(q, self.kv_buf, self.indices, sinks, scale)
-
 
 class DeepseekV4Compressor(nn.Module):
     """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens, per the
@@ -887,23 +869,23 @@ class DeepseekV4Attention(nn.Module):
         )  # (b, 1, t, t + e)
         return self._eager(q, kv, attention_mask)
 
-    def _attend(
-        self, hidden_states: Tensor, q_residual: Tensor, q: Tensor, kv: Tensor, packed: PackedContext
-    ) -> Tensor:
+    def _attend(self, q: Tensor, kv: Tensor, compressed: tuple[Tensor, Tensor] | None, packed: PackedContext) -> Tensor:
         """Attend `q` (b, h, t, d) over the local KV `kv` (b, 1, t, d), plus any compressed entries.
 
-        Returns (b, t, h, d). A sliding layer sees only its window; a compressed layer reaches
-        further through its compressor's entries, either by concatenating them onto the dense
-        mask or, on the sparse path, by gathering the selected ones per query.
+        Returns (b, t, h, d). A sliding layer sees only its window and passes `compressed` as
+        `None`; a compressed layer reaches further through its compressor's output, the entries
+        paired with this layer's entry selection in whatever form its attention path consumes:
+        an additive `block_bias` to concatenate onto the dense mask for HCA, the indexer's picks
+        to gather per query for CSA.
         """
-        if self.compressor is None:
+        if compressed is None:
             return self._eager(q, kv, packed.attention_mask)
 
         if self.layer_type != "compressed_sparse_attention":
-            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed)
+            compressed_kv, block_bias = compressed
             return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
 
-        compressed_kv, top_k_indices = self.compressor(hidden_states, q_residual, packed)
+        compressed_kv, top_k_indices = compressed
         if self.attn_impl == "eager":
             block_bias = block_bias_from_indices(top_k_indices, compressed_kv.shape[2], packed.attention_mask.dtype)
             return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
@@ -925,8 +907,9 @@ class DeepseekV4Attention(nn.Module):
         )
         q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
         if self.attn_impl == "kernel":
-            return inputs.attend(q, self.sinks, self.scaling)
-        return inputs._attend_eager_gather(q, self.sinks, self.scaling)
+            out, _lse = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
+            return out
+        return sparse_attention_gather(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
@@ -954,7 +937,8 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)  # (b, 1, t, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
-        attn_output = self._attend(hidden_states, q_residual, q, kv, packed)  # (b, t, h, d)
+        compressed = self.compressor(hidden_states, q_residual, packed) if self.compressor is not None else None
+        attn_output = self._attend(q, kv, compressed, packed)  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
