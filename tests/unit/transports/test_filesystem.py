@@ -36,6 +36,36 @@ def test_filesystem_receiver_uses_collective_rpc_after_topology_check(tmp_path):
     )
 
 
+def test_filesystem_receiver_checks_topology_before_loading_lora(tmp_path):
+    step_dir = tmp_path / "step_3"
+    step_dir.mkdir()
+    (step_dir / FINISHED_MARKER).touch()
+    (step_dir / "adapter_config.json").touch()
+    calls = []
+
+    async def check_topology():
+        calls.append("topology")
+
+    async def load_adapter(*_args):
+        calls.append("load")
+
+    receiver = FileSystemWeightReceiver(
+        tmp_path,
+        FileSystemWeightBroadcastConfig(),
+        [],
+        "Qwen/Qwen3-0.6B",
+        topology_guard=check_topology,
+    )
+
+    with patch(
+        "prime_rl.transports.weights.filesystem.load_lora_adapter",
+        side_effect=load_adapter,
+    ):
+        asyncio.run(receiver.receive(3))
+
+    assert calls == ["topology", "load"]
+
+
 def test_filesystem_worker_uses_native_vllm_reload(tmp_path):
     worker = MagicMock()
 
