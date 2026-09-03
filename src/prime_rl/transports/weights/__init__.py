@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import torch
@@ -40,11 +41,30 @@ def setup_weight_receiver(
     config: WeightBroadcastConfig,
     admin_clients: list[AsyncClient],
     model_name: str,
+    *,
+    worker_world_sizes: tuple[int, ...] | None = None,
+    use_collective_rpc: bool = False,
+    topology_guard: Callable[[], Awaitable[None]] | None = None,
 ) -> WeightReceiver:
     if config.type == "nccl":
-        return NCCLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+        return NCCLWeightReceiver(
+            broadcast_dir,
+            config,
+            admin_clients,
+            model_name,
+            worker_world_sizes=worker_world_sizes,
+            use_collective_rpc=use_collective_rpc,
+            topology_guard=topology_guard,
+        )
     elif config.type == "filesystem":
-        return FileSystemWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+        return FileSystemWeightReceiver(
+            broadcast_dir,
+            config,
+            admin_clients,
+            model_name,
+            use_collective_rpc=use_collective_rpc,
+            topology_guard=topology_guard,
+        )
     elif config.type == "nixl":
         return NIXLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
     else:
