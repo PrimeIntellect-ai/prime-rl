@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +16,7 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import wait_for_path
 
 
 class PrefillScorer:
@@ -110,6 +112,19 @@ class AdminClients:
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
+
+
+def setup_policy_admin_clients(
+    client_config: ClientConfig,
+    model_name: str,
+    *,
+    require_world_size: bool,
+):
+    if client_config.is_dynamo():
+        from prime_rl.inference.dynamo import DynamoAdminClients
+
+        return DynamoAdminClients(client_config, model_name, require_world_size=require_world_size)
+    return AdminClients(client_config)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -258,6 +273,12 @@ ADMIN_TIMEOUT_S = 300.0
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
+NCCL_MANIFEST = "NCCL_MANIFEST.json"
+
+
+def get_nccl_chunk_manifest(weight_dir: Path, chunk_id: int) -> Path:
+    return weight_dir / f"NCCL_CHUNK_{chunk_id}.json"
+
 
 async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
@@ -277,6 +298,16 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
                 **kwargs,
             )
             response.raise_for_status()
+
+
+async def _admin_post_once(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+    """POST a non-idempotent admin operation exactly once."""
+    response = await client.post(
+        path,
+        timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
+        **kwargs,
+    )
+    response.raise_for_status()
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
@@ -300,11 +331,40 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger.debug("All inference engines resumed")
 
 
+async def _receive_native_nccl_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> None:
+    """Drive vLLM's native worker update lifecycle while the trainer sends chunks."""
+    manifest_path = weight_dir / NCCL_MANIFEST
+    manifest_path.unlink(missing_ok=True)
+    for chunk_manifest in weight_dir.glob("NCCL_CHUNK_*.json"):
+        chunk_manifest.unlink()
+
+    await asyncio.gather(*[_admin_post_once(client, "/start_weight_update") for client in admin_clients])
+    await wait_for_path(manifest_path, interval=0.1, log_interval=10)
+    num_chunks = int(json.loads(manifest_path.read_text())["num_chunks"])
+    for chunk_id in range(num_chunks):
+        chunk_path = get_nccl_chunk_manifest(weight_dir, chunk_id)
+        await wait_for_path(chunk_path, interval=0.1, log_interval=10)
+        update_info = json.loads(chunk_path.read_text())
+        await asyncio.gather(
+            *[
+                _admin_post_once(
+                    client,
+                    "/update_weights",
+                    json={"update_info": update_info},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for client in admin_clients
+            ]
+        )
+    await asyncio.gather(*[_admin_post_once(client, "/finish_weight_update") for client in admin_clients])
+
+
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     step: int = 0,
     on_paused: Callable[[], None] | None = None,
+    native_nccl: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -320,22 +380,30 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     await _pause_engines(admin_clients, step=step)
+    update_succeeded = False
     try:
         if on_paused is not None:
             on_paused()
-        await asyncio.gather(
-            *[
-                _admin_post(
-                    admin_client,
-                    "/update_weights",
-                    json={"weight_dir": weight_dir_posix},
-                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                )
-                for admin_client in admin_clients
-            ]
-        )
+        if native_nccl:
+            if weight_dir is None:
+                raise ValueError("Native NCCL updates require a weight directory")
+            await _receive_native_nccl_weights(admin_clients, weight_dir)
+        else:
+            await asyncio.gather(
+                *[
+                    _admin_post(
+                        admin_client,
+                        "/update_weights",
+                        json={"weight_dir": weight_dir_posix},
+                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                    )
+                    for admin_client in admin_clients
+                ]
+            )
+        update_succeeded = True
     finally:
-        await _resume_engines(admin_clients)
+        if update_succeeded or not native_nccl:
+            await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

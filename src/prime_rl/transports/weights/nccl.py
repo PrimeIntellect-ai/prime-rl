@@ -1,3 +1,4 @@
+import json
 import pickle
 from pathlib import Path
 from typing import Callable, Generator, cast
@@ -9,9 +10,11 @@ from torch import Tensor
 from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
+from vllm.distributed.weight_transfer.nccl_common import trainer_init
+from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
-from prime_rl.orchestrator.clients import init_nccl_broadcast, update_weights
+from prime_rl.orchestrator.clients import NCCL_MANIFEST, get_nccl_chunk_manifest, init_nccl_broadcast, update_weights
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
@@ -123,25 +126,38 @@ class NCCLBroadcaster:
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
-            # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
-            )
-            self.communicator = PyNcclCommunicator(pg, device=device)
+            if quantize_in_weight_transfer:
+                pg = StatelessProcessGroup.create(
+                    host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+                )
+                self.communicator = PyNcclCommunicator(pg, device=device)
+            else:
+                self.communicator = trainer_init(
+                    NCCLTrainerInitInfo(
+                        master_address=host,
+                        master_port=port,
+                        world_size=world_size,
+                        packed=False,
+                        rank=rank,
+                    )
+                )
             self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def send(self, model: nn.Module) -> None:
+    def send(self, model: nn.Module, step_dir: Path) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
-        if self.world.is_master:
+        if self.world.is_master and self.quantize_in_weight_transfer:
             broadcast_integer(num_state_dict_to_send, self.communicator)
+
+        if self.world.is_master and not self.quantize_in_weight_transfer:
+            self._write_manifest(step_dir / NCCL_MANIFEST, {"num_chunks": num_state_dict_to_send})
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         preprocess_fn: Callable[[nn.Module, dict[str, Tensor], int], dict[str, Tensor]]
@@ -154,7 +170,29 @@ class NCCLBroadcaster:
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
             layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
             if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+                if self.quantize_in_weight_transfer:
+                    broadcast_state_dict(layer_state_dict, self.communicator)
+                else:
+                    update_info = {
+                        "names": list(layer_state_dict),
+                        "dtype_names": [
+                            str(tensor.dtype).removeprefix("torch.") for tensor in layer_state_dict.values()
+                        ],
+                        "shapes": [list(tensor.shape) for tensor in layer_state_dict.values()],
+                    }
+                    self._write_manifest(
+                        get_nccl_chunk_manifest(step_dir, layer_id + 1),
+                        update_info,
+                    )
+                    for tensor in layer_state_dict.values():
+                        send = tensor if tensor.is_contiguous() else tensor.contiguous()
+                        self.communicator.broadcast(send, src=0)
+
+    @staticmethod
+    def _write_manifest(path: Path, payload: dict) -> None:
+        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+        temporary_path.write_text(json.dumps(payload))
+        temporary_path.replace(path)
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
@@ -192,7 +230,7 @@ class NCCLWeightSender(WeightSender):
         # the collectives sit unmatched until NCCL's watchdog kills the process.
         if self.world.world_size > 1:
             dist.barrier()
-        self.nccl_broadcast_sender.send(model)
+        self.nccl_broadcast_sender.send(model, step_dir)
 
 
 class NCCLWeightReceiver(WeightReceiver):
@@ -217,4 +255,5 @@ class NCCLWeightReceiver(WeightReceiver):
             self.step_dir(step),
             step=step,
             on_paused=lambda: self._ack(step),
+            native_nccl=not self.config.quantize_in_weight_transfer,
         )

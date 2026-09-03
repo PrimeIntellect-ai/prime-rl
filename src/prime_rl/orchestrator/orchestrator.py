@@ -32,14 +32,16 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
+    from prime_rl.orchestrator.clients import AdminClients
     from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.inference.vllm.routed_experts import install_native_routed_experts_normalizer
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import InferenceClient, setup_policy_admin_clients
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -83,6 +85,7 @@ from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
+install_native_routed_experts_normalizer()
 
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -208,7 +211,11 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_clients = AdminClients(config.model.client)
+        self.admin_clients = setup_policy_admin_clients(
+            config.model.client,
+            config.model.name,
+            require_world_size=config.weight_broadcast.type in ("nccl", "nixl"),
+        )
 
         await monitors.setup(
             producer="orch",
@@ -309,6 +316,7 @@ class Orchestrator:
             config.weight_broadcast,
             admin_clients=self.admin_clients.clients,
             model_name=config.model.name,
+            admin_plane=self.admin_clients,
         )
         await self.receiver.initialize()
         get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")

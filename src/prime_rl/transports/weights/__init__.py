@@ -26,6 +26,10 @@ def setup_weight_sender(
     lora_config: LoRAConfig | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
+        if config.dynamo is not None:
+            from prime_rl.transports.weights.dynamo import DynamoNCCLWeightSender
+
+            return DynamoNCCLWeightSender(output_dir, config)
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
@@ -40,7 +44,14 @@ def setup_weight_receiver(
     config: WeightBroadcastConfig,
     admin_clients: list[AsyncClient],
     model_name: str,
+    admin_plane=None,
 ) -> WeightReceiver:
+    from prime_rl.inference.dynamo import DynamoAdminClients
+
+    if isinstance(admin_plane, DynamoAdminClients):
+        from prime_rl.transports.weights.dynamo import DynamoWeightReceiver
+
+        return DynamoWeightReceiver(broadcast_dir, config, admin_clients, model_name, admin_plane)
     if config.type == "nccl":
         return NCCLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
     elif config.type == "filesystem":
