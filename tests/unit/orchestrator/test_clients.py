@@ -13,6 +13,7 @@ from prime_rl.orchestrator.clients import (
     _rank_offsets,
     check_health,
     init_nccl_broadcast,
+    init_nixl_broadcast,
     load_lora_adapter,
     setup_client,
     setup_policy_admin_clients,
@@ -191,6 +192,36 @@ def test_collective_rpc_nccl_init_uses_exact_worker_offsets():
     )
 
 
+def test_collective_rpc_nixl_init_uses_exact_worker_offsets():
+    clients = [AsyncMock(), AsyncMock()]
+    for client in clients:
+        client.post.return_value = successful_response()
+
+    asyncio.run(
+        init_nixl_broadcast(
+            clients,
+            host="model-express",
+            port=5555,
+            timeout=1200,
+            inference_world_size=3,
+            session_id="run-a",
+            worker_world_sizes=(2, 1),
+            use_collective_rpc=True,
+        )
+    )
+
+    for client, rank_offset in zip(clients, (0, 2)):
+        client.post.assert_awaited_once_with(
+            "/collective_rpc",
+            json={
+                "method": "init_broadcaster",
+                "timeout": 1200,
+                "args": ["model-express", 5555, rank_offset, 3, 1200, False, "run-a"],
+                "kwargs": {},
+            },
+        )
+
+
 def test_collective_rpc_weight_update_uses_prime_worker_method(tmp_path):
     client = AsyncMock()
     client.post.return_value = successful_response()
@@ -208,6 +239,25 @@ def test_collective_rpc_weight_update_uses_prime_worker_method(tmp_path):
         "kwargs": {},
     }
     assert bounded_wait.await_args.kwargs["timeout"] == 730.0
+
+
+def test_collective_rpc_nixl_update_allows_no_weight_directory():
+    client = AsyncMock()
+    client.post.return_value = successful_response()
+
+    asyncio.run(update_weights([client], None, step=2, use_collective_rpc=True))
+
+    assert [call.args[0] for call in client.post.await_args_list] == [
+        "/pause",
+        "/collective_rpc",
+        "/resume",
+    ]
+    assert client.post.await_args_list[1].kwargs["json"] == {
+        "method": "update_weights_from_path",
+        "timeout": 720.0,
+        "args": [None],
+        "kwargs": {},
+    }
 
 
 def test_collective_rpc_update_failure_keeps_engines_paused(tmp_path):

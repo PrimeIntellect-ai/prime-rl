@@ -6,25 +6,33 @@ from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, NIXLWeight
 from prime_rl.transports.weights import setup_weight_receiver
 
 
-@pytest.mark.parametrize(
-    ("config", "receiver_name"),
-    [
-        (NIXLWeightBroadcastConfig(), "NIXLWeightReceiver"),
-    ],
-)
-def test_non_nccl_receiver_ignores_nccl_specific_dynamo_controls(tmp_path, config, receiver_name):
-    with patch(f"prime_rl.transports.weights.{receiver_name}", return_value=sentinel.receiver):
+def test_nixl_receiver_uses_dynamo_collective_rpc_controls(tmp_path):
+    topology_guard = AsyncMock()
+    config = NIXLWeightBroadcastConfig()
+    with patch(
+        "prime_rl.transports.weights.NIXLWeightReceiver",
+        return_value=sentinel.receiver,
+    ) as receiver_cls:
         receiver = setup_weight_receiver(
             tmp_path,
             config,
             [],
             "Qwen/Qwen3-0.6B",
-            worker_world_sizes=(1,),
+            worker_world_sizes=(2, 1),
             use_collective_rpc=True,
-            topology_guard=AsyncMock(),
+            topology_guard=topology_guard,
         )
 
     assert receiver is sentinel.receiver
+    receiver_cls.assert_called_once_with(
+        tmp_path,
+        config,
+        [],
+        "Qwen/Qwen3-0.6B",
+        worker_world_sizes=(2, 1),
+        use_collective_rpc=True,
+        topology_guard=topology_guard,
+    )
 
 
 def test_filesystem_receiver_uses_dynamo_collective_rpc_controls(tmp_path):
