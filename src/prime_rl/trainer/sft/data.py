@@ -329,6 +329,29 @@ class SFTDataset(StatefulIterableDataset):
                 "Set [model.vlm] to train on multimodal samples."
             )
 
+        # Literal media-marker text (e.g. "<image>" inside a code comment or tool-call
+        # arguments) tokenizes to the model's image-placeholder id with no pixel data
+        # behind it. One phantom token in a packed batch fails the scatter-time
+        # token/feature check on whichever rank draws it — and that rank's teardown then
+        # wedges every other rank in a collective until the NCCL timeout, which blames a
+        # victim collective instead of the row. mm_token_type_ids marks only
+        # renderer-emitted placeholder runs, so any placeholder id at a type-0 position —
+        # or anywhere in a row that produced no multimodal data — is phantom text.
+        mm_map = getattr(self.renderer, "mm_token_type_id_map", None)
+        if mm_map:
+            placeholder_ids = set(mm_map)
+            if mm_token_type_ids is None:
+                phantom = sum(1 for t in input_ids if t in placeholder_ids)
+            else:
+                phantom = sum(1 for t, tt in zip(input_ids, mm_token_type_ids) if tt == 0 and t in placeholder_ids)
+            if phantom:
+                self.logger.warning(
+                    f"Dropping example {example.get('__index', '')} ({example.get('id', '?')}): "
+                    f"{phantom} media placeholder token(s) outside any renderer-emitted "
+                    f"placeholder run (literal marker text in content)"
+                )
+                return None
+
         # Causal shift: model predicts next token from current.
         target_ids = input_ids[1:]
         loss_mask = loss_mask[1:]
