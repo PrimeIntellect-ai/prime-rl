@@ -6,7 +6,13 @@ import httpx
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.orchestrator.clients import _is_retryable_lora_error, check_health, load_lora_adapter, setup_client
+from prime_rl.orchestrator.clients import (
+    _is_retryable_lora_error,
+    check_health,
+    load_lora_adapter,
+    setup_client,
+    update_weights,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -117,3 +123,32 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+def test_update_weights_uses_native_nccl_lifecycle(tmp_path: Path):
+    client = AsyncMock()
+    on_paused = MagicMock()
+
+    with (
+        patch("prime_rl.orchestrator.clients._pause_engines", new=AsyncMock()) as pause,
+        patch("prime_rl.orchestrator.clients._resume_engines", new=AsyncMock()) as resume,
+        patch(
+            "prime_rl.orchestrator.clients._receive_native_nccl_weights",
+            new=AsyncMock(),
+            create=True,
+        ) as receive,
+    ):
+        asyncio.run(
+            update_weights(
+                [client],
+                tmp_path,
+                step=7,
+                on_paused=on_paused,
+                native_nccl=True,
+            )
+        )
+
+    pause.assert_awaited_once_with([client], step=7)
+    on_paused.assert_called_once_with()
+    receive.assert_awaited_once_with([client], tmp_path)
+    resume.assert_awaited_once_with([client])
