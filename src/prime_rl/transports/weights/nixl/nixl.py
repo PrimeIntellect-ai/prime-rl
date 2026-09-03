@@ -465,7 +465,7 @@ class NIXLWeightReceiver(WeightReceiver):
 
     async def initialize(self) -> None:
         await init_nixl_broadcast(
-            self.admin_client,
+            self.admin_plane,
             self.config.host,
             self.config.port,
             self.config.timeout,
@@ -495,7 +495,7 @@ class NIXLWeightReceiver(WeightReceiver):
             policy_notification(step, "ready"),
             timeout=self.config.timeout,
         )
-        await self.admin_client.update_weights(None, step=step)
+        await self.admin_plane.update_nixl_weights(step=step)
         self.nixl_agent.send_notification(
             trainer_peer,
             policy_notification(step, "complete"),

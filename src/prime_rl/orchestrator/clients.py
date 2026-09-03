@@ -73,7 +73,7 @@ class InferenceClient:
         await self._scorer.aclose()
 
 
-class AdminClient:
+class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
     update_weights, init_broadcaster, load_lora_adapter live on the engines),
@@ -155,9 +155,18 @@ class AdminClient:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        await self.update_weights(weight_dir, step=step, on_paused=on_paused)
+        """Receive weights through the static NCCL update endpoint."""
+        await self._update_weights(weight_dir, step=step, on_paused=on_paused)
 
-    async def update_weights(
+    async def update_filesystem_weights(self, weight_dir: Path, *, step: int = 0) -> None:
+        """Load weights from a checkpoint on the shared filesystem."""
+        await self._update_weights(weight_dir, step=step)
+
+    async def update_nixl_weights(self, *, step: int = 0) -> None:
+        """Trigger a weight pull from the initialized NIXL transport."""
+        await self._update_weights(None, step=step)
+
+    async def _update_weights(
         self,
         weight_dir: Path | None,
         step: int = 0,
@@ -193,7 +202,7 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
     """One-shot readiness check of an inference endpoint (health + model
     listing) with transient clients — for frozen endpoints that never need a
     persistent admin plane."""
-    admin = AdminClient(client_config)
+    admin = AdminPlane(client_config)
     try:
         await admin.wait_for_ready(model_name)
     finally:
@@ -401,7 +410,7 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_client: AdminClient, lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -429,11 +438,11 @@ async def load_lora_adapter(admin_client: AdminClient, lora_name: str, lora_path
         )
         response.raise_for_status()
 
-    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_client.clients])
+    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
 
 
 async def init_nixl_broadcast(
-    admin_client: AdminClient,
+    admin_plane: AdminPlane,
     host: str,
     port: int,
     timeout: int,
@@ -441,7 +450,7 @@ async def init_nixl_broadcast(
     session_id: str,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    admin_clients = admin_client.clients
+    admin_clients = admin_plane.clients
     workers_per_server = inference_world_size // len(admin_clients)
 
     async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:

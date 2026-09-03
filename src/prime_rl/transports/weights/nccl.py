@@ -201,7 +201,7 @@ class NCCLWeightReceiver(WeightReceiver):
     marker."""
 
     async def initialize(self) -> None:
-        await self.admin_client.initialize_nccl(
+        await self.admin_plane.initialize_nccl(
             host=self.config.host,
             port=self.config.port,
             timeout=self.config.timeout,
@@ -210,7 +210,7 @@ class NCCLWeightReceiver(WeightReceiver):
         )
 
     async def receive(self, step: int) -> None:
-        await self.admin_client.update_nccl_weights(
+        await self.admin_plane.update_nccl_weights(
             self.step_dir(step),
             step=step,
             on_paused=lambda: self._ack(step),
