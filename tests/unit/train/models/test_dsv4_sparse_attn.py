@@ -22,7 +22,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import sparse_attention_gathe
 # provides and only on linux. The CPU CI job does install it (`uv sync --all-extras`, and tilelang
 # imports without a GPU), but a non-linux or extras-free checkout genuinely lacks it.
 try:
-    from prime_rl.trainer.models.kernels.dsv4_sparse_attn import dsv4_sparse_attn
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
 

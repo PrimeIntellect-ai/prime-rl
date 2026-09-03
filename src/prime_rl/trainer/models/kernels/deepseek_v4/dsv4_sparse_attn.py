@@ -20,8 +20,8 @@ except Exception:
 import tilelang
 import torch
 
-from prime_rl.trainer.models.kernels.dsv4_sparse_attn_bwd import bwd, postprocess, preprocess
-from prime_rl.trainer.models.kernels.dsv4_sparse_attn_fwd import dsv4_sparse_attn_fwd
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_bwd import bwd, postprocess, preprocess
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd import dsv4_sparse_attn_fwd
 
 _LOG2E = 1.44269504
 
@@ -79,6 +79,9 @@ def dsv4_sparse_attn(
 
     assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
     assert kv.shape[0] == batch
+    assert q.dtype == torch.bfloat16, (
+        f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}"
+    )
     shape_error = sparse_attn_shape_error(heads, kv_group, dim)
     assert shape_error is None, shape_error
     topk = indices.shape[-1]
