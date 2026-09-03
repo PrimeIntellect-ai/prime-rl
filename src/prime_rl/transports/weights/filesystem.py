@@ -85,11 +85,11 @@ class FileSystemWeightReceiver(WeightReceiver):
         weights_dir = self.step_dir(step)
         self._ack(step)
         await wait_for_path(weights_dir / FINISHED_MARKER)
+        if self.topology_guard is not None:
+            await self.topology_guard()
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_clients, self.model_name, weights_dir)
         else:
-            if self.topology_guard is not None:
-                await self.topology_guard()
             await update_weights(
                 self.admin_clients,
                 weights_dir,
