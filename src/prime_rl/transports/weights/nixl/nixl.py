@@ -6,7 +6,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from math import prod
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import cast
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from httpx import AsyncClient
 from modelexpress.client import MxClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
@@ -450,8 +451,21 @@ class NIXLWeightSender(WeightSender):
 class NIXLWeightReceiver(WeightReceiver):
     """Drives NIXL discovery and policy synchronization for the orchestrator."""
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        broadcast_dir: Path,
+        config: NIXLWeightBroadcastConfig,
+        admin_clients: list[AsyncClient],
+        model_name: str,
+        *,
+        worker_world_sizes: tuple[int, ...] | None = None,
+        use_collective_rpc: bool = False,
+        topology_guard: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(broadcast_dir, config, admin_clients, model_name)
+        self.worker_world_sizes = worker_world_sizes
+        self.use_collective_rpc = use_collective_rpc
+        self.topology_guard = topology_guard
         set_ucx_env_defaults(0)
         self.nixl_agent = NixlAgent(make_agent_name("orchestrator", 0))
         self.trainer_peer: NixlPeer | None = None
@@ -464,6 +478,8 @@ class NIXLWeightReceiver(WeightReceiver):
         )
 
     async def initialize(self) -> None:
+        if self.topology_guard is not None:
+            await self.topology_guard()
         await init_nixl_broadcast(
             self.admin_clients,
             self.config.host,
@@ -471,10 +487,14 @@ class NIXLWeightReceiver(WeightReceiver):
             self.config.timeout,
             self.config.inference_world_size,
             self.config.session_id,
+            worker_world_sizes=self.worker_world_sizes,
+            use_collective_rpc=self.use_collective_rpc,
         )
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
 
     async def receive(self, step: int) -> None:
+        if self.topology_guard is not None:
+            await self.topology_guard()
         self._ack(step)
         if self.trainer_peer is None:
             trainer_refs = await asyncio.to_thread(
@@ -495,7 +515,12 @@ class NIXLWeightReceiver(WeightReceiver):
             policy_notification(step, "ready"),
             timeout=self.config.timeout,
         )
-        await update_weights(self.admin_clients, None, step=step)
+        await update_weights(
+            self.admin_clients,
+            None,
+            step=step,
+            use_collective_rpc=self.use_collective_rpc,
+        )
         self.nixl_agent.send_notification(
             trainer_peer,
             policy_notification(step, "complete"),

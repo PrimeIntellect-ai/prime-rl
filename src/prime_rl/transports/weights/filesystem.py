@@ -1,7 +1,9 @@
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import torch.distributed as dist
 import torch.nn as nn
+from httpx import AsyncClient
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
@@ -65,11 +67,32 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
+    def __init__(
+        self,
+        broadcast_dir: Path,
+        config: FileSystemWeightBroadcastConfig,
+        admin_clients: list[AsyncClient],
+        model_name: str,
+        *,
+        use_collective_rpc: bool = False,
+        topology_guard: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(broadcast_dir, config, admin_clients, model_name)
+        self.use_collective_rpc = use_collective_rpc
+        self.topology_guard = topology_guard
+
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
         self._ack(step)
         await wait_for_path(weights_dir / FINISHED_MARKER)
+        if self.topology_guard is not None:
+            await self.topology_guard()
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_clients, self.model_name, weights_dir)
         else:
-            await update_weights(self.admin_clients, weights_dir, step=step)
+            await update_weights(
+                self.admin_clients,
+                weights_dir,
+                step=step,
+                use_collective_rpc=self.use_collective_rpc,
+            )
