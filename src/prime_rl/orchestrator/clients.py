@@ -108,6 +108,57 @@ class AdminClients:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
+    async def initialize_nccl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        gpus_per_server = inference_world_size // len(self.clients)
+        get_logger().info(
+            f"Initializing NCCL broadcast: {len(self.clients)} servers, "
+            f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
+        )
+
+        async def initialize_client(admin_client: AsyncClient, rank_offset: int) -> None:
+            try:
+                response = await admin_client.post(
+                    "/init_broadcaster",
+                    json={
+                        "host": host,
+                        "port": port,
+                        "rank_offset": rank_offset,
+                        "inference_world_size": inference_world_size,
+                        "timeout": timeout,
+                        "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                    },
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code == 404:
+                    get_logger().warning(
+                        "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
+                    )
+
+        await asyncio.gather(
+            *(
+                initialize_client(admin_client, client_num * gpus_per_server)
+                for client_num, admin_client in enumerate(self.clients)
+            )
+        )
+
+    async def update_nccl_weights(
+        self,
+        weight_dir: Path,
+        *,
+        step: int = 0,
+        on_paused: Callable[[], None] | None = None,
+    ) -> None:
+        await _update_weights(self.clients, weight_dir, step=step, on_paused=on_paused)
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
@@ -306,8 +357,8 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger.debug("All inference engines resumed")
 
 
-async def update_weights(
-    admin_plane: AdminPlane,
+async def _update_weights(
+    admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     step: int = 0,
     on_paused: Callable[[], None] | None = None,
@@ -325,7 +376,7 @@ async def update_weights(
     """
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    await _pause_engines(admin_plane.clients, step=step)
+    await _pause_engines(admin_clients, step=step)
     try:
         if on_paused is not None:
             on_paused()
@@ -337,11 +388,20 @@ async def update_weights(
                     json={"weight_dir": weight_dir_posix},
                     timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                 )
-                for admin_client in admin_plane.clients
+                for admin_client in admin_clients
             ]
         )
     finally:
-        await _resume_engines(admin_plane.clients)
+        await _resume_engines(admin_clients)
+
+
+async def update_weights(
+    admin_plane: AdminPlane,
+    weight_dir: Path | None,
+    step: int = 0,
+    on_paused: Callable[[], None] | None = None,
+) -> None:
+    await _update_weights(admin_plane.clients, weight_dir, step=step, on_paused=on_paused)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -397,57 +457,6 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_plane.clients])
-
-
-async def init_nccl_broadcast(
-    admin_plane: AdminPlane,
-    host: str,
-    port: int,
-    timeout: int,
-    inference_world_size: int,
-    quantize_in_weight_transfer: bool = False,
-) -> None:
-    """Initialize NCCL broadcast on all inference servers.
-
-    Each admin client represents one vLLM server. The function computes
-    per-server rank_offset and gpus_per_server so that every inference GPU
-    gets a unique rank in the NCCL broadcast group.
-    """
-    logger = get_logger()
-
-    admin_clients = admin_plane.clients
-    gpus_per_server = inference_world_size // len(admin_clients)
-
-    logger.info(
-        f"Initializing NCCL broadcast: {len(admin_clients)} servers, "
-        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
-    )
-
-    async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
-        try:
-            response = await admin_client.post(
-                "/init_broadcaster",
-                json={
-                    "host": host,
-                    "port": port,
-                    "rank_offset": rank_offset,
-                    "inference_world_size": inference_world_size,
-                    "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
-                return
-
-    await asyncio.gather(
-        *[
-            _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
-            for client_num, admin_client in enumerate(admin_clients)
-        ]
-    )
 
 
 async def init_nixl_broadcast(

@@ -63,6 +63,37 @@ def test_setup_admin_plane_uses_static_clients():
     asyncio.run(admin_plane.aclose())
 
 
+def test_static_admin_plane_initializes_nccl():
+    admin_plane = setup_admin_plane(ClientConfig(), "test-model")
+    client = AsyncMock()
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    client.post.return_value = response
+    admin_plane.clients = [client]
+
+    asyncio.run(
+        admin_plane.initialize_nccl(
+            host="trainer",
+            port=29501,
+            timeout=1200,
+            inference_world_size=1,
+        )
+    )
+
+    client.post.assert_awaited_once_with(
+        "/init_broadcaster",
+        json={
+            "host": "trainer",
+            "port": 29501,
+            "rank_offset": 0,
+            "inference_world_size": 1,
+            "timeout": 1200,
+            "quantize_in_weight_transfer": False,
+        },
+    )
+    asyncio.run(admin_plane.aclose())
+
+
 def test_setup_client_creates_renderer_client():
     from renderers import Qwen3VLRendererConfig
 
