@@ -607,9 +607,10 @@ async def init_nixl_broadcast(
                         timeout,
                         False,
                         session_id,
+                        engine_world_size,
                     ],
                 )
-                for admin_client, rank_offset in zip(admin_clients, rank_offsets)
+                for admin_client, rank_offset, engine_world_size in zip(admin_clients, rank_offsets, worker_world_sizes)
             ]
         )
         return
