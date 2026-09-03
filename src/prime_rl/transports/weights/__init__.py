@@ -66,6 +66,14 @@ def setup_weight_receiver(
             topology_guard=topology_guard,
         )
     elif config.type == "nixl":
-        return NIXLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+        return NIXLWeightReceiver(
+            broadcast_dir,
+            config,
+            admin_clients,
+            model_name,
+            worker_world_sizes=worker_world_sizes,
+            use_collective_rpc=use_collective_rpc,
+            topology_guard=topology_guard,
+        )
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

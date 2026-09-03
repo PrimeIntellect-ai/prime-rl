@@ -398,9 +398,6 @@ async def update_weights(
     """
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if use_collective_rpc and weight_dir_posix is None:
-        raise ValueError("Prime NCCL collective RPC updates require a weight directory")
-
     await _pause_engines(admin_clients, step=step)
     if use_collective_rpc:
         if on_paused is not None:
@@ -584,8 +581,39 @@ async def init_nixl_broadcast(
     timeout: int,
     inference_world_size: int,
     session_id: str,
+    worker_world_sizes: tuple[int, ...] | None = None,
+    use_collective_rpc: bool = False,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+    if use_collective_rpc:
+        if worker_world_sizes is None:
+            raise ValueError("Dynamo NIXL initialization requires per-worker world sizes")
+        if len(worker_world_sizes) != len(admin_clients):
+            raise ValueError(
+                f"Dynamo discovered {len(worker_world_sizes)} worker sizes for {len(admin_clients)} admin clients"
+            )
+        rank_offsets = _rank_offsets(worker_world_sizes, inference_world_size)
+        await asyncio.gather(
+            *[
+                _collective_rpc(
+                    admin_client,
+                    method="init_broadcaster",
+                    timeout=timeout,
+                    args=[
+                        host,
+                        port,
+                        rank_offset,
+                        inference_world_size,
+                        timeout,
+                        False,
+                        session_id,
+                    ],
+                )
+                for admin_client, rank_offset in zip(admin_clients, rank_offsets)
+            ]
+        )
+        return
+
     workers_per_server = inference_world_size // len(admin_clients)
 
     async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
