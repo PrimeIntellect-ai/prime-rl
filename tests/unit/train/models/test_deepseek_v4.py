@@ -159,6 +159,17 @@ def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.M
     return module
 
 
+def _set_attn_impl(module: nn.Module, impl: str) -> None:
+    """Pin the CSA attention implementation on every attention layer `module` owns.
+
+    `modules()` yields `module` itself, so this covers a lone attention layer as well as a model
+    holding several of them.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, DeepseekV4Attention):
+            submodule.attn_impl = impl
+
+
 def _single_doc(input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """`position_ids` and `seq_lens` for a row holding one document per batch entry."""
     batch, seq_len = input_ids.shape
@@ -198,6 +209,11 @@ def _packed_context(
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     prime_model = get_prime_model()
+    # `kernel` is unreachable for the toy `_MODEL`: 4 heads and 32 channels are outside the
+    # shapes the kernel tiles, and it is validated at the real Flash shapes instead. That rules
+    # out only `kernel`, so pin to `gather`, which runs the same `SparseAttnInputs` path the
+    # kernel does and is the sparse path's only end-to-end coverage through an assembled model.
+    _set_attn_impl(prime_model, "gather")
     hash_layers = prime_model.model.layers[: _MODEL["num_hash_layers"]]
     assert hash_layers, "config must contain a hash-routed layer"
 
@@ -225,6 +241,11 @@ def test_deepseek_v4_backward():
         model = DeepseekV4ForCausalLM(prime_config)
     _randomize(model)
     inject_prime_lm_head(model)
+    # `kernel` is unreachable for the toy `_MODEL`: 4 heads and 32 channels are outside the
+    # shapes the kernel tiles, and it is validated at the real Flash shapes instead. That rules
+    # out only `kernel`, so pin to `gather`, which runs the same `SparseAttnInputs` path the
+    # kernel does and is the sparse path's only end-to-end coverage through an assembled model.
+    _set_attn_impl(model, "gather")
 
     input_ids = torch.randint(0, _MODEL["vocab_size"], (_MODEL_BATCH, _MODEL_SEQ), device="cuda")
     position_ids, seq_lens = _single_doc(input_ids)
@@ -687,10 +708,6 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     Captured from the mask the model actually applies rather than by calling the builder, so it
     keeps holding if the masking ever moves.
     """
-    # The dense sliding mask is an eager-path artifact, so this pins the path that owns it rather
-    # than whatever `PRIME_RL_DSV4_ATTN` selects; the count below is one call per layer.
-    monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "eager")
-
     recorded = []
     real_attention = dsv4_attention.eager_attention_with_sinks
 
@@ -701,6 +718,9 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
 
     prime_model = get_prime_model(torch.float32)
+    # The dense sliding mask is an eager-path artifact, so this pins the path that owns it rather
+    # than whatever `PRIME_RL_DSV4_ATTN` selects; the count below is one call per layer.
+    _set_attn_impl(prime_model, "eager")
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
@@ -730,6 +750,10 @@ def test_deepseek_v4(_torch_rms_norm):  # noqa: F811
     covers the assembled stack.
     """
     prime_model = get_prime_model(torch.float32)
+    # Float32, which the kernel cannot run, and the tolerances below were measured on the dense
+    # path, so pin it rather than inheriting whatever `PRIME_RL_DSV4_ATTN` says. The sparse path's
+    # whole-model coverage is `test_deepseek_v4_backward` under `gather`.
+    _set_attn_impl(prime_model, "eager")
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
 
     packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
@@ -870,6 +894,10 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     since a CSA compressor hands back the indexer's picks and an HCA one an additive bias.
     """
     module = prime_attention(layer_idx, dtype=torch.float32)
+    # Float32, which the kernel cannot run, and the `_PACKED_RTOL` bounds below were measured on
+    # the dense path, so pin it rather than inheriting whatever `PRIME_RL_DSV4_ATTN` says. The
+    # sparse path's own packing invariant is asserted at the Flash shapes further down.
+    _set_attn_impl(module, "eager")
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)
 
@@ -1047,9 +1075,9 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     recorded = _record_attention(monkeypatch)
 
     with torch.no_grad():
-        monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "eager")
+        _set_attn_impl(module, "eager")
         module(hidden_states, packed=packed)
-        monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "gather")
+        _set_attn_impl(module, "gather")
         module(hidden_states, packed=packed)
 
     admitted = recorded["mask"][0, 0] == 0  # (seq_len, seq_len + n_entries)
@@ -1080,7 +1108,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
     recorded = _record_attention(monkeypatch)
 
-    monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "gather")
+    _set_attn_impl(module, "gather")
     with torch.no_grad():
         module(hidden_states, packed=packed)
 
@@ -1119,11 +1147,11 @@ def test_sparse_attention_gather_matches_eager(doc_lens, monkeypatch):
     eager_input, gather_input = _flash_hidden_states(sum(doc_lens))
     recorded = _record_attention(monkeypatch)
 
-    monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "eager")
+    _set_attn_impl(module, "eager")
     module(eager_input, packed=packed)
     eager_output = recorded["eager"]
 
-    monkeypatch.setattr(dsv4_attention, "DSV4_ATTN_IMPL", "gather")
+    _set_attn_impl(module, "gather")
     module(gather_input, packed=packed)
     gather_output = recorded["gather"]
 
@@ -1143,3 +1171,124 @@ def test_sparse_attention_gather_matches_eager(doc_lens, monkeypatch):
     (gather_output * weight).sum().backward()
     _compare_accumulated_grads(module, eager_grads, rtol=_GATHER_GRAD_RTOL)
     _assert_relative(gather_input.grad, eager_input.grad, _GATHER_GRAD_RTOL, "hidden states gradient")
+
+
+# One CSA layer in bfloat16, so `_PACKED_RTOL` (float32, and three orders of magnitude tighter
+# than a kernel accumulating bfloat16 inputs) does not apply, but neither does `_MODEL_GRAD_RTOL`,
+# which is sized for four hyper-connected layers amplifying a bf16 expert floor. Each bound below
+# is the tightest round number holding over 30 seeds; the worst is 1.4e-3 on the output and
+# 7.6e-3 on a gradient, against 6.9e-4 and 6.2e-3 on the fixed seed the test actually runs. The
+# gradient bound is the tighter fit of the two, at 1.3x: every seed lands between 5.8e-3 and
+# 7.6e-3, so the bound sits just above a well-sampled ceiling rather than above a long tail.
+_KERNEL_RTOL, _KERNEL_GRAD_RTOL = 5e-3, 1e-2
+
+# `compress_rate = 4` yields 129 + 254 = 383 compressed entries, under `index_topk = 512`, so
+# every readable entry is picked and the indexer's ordering cannot differ packed from alone. A
+# saturated layout would let a bfloat16 tie flip a pick and move the output for a reason that has
+# nothing to do with document independence.
+_KERNEL_DOC_LENS = (517, 1019)
+
+
+@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
+    """The fused kernel path, end to end through one CSA layer, must respect documents.
+
+    The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
+    dtype `SparseAttnInputs.attend` accepts. Numerics belong to
+    `test_dsv4_sparse_attn.py`, which compares the kernel against the float32 gather oracle on
+    hand-built tensors; what is covered here is that the modeling code feeds the kernel inputs it
+    can act on, and that nothing in `q`, the KV buffer or the indices carries the packed row's
+    layout into a document's own answer.
+
+    The call count is load-bearing, not decoration: `attend` raises today rather than demoting a
+    dtype it cannot run, but without counting the calls a regression that reintroduced a fallback
+    would leave this test asserting a property of the gather reference instead.
+    """
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())
+    with torch.device("cuda"):
+        hidden = torch.randn(1, sum(_KERNEL_DOC_LENS), _FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
+    packed_input, alone_input = hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
+
+    calls = []
+    real_kernel = dsv4_attention.dsv4_sparse_attn
+
+    def counting_kernel(q, kv_buf, indices, sinks, scale):
+        calls.append(q.shape[1])
+        return real_kernel(q, kv_buf, indices, sinks, scale)
+
+    _set_attn_impl(module, "kernel")
+    monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
+
+    packed_output, _ = module(packed_input, packed=packed)
+    assert calls == [sum(_KERNEL_DOC_LENS)], f"the packed forward never reached the kernel, calls={calls}"
+    with torch.device("cuda"):
+        weight = torch.randn_like(packed_output)
+    (packed_output * weight).sum().backward()
+    packed_grads = _take_grads(module)
+
+    for index, length in enumerate(_KERNEL_DOC_LENS):
+        span = _doc_slice(_KERNEL_DOC_LENS, index)
+        alone_output, _ = module(
+            alone_input[:, span], packed=_packed_context((length,), torch.bfloat16, _flash_config())
+        )
+        _assert_relative(packed_output[:, span], alone_output, _KERNEL_RTOL, f"document {index}")
+        (alone_output * weight[:, span]).sum().backward()
+
+    assert calls == [sum(_KERNEL_DOC_LENS), *_KERNEL_DOC_LENS], f"a forward never reached the kernel, calls={calls}"
+    _compare_accumulated_grads(module, packed_grads, rtol=_KERNEL_GRAD_RTOL)
+    _assert_relative(alone_input.grad, packed_input.grad, _KERNEL_GRAD_RTOL, "hidden states gradient")
+
+
+@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
+    """Every parameter of a CSA layer that can train does, with the kernel in the path.
+
+    `test_deepseek_v4_backward` makes this assertion through the assembled model, but only on the
+    gather path: the kernel does not tile the toy `_MODEL` shapes. This is the same assertion at
+    module level and at the real Flash shapes, and it is not implied by its neighbour above, which
+    compares two runs of the same path and would pass unchanged if both left a parameter at zero.
+
+    The call count is load-bearing rather than decoration: `attend` raises today instead of
+    falling back, but a regression that reintroduced a fallback would leave this asserting a
+    property of the gather reference.
+    """
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())
+    with torch.device("cuda"):
+        hidden_states = torch.randn(1, sum(_KERNEL_DOC_LENS), _FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
+    hidden_states.requires_grad_(True)
+
+    calls = []
+    real_kernel = dsv4_attention.dsv4_sparse_attn
+
+    def counting_kernel(q, kv_buf, indices, sinks, scale):
+        calls.append(q.shape[1])
+        return real_kernel(q, kv_buf, indices, sinks, scale)
+
+    _set_attn_impl(module, "kernel")
+    monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
+
+    output, _ = module(hidden_states, packed=packed)
+    assert calls == [sum(_KERNEL_DOC_LENS)], f"the forward never reached the kernel, calls={calls}"
+    with torch.device("cuda"):
+        weight = torch.randn_like(output)
+    (output * weight).sum().backward()
+
+    dead, unexpectedly_alive = [], []
+    for name, param in module.named_parameters():
+        has_grad = param.grad is not None and param.grad.norm().item() > 0
+        # The same expectation `test_deepseek_v4_backward` and `_compare_accumulated_grads` carry:
+        # the indexer reaches the loss only through integer top-k indices, so nothing
+        # differentiates back into it.
+        if ".indexer." in name:
+            if has_grad:
+                unexpectedly_alive.append(name)
+        elif not has_grad:
+            dead.append(name)
+
+    assert not dead, f"Parameters with zero/no gradients: {dead}"
+    assert not unexpectedly_alive, f"Lightning Indexer parameters received a gradient: {unexpectedly_alive}"
+    assert hidden_states.grad is not None and hidden_states.grad.norm() > 0, (
+        "the hidden states received no gradient, so nothing reached the layer's inputs"
+    )

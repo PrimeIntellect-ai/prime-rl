@@ -120,12 +120,25 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
-_ATTN_IMPLS = frozenset({"eager", "gather"})
+# Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
+try:
+    from prime_rl.trainer.models.kernels.dsv4_sparse_attn import dsv4_sparse_attn
+except ImportError:
+    dsv4_sparse_attn = None  # type: ignore
+
+_ATTN_IMPLS = frozenset({"eager", "gather", "kernel"})
 
 # Temporary scaffolding for the sparse-attention rollout, deliberately not a config field.
+# Only the default: every layer snapshots it into `self.attn_impl` at construction, so
+# rebinding this afterwards does nothing to a model that already exists.
 DSV4_ATTN_IMPL = os.environ.get("PRIME_RL_DSV4_ATTN", "eager")
 if DSV4_ATTN_IMPL not in _ATTN_IMPLS:
     raise ValueError(f"PRIME_RL_DSV4_ATTN must be one of {sorted(_ATTN_IMPLS)}, got {DSV4_ATTN_IMPL!r}")
+if DSV4_ATTN_IMPL == "kernel" and dsv4_sparse_attn is None:
+    raise ValueError(
+        "PRIME_RL_DSV4_ATTN='kernel' needs the tilelang sparse-attention kernel, which failed to "
+        "import. Install the `gpu` extra (tilelang) or pick another PRIME_RL_DSV4_ATTN value."
+    )
 
 # The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
 # `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production
@@ -193,8 +206,8 @@ def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: T
     A slot holding the sentinel (the trailing zero position of `kv_buf`) is masked out, so a
     query with a short window or fewer picks than slots costs nothing but the loads.
 
-    This materializes the `(batch, seq_len, n_slots, head_dim)` gather: at production shapes
-    (640 slots, 512 channels) that is 640 KB per token in bf16, about 42 GB at `seq_len = 65536`.
+    This materializes the `(batch, seq_len, n_slots, head_dim)` gather in float32: at production
+    shapes (640 slots, 512 channels) that is 1.3 MB per token, about 86 GB at `seq_len = 65536`.
     It is an oracle for the kernel that replaces it and a small-shape fallback, not a
     long-context path. It runs entirely in float32 so it matches a kernel accumulating in fp32.
     """
@@ -437,6 +450,10 @@ class SparseAttnInputs:
         kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
                              n in [S, S + E) -> compressed entry (n - S)
                              n = S + E       -> zeros; this position is also the sentinel index
+
+    Every index must be a real key in `[0, n_positions - 1)` or the sentinel, which `build`
+    guarantees. Nothing validates that at runtime: the kernel would need a clamp in its inner
+    gather loop and `sparse_attention_gather` a device sync, so a bad index corrupts silently.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim), trailing position is the zero pad slot
@@ -493,7 +510,21 @@ class SparseAttnInputs:
         return cls(kv_buf=kv_buf, indices=indices)
 
     def attend(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
-        """Attend `q` (batch, seq_len, heads, head_dim) over this layer's gathered slots."""
+        """Attend `q` (batch, seq_len, heads, head_dim) over this layer's slots, via `dsv4_sparse_attn`."""
+        if q.dtype != torch.bfloat16:
+            raise ValueError(
+                f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}. "
+                "Run the model in bfloat16 or select the 'gather' attention implementation."
+            )
+        out, _lse = dsv4_sparse_attn(q, self.kv_buf, self.indices, sinks, scale)
+        return out
+
+    def _attend_eager_gather(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
+        """Same attention as `attend`, unfused, through the float32 `sparse_attention_gather`.
+
+        "Eager" is the PyTorch sense of unfused here, not the dense-mask `eager` layer path,
+        which reaches attention without ever building these inputs.
+        """
         return sparse_attention_gather(q, self.kv_buf, self.indices, sinks, scale)
 
 
@@ -785,6 +816,10 @@ class DeepseekV4Attention(nn.Module):
         )
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
         self.sinks = nn.Parameter(torch.zeros(self.num_heads))
+        # Per-layer rather than a global read at call time, which makes the choice explicit and
+        # steerable in a test without patching process-wide state. Temporary scaffolding for the
+        # sparse-attention rollout, to be replaced along with `DSV4_ATTN_IMPL` itself.
+        self.attn_impl = DSV4_ATTN_IMPL
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
@@ -800,6 +835,20 @@ class DeepseekV4Attention(nn.Module):
             training=self.training,
         )
 
+    def _eager_with_entries(
+        self, q: Tensor, kv: Tensor, compressed_kv: Tensor, block_bias: Tensor, packed: PackedContext
+    ) -> Tensor:
+        """Dense attention over the local window concatenated with this layer's entries."""
+        kv = torch.cat([kv, compressed_kv], dim=2)  # (b, 1, t + e, d)
+        # The compressed entries live outside the local window, so the sliding mask says
+        # nothing about them; `block_bias` carries their per-query causality and the
+        # indexer's selection. Zero-padding instead would let every query read every one.
+        attention_mask = torch.cat(
+            [packed.attention_mask.expand(*block_bias.shape[:-1], -1), block_bias.to(packed.attention_mask.dtype)],
+            dim=-1,
+        )  # (b, 1, t, t + e)
+        return self._eager(q, kv, attention_mask)
+
     def _attend(
         self, hidden_states: Tensor, q_residual: Tensor, q: Tensor, kv: Tensor, packed: PackedContext
     ) -> Tensor:
@@ -812,35 +861,34 @@ class DeepseekV4Attention(nn.Module):
         if self.compressor is None:
             return self._eager(q, kv, packed.attention_mask)
 
-        if self.layer_type == "compressed_sparse_attention":
-            compressed_kv, top_k_indices = self.compressor(hidden_states, q_residual, packed)
-            if DSV4_ATTN_IMPL != "eager":
-                # `eager_attention_with_sinks` drops attention weights, the sparse path does not,
-                # so the two only agree at zero. The default is 0.0 but a config may set it.
-                assert self.attention_dropout == 0.0, "the sparse attention path implements no dropout"
-                inputs = SparseAttnInputs.build(
-                    kv=kv,
-                    compressed_kv=compressed_kv,
-                    top_k_indices=top_k_indices,
-                    window_indices=packed.window_indices,
-                    sliding_window=self.config.sliding_window,
-                    index_topk=self.config.index_topk,
-                )
-                # The kernel that will replace the gather reference asserts contiguity.
-                return inputs.attend(q.transpose(1, 2).contiguous(), self.sinks, self.scaling)
-            block_bias = block_bias_from_indices(top_k_indices, compressed_kv.shape[2], packed.attention_mask.dtype)
-        else:
+        if self.layer_type != "compressed_sparse_attention":
             compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed)
+            return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
 
-        kv = torch.cat([kv, compressed_kv], dim=2)  # (b, 1, t + e, d)
-        # The compressed entries live outside the local window, so the sliding mask says
-        # nothing about them; `block_bias` carries their per-query causality and the
-        # indexer's selection. Zero-padding instead would let every query read every one.
-        attention_mask = torch.cat(
-            [packed.attention_mask.expand(*block_bias.shape[:-1], -1), block_bias.to(packed.attention_mask.dtype)],
-            dim=-1,
-        )  # (b, 1, t, t + e)
-        return self._eager(q, kv, attention_mask)
+        compressed_kv, top_k_indices = self.compressor(hidden_states, q_residual, packed)
+        if self.attn_impl == "eager":
+            block_bias = block_bias_from_indices(top_k_indices, compressed_kv.shape[2], packed.attention_mask.dtype)
+            return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
+        # Only the two gather-based implementations remain. An unrecognized one raises instead of
+        # picking a path, so a mistyped selection can never be measured as if it were the ask.
+        if self.attn_impl not in ("gather", "kernel"):
+            raise ValueError(f"attn_impl must be one of {sorted(_ATTN_IMPLS)}, got {self.attn_impl!r}")
+
+        # `eager_attention_with_sinks` drops attention weights, the gather-based paths do not,
+        # so they only agree at zero. The default is 0.0 but a config may set it.
+        assert self.attention_dropout == 0.0, "the sparse attention path implements no dropout"
+        inputs = SparseAttnInputs.build(
+            kv=kv,
+            compressed_kv=compressed_kv,
+            top_k_indices=top_k_indices,
+            window_indices=packed.window_indices,
+            sliding_window=self.config.sliding_window,
+            index_topk=self.config.index_topk,
+        )
+        q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
+        if self.attn_impl == "kernel":
+            return inputs.attend(q, self.sinks, self.scaling)
+        return inputs._attend_eager_gather(q, self.sinks, self.scaling)
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
