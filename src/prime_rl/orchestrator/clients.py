@@ -183,6 +183,14 @@ class AdminPlane:
             await client.aclose()
 
 
+def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+    if client_config.dynamo is not None:
+        from prime_rl.inference.dynamo import DynamoAdminPlane
+
+        return DynamoAdminPlane(client_config, model_name)
+    return AdminPlane(client_config)
+
+
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
     """One-shot readiness check of an inference endpoint (health + model
     listing) with transient clients — for frozen endpoints that never need a
