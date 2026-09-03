@@ -11,6 +11,7 @@ from prime_rl.transports.batch.types import (
     MMImageRef,
     MMRefs,
     RoutedExperts,
+    SamplingMask,
     TrainingSample,
 )
 from prime_rl.transports.batch.zmq import (
@@ -52,6 +53,7 @@ __all__ = [
     "MMRefs",
     "TrainingSample",
     "MicroBatch",
+    "SamplingMask",
     "RoutedExperts",
     "setup_batch_sender",
     "setup_batch_receiver",

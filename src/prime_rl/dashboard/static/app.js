@@ -15,6 +15,13 @@ const SINGLE_SERIES = "#b6ff3c";
 const POLL_MS = 5000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
+const SORT_OPTIONS = new Set([
+  "arrival:desc", "arrival:asc", "group:asc",
+  "duration:desc", "duration:asc", "reward:desc", "reward:asc", "output_tokens:desc",
+]);
+// the stream reads newest first; a cohort reads by group, so its members sit together
+const DEFAULT_SORTS = { stream: "arrival:desc", step: "group:asc" };
+
 const state = {
   runs: [],
   run: null,
@@ -42,12 +49,17 @@ const state = {
   },
   traces: {
     loaded: false, steps: [], step: null, env: "",
-    kind: "train",
-    preferred: "effective",
-    subset: "effective",
+    mode: prefs.traceMode ?? "stream",
+    kinds: { train: true, eval: true },
+    bin: null,
+    episodes: [],
+    total: 0,
+    paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
-    sort: (prefs.traceSort ?? "line:asc").split(":")[0],
-    order: (prefs.traceSort ?? "line:asc").split(":")[1],
+    sorts: {
+      stream: SORT_OPTIONS.has(prefs.traceSortStream) ? prefs.traceSortStream : DEFAULT_SORTS.stream,
+      step: SORT_OPTIONS.has(prefs.traceSortStep) ? prefs.traceSortStep : DEFAULT_SORTS.step,
+    },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
@@ -68,10 +80,10 @@ const fmtReward = (v) => (v == null || Number.isNaN(v) ? "n/a" : v.toFixed(3));
 function fmtCompact(n) {
   if (n == null || Number.isNaN(n)) return "n/a";
   const abs = Math.abs(n);
-  if (abs >= 1e9) return `${+(n / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`;
-  if (abs >= 1e6) return `${+(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
-  if (abs >= 1000) return `${+(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
-  return String(n);
+  if (abs < 1e3) return String(n);
+  if (abs < 1e6) return `${(n / 1e3).toFixed(1)}K`;
+  if (abs < 1e9) return `${(n / 1e6).toFixed(1)}M`;
+  return `${(n / 1e9).toFixed(1)}B`;
 }
 function fmtCost(v) {
   if (v == null || Number.isNaN(v)) return "n/a";
@@ -168,13 +180,12 @@ function applyRunTypeControls() {
   $("#metrics-mode").hidden = isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
-  // rl: train/eval + all/effective per step - sft: eval only - eval: neither, no steps
-  $("#trace-kind").hidden = isEval || state.meta?.type === "sft";
-  $("#trace-subset").hidden = isEval;
+  // an eval run has no steps to switch between, so it is stream-only
+  $("#trace-mode").hidden = isEval;
+  $("#tm-mode-row").hidden = isEval;
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
-  $("#tm-kind-row").hidden = isEval || state.meta?.type === "sft";
-  $("#tm-subset-row").hidden = isEval;
+  if (isEval) state.traces.mode = "stream";
 }
 
 async function selectRun(name, deferTab = false) {
@@ -202,7 +213,7 @@ async function selectRun(name, deferTab = false) {
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
-    kind: "train", subset: state.traces.preferred,
+    key: null, total: 0, bin: null, hist: null,
   };
   state.report = {
     ...state.report,
@@ -215,18 +226,15 @@ async function selectRun(name, deferTab = false) {
   if (!deferTab) await activateTab(state.tab, true);
 }
 
+/* durations and counts read the way verifiers' format_time / format_count write
+   them, so the same run is described the same everywhere */
 function fmtDuration(secs) {
   if (secs == null || !isFinite(secs) || secs < 0) return "n/a";
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = Math.floor(secs % 60);
-  const parts = [];
-  if (d) parts.push(`${d}d`);
-  if (d || h) parts.push(`${h}h`);
-  if (d || h || m) parts.push(`${m}m`);
-  parts.push(`${s}s`);
-  return parts.join(" ");
+  if (secs < 1) return `${secs.toFixed(1)}s`;
+  if (secs < 60) return `${Math.round(secs)}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
 }
 
 function fmtAgo(ts) {
@@ -454,7 +462,7 @@ async function fetchEvalSeries() {
   try {
     const qs = new URLSearchParams({ after: m.evalCount || 0 });
     if (m.evalEtag) qs.set("etag", m.evalEtag);
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/0/eval/all/series?${qs}`);
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/series?${qs}`);
   } catch {
     return 0;
   }
@@ -1824,52 +1832,28 @@ async function initLogs() {
 
 async function loadRollouts() {
   const traces = state.traces;
-  const previousTarget = latestPreferredStep(traces.steps, traces.kind, traces.preferred);
+  const previousTarget = traces.steps.at(-1);
   const wasFollowing = traces.step == null || traces.step === previousTarget?.step;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts`);
   traces.steps = data.steps;
-  const target = latestPreferredStep(data.steps, traces.kind, traces.preferred);
+  const target = data.steps.at(-1);
   // Follow new work while the user is on the latest preferred step. Keep a
   // manually selected historical step stable, especially while its modal is open.
   if (target && wasFollowing && $("#trace-modal").hidden) traces.step = target.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
-}
-
-function latestPreferredStep(steps, kind, preferred) {
-  const newestFirst = [...steps].reverse();
-  return (
-    newestFirst.find((s) => s.available[`${kind}/${preferred}`]) ??
-    newestFirst.find((s) => Object.keys(s.available).some((key) => key.endsWith(`/${preferred}`))) ??
-    newestFirst[0]
-  );
 }
 
 function stepInfo(step) {
   return state.traces.steps.find((s) => s.step === step);
 }
 
-function adjustKindSubset() {
+/* a step is only meaningful once a cohort shipped at it; the latest stands in for
+   one that has not */
+function clampStep() {
   const traces = state.traces;
-  const available = stepInfo(traces.step)?.available || {};
-  const hasTrain = available["train/all"] || available["train/effective"];
-  const hasEval = available["eval/all"] || available["eval/effective"];
-  if (traces.kind === "train" && !hasTrain && hasEval) traces.kind = "eval";
-  if (traces.kind === "eval" && !hasEval && hasTrain) traces.kind = "train";
-  // fall back when the preferred subset is missing at this step (e.g. the latest
-  // step's effective file lands only at ship time), but return to it as soon as
-  // it exists again — advantages are only stamped on effective records
-  const preferred = traces.preferred;
-  const other = preferred === "all" ? "effective" : "all";
-  if (available[`${traces.kind}/${preferred}`]) traces.subset = preferred;
-  else if (available[`${traces.kind}/${other}`]) traces.subset = other;
-  for (const sel of ["#trace-kind", "#tm-kind"]) {
-    $(`${sel} [data-kind=train]`).disabled = !hasTrain;
-    $(`${sel} [data-kind=eval]`).disabled = !hasEval;
-    setActive(sel, "kind", traces.kind);
-  }
-  setActive("#trace-subset", "subset", traces.subset);
-  setActive("#tm-subset", "subset", traces.subset);
+  const steps = traces.steps.map((s) => s.step);
+  if (traces.mode === "step" && !steps.includes(traces.step)) traces.step = steps.at(-1) ?? null;
 }
 
 function renderStepControl() {
@@ -1882,7 +1866,7 @@ function renderStepControl() {
   const cells = [];
   for (let b = 0; b * perCell < steps.length; b++) {
     const slice = steps.slice(b * perCell, (b + 1) * perCell);
-    const hasEval = slice.some((s) => s.available["eval/all"] || s.available["eval/effective"]);
+    const hasEval = slice.some((s) => s.kinds.includes("eval"));
     const last = b * perCell + slice.length - 1;
     const title = slice.length === 1 ? `step ${slice[0].step}` : `steps ${slice[0].step}–${slice[slice.length - 1].step}`;
     cells.push(
@@ -1898,7 +1882,7 @@ function renderStepControl() {
   $("#step-prev").disabled = idx <= 0;
   $("#step-next").disabled = idx < 0 || idx >= steps.length - 1;
   const info = stepInfo(traces.step);
-  const hasEval = info && (info.available["eval/all"] || info.available["eval/effective"]);
+  const hasEval = info?.kinds.includes("eval");
   $("#step-label").innerHTML =
     traces.step == null
       ? `<span class="muted">no steps yet</span>`
@@ -1910,7 +1894,7 @@ function selectStepByIndex(index) {
   const step = state.traces.steps[index];
   if (!step || step.step === state.traces.step) return;
   state.traces.step = step.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   loadEpisodes();
 }
@@ -1918,36 +1902,93 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="10">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
 }
 
-async function loadEpisodes() {
+const PAGE = 128;
+
+/* both kinds on means no filter; exactly one narrows to it. Turning both off would
+   only ever show nothing, so the last one on stays on. */
+function activeKind() {
+  const { train, eval: ev } = state.traces.kinds;
+  return train && ev ? "" : train ? "train" : ev ? "eval" : "";
+}
+
+function traceSort() {
+  return state.traces.sorts[state.traces.mode] ?? DEFAULT_SORTS[state.traces.mode];
+}
+
+function traceQuery(extra = {}) {
+  const t = state.traces;
+  const [sort, order] = traceSort().split(":");
+  const qs = new URLSearchParams({ sort, order, errors_only: t.errorsOnly });
+  const kind = activeKind();
+  if (kind) qs.set("kind", kind);
+  if (t.env) qs.set("env", t.env);
+  if (t.mode === "step" && t.step != null) qs.set("step", t.step);
+  if (t.bin) {
+    qs.set("start", t.bin[0]);
+    qs.set("end", t.bin[1]);
+  }
+  for (const [key, value] of Object.entries(extra)) qs.set(key, value);
+  return qs;
+}
+
+function traceFiltered() {
+  const t = state.traces;
+  return !!(activeKind() || t.env || t.errorsOnly || t.bin);
+}
+
+/* what a loaded table answers to: the run and the exact query that produced it, so
+   the query itself decides whether a load continues the table or replaces it */
+function traceKey() {
+  return `${state.run}|${state.traces.mode}|${traceQuery()}`;
+}
+
+/* the table holds one page at a time and grows as the reader scrolls, so a run of
+   any length costs the same to open */
+async function loadEpisodes({ append = false, poll = false } = {}) {
   const traces = state.traces;
   syncTraceFilterControls();
-  if (traces.step == null) {
+  if (traces.mode === "step" && traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces yet");
+    showTraceEmpty("no shipped batches yet");
     return;
   }
-  const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
-  if (traces.env) qs.set("env", traces.env);
-  // etag = the file size the client last saw: while the file is unchanged the
-  // poll gets a tiny {unchanged} response instead of thousands of summaries
-  const etagKey = JSON.stringify([state.run, traces.step, traces.kind, traces.subset, traces.env, traces.errorsOnly, traces.sort, traces.order]);
-  if (traces.etagKey === etagKey && traces.etag) qs.set("etag", traces.etag);
+  const key = traceKey();
+  const fresh = !append || traces.key !== key;
+  const offset = fresh ? 0 : traces.episodes.length;
+  if (!fresh && offset >= traces.total) return;
+  // a later page is pinned to the stream length the first page saw, so a live run
+  // growing at the head cannot shift what the offset addresses
+  const qs = traceQuery(fresh ? { offset, limit: PAGE } : { offset, limit: PAGE, upto: traces.lines });
+  // etag = the stream size the client last saw: an unchanged run answers a poll
+  // with {unchanged} instead of a page
+  if (fresh && traces.key === key && traces.etag && !append) qs.set("etag", traces.etag);
   let data;
   try {
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}?${qs}`);
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} traces at step ${traces.step}`);
+    showTraceEmpty("no traces yet");
+    syncTraceChart();
     return;
   }
   if (data.unchanged) return;
-  const fresh = traces.etagKey !== etagKey;
+  // A live run answers every poll with a new first page. Rebuilding from it would
+  // drop the pages a reader has scrolled through and send them back to the top, so
+  // while they are scrolled only the count moves. The etag is deliberately left
+  // behind: the next poll after they return to the top refreshes for real.
+  if (poll && !append && traces.key === key && $("#episode-table-wrap").scrollTop > 0) {
+    $("#trace-status").textContent = episodeCount(data.total);
+    return;
+  }
   traces.etag = data.etag;
-  traces.etagKey = etagKey;
-  traces.episodes = data.episodes;
+  traces.key = key;
+  traces.total = data.total;
+  traces.runKinds = data.kinds;
+  if (fresh) traces.lines = data.lines;
+  traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
     $(sel).innerHTML =
@@ -1956,21 +1997,172 @@ async function loadEpisodes() {
   syncDressedSelects();
   if (!data.total) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no episodes", "nothing matches the current filters");
+    // an unfiltered run with nothing in it has not produced episodes yet; a filtered
+    // one has, and the reader needs to know it is their filter that is empty
+    if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
+    else showTraceEmpty("no traces yet");
     return;
   }
   renderEpisodeRows(fresh);
-  const fellBack = traces.subset !== traces.preferred && !$("#trace-subset").hidden;
-  $("#trace-status").textContent = `${data.total} episodes${fellBack ? ` · no ${traces.preferred} at this step` : ""}`;
+  if (!$("#trace-modal").hidden) renderRolloutWindow();
+  // the count is the run's, not the page's: a later page reports the pinned snapshot
+  if (fresh) $("#trace-status").textContent = episodeCount(data.total);
+}
+
+function episodeCount(n) {
+  return `${fmtCompact(n)} episode${n === 1 ? "" : "s"}`;
+}
+
+async function loadMoreEpisodes() {
+  const traces = state.traces;
+  if (traces.paging || traces.episodes.length >= traces.total) return;
+  traces.paging = true;
+  try {
+    await loadEpisodes({ append: true });
+  } finally {
+    traces.paging = false;
+  }
+}
+
+/* episodes finished per time bin: the stream's shape, and the thing you click to
+   narrow the table to a moment */
+async function loadHistogram() {
+  const traces = state.traces;
+  if (traces.mode !== "stream") return;
+  const qs = traceQuery();
+  qs.delete("start");
+  qs.delete("end");
+  qs.delete("sort");
+  qs.delete("order");
+  let data;
+  try {
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/histogram?${qs}`);
+  } catch {
+    return;
+  }
+  traces.hist = data;
+  renderHistogram();
+}
+
+/* the chart belongs to the stream, and only once there is something to plot: an
+   empty frame reads as a broken chart rather than an empty run */
+function syncTraceChart() {
+  const t = state.traces;
+  $("#trace-chart").hidden = t.mode !== "stream" || !t.hist?.bins?.length;
+}
+
+const HIST_H = 148;
+const HIST_BAR_MAX = 46;
+
+function renderHistogram() {
+  const data = state.traces.hist;
+  const host = $("#trace-hist");
+  // unhide before measuring: a hidden host measures 0, and a chart drawn to a guessed
+  // width would keep it for the life of the page
+  syncTraceChart();
+  if (!data || !data.bins.length) return;
+  if (!host.clientWidth) return; // not laid out yet - the observer redraws once it is
+  const width = Math.max(320, host.clientWidth);
+  state.traces.histWidth = width;
+  const bins = data.bins;
+  const max = Math.max(...bins.map((b) => b[1]), 1);
+  // real pixels, and the plot always spans the width; capping the bar itself is
+  // what keeps a two-bar series from becoming two slabs
+  const padL = 46, padR = 8, padB = 20, padT = 12;
+  const plot = width - padL - padR;
+  const slot = plot / bins.length;
+  const barW = Math.max(1, Math.min(slot - Math.min(3, slot * 0.25), HIST_BAR_MAX));
+  const scale = (count) => (count / max) * (HIST_H - padB - padT);
+  const selected = state.traces.bin;
+  const bars = bins
+    .map(([t, count], i) => {
+      const h = scale(count);
+      const on = selected && t >= selected[0] && t < selected[1];
+      return (
+        `<rect class="hbar${on ? " on" : ""}" x="${(padL + i * slot + (slot - barW) / 2).toFixed(2)}" ` +
+        `y="${(HIST_H - padB - h).toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, count ? 1 : 0).toFixed(2)}" ` +
+        `data-t="${t}" data-count="${count}"></rect>`
+      );
+    })
+    .join("");
+  const grid = [0, max / 2, max]
+    .map((v) => {
+      const y = HIST_H - padB - scale(v);
+      return (
+        `<line class="hgrid" x1="${padL}" y1="${y.toFixed(2)}" x2="${(padL + plot).toFixed(2)}" y2="${y.toFixed(2)}"></line>` +
+        `<text class="hax hval" x="${padL - 8}" y="${(y + 3).toFixed(2)}">${fmtCompact(Math.round(v))}</text>`
+      );
+    })
+    .join("");
+  // label a few bars: seconds only when consecutive ticks could not differ without
+  // them, and the date once the axis crosses a day
+  const spanS = data.end - data.start || 1;
+  const every = Math.max(1, Math.ceil(bins.length / Math.max(2, Math.floor(plot / 110))));
+  const withSeconds = every * (data.bin || spanS) < 60;
+  const label = (t) => (spanS > 86400 ? `${fmtDay(t)} ${fmtClock(t, withSeconds)}` : fmtClock(t, withSeconds));
+  // The axis is mono, so a label's width is known without measuring it. Ticks are
+  // placed by that width rather than by index: the ends anchor the axis and the
+  // strided ones fill in between, and any that would collide is dropped instead of
+  // printed over its neighbour.
+  const CHAR_W = 6, TICK_GAP = 12;
+  const placed = [];
+  const tick = (i, anchor) => {
+    const text = label(bins[i][0]);
+    const x = padL + i * slot + slot / 2;
+    const width = text.length * CHAR_W;
+    const x0 = anchor === "start" ? x : anchor === "end" ? x - width : x - width / 2;
+    const x1 = x0 + width;
+    if (placed.some(([a, b]) => x0 < b + TICK_GAP && x1 > a - TICK_GAP)) return "";
+    placed.push([x0, x1]);
+    return `<text class="hax" style="text-anchor:${anchor}" x="${x.toFixed(2)}" y="${HIST_H - 5}">${text}</text>`;
+  };
+  const ticks = [
+    tick(0, "start"),
+    ...(bins.length > 1 ? [tick(bins.length - 1, "end")] : []),
+    ...Array.from({ length: Math.floor((bins.length - 2) / every) }, (_, k) => tick((k + 1) * every, "middle")),
+  ].join("");
+  host.innerHTML =
+    `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">${grid}${bars}${ticks}</svg>`;
+  const span = `${fmtDay(data.start)} ${fmtClock(data.start)} → ${fmtClock(data.end)}`;
+  const picked = selected ? ` · selected ${fmtClock(selected[0])}–${fmtClock(selected[1])} (${fmtBin(data.bin)})` : "";
+  $("#trace-chart-sub").textContent = `${fmtCompact(data.total)} episodes · ${fmtBin(data.bin)} bins · ${span}${picked}`;
+}
+
+function histTipHtml(start, count, bin) {
+  const end = start + bin;
+  return (
+    `<div class="tip-head">${episodeCount(count)}</div>` +
+    `<div class="tip-row"><span>start</span><span>${fmtDay(start)} ${fmtClock(start)}</span></div>` +
+    `<div class="tip-row"><span>end</span><span>${fmtDay(end)} ${fmtClock(end)}</span></div>` +
+    `<div class="tip-row"><span>duration</span><span>${fmtBin(bin)}</span></div>`
+  );
+}
+
+const fmtClock = (t, seconds = true) =>
+  new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(seconds && { second: "2-digit" }) });
+const fmtDay = (t) => new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+
+function fmtBin(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+function fmtStamp(epoch) {
+  const d = new Date(epoch * 1000);
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function episodeRowHtml(ep) {
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
+        <td class="muted nowrap">${ep.arrival ? fmtStamp(ep.arrival) : ""}</td>
+        <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
+        <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
-        <td class="${rewardClass(ep.advantage)}">${ep.advantage != null ? fmtReward(ep.advantage) : "n/a"}</td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
@@ -1983,8 +2175,8 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* windowed table: only rows in (and around) the viewport exist in the DOM,
-   spacer rows stand in for the rest — thousands of episodes stay instant */
+/* windowed table: only rows in (and around) the viewport exist in the DOM, spacer
+   rows stand in for the rest, and the page itself grows as the reader scrolls */
 let episodeRowH = 0;
 
 function renderEpisodeRows(reset = false) {
@@ -2001,7 +2193,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="10" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML =
     pad(start * episodeRowH) +
     episodes.slice(start, end).map(episodeRowHtml).join("") +
@@ -2020,7 +2212,9 @@ async function refreshTraces() {
   try {
     await loadRollouts();
     if (state.traces !== traces) return;
-    await loadEpisodes();
+    await loadEpisodes({ poll: true });
+    if (state.traces !== traces) return;
+    await loadHistogram();
   } finally {
     traces.fetching = false;
   }
@@ -2032,12 +2226,29 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let currentEvidenceView = null;
 let episodeOpenVersion = 0;
 let episodeEnrichmentVersion = 0;
 let currentTimeline = null;
-let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
+let preferredTraceView = ["timeline", "semantic"].includes(prefs.traceView) ? prefs.traceView : "transcript";
+let traceView = preferredTraceView;
 let pendingTimelineNode = null;
 let pendingTimelineCall = null;
+let semanticSelection = null;
+let semanticTranscriptOrigin = null;
+const semanticExpandedRuns = new Set();
+
+function clearSemanticTranscriptOrigin() {
+  semanticTranscriptOrigin?.classList.remove("semantic-origin");
+  semanticTranscriptOrigin = null;
+}
+let replay = null;
+
+const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "stable_mask"]);
+
+const SORT_SVG =
+  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+  '<path d="M3 6h11M3 12h8M3 18h5"></path><path d="M18 7v11M15 15l3 3 3-3"></path></svg>';
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2071,7 +2282,7 @@ let tmItemH = 0;
 function renderRolloutWindow() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  $("#tm-count").textContent = fmtCompact(episodes.length);
+  $("#tm-count").textContent = fmtCompact(state.traces.total || episodes.length);
   if (!episodes.length) {
     list.innerHTML = "";
     return;
@@ -2100,9 +2311,26 @@ function renderRolloutList() {
   renderRolloutWindow();
 }
 
-function stepRollout(delta) {
+function renderSemanticEpisodeNav() {
   const episodes = filteredRollouts();
+  const index = episodes.findIndex((episode) => episode.line === currentLine);
+  const episode = episodes[index];
+  $("#tm-episode-label").textContent = episode
+    ? `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
+    : "episode";
+  $("#tm-episode-prev").disabled = index <= 0;
+  const hasLoadedNext = index >= 0 && index < episodes.length - 1;
+  const hasUnloadedNext = index >= 0 && episodes.length < state.traces.total;
+  $("#tm-episode-next").disabled = !hasLoadedNext && !hasUnloadedNext;
+}
+
+async function stepRollout(delta) {
+  let episodes = filteredRollouts();
   const idx = episodes.findIndex((e) => e.line === currentLine);
+  if (delta > 0 && idx + delta >= episodes.length) {
+    await loadMoreEpisodes();
+    episodes = filteredRollouts();
+  }
   const next = episodes[idx + delta];
   if (next) openEpisode(next.line);
 }
@@ -2122,11 +2350,12 @@ function renderModalStep() {
 
 async function modalStep(delta) {
   const traces = state.traces;
+  if (traces.mode !== "step") return; // the stream has no step to move to
   const idx = traces.steps.findIndex((s) => s.step === traces.step);
   const target = traces.steps[idx + delta];
   if (!target) return;
   traces.step = target.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   await loadEpisodes();
   renderModalStep();
@@ -2143,17 +2372,19 @@ async function modalStep(delta) {
 }
 
 function fetchEpisode(line, withTokens, withRendered = false) {
-  const traces = state.traces;
   const params = new URLSearchParams();
   if (withTokens) params.set("tokens", "true");
   if (withRendered) params.set("rendered", "true");
   const qs = params.size ? `?${params}` : "";
-  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
+  return api(`/api/runs/${encodeURIComponent(state.run)}/episodes/${line}${qs}`);
 }
 
 function fetchEpisodeTimeline(line) {
-  const traces = state.traces;
-  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}/timeline`);
+  return api(`/api/runs/${encodeURIComponent(state.run)}/episodes/${line}/timeline`);
+}
+
+function timelineHasSemantic(timeline = currentTimeline) {
+  return (timeline?.semantic_lanes || []).some((lane) => lane.context);
 }
 
 async function ensureTimeline() {
@@ -2184,6 +2415,7 @@ async function ensureTokens() {
 }
 
 async function openEpisode(line, target = {}) {
+  stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
@@ -2193,11 +2425,18 @@ async function openEpisode(line, target = {}) {
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
-  $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
+  const timelineTarget = $("#tm-timeline");
+  timelineTarget.classList.remove("semantic-canvas");
+  delete timelineTarget.dataset.semanticEpisode;
+  timelineTarget.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
   currentTimeline = null;
   pendingTimelineNode = null;
   pendingTimelineCall = null;
+  semanticSelection = null;
+  semanticExpandedRuns.clear();
+  clearSemanticTranscriptOrigin();
+  $("#sg-inspector").hidden = true;
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
@@ -2207,13 +2446,19 @@ async function openEpisode(line, target = {}) {
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
-  if (traceView === "timeline") await ensureTimeline();
+  currentEvidenceView = target.evidence ?? null;
+  traceView = currentEvidenceView == null ? preferredTraceView : "transcript";
+  if (traceView === "timeline" || traceView === "semantic") await ensureTimeline();
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
+  if (traceView === "semantic" && !timelineHasSemantic()) traceView = "transcript";
   renderEpisode();
+  if (traceView === "replay") return;
   await ensureTokens();
   if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
+  stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
@@ -2223,6 +2468,10 @@ function closeDrawer() {
   currentTimeline = null;
   pendingTimelineNode = null;
   pendingTimelineCall = null;
+  semanticSelection = null;
+  semanticExpandedRuns.clear();
+  clearSemanticTranscriptOrigin();
+  $("#sg-inspector").hidden = true;
   currentLine = null;
   pendingHighlight = null;
 }
@@ -2248,7 +2497,7 @@ function currentPath(trace, branches) {
 
 function traceReward(trace) {
   return Object.values(trace.rewards || {}).reduce(
-    (acc, r) => acc + (r.score ?? 0) * (r.weight ?? 1), 0
+    (acc, r) => acc + ((r?.score ?? 0) * (r?.weight ?? 1)), 0
   );
 }
 
@@ -2277,20 +2526,156 @@ function alignedSignal(node, values) {
   return (i) => (index[i] == null ? null : values[index[i]]);
 }
 
-function renderTokenNode(node, signal, maxAbsAdv) {
+/* per-episode normalization constants for the token-signal overlays, plus the
+   run's IPO eps for the stable mask (server-stamped on annotated traces) */
+function episodeSignalScales(trace) {
+  let maxAbsAdv = 0, maxEntropy = 0, maxKl = 0;
+  for (const node of trace.nodes || []) {
+    for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
+    for (const h of node.entropies || []) if (h != null) maxEntropy = Math.max(maxEntropy, h);
+    const trainer = node.trainer_logprobs, inference = node.logprobs;
+    if (Array.isArray(trainer) && Array.isArray(inference) && trainer.length === inference.length)
+      for (let j = 0; j < trainer.length; j++) {
+        if (trainer[j] == null || inference[j] == null) continue;
+        const dlp = trainer[j] - inference[j];
+        maxKl = Math.max(maxKl, Math.exp(dlp) - dlp - 1);
+      }
+  }
+  return { maxAbsAdv, maxEntropy, maxKl, eps: trace.train_annotations?.eps ?? 0.1 };
+}
+
+const SIGNAL_LABELS = {
+  advantage: "Advantage",
+  entropy: "Entropy",
+  mismatch_kl: "Mismatch",
+  stable_mask: "The stable mask",
+  mask: "The loss mask",
+  is_content: "The content mask",
+};
+
+/* how many of a node's tokens the signal would actually colour. ``limit`` stops the
+   walk early for callers that only need to know whether it colours anything at all */
+function paintedCount(node, signal, scales, limit = Infinity) {
+  const n = node.token_ids?.length || 0;
+  const count = (at) => {
+    let painted = 0;
+    for (let i = 0; i < n && painted < limit; i++) if (at(i) != null) painted++;
+    return painted;
+  };
+  if (!n) return 0;
+  if (signal === "mask") return count((i) => node.mask?.[i] || null);
+  if (signal === "is_content") return count((i) => node.is_content?.[i] || null);
+  if (signal === "advantage") return scales.maxAbsAdv > 0 ? count(alignedSignal(node, node.advantages)) : 0;
+  if (signal === "entropy") return scales.maxEntropy > 0 ? count(alignedSignal(node, node.entropies)) : 0;
+  if (signal === "mismatch_kl" && !(scales.maxKl > 0)) return 0;
+  // the mismatch and the stable mask both read the trainer against the sampler
+  const trainerAt = alignedSignal(node, node.trainer_logprobs);
+  const logprobAt = alignedSignal(node, node.logprobs);
+  return count((i) => (trainerAt(i) != null && logprobAt(i) != null ? 1 : null));
+}
+
+/* Why the selected signal coloured nothing, or null when it coloured something. An
+   overlay that paints nothing is indistinguishable from a broken one, so each way of
+   coming up empty names itself rather than leaving the reader to guess. */
+function signalNote(trace, path, signal, scales) {
+  if (!signal) return null;
+  const nodes = path.map((index) => trace.nodes[index]).filter(Boolean);
+  const tokens = nodes.reduce((total, node) => total + (node.token_ids?.length || 0), 0);
+  if (nodes.some((node) => paintedCount(node, signal, scales, 1))) return null;
+  const label = SIGNAL_LABELS[signal] || signal;
+  const isEval = trace.info?.kind === "eval";
+  if (!tokens)
+    return [
+      "no tokens to colour",
+      `${label} colours recorded tokens, and this trace recorded none.` +
+        (isEval ? " Eval rollouts are sampled through the chat API, which returns text rather than tokens." : ""),
+    ];
+  if (TRAINER_SIGNALS.has(signal) && !trace.train_annotations)
+    return [
+      "no trainer streams",
+      `${label} comes from the trainer. ` +
+        (isEval
+          ? "The trainer only sees train episodes, so an eval episode never carries recomputed logprobs."
+          : trace.info?.effective
+            ? "This episode shipped in a batch, but the trainer has not annotated it yet."
+            : "This episode has not shipped in a batch, so the trainer has not trained it yet."),
+    ];
+  if (TRAINER_SIGNALS.has(signal)) {
+    // the stable mask paints wherever both logprobs exist, so it reads coverage
+    // without a scale - a zero mismatch is only news once the tokens are covered
+    if (signal !== "entropy" && nodes.some((node) => paintedCount(node, "stable_mask", scales)))
+      return ["no mismatch", "The trainer's logprobs match the sampling logprobs exactly on every token here."];
+    return [
+      "not covered on this branch",
+      `The trainer annotated this episode, but its streams reach none of this branch's tokens, so ${label.toLowerCase()} has nothing to colour.`,
+    ];
+  }
+  if (signal === "advantage")
+    return nodes.some((node) => node.advantages?.length)
+      ? ["every advantage is 0", "Every member of this trace's group scored the same reward, so the group carries no learning signal."]
+      : [
+          "no advantage assigned",
+          trace.info?.effective
+            ? "This trace shipped in a batch but carries no advantage stream."
+            : "A trace is assigned its advantage when a batch ships it. This one has not shipped in a batch.",
+        ];
+  return [`${label.toLowerCase()} is empty`, `No token on this branch is in ${label.toLowerCase()}.`];
+}
+
+/* Disable the overlays this episode cannot show, each labelled with the reason, and
+   return the one to actually render with. The selection stays as the reader left it -
+   it is sticky across episodes - so an episode that cannot honour it falls back to
+   plain text here and picks the choice back up on an episode that carries it. */
+function resolveSignal(trace, path, scales) {
+  const select = $("#token-signal");
+  let unavailable = 0;
+  for (const option of select.options) {
+    const note = option.value ? signalNote(trace, path, option.value, scales) : null;
+    option.disabled = !!note;
+    if (note) {
+      option.dataset.reason = note[0];
+      option.title = note[1];
+      unavailable++;
+    } else {
+      delete option.dataset.reason;
+      option.title = "";
+    }
+  }
+  // every overlay is empty here, so say it once rather than only per option
+  if (unavailable === select.options.length - 1) select.dataset.note = "no token overlay available";
+  else delete select.dataset.note;
+  syncDressedSelects();
+  return select.selectedOptions[0]?.disabled ? "" : select.value;
+}
+
+function renderTokenNode(node, signal, scales) {
   const ids = node.token_ids || [];
   const strs = node.token_strs;
   const logprobAt = alignedSignal(node, node.logprobs);
   const advantageAt = alignedSignal(node, node.advantages);
+  const trainerLpAt = alignedSignal(node, node.trainer_logprobs);
+  const entropyAt = alignedSignal(node, node.entropies);
   const spans = ids.map((id, i) => {
     const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
+    const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
+    const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
+    const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
+    const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
     let bg = "";
-    if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
-      const alpha = Math.min(1, Math.abs(advantage) / maxAbsAdv) * 0.45;
+    if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
+      const alpha = Math.min(1, Math.abs(advantage) / scales.maxAbsAdv) * 0.45;
       bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
-    } else if (signal === "logprob" && logprob != null) {
-      bg = `background:rgba(183,166,250,${(Math.min(1, -logprob / 6) * 0.6).toFixed(3)})`;
+    } else if (signal === "entropy" && entropy != null && scales.maxEntropy > 0) {
+      bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
+    } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
+      bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
+    } else if (signal === "stable_mask" && probDelta != null) {
+      // the IPO mask: a token whose probability moved further than eps is dropped
+      bg =
+        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
+        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
+        : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
     } else if (signal === "is_content" && node.is_content?.[i]) {
@@ -2298,8 +2683,14 @@ function renderTokenNode(node, signal, maxAbsAdv) {
     }
     let tip = `#${i} id=${id}`;
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
-    else if (signal === "logprob" && logprob != null)
-      tip += ` lp=${logprob.toFixed(4)} (${(Math.exp(logprob) * 100).toFixed(1)}%)`;
+    else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
+    else if (signal === "mismatch_kl" && kl != null)
+      tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} kl=${kl.toFixed(6)}`;
+    // the mask reads in probabilities, since eps is a probability distance
+    else if (signal === "stable_mask" && probDelta != null)
+      tip +=
+        ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)}` +
+        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? `masked ${probDelta > 0 ? "high" : "low"}` : "kept"}`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
@@ -2318,6 +2709,10 @@ function pyLiteral(value) {
 }
 
 function toolCallHtml(toolCall) {
+  return `<div class="tool-call">${esc(toolCallText(toolCall))}</div>`;
+}
+
+function toolCallText(toolCall) {
   const name = toolCall.function?.name ?? toolCall.name ?? "?";
   const raw = toolCall.function?.arguments ?? toolCall.arguments;
   let args;
@@ -2331,7 +2726,7 @@ function toolCallHtml(toolCall) {
   } catch {
     args = String(raw ?? "");
   }
-  return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
+  return `${name}(${args})`;
 }
 
 function reasoningBlock(content, marks = null) {
@@ -2391,11 +2786,92 @@ function toolDefinitionsHtml(trace) {
   );
 }
 
+const TASK_SCAFFOLD_FIELDS = new Set([
+  "idx", "name", "description", "prompt", "system_prompt", "image", "workdir",
+  "network_allow", "network_block", "artifacts", "timeout", "resources",
+]);
+const TASK_EVIDENCE_FIELD_ORDER = new Map([["question", 0], ["answer", 1]]);
+
+function evidenceText(value) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function taskEvidenceHtml(trace) {
+  const data = trace.task?.data;
+  if (!data || typeof data !== "object") return "";
+  const fields = Object.entries(data)
+    .filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null)
+    .sort(
+      ([a], [b]) =>
+        (TASK_EVIDENCE_FIELD_ORDER.get(a) ?? 2) - (TASK_EVIDENCE_FIELD_ORDER.get(b) ?? 2)
+    );
+  if (!fields.length) return "";
+  const previewKeys = fields.map(([key]) => key).join(" · ");
+  const body = fields
+    .map(
+      ([key, value]) =>
+        `<section class="evidence-field"><header><span>${esc(key)}</span>` +
+        `<button class="icon-btn" data-copy-task="${esc(key)}" title="copy ${esc(key)}">${COPY_SVG}</button></header>` +
+        `<pre>${esc(evidenceText(value))}</pre></section>`
+    )
+    .join("");
+  return (
+    `<details class="task-evidence standalone" open><summary><span class="context-label">Task data</span>` +
+    `<span class="entry-preview">${esc(previewKeys)}</span><span class="entry-chev">›</span></summary>` +
+    `<div class="evidence-fields">${body}</div></details>`
+  );
+}
+
+function judgeEvidenceHtml(trace) {
+  const records = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+  if (!records.length) return "";
+  const calls = records
+    .map((record, index) => {
+      const request = record.request;
+      const response = record.response;
+      const messages = request.messages;
+      const responseText = messageText(response.message);
+      const { input, cached, output } = normalizedCallUsage(response.usage);
+      const chips = [];
+      if (request.model) chips.push(request.model);
+      if (input != null) chips.push(`${fmtCompact(input)} in`);
+      if (cached != null) chips.push(`${fmtCompact(cached)} cache`);
+      if (output != null) chips.push(`${fmtCompact(output)} out`);
+      const prompt = messages
+        .map(
+          (message, messageIndex) =>
+            `<section class="judge-message"><header><span>${String(messageIndex + 1).padStart(2, "0")}</span>` +
+            `<strong>${esc(message.role || "message")}</strong></header>` +
+            `<div>${esc(messageText(message))}</div></section>`
+        )
+        .join("");
+      const parsed = response.parsed == null
+        ? ""
+        : `<section class="judge-result parsed"><header>Parsed verdict</header><pre>${esc(evidenceText(response.parsed))}</pre></section>`;
+      return (
+        `<details class="entry judge-entry" open><summary><span class="entry-num">J${String(index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(record.name)}</span>` +
+        `<span class="entry-preview">${preview(responseText, 180)}</span>` +
+        chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("") +
+        `<button class="icon-btn" data-copy-judge="${index}" title="copy judge call">${COPY_SVG}</button>` +
+        `<span class="entry-chev">›</span></summary>` +
+        `<div class="judge-call-grid"><section class="judge-request"><header>Judge prompt</header>${prompt}</section>` +
+        `<section class="judge-result"><header>Judge response</header><pre>${esc(responseText)}</pre></section>${parsed}</div>` +
+        `</details>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="judging-divider"><span>Judging</span><span>${records.length} call${records.length === 1 ? "" : "s"}</span></div>` +
+    calls
+  );
+}
+
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
   const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
-  if (!rendered) return emptyState("rendered text not loaded", "select this view again to load recorded token IDs") + errors;
-  const signal = $("#token-signal").value;
+  if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
   const unavailable = {
@@ -2405,40 +2881,46 @@ function renderedTokensHtml(trace, branches) {
     decode_error: ["recorded tokens could not be decoded", "The tokenizer was found, but it could not decode this recorded sequence."],
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
+  const scales = episodeSignalScales(trace);
+  const signal = resolveSignal(trace, path, scales);
   if (signal && tokenCount) {
-    let maxAbsAdv = 0;
-    for (const node of trace.nodes || [])
-      for (const advantage of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(advantage));
-    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, maxAbsAdv)).join("");
-    return (
-      `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
-      `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
-      (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
-      (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
-      `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
-      `<span class="entry-chev">›</span></summary>` +
-      `<pre class="rendered-text">${body}</pre></details>` + errors
-    );
+    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
+    return errors + renderedBoxHtml(tokenCount, body, selected?.text != null);
   }
   if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
-    return emptyState(title, detail) + errors;
+    return errors + emptyState(title, detail);
   }
+  return errors + renderedBoxHtml(selected.token_count, esc(selected.text), true);
+}
+
+/* the whole point of this view is the sequence, so it is always open and leads with
+   it rather than a preview of what is right below */
+function renderedBoxHtml(tokenCount, body, canCopyText) {
   return (
-    `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
-    `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
-    `<span class="entry-preview">${preview(selected.text, 180)}</span>` +
-    `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
-    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
-    `<span class="entry-chev">›</span></summary>` +
-    `<pre class="rendered-text">${esc(selected.text)}</pre></details>` + errors
+    `<div class="rendered-transcript">` +
+    `<div class="rendered-head"><span class="context-label">Rendered tokens/text</span>` +
+    `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
+    `<div class="spacer"></div>` +
+    (canCopyText ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
+    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button></div>` +
+    `<pre class="rendered-text">${body}</pre></div>`
   );
 }
 
 let entriesObserver = null;
 
 function episodeErrors(ep, trace) {
-  return [...(ep.errors || []), ...(trace?.errors || [])];
+  // one failure is often recorded twice, on the episode and on its trace; show it
+  // once, keeping whichever copy carries the traceback
+  const byMessage = new Map();
+  for (const error of [...(ep.errors || []), ...(trace?.errors || [])]) {
+    const record = error && typeof error === "object" ? error : { message: String(error) };
+    const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
+    const kept = byMessage.get(key);
+    if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
+  }
+  return [...byMessage.values()];
 }
 
 function errorBannersHtml(errors) {
@@ -2486,21 +2968,28 @@ function renderMessages(ep, trace, branches) {
   entriesObserver?.disconnect();
   const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
-    container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
+    container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
+    return;
+  }
+  if (currentEvidenceView === "task") {
+    container.innerHTML = errorsHtml + (taskEvidenceHtml(trace) || emptyState("no task data", "this trace carries no task-specific evidence"));
+    return;
+  }
+  if (currentEvidenceView === "judge") {
+    const judgesHtml = judgeEvidenceHtml(trace);
+    container.innerHTML = errorsHtml + (judgesHtml ? `<div class="judging-view">${judgesHtml}</div>` : emptyState("no judge calls", "this trace has no recorded judge evidence"));
     return;
   }
   if (state.traces.viewMode === "rendered") {
     container.innerHTML = renderedTokensHtml(trace, branches);
     return;
   }
-  const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
-  let maxAbsAdv = 0;
-  for (const node of trace.nodes || [])
-    for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
+  const scales = episodeSignalScales(trace);
+  const signal = resolveSignal(trace, path, scales);
   const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
   const callsByNode = new Map();
   for (const item of indexedCalls) {
@@ -2522,8 +3011,8 @@ function renderMessages(ep, trace, branches) {
     pendingHighlight &&
     pendingHighlight.run === state.run &&
     pendingHighlight.step === state.traces.step &&
-    pendingHighlight.kind === state.traces.kind &&
-    pendingHighlight.subset === state.traces.subset &&
+    pendingHighlight.kind === activeKind() &&
+    pendingHighlight.subset === (state.traces.mode === "step" ? "effective" : "all") &&
     pendingHighlight.line === currentLine &&
     pendingHighlight.trace === currentTraceIdx
       ? pendingHighlight
@@ -2551,11 +3040,24 @@ function renderMessages(ep, trace, branches) {
       (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
     );
     const marked = contentMarked || reasoningMarked;
+    // a node with no recorded token ids carries nothing to colour - it still shows its
+    // message, whole, and says why it is uncoloured
+    const overlayable = !!node.token_ids?.length;
+    const showingTokens = !contentMarked && signal && overlayable;
+    // mark the entries a signal skipped. A prompt entry carries no sampled token, so
+    // leaving it uncoloured is the expected result, not a gap.
+    if (signal) {
+      if (!overlayable) chips.push("no tokens to overlay");
+      else if (node.sampled && !paintedCount(node, signal, scales, 1)) chips.push("not covered");
+    }
+    const whole = reasoning ? `${reasoningText(reasoning)}\n\n${text}`.trim() : text;
     const body = contentMarked
       ? quoteMarkedHtml(text, contentMarks)
-      : signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
+      : showingTokens ? renderTokenNode(node, signal, scales) : esc(signal ? whole : text);
     const subs = [];
-    if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
+    // Reasoning is parsed into its own box only in the text view; under a signal the
+    // recorded sequence is what is being read, so it stays inline with the message.
+    if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
@@ -2590,11 +3092,11 @@ function renderMessages(ep, trace, branches) {
     )
     .join("");
   container.innerHTML =
+    errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml +
-    errorsHtml;
+    unlinkedCallsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
@@ -2659,7 +3161,7 @@ function renderMeta(ep, trace, branches) {
     const rewards = Object.entries(trace.rewards || {});
     if (rewards.length) {
       parts.push(`<div class="meta-sec">rewards</div>`);
-      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtReward(r.score)} × ${fmtNum(r.weight ?? 1)}`));
+      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtReward(r?.score)} × ${fmtNum(r?.weight ?? 1)}`));
     }
     const metrics = Object.entries(trace.metrics || {});
     if (metrics.length) {
@@ -2676,6 +3178,8 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+    if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
 
     const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
     const addUsage = (field, value) => {
@@ -2746,8 +3250,7 @@ function renderMeta(ep, trace, branches) {
 }
 
 function timelineClock(ts) {
-  if (ts == null) return "—";
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return ts == null ? "—" : fmtClock(ts);
 }
 
 function timelineTipAttr(payload) {
@@ -2765,6 +3268,58 @@ function appendTimelineUsage(rows, usage, aggregate = false) {
   if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
   if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
   if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+}
+
+function aggregateTimelineUsage(items) {
+  const summedFields = [
+    "model_calls",
+    "input_tokens",
+    "cached_tokens",
+    "total_input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+    "cost",
+  ];
+  const aggregate = {};
+  for (const field of summedFields) {
+    const values = items.map((usage) => usage?.[field]).filter((value) => typeof value === "number");
+    aggregate[field] = values.length ? values.reduce((total, value) => total + value, 0) : null;
+  }
+  const contextLengths = items
+    .map((usage) => usage?.max_context_tokens)
+    .filter((value) => typeof value === "number");
+  const latestContextLengths = items
+    .map((usage) => usage?.latest_context_tokens)
+    .filter((value) => typeof value === "number");
+  aggregate.latest_context_tokens = latestContextLengths.at(-1) ?? null;
+  aggregate.max_context_tokens = contextLengths.length ? Math.max(...contextLengths) : null;
+  return aggregate;
+}
+
+function semanticContextRows(usage, compact = true) {
+  const tokens = (value) => compact ? fmtCompact(value) : Math.round(value).toLocaleString();
+  const rows = [];
+  if (usage?.latest_context_tokens != null) rows.push(["current prompt", tokens(usage.latest_context_tokens)]);
+  if (usage?.max_context_tokens != null) rows.push(["peak prompt", tokens(usage.max_context_tokens)]);
+  return rows;
+}
+
+function semanticCumulativeUsageRows(usage, compact = true) {
+  const tokens = (value) => compact ? fmtCompact(value) : Math.round(value).toLocaleString();
+  const rows = [];
+  if (usage?.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
+  if (usage?.total_tokens != null) rows.push(["cumulative processed", tokens(usage.total_tokens)]);
+  if (usage?.input_tokens != null) rows.push(["uncached input", tokens(usage.input_tokens)]);
+  if (usage?.cached_tokens != null) rows.push(["cached input", tokens(usage.cached_tokens)]);
+  if (usage?.output_tokens != null) rows.push(["output", tokens(usage.output_tokens)]);
+  if (usage?.reasoning_tokens != null) rows.push(["reasoning", tokens(usage.reasoning_tokens)]);
+  if (usage?.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+  return rows;
+}
+
+function semanticUsageRows(usage, compact = true) {
+  return [...semanticContextRows(usage, compact), ...semanticCumulativeUsageRows(usage, compact)];
 }
 
 function timelineSpanHtml(lane, span, start, total) {
@@ -2823,24 +3378,53 @@ function timelineLaneHtml(lane, start, total) {
     `${model}</span></div>` +
     `<div class="tl-track">${grids}${spans}</div>` +
     `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
-    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
-    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span></div></div>`
+  );
+}
+
+function semanticEdgeKind(type) {
+  if (type === "continuation") return "continuation";
+  if (type === "subagent_call") return "subagent-call";
+  if (type === "subagent_return") return "subagent-return";
+  if (type === "compaction") return "compaction";
+  return "custom";
+}
+
+function semanticEdgeLabel(type) {
+  if (type === "continuation") return "context flow";
+  return type.replaceAll("_", " ");
+}
+
+function timelineLegendHtml(edges) {
+  const types = [...new Set((edges || []).map((edge) => edge.type))];
+  if (!types.length) return "";
+  return (
+    `<div class="tl-edge-legend"><span class="tl-edge-legend-title">semantic edges</span>` +
+    types
+      .map(
+        (type) =>
+          `<span class="tl-edge-key"><i class="${semanticEdgeKind(type)}"></i>${esc(semanticEdgeLabel(type))}</span>`
+      )
+      .join("") +
+    `</div>`
   );
 }
 
 function renderTimeline() {
   const target = $("#tm-timeline");
+  target.classList.remove("semantic-canvas");
   const timeline = currentTimeline;
   if (!timeline) {
     target.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
     return;
   }
-  if (!(timeline.lanes || []).length) {
+  const lanes = timeline.lanes;
+  if (!(lanes || []).length) {
     target.innerHTML = emptyState("no timeline", "this episode carries no agent traces");
     return;
   }
-  const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
-  const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
+  const starts = lanes.map((lane) => lane.started_at).filter((value) => value != null);
+  const ends = lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
   const start = starts.length ? Math.min(...starts) : 0;
   const end = ends.length ? Math.max(...ends) : start + 1;
   const total = Math.max(1, end - start);
@@ -2848,15 +3432,868 @@ function renderTimeline() {
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
     .join("");
   target.innerHTML =
-    `<div class="tl-shell"><div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
-    timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
+    `<div class="tl-shell physical">` +
+    `<div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
     `</div>`;
 }
 
-async function setTraceView(view) {
+const semanticNodeDetails = new Map();
+const semanticScopeDetails = new Map();
+
+function semanticNodeKey(traceIndex, nodeIndex) {
+  return `${traceIndex}:${nodeIndex}`;
+}
+
+function semanticNodeTip(event) {
+  const span = event.span;
+  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  const rows = [
+    ["agent", event.agent.label],
+    ["context", String(event.contextIndex)],
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? "unknown" : timelineClock(span.ended_at)],
+    ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+  ];
+  appendTimelineUsage(rows, {
+    input_tokens: span.input_tokens,
+    cached_tokens: span.cached_tokens,
+    total_input_tokens: totalInput,
+    output_tokens: span.output_tokens,
+    reasoning_tokens: span.reasoning_tokens,
+    max_context_tokens: totalInput,
+    total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
+    cost: span.cost,
+  });
+  return timelineTipAttr({
+    kind: "model call",
+    title: `${event.agent.label} — ${span.label}`,
+    snippet: span.snippet || "",
+    rows,
+    hint: "Click to inspect this call. Exact wall-clock placement is available in Timeline.",
+  });
+}
+
+function renderSemanticGraph() {
+  const target = $("#tm-timeline");
+  const wasSemantic = target.classList.contains("semantic-canvas");
+  target.classList.add("semantic-canvas");
+  const episodeKey = String(currentLine);
+  const preserveViewport = wasSemantic && target.dataset.semanticEpisode === episodeKey;
+  const previousScrollLeft = target.scrollLeft;
+  const previousScrollTop = target.scrollTop;
+  const timeline = currentTimeline;
+  const lanes = (timeline?.semantic_lanes || []).filter((lane) => lane.context);
+  const edges = timeline?.semantic_edges || [];
+  semanticNodeDetails.clear();
+  semanticScopeDetails.clear();
+  if (!lanes.length) {
+    target.innerHTML = emptyState(
+      "no semantic graph",
+      "this harness did not attach semantic relationships to the model-call nodes"
+    );
+    return;
+  }
+
+  const agentsByKey = new Map();
+  const segments = [];
+  const events = [];
+  lanes.forEach((lane, laneIndex) => {
+    const agentKey = `${lane.trace_index}:${lane.context.agent}`;
+    let agent = agentsByKey.get(agentKey);
+    if (!agent) {
+      agent = {
+        key: agentKey,
+        label: lane.context.agent,
+        traceIndex: lane.trace_index,
+        depth: lane.depth || 0,
+        startedAt: lane.started_at,
+        segments: [],
+      };
+      agentsByKey.set(agentKey, agent);
+    } else {
+      agent.startedAt = Math.min(agent.startedAt ?? Infinity, lane.started_at ?? Infinity);
+      agent.depth = Math.min(agent.depth, lane.depth || 0);
+    }
+    const segment = {
+      key: `${agentKey}:${lane.context.index}:${laneIndex}`,
+      agent,
+      contextIndex: lane.context.index,
+      unlinked: !!lane.context.unlinked,
+      lane,
+      events: [],
+    };
+    agent.segments.push(segment);
+    segments.push(segment);
+    for (const span of lane.spans || []) {
+      if (span.track !== "activity" || span.node_index == null) continue;
+      const event = {
+        key: semanticNodeKey(lane.trace_index, span.node_index),
+        traceIndex: lane.trace_index,
+        nodeIndex: span.node_index,
+        callIndex: span.call_index,
+        contextIndex: lane.context.index,
+        lane,
+        agent,
+        segment,
+        span,
+      };
+      segment.events.push(event);
+      events.push(event);
+    }
+  });
+  const agents = [...agentsByKey.values()].sort(
+    (left, right) =>
+      left.depth - right.depth ||
+      (left.startedAt ?? Infinity) - (right.startedAt ?? Infinity) ||
+      left.label.localeCompare(right.label)
+  );
+  for (const agent of agents) {
+    agent.segments.sort((left, right) => left.contextIndex - right.contextIndex);
+    agent.usage = aggregateTimelineUsage(agent.segments.map((segment) => segment.lane.usage));
+    semanticScopeDetails.set(`agent:${agent.key}`, { kind: "agent", agent });
+  }
+  for (const segment of segments) {
+    semanticScopeDetails.set(`context:${segment.key}`, { kind: "context", segment });
+  }
+  events.sort(
+    (left, right) =>
+      (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+      left.traceIndex - right.traceIndex ||
+      left.nodeIndex - right.nodeIndex
+  );
+  if (!events.length) {
+    target.innerHTML = emptyState("no semantic graph", "this trace has semantic contexts but no model calls");
+    return;
+  }
+
+  // Semantic vertical placement follows causal rank, not wall-clock time. Add
+  // per-agent ordering links as a defensive fallback for harnesses that omit
+  // explicit continuation edges; Timeline remains the wall-clock view.
+  const eventByKey = new Map(events.map((event) => [event.key, event]));
+  const outgoing = new Map(events.map((event) => [event.key, new Set()]));
+  const indegree = new Map(events.map((event) => [event.key, 0]));
+  const addCausalLink = (sourceKey, targetKey) => {
+    if (sourceKey === targetKey || !eventByKey.has(sourceKey) || !eventByKey.has(targetKey)) return;
+    const targets = outgoing.get(sourceKey);
+    if (targets.has(targetKey)) return;
+    targets.add(targetKey);
+    indegree.set(targetKey, indegree.get(targetKey) + 1);
+  };
+  const hasCausalPath = (sourceKey, targetKey) => {
+    const pending = [sourceKey];
+    const visited = new Set();
+    while (pending.length) {
+      const key = pending.pop();
+      if (key === targetKey) return true;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      pending.push(...outgoing.get(key));
+    }
+    return false;
+  };
+  edges.forEach((edge) => {
+    addCausalLink(
+      semanticNodeKey(edge.trace_index, edge.source_node),
+      semanticNodeKey(edge.trace_index, edge.target_node)
+    );
+  });
+  for (const agent of agents) {
+    const agentEvents = events
+      .filter((event) => event.agent === agent)
+      .sort(
+        (left, right) =>
+          (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+          left.nodeIndex - right.nodeIndex
+      );
+    for (let index = 1; index < agentEvents.length; index++) {
+      const sourceKey = agentEvents[index - 1].key;
+      const targetKey = agentEvents[index].key;
+      if (!hasCausalPath(sourceKey, targetKey) && !hasCausalPath(targetKey, sourceKey)) {
+        addCausalLink(sourceKey, targetKey);
+      }
+    }
+  }
+  const eventOrder = (leftKey, rightKey) => {
+    const left = eventByKey.get(leftKey);
+    const right = eventByKey.get(rightKey);
+    return (
+      (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+      left.traceIndex - right.traceIndex ||
+      left.nodeIndex - right.nodeIndex
+    );
+  };
+  const ranks = new Map(events.map((event) => [event.key, 0]));
+  const ready = events
+    .filter((event) => indegree.get(event.key) === 0)
+    .map((event) => event.key)
+    .sort(eventOrder);
+  const ranked = new Set();
+  while (ready.length) {
+    const sourceKey = ready.shift();
+    ranked.add(sourceKey);
+    for (const targetKey of outgoing.get(sourceKey)) {
+      ranks.set(targetKey, Math.max(ranks.get(targetKey), ranks.get(sourceKey) + 1));
+      indegree.set(targetKey, indegree.get(targetKey) - 1);
+      if (indegree.get(targetKey) === 0) {
+        ready.push(targetKey);
+        ready.sort(eventOrder);
+      }
+    }
+  }
+  let fallbackRank = Math.max(0, ...ranks.values()) + 1;
+  for (const event of events) {
+    if (!ranked.has(event.key)) ranks.set(event.key, fallbackRank++);
+  }
+  const rankValues = [...new Set(ranks.values())].sort((left, right) => left - right);
+  const rows = rankValues.map((rank, index) => ({ index, rank, events: [] }));
+  const rowByRank = new Map(rows.map((row) => [row.rank, row]));
+  for (const event of events) {
+    const row = rowByRank.get(ranks.get(event.key));
+    row.events.push(event);
+    event.row = row.index;
+  }
+
+  segments.forEach((segment) => {
+    segment.events.sort((left, right) => left.row - right.row);
+    segment.firstEvent = segment.events[0];
+    segment.lastEvent = segment.events[segment.events.length - 1];
+  });
+  const compactionTargets = new Set(
+    edges
+      .filter((edge) => edge.type === "compaction")
+      .map((edge) => semanticNodeKey(edge.trace_index, edge.target_node))
+  );
+  const inferredContinuationTargets = new Set(
+    edges
+      .filter((edge) => edge.type === "continuation" && edge.inferred)
+      .map((edge) => semanticNodeKey(edge.trace_index, edge.target_node))
+  );
+  for (const event of events) {
+    event.inferredContinuation = inferredContinuationTargets.has(event.key);
+  }
+  for (const segment of segments) {
+    segment.isCompacted = compactionTargets.has(segment.firstEvent?.key);
+  }
+
+  // Fold only long, uninterrupted runs of ordinary model calls. Context
+  // boundaries, semantic-edge endpoints, active calls, and the selected call
+  // stay explicit so folding never removes execution structure.
+  const protectedEventKeys = new Set();
+  for (const segment of segments) {
+    if (segment.firstEvent) protectedEventKeys.add(segment.firstEvent.key);
+    if (segment.lastEvent) protectedEventKeys.add(segment.lastEvent.key);
+  }
+  for (const edge of edges) {
+    if (edge.type === "continuation") continue;
+    protectedEventKeys.add(semanticNodeKey(edge.trace_index, edge.source_node));
+    protectedEventKeys.add(semanticNodeKey(edge.trace_index, edge.target_node));
+  }
+  for (const event of events) {
+    if (event.span.status !== "completed") protectedEventKeys.add(event.key);
+  }
+  if (semanticSelection?.key) protectedEventKeys.add(semanticSelection.key);
+
+  const collapseRuns = [];
+  const foldRun = (segment, ordinaryEvents) => {
+    const contextCalls = 2;
+    const minimumOrdinaryCalls = contextCalls * 2 + 3;
+    if (ordinaryEvents.length < minimumOrdinaryCalls) return;
+    const hiddenEvents = ordinaryEvents.slice(contextCalls, -contextCalls);
+    const first = hiddenEvents[0];
+    const last = hiddenEvents[hiddenEvents.length - 1];
+    const key = `${currentLine}:${segment.key}:${first.key}:${last.key}`;
+    collapseRuns.push({
+      key,
+      segment,
+      events: hiddenEvents,
+      firstEvent: first,
+      expanded: semanticExpandedRuns.has(key),
+    });
+  };
+  for (const segment of segments) {
+    let ordinaryEvents = [];
+    for (const event of segment.events) {
+      if (protectedEventKeys.has(event.key)) {
+        foldRun(segment, ordinaryEvents);
+        ordinaryEvents = [];
+      } else {
+        ordinaryEvents.push(event);
+      }
+    }
+    foldRun(segment, ordinaryEvents);
+  }
+  const collapsedEventKeys = new Set(
+    collapseRuns.filter((run) => !run.expanded).flatMap((run) => run.events.map((event) => event.key))
+  );
+  const collapsedRunRows = new Set(
+    collapseRuns.filter((run) => !run.expanded).map((run) => run.firstEvent.row)
+  );
+  const layoutRows = rows.filter(
+    (row) => row.events.some((event) => !collapsedEventKeys.has(event.key)) || collapsedRunRows.has(row.index)
+  );
+
+  // The earliest, shallowest agent owns the centered execution spine. Other
+  // agents occupy symmetric, reusable fan-out slots around it.
+  for (const agent of agents) {
+    const agentEvents = events.filter((event) => event.agent === agent);
+    agent.firstRow = Math.min(...agentEvents.map((event) => event.row));
+    agent.lastRow = Math.max(...agentEvents.map((event) => event.row));
+  }
+  const rootAgent = agents[0];
+  for (const agent of agents) {
+    agent.displayLabel = agent === rootAgent
+      ? agent.label === "agent" ? "root agent" : `root · ${agent.label}`
+      : agent.label;
+  }
+  rootAgent.offset = 0;
+  const assignedAgents = [];
+  const fanOffset = (slot) => (slot % 2 === 0 ? -(slot / 2 + 1) : (slot + 1) / 2);
+  for (const agent of agents
+    .filter((candidate) => candidate !== rootAgent)
+    .sort((left, right) => left.firstRow - right.firstRow || left.depth - right.depth)) {
+    let slot = 0;
+    let offset = fanOffset(slot);
+    while (
+      assignedAgents.some(
+        (other) =>
+          other.offset === offset &&
+          other.firstRow <= agent.lastRow &&
+          agent.firstRow <= other.lastRow
+      )
+    ) {
+      offset = fanOffset(++slot);
+    }
+    agent.offset = offset;
+    assignedAgents.push(agent);
+  }
+
+  const sidePadding = 44;
+  const laneMinWidth = 340;
+  const laneMaxWidth = 400;
+  const turnMarkWidth = 64;
+  const turnMarkHeight = 10;
+  const turnLabelOffset = turnMarkWidth / 2 + 9;
+  const turnHitWidth = 124;
+  const turnHitHeight = 40;
+  const radius = Math.max(...agents.map((agent) => Math.abs(agent.offset)), 0);
+  const slotCount = radius * 2 + 1;
+  const viewportWidth = Math.max(320, target.clientWidth);
+  const laneWidth = Math.min(
+    laneMaxWidth,
+    Math.max(laneMinWidth, (viewportWidth - sidePadding * 2) / slotCount)
+  );
+  const graphWidth = slotCount * laneWidth;
+  const width = Math.max(viewportWidth, graphWidth + sidePadding * 2);
+  const graphLeft = (width - graphWidth) / 2;
+  const rootX = graphLeft + (radius + 0.5) * laneWidth;
+  const segmentStarts = new Set(segments.map((segment) => segment.firstEvent?.key).filter(Boolean));
+  let rowCursor = 84;
+  layoutRows.forEach((row, index) => {
+    const beginsContext = row.events.some((event) => segmentStarts.has(event.key));
+    const semanticLandmark = row.events.some((event) => protectedEventKeys.has(event.key));
+    const foldedRun = collapsedRunRows.has(row.index);
+    if (index && beginsContext) rowCursor += 28;
+    row.y = rowCursor;
+    rowCursor += semanticLandmark ? 44 : foldedRun ? 30 : 34;
+  });
+  const height = Math.max(260, rowCursor + 42);
+  const positions = new Map();
+  for (const event of events) {
+    if (collapsedEventKeys.has(event.key)) continue;
+    const x = rootX + event.agent.offset * laneWidth;
+    const y = rows[event.row].y;
+    positions.set(event.key, { x, y });
+    semanticNodeDetails.set(event.key, event);
+  }
+
+  const markerColors = {
+    continuation: "#767676",
+    "subagent-call": "#4a9eff",
+    "subagent-return": "#ff6b4a",
+    compaction: "#b7a6fa",
+    custom: "#b6ff3c",
+  };
+  const markerKinds = Object.keys(markerColors);
+  const markers = markerKinds
+    .map(
+      (kind) =>
+        `<marker id="sg-arrow-${kind}" viewBox="0 0 10 10" refX="9" refY="5" ` +
+        `markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto" overflow="visible">` +
+        `<path d="M0.75 0.75L9.5 5L0.75 9.25Z" fill="${markerColors[kind]}"></path></marker>`
+    )
+    .join("");
+  const roundedReturnPath = (source, destination) => {
+    const direction = Math.sign(destination.x - source.x);
+    const portX = turnMarkWidth / 2 + 1;
+    const sourceX = source.x + direction * portX;
+    const sourceY = source.y + turnMarkHeight * 0.35;
+    const targetX = destination.x - direction * portX;
+    const targetY = destination.y - turnMarkHeight * 0.15;
+    const railInset = Math.min(58, laneWidth * 0.17);
+    const railX = targetX - direction * railInset;
+    const bend = Math.min(14, Math.max(6, (targetY - sourceY) / 4));
+    return (
+      `M${sourceX} ${sourceY}` +
+      `H${railX - direction * bend}` +
+      `Q${railX} ${sourceY} ${railX} ${sourceY + bend}` +
+      `V${targetY - bend}` +
+      `Q${railX} ${targetY} ${railX + direction * bend} ${targetY}` +
+      `H${targetX}`
+    );
+  };
+  const paths = edges
+    .map((edge) => {
+      if (edge.type === "continuation") return "";
+      const source = positions.get(semanticNodeKey(edge.trace_index, edge.source_node));
+      const destination = positions.get(semanticNodeKey(edge.trace_index, edge.target_node));
+      if (!source || !destination) return "";
+      const kind = semanticEdgeKind(edge.type);
+      let path;
+      if (source.x === destination.x) {
+        const portY = turnMarkHeight / 2 + 1;
+        path = `M${source.x} ${source.y + portY}L${destination.x} ${destination.y - portY}`;
+      } else if (edge.type === "subagent_return") {
+        path = roundedReturnPath(source, destination);
+      } else {
+        const direction = Math.sign(destination.x - source.x);
+        const portX = turnMarkWidth / 2 + 1;
+        const portY = turnMarkHeight * 0.35;
+        const sourceX = source.x + direction * portX;
+        const sourceY = source.y + portY;
+        const targetX = destination.x - direction * portX;
+        const targetY = destination.y - portY;
+        const handle = Math.min(laneWidth * 0.3, Math.max(70, Math.abs(targetX - sourceX) * 0.35));
+        path = `M${sourceX} ${sourceY}C${sourceX + direction * handle} ${sourceY},${targetX - direction * handle} ${targetY},${targetX} ${targetY}`;
+      }
+      return `<path class="sg-edge ${kind}" d="${path}" marker-end="url(#sg-arrow-${kind})"></path>`;
+    })
+    .join("");
+  const collapsedRunsBySegment = new Map(segments.map((segment) => [segment.key, []]));
+  for (const run of collapseRuns) {
+    if (!run.expanded) collapsedRunsBySegment.get(run.segment.key).push(run);
+  }
+  const lifelines = segments
+    .map((segment) => {
+      if (!segment.firstEvent || !segment.lastEvent) return "";
+      const first = positions.get(segment.firstEvent.key);
+      const last = positions.get(segment.lastEvent.key);
+      const color = PALETTE[agents.indexOf(segment.agent) % PALETTE.length];
+      const gaps = collapsedRunsBySegment
+        .get(segment.key)
+        .map((run) => rows[run.firstEvent.row].y)
+        .sort((left, right) => left - right);
+      const startY = first.y - 13;
+      const endY = last.y + 16;
+      const gapHalfHeight = 14;
+      let cursorY = startY;
+      let path = "";
+      for (const gapY of gaps) {
+        const gapStart = Math.max(cursorY, gapY - gapHalfHeight);
+        const gapEnd = Math.min(endY, gapY + gapHalfHeight);
+        if (gapStart > cursorY) path += `M${first.x} ${cursorY}V${gapStart}`;
+        cursorY = gapEnd;
+      }
+      if (cursorY < endY) path += `M${first.x} ${cursorY}V${endY}`;
+      return `<path class="sg-lifeline" d="${path}" style="--lane-color:${color}"></path>`;
+    })
+    .join("");
+  const laneBands = Array.from({ length: slotCount }, (_, index) => {
+    const offset = index - radius;
+    return (
+      `<div class="sg-lane-band ${offset === 0 ? "root" : ""}" ` +
+      `style="left:${graphLeft + index * laneWidth}px;width:${laneWidth}px"></div>`
+    );
+  })
+    .join("");
+  const agentLabels = segments
+    .map((segment) => {
+      if (!segment.firstEvent) return "";
+      const position = positions.get(segment.firstEvent.key);
+      const color = PALETTE[agents.indexOf(segment.agent) % PALETTE.length];
+      const successor = segment.unlinked
+        ? "semantic link missing"
+        : segment.isCompacted ? "new compacted context" : `context ${segment.contextIndex}`;
+      const agentLabel = segment.agent.displayLabel;
+      const isRoot = segment.agent === rootAgent;
+      const labelWidth = isRoot ? 220 : 180;
+      const side = Math.sign(segment.agent.offset);
+      const labelDirection = side;
+      const labelLeft = isRoot
+        ? position.x - labelWidth / 2
+        : position.x + labelDirection * 110 - labelWidth / 2;
+      const labelTop = isRoot ? position.y - 56 : position.y - 52;
+      const sideClass = isRoot ? "root" : labelDirection < 0 ? "side-left" : "side-right";
+      const agentTip = timelineTipAttr({
+        kind: "agent",
+        title: agentLabel,
+        snippet: "",
+        rows: [["contexts", fmtNum(segment.agent.segments.length)], ...semanticUsageRows(segment.agent.usage)],
+        hint: "Current prompt is the latest model request. Click for exact usage.",
+      });
+      const contextTip = timelineTipAttr({
+        kind: segment.unlinked ? "unlinked calls" : "context",
+        title: segment.unlinked ? agentLabel : `${agentLabel} — context ${segment.contextIndex}`,
+        snippet: "",
+        rows: semanticUsageRows(segment.lane.usage),
+        hint: segment.unlinked
+          ? "The trace did not provide enough lineage to place these calls."
+          : "Current prompt is the latest model request. Click for exact usage.",
+      });
+      return (
+        `<div class="sg-agent-label ${sideClass} ${segment.isCompacted ? "compacted" : ""} ${segment.unlinked ? "unlinked" : ""}" ` +
+        `style="left:${labelLeft}px;top:${labelTop}px;width:${labelWidth}px">` +
+        `<button class="sg-agent-name" data-sg-scope="agent:${esc(segment.agent.key)}" ` +
+        `aria-label="Inspect ${esc(agentLabel)} usage across all contexts"${agentTip}>` +
+        `<i style="background:${color}"></i>${esc(agentLabel)}</button>` +
+        `<button class="sg-context-name" data-sg-scope="context:${esc(segment.key)}" ` +
+        `aria-label="Inspect ${esc(agentLabel)} context ${segment.contextIndex} usage"${contextTip}>` +
+        `${esc(successor)}</button></div>`
+      );
+    })
+    .join("");
+  const turns = events
+    .filter((event) => !collapsedEventKeys.has(event.key))
+    .map((event) => {
+      const position = positions.get(event.key);
+      const color = PALETTE[agents.indexOf(event.agent) % PALETTE.length];
+      return (
+        `<button class="sg-turn" style="left:${position.x - turnHitWidth / 2}px;top:${position.y - turnHitHeight / 2}px;` +
+        `width:${turnHitWidth}px;height:${turnHitHeight}px;--turn-color:${color};--turn-mark-width:${turnMarkWidth}px;` +
+        `--turn-mark-height:${turnMarkHeight}px;--turn-label-offset:${turnLabelOffset}px" ` +
+        `data-sg-key="${esc(event.key)}" data-tl-trace="${event.traceIndex}" data-tl-node="${event.nodeIndex}" ` +
+        `data-tl-call="${event.callIndex}"${semanticNodeTip(event)}>` +
+        `<span class="sg-turn-mark"></span><span class="sg-turn-index">${esc(event.span.label.replace("turn ", "t"))}</span></button>`
+      );
+    })
+    .join("");
+  const runControls = collapseRuns
+    .map((run) => {
+      const color = PALETTE[agents.indexOf(run.segment.agent) % PALETTE.length];
+      const position = positions.get(run.firstEvent.key) || {
+        x: rootX + run.segment.agent.offset * laneWidth,
+        y: rows[run.firstEvent.row].y,
+      };
+      const width = 58;
+      const height = 20;
+      const centerX = position.x;
+      const centerY = position.y - (run.expanded ? 17 : 0);
+      const action = run.expanded ? "Collapse" : "Expand";
+      const label = run.expanded ? `− ${run.events.length}` : `⋯ ${run.events.length}`;
+      return (
+        `<button class="sg-turn-run ${run.expanded ? "expanded" : "collapsed"}" ` +
+        `style="left:${centerX - width / 2}px;top:${centerY - height / 2}px;width:${width}px;height:${height}px;` +
+        `--turn-color:${color}" data-sg-collapse-run="${esc(run.key)}" aria-expanded="${run.expanded}" ` +
+        `aria-label="${action} ${run.events.length} ordinary turns for ${esc(run.segment.agent.label)}" ` +
+        `title="${action} ${run.events.length} ordinary turns">${label}</button>`
+      );
+    })
+    .join("");
+
+  target.innerHTML =
+    timelineLegendHtml(edges) +
+    `<div class="sg-shell" style="width:${width}px;height:${height}px">` +
+    laneBands +
+    `<svg class="sg-edge-layer" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true"><defs>${markers}</defs>${lifelines}${paths}</svg>` +
+    agentLabels +
+    turns +
+    runControls +
+    `</div>`;
+  if (preserveViewport) {
+    target.scrollLeft = previousScrollLeft;
+    target.scrollTop = previousScrollTop;
+  } else {
+    target.dataset.semanticEpisode = episodeKey;
+    const visibleCenter = target.clientWidth / 2;
+    target.scrollLeft = Math.max(0, rootX - visibleCenter);
+    target.scrollTop = 0;
+  }
+}
+
+function semanticInspectorRows(rows) {
+  return rows
+    .map(([key, value]) => `<div class="sg-inspector-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`)
+    .join("");
+}
+
+function openSemanticCallInspector(event) {
+  semanticSelection = { ...event, kind: "call" };
+  const span = event.span;
+  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  const rows = [
+    ["agent", event.agent.label],
+    ["context", event.contextIndex],
+    ["node", event.nodeIndex],
+    ["call", event.callIndex],
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+    ["input", totalInput == null ? "n/a" : fmtCompact(totalInput)],
+    ["output", span.output_tokens == null ? "n/a" : fmtCompact(span.output_tokens)],
+    ["cost", span.cost == null ? "n/a" : fmtCost(span.cost)],
+  ];
+  if (event.inferredContinuation) rows.splice(2, 0, ["lineage", "recovered from physical tool flow"]);
+  $("#sg-inspector-title").textContent = `${event.agent.label} · ${span.label}`;
+  $("#sg-inspector-body").innerHTML =
+    `<div class="sg-inspector-section">model call</div>` +
+    semanticInspectorRows(rows) +
+    (span.snippet ? `<div class="sg-inspector-section">prompt</div><div class="sg-inspector-snippet">${esc(span.snippet)}</div>` : "");
+  $("#sg-open-transcript").hidden = false;
+  $("#sg-inspector").hidden = false;
+}
+
+function openSemanticScopeInspector(scope) {
+  semanticSelection = scope;
+  $("#sg-open-transcript").hidden = true;
+  if (scope.kind === "agent") {
+    const { agent } = scope;
+    $("#sg-inspector-title").textContent = `${agent.displayLabel} · all contexts`;
+    $("#sg-inspector-body").innerHTML =
+      `<div class="sg-inspector-section">current context</div>` +
+      semanticInspectorRows(semanticContextRows(agent.usage, false)) +
+      `<div class="sg-inspector-section">cumulative usage</div>` +
+      semanticInspectorRows([["contexts", fmtNum(agent.segments.length)], ...semanticCumulativeUsageRows(agent.usage, false)]) +
+      `<div class="sg-inspector-section">contexts</div>` +
+      semanticInspectorRows(
+        agent.segments.map((segment) => [
+          `context ${segment.contextIndex}`,
+          segment.lane.usage?.latest_context_tokens == null
+            ? "n/a"
+            : `${Math.round(segment.lane.usage.latest_context_tokens).toLocaleString()} prompt · ${fmtNum(segment.lane.usage.model_calls || 0)} calls`,
+        ])
+      );
+  } else {
+    const { segment } = scope;
+    $("#sg-inspector-title").textContent = segment.unlinked
+      ? `${segment.agent.displayLabel} · semantic link missing`
+      : `${segment.agent.displayLabel} · context ${segment.contextIndex}`;
+    $("#sg-inspector-body").innerHTML =
+      `<div class="sg-inspector-section">context length</div>` +
+      semanticInspectorRows(semanticContextRows(segment.lane.usage, false)) +
+      `<div class="sg-inspector-section">cumulative usage</div>` +
+      semanticInspectorRows(semanticCumulativeUsageRows(segment.lane.usage, false));
+  }
+  $("#sg-inspector").hidden = false;
+}
+
+function replayClock(seconds) {
+  const safe = Math.max(0, seconds || 0);
+  const minutes = Math.floor(safe / 60);
+  return `${minutes}:${(safe % 60).toFixed(1).padStart(4, "0")}`;
+}
+
+function replayEvents(trace, branches, skipInference = false) {
+  const path = currentPath(trace, branches);
+  const callsByNode = new Map();
+  (trace.calls || []).forEach((call) => {
+    if (Number.isInteger(call.node) && !callsByNode.has(call.node)) callsByNode.set(call.node, call);
+  });
+  const raw = path.map((nodeIndex) => {
+    const node = trace.nodes[nodeIndex];
+    const linked = callsByNode.get(nodeIndex);
+    const callStart = linked?.time?.start;
+    const callEnd = linked?.time?.end;
+    const timestamp = node.timestamp;
+    const start = callStart > 0 ? callStart : timestamp > 0 ? timestamp : null;
+    const end = callEnd > 0 ? callEnd : start;
+    return { node, linked, start, end, timed: start != null };
+  });
+  // Prompt nodes can be committed at response time even though the model saw
+  // them before the request. Place that context no later than its call start.
+  let previousCall = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const callStart = raw[i].linked?.time?.start;
+    if (!(callStart > 0)) continue;
+    for (let j = previousCall + 1; j < i; j++) {
+      if (raw[j].start == null || raw[j].start > callStart) raw[j].start = raw[j].end = callStart;
+    }
+    previousCall = i;
+  }
+  const timestamps = raw.flatMap((event) => [event.start, event.end]).filter((value) => value != null);
+  const origin = timestamps.length ? Math.min(...timestamps) : 0;
+  let cursor = 0;
+  let events = raw.map((event) => {
+    const at = event.start == null ? cursor : Math.max(cursor, event.start - origin);
+    const end = event.end == null ? at : Math.max(at, event.end - origin);
+    cursor = end;
+    return { ...event, at, end };
+  });
+  if (skipInference) {
+    let virtualClock = 0;
+    let previous = null;
+    events = events.map((event) => {
+      const role = event.node.message?.role;
+      if (role === "tool" && previous) virtualClock += Math.max(0, event.at - previous.end);
+      previous = event;
+      return { ...event, at: virtualClock, end: virtualClock };
+    });
+  }
+  return {
+    events,
+    duration: events.reduce((maximum, event) => Math.max(maximum, event.end), 0),
+    hasTiming: events.some((event) => event.timed),
+  };
+}
+
+function replayNodeHtml(event, elapsed, pendingTools) {
+  const message = event.node.message || {};
+  const role = message.role || "unknown";
+  const complete = elapsed >= event.end;
+  const duration = event.end - event.at;
+  const progress = complete || duration <= 0 ? 1 : Math.max(0, Math.min(1, (elapsed - event.at) / duration));
+  const content = messageText(message);
+  const reasoning = replay?.showThinking ? reasoningText(message.reasoning_content ?? message.reasoning) : "";
+  const streamed = reasoning ? `thinking\n${reasoning}\n\n${content}` : content;
+  const visible = event.linked && !complete ? streamed.slice(0, Math.floor(streamed.length * progress)) : streamed;
+  const stamp = event.timed ? `+${replayClock(event.at)}` : "untimed";
+  const callDuration = event.end - event.at;
+  let body = "";
+  if (role === "system") body = `<span class="replay-system"># system\n${esc(visible)}</span>`;
+  else if (role === "user") body = `<span class="replay-user">❯ ${esc(visible)}</span>`;
+  else if (role === "tool") body = `<span class="replay-output">${esc(visible)}</span>`;
+  else body = `<span class="replay-assistant">${esc(visible)}</span>`;
+  if (event.linked && !complete) {
+    const usage = normalizedCallUsage(event.linked.usage);
+    const details = [event.linked.model, usage.output == null ? null : `${fmtCompact(usage.output)} output tok`]
+      .filter(Boolean)
+      .join(" · ");
+    body =
+      `<div class="replay-model-wait"><span>model responding${details ? ` · ${esc(details)}` : ""}</span>` +
+      `<span>${fmtDuration(elapsed - event.at)} / ${fmtDuration(callDuration)}</span>` +
+      `<i><b style="width:${(progress * 100).toFixed(2)}%"></b></i></div>` +
+      body;
+  }
+  if (complete) {
+    for (const call of message.tool_calls || []) {
+      const id = call.id ?? call.tool_call_id;
+      if (id) pendingTools.set(id, toolCallText(call));
+      body += `<span class="replay-command">$ ${esc(toolCallText(call))}</span>`;
+    }
+    const resultId = message.tool_call_id;
+    if (resultId) pendingTools.delete(resultId);
+    else if (role === "tool" && pendingTools.size) pendingTools.delete(pendingTools.keys().next().value);
+  }
+  return `<div class="replay-event ${esc(role)}"><span class="replay-stamp">${stamp}</span><div>${body}</div></div>`;
+}
+
+function paintReplay(force = false) {
+  if (!replay) return;
+  const output = $("#replay-output");
+  if (!output) return;
+  const frame = Math.floor(replay.elapsed * 20);
+  if (!force && frame === replay.lastFrame) return;
+  replay.lastFrame = frame;
+  const previousScrollTop = output.scrollTop;
+  const pendingTools = new Map();
+  let html = "";
+  for (const event of replay.events) {
+    if (event.at > replay.elapsed) break;
+    html += replayNodeHtml(event, replay.elapsed, pendingTools);
+  }
+  if (pendingTools.size)
+    html += [...pendingTools.values()]
+      .map((command) => `<div class="replay-running"><span class="replay-spinner"></span>${esc(command)} running</div>`)
+      .join("");
+  output.innerHTML = html || `<div class="replay-wait">waiting for the first recorded event…</div>`;
+  const progress = $("#replay-progress");
+  if (progress) progress.value = replay.duration ? String((replay.elapsed / replay.duration) * 1000) : "1000";
+  const time = $("#replay-time");
+  if (time) time.textContent = `${replayClock(replay.elapsed)} / ${replayClock(replay.duration)}`;
+  const play = $("#replay-play");
+  if (play) play.textContent = replay.playing ? "pause" : replay.elapsed >= replay.duration ? "replay" : "play";
+  output.scrollTop = replay.followOutput ? output.scrollHeight : previousScrollTop;
+}
+
+function stopReplay() {
+  if (!replay) return;
+  replay.playing = false;
+  if (replay.raf) cancelAnimationFrame(replay.raf);
+  replay.raf = null;
+}
+
+function setReplayThinking(show) {
+  if (!replay) return;
+  replay.showThinking = show;
+  const control = $("#replay-show-thinking");
+  if (control) control.checked = show;
+  replay.lastFrame = -1;
+  paintReplay(true);
+}
+
+function setReplayFollow(follow) {
+  if (!replay) return;
+  replay.followOutput = follow;
+  const output = $("#replay-output");
+  if (output) output.scrollTop = follow ? output.scrollHeight : 0;
+  $("#replay-top")?.classList.toggle("active", !follow);
+  $("#replay-live")?.classList.toggle("active", follow);
+}
+
+function replayTick(now) {
+  if (!replay?.playing) return;
+  replay.elapsed = Math.min(replay.duration, ((now - replay.wallStarted) / 1000) * replay.speed);
+  if (replay.elapsed >= replay.duration) stopReplay();
+  paintReplay();
+  if (replay?.playing) replay.raf = requestAnimationFrame(replayTick);
+}
+
+function playReplay() {
+  if (!replay) return;
+  if (replay.elapsed >= replay.duration) replay.elapsed = 0;
+  replay.playing = true;
+  replay.wallStarted = performance.now() - (replay.elapsed / replay.speed) * 1000;
+  replay.raf = requestAnimationFrame(replayTick);
+  paintReplay(true);
+}
+
+function renderReplay(trace, branches) {
+  const container = $("#tm-messages");
+  entriesObserver?.disconnect();
+  if (!trace) {
+    container.innerHTML = emptyState("no trace to replay", "this episode carries no trace data");
+    return;
+  }
+  stopReplay();
+  const timing = replayEvents(trace, branches);
+  replay = {
+    ...timing,
+    trace,
+    branches,
+    skipInference: false,
+    showThinking: true,
+    followOutput: true,
+    elapsed: 0,
+    speed: 8,
+    playing: false,
+    raf: null,
+    lastFrame: -1,
+    wallStarted: 0,
+  };
+  container.innerHTML =
+    `<div class="replay-shell"><div class="replay-bar"><span class="replay-lights">● ● ●</span>` +
+    `<span class="replay-title">${esc(trace.agent?.name || "agent")} · terminal replay</span>` +
+    `<span id="replay-timing-badge" class="chip">${timing.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace"}</span></div>` +
+    `<div class="replay-controls"><button id="replay-restart" class="btn">↺</button><button id="replay-play" class="btn">play</button>` +
+    `<button id="replay-top" class="btn" title="scroll to the beginning (Home)">↑ top</button>` +
+    `<button id="replay-live" class="btn active" title="follow new output (End)">↓ live</button>` +
+    `<input id="replay-progress" type="range" min="0" max="1000" value="0" aria-label="replay position">` +
+    `<span id="replay-time">${replayClock(0)} / ${replayClock(timing.duration)}</span>` +
+    `<label class="replay-skip"><input id="replay-skip-inference" type="checkbox"> skip inference</label>` +
+    `<label class="replay-skip" title="Press T"><input id="replay-show-thinking" type="checkbox" checked> thinking <kbd>T</kbd></label>` +
+    `<span class="replay-control-label">speed</span>` +
+    `<select id="replay-speed" aria-label="replay speed"><option value="0.5">0.5×</option><option value="1">1×</option>` +
+    `<option value="2">2×</option><option value="4">4×</option><option value="8" selected>8×</option>` +
+    `<option value="16">16×</option><option value="32">32×</option></select></div>` +
+    `<div id="replay-output" class="replay-output-pane"></div></div>`;
+  paintReplay(true);
+  playReplay();
+}
+
+async function setTraceView(view, { persist = true } = {}) {
+  if (persist && view !== "replay") preferredTraceView = view;
+  stopReplay();
   traceView = view;
   setActive("#tm-view", "view", view);
-  if (view === "timeline") await ensureTimeline();
+  if (view === "timeline" || view === "semantic") await ensureTimeline();
   renderEpisode();
   savePrefs();
 }
@@ -2878,25 +4315,59 @@ function renderEpisode() {
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
-  branchTabs.hidden = branches.length <= 1;
+  const taskFields = Object.entries(trace?.task?.data || {}).filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null);
+  const judgeCalls = Array.isArray(trace?.info?.judge_calls) ? trace.info.judge_calls : [];
+  const hasEvidence = taskFields.length > 0 || judgeCalls.length > 0;
+  branchTabs.hidden = branches.length <= 1 && !hasEvidence;
   branchTabs.innerHTML =
-    branches.length > 1
+    !branchTabs.hidden
       ? branches
-          .map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
+          .map((_, i) => `<button data-branch="${i}" class="${currentEvidenceView == null && i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
           .join("") +
-        `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+        (branches.length > 1
+          ? `<button data-branch="-1" class="${currentEvidenceView == null && currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+          : "")
       : "";
+  const evidenceTabs = $("#tm-evidence-tabs");
+  evidenceTabs.hidden = !hasEvidence;
+  evidenceTabs.innerHTML =
+    (taskFields.length
+      ? `<button data-evidence="task" class="${currentEvidenceView === "task" ? "active" : ""}">task data</button>`
+      : "") +
+    (judgeCalls.length
+      ? `<button data-evidence="judge" class="${currentEvidenceView === "judge" ? "active" : ""}">judging · ${judgeCalls.length}</button>`
+      : "");
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
   const timeline = traceView === "timeline";
-  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
-  $("#tm-messages").hidden = timeline;
-  $("#tm-timeline").hidden = !timeline;
-  $("#token-signal").closest(".dd-select").hidden = timeline;
-  $("#tm-collapse").hidden = timeline;
-  $("#tm-expand").hidden = timeline;
+  const semantic = traceView === "semantic";
+  const replaying = traceView === "replay";
+  const graph = timeline || semantic;
+  const evidence = currentEvidenceView != null;
+  const semanticAvailable = timelineHasSemantic();
+  const semanticButton = $('#tm-view [data-view="semantic"]');
+  semanticButton.disabled = currentTimeline != null && !semanticAvailable;
+  semanticButton.title = semanticAvailable || currentTimeline == null
+    ? "causal relationships between model calls"
+    : "this episode has no semantic relationships";
+  $("#trace-modal").classList.toggle("semantic-view", semantic);
+  $("#tm-semantic-nav").hidden = !semantic;
+  if (semantic) renderSemanticEpisodeNav();
+  $("#tm-tabs-row").hidden = graph || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
+  $("#tm-messages").hidden = graph;
+  $("#tm-timeline").hidden = !graph;
+  $("#trace-view-mode").hidden = graph || evidence || replaying;
+  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying;
+  $("#tm-collapse").hidden = graph || evidence || replaying;
+  $("#tm-expand").hidden = graph || evidence || replaying;
+  if (!semantic) {
+    semanticSelection = null;
+    $("#sg-inspector").hidden = true;
+  }
   setActive("#tm-view", "view", traceView);
   if (timeline) renderTimeline();
+  else if (semantic) renderSemanticGraph();
+  else if (replaying) renderReplay(trace, branches);
   else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
@@ -3201,7 +4672,7 @@ async function resolveCitation(c, cache) {
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
   for (const key of ["prefix", "suffix"])
     if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
-  const base = `/api/runs/${encodeURIComponent(run)}/rollouts/${c.step}/${c.kind}/${c.subset}`;
+  const base = `/api/runs/${encodeURIComponent(run)}/episodes`;
   const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
   if (!cache.summaries.has(summaryKey))
     cache.summaries.set(
@@ -3333,11 +4804,11 @@ const MAX_PENDING_VIEW_COMMANDS = 32;
 function primeTraceCommand(cmd) {
   const traces = state.traces;
   if (cmd.step != null) traces.step = cmd.step;
-  if (cmd.kind) traces.kind = cmd.kind;
-  if (cmd.subset) {
-    traces.subset = cmd.subset;
-    traces.preferred = cmd.subset;
-  }
+  // a command naming a kind narrows to it; both stay on otherwise
+  if (cmd.kind) traces.kinds = { train: cmd.kind === "train", eval: cmd.kind === "eval" };
+  // a citation addressed to a step wants the cohort view; `all` is the stream
+  if (cmd.subset) traces.mode = cmd.subset === "effective" ? "step" : "stream";
+  traces.bin = null;
   traces.env = "";
   traces.errorsOnly = false;
   if (cmd.highlight?.length) traces.viewMode = "messages";
@@ -3391,7 +4862,7 @@ function applyViewCommand(cmd) {
 async function applyTraceCommand(cmd) {
   const traces = state.traces;
   if (!traces.loaded) await initTraces();
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   await loadEpisodes();
   if (cmd.line == null && cmd.episode == null) return;
@@ -3402,8 +4873,8 @@ async function applyTraceCommand(cmd) {
   pendingHighlight = {
     run: state.run,
     step: traces.step,
-    kind: traces.kind,
-    subset: traces.subset,
+    kind: activeKind(),
+    subset: traces.mode === "step" ? "effective" : "all",
     line,
     trace: cmd.trace ?? 0,
     highlights: (cmd.highlight || []).filter((h) => h && h.node != null),
@@ -3514,17 +4985,44 @@ const dressedSelects = new Set();
 
 function rebuildSelectMenu(wrap) {
   const select = wrap.querySelector("select");
-  wrap.querySelector(".dd-menu").innerHTML = [...select.options]
-    .map((o, i) => `<div class="dd-opt${o.selected ? " active" : ""}${o.disabled ? " disabled" : ""}" data-i="${i}">${esc(o.textContent)}</div>`)
-    .join("");
+  // an option can carry the reason it has nothing to offer: it greys, keeps its
+  // place, and says why beside its name
+  const note = select.dataset.note ? `<div class="dd-note">${esc(select.dataset.note)}</div>` : "";
+  wrap.querySelector(".dd-menu").innerHTML =
+    note +
+    [...select.options]
+      .map((o, i) => {
+        const reason = o.dataset.reason;
+        const classes = ["dd-opt", o.selected && "active", o.disabled && "disabled", reason && "unavailable"];
+        return (
+          `<div class="${classes.filter(Boolean).join(" ")}" data-i="${i}"${o.title ? ` title="${esc(o.title)}"` : ""}>` +
+          `<span>${esc(o.textContent)}</span>` +
+          (reason ? `<span class="dd-why">${esc(reason)}</span>` : "") +
+          `</div>`
+        );
+      })
+      .join("");
 }
 
 function syncDressedSelects() {
   for (const select of dressedSelects) {
     const wrap = select.closest(".dd-wrap");
     if (!wrap) continue;
-    wrap.querySelector(".dd-btn span").textContent = select.selectedOptions[0]?.textContent ?? "";
-    wrap.querySelector(".dd-btn").disabled = select.disabled;
+    const chosen = select.selectedOptions[0]?.textContent ?? "";
+    // a labelled select reads like the filter button: an icon, its name, its value
+    const label = select.dataset.label;
+    const span = wrap.querySelector(".dd-btn span");
+    // a labelled select names itself and leaves its value to the menu, where the
+    // active option is already marked - the same as the filter button
+    if (label) span.innerHTML = `<b class="dd-label">${esc(label)}</b>`;
+    else span.textContent = chosen;
+    const btn = wrap.querySelector(".dd-btn");
+    btn.disabled = select.disabled;
+    // a chosen option with nothing to offer greys the trigger too, and hovering it
+    // gives the reason without opening the menu
+    const chosenOption = select.selectedOptions[0];
+    btn.classList.toggle("unavailable", !!chosenOption?.dataset.reason);
+    btn.title = chosenOption?.dataset.reason ? chosenOption.title : "";
   }
 }
 
@@ -3537,6 +5035,7 @@ function dressSelect(select) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn dd-btn";
+  if (select.dataset.label) btn.insertAdjacentHTML("beforeend", SORT_SVG);
   btn.appendChild(document.createElement("span"));
   const menu = document.createElement("div");
   menu.className = "dd-menu dd-optlist";
@@ -3559,10 +5058,31 @@ function dressSelect(select) {
 function syncTraceFilterControls() {
   const t = state.traces;
   for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
-  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = `${t.sort}:${t.order}`;
+  for (const sel of ["#trace-kinds", "#tm-kinds"])
+    for (const button of document.querySelectorAll(`${sel} button`)) {
+      button.classList.toggle("on", !!t.kinds[button.dataset.kind]);
+      // note a kind this run never produced, but leave it toggleable: disabling it
+      // would strand the toggle off the moment someone turned it off
+      const absent = t.runKinds && !t.runKinds.includes(button.dataset.kind);
+      button.classList.toggle("absent", !!absent);
+      button.title = absent ? `no ${button.dataset.kind} episodes in this run` : "";
+    }
+  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"])
-    $(sel).classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  for (const sel of ["#trace-sort", "#tm-sort"])
+    $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
+  const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
+  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
+  const badge = $("#trace-filter-count");
+  badge.hidden = !active;
+  badge.textContent = active;
+  // the stream is not addressed by step, so its controls go away in that mode
+  $("#step-bar").hidden = t.mode !== "step";
+  $("#tm-stephead").hidden = t.mode !== "step";
+  syncTraceChart();
+  $("#trace-clear-bin").hidden = !t.bin;
+  setActive("#trace-mode", "mode", t.mode);
+  setActive("#tm-mode", "mode", t.mode);
   syncDressedSelects();
 }
 
@@ -3782,27 +5302,15 @@ $("#step-blocks").addEventListener("pointerover", (e) => {
   const cell = e.target.closest(".sb-cell");
   if (cell) selectStepByIndex(+cell.dataset.i);
 });
-$("#step-prev").addEventListener("click", () => {
-  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
-  selectStepByIndex(idx - 1);
-});
-$("#step-next").addEventListener("click", () => {
-  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
-  selectStepByIndex(idx + 1);
-});
-async function setTraceKind(kind, inModal = false) {
-  state.traces.kind = kind;
-  adjustKindSubset();
+$("#step-prev").addEventListener("click", () => shiftStep(-1));
+$("#step-next").addEventListener("click", () => shiftStep(1));
+async function setTraceMode(mode, inModal = false) {
+  const traces = state.traces;
+  traces.mode = mode;
+  traces.bin = null;
+  clampStep();
   await loadEpisodes();
-  savePrefs();
-  if (inModal) await reopenFirstEpisode();
-}
-
-async function setTraceSubset(subset, inModal = false) {
-  state.traces.preferred = subset;
-  state.traces.subset = subset;
-  adjustKindSubset();
-  await loadEpisodes();
+  if (mode === "stream") await loadHistogram();
   savePrefs();
   if (inModal) await reopenFirstEpisode();
 }
@@ -3828,36 +5336,78 @@ async function reopenFirstEpisode() {
   $("#tm-meta").innerHTML = "";
 }
 
-for (const [sel, inModal] of [["#trace-kind", false], ["#tm-kind", true]])
+for (const [sel, inModal] of [["#trace-mode", false], ["#tm-mode", true]])
   document.querySelectorAll(`${sel} button`).forEach((b) =>
     b.addEventListener("click", () => {
-      if (b.disabled || b.dataset.kind === state.traces.kind) return;
-      setTraceKind(b.dataset.kind, inModal);
-    })
-  );
-for (const [sel, inModal] of [["#trace-subset", false], ["#tm-subset", true]])
-  document.querySelectorAll(`${sel} button`).forEach((b) =>
-    b.addEventListener("click", () => {
-      if (b.dataset.subset === state.traces.subset) return;
-      setTraceSubset(b.dataset.subset, inModal);
+      if (b.dataset.mode === state.traces.mode) return;
+      setTraceMode(b.dataset.mode, inModal);
     })
   );
 for (const sel of ["#trace-env", "#tm-env"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.env = e.target.value;
     await loadEpisodes();
+    await loadHistogram();
     await refreshModalList();
   });
+for (const sel of ["#trace-kinds", "#tm-kinds"])
+  document.querySelectorAll(`${sel} button`).forEach((b) =>
+    b.addEventListener("click", async () => {
+      const kinds = state.traces.kinds;
+      const kind = b.dataset.kind;
+      const other = kind === "train" ? "eval" : "train";
+      if (kinds[kind] && !kinds[other]) return; // never leave both off
+      kinds[kind] = !kinds[kind];
+      await loadEpisodes();
+      await loadHistogram();
+      savePrefs();
+      await refreshModalList();
+    })
+  );
+$("#trace-clear-bin").addEventListener("click", async () => {
+  state.traces.bin = null;
+  await loadEpisodes();
+  renderHistogram();
+});
+$("#trace-hist").addEventListener("mousemove", (e) => {
+  const bar = e.target.closest(".hbar");
+  const tip = $("#hist-tip");
+  if (!bar) {
+    tip.hidden = true;
+    return;
+  }
+  tip.innerHTML = histTipHtml(+bar.dataset.t, +bar.dataset.count, state.traces.hist?.bin ?? 60);
+  tip.hidden = false;
+  const host = $("#trace-chart").getBoundingClientRect();
+  const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${e.clientY - host.top + 14}px`;
+});
+$("#trace-hist").addEventListener("mouseleave", () => {
+  $("#hist-tip").hidden = true;
+});
+// a bar narrows the table to the episodes that finished in it
+$("#trace-hist").addEventListener("click", async (e) => {
+  const bar = e.target.closest(".hbar");
+  if (!bar) return;
+  const start = +bar.dataset.t;
+  const width = state.traces.hist?.bin ?? 60;
+  const bin = [start, start + width];
+  state.traces.bin = state.traces.bin && state.traces.bin[0] === start ? null : bin;
+  await loadEpisodes();
+  renderHistogram();
+});
 for (const sel of ["#trace-errors", "#tm-errors"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.errorsOnly = e.target.checked;
     await loadEpisodes();
+    await loadHistogram();
     savePrefs();
     await refreshModalList();
   });
 for (const sel of ["#trace-sort", "#tm-sort"])
   $(sel).addEventListener("change", async (e) => {
-    [state.traces.sort, state.traces.order] = e.target.value.split(":");
+    state.traces.sorts[state.traces.mode] = e.target.value;
     await loadEpisodes();
     savePrefs();
     await refreshModalList();
@@ -3877,20 +5427,67 @@ function rafThrottle(fn) {
     });
   };
 }
+// the window follows the scroll, and the next page is pulled as the reader nears the end
 $("#episode-table-wrap").addEventListener(
   "scroll",
-  rafThrottle(() => state.traces.episodes?.length && renderEpisodeRows())
+  rafThrottle(() => {
+    const wrap = $("#episode-table-wrap");
+    if (state.traces.episodes?.length) renderEpisodeRows();
+    if (wrap.scrollTop + wrap.clientHeight > wrap.scrollHeight - 400) loadMoreEpisodes();
+  })
 );
-$("#tm-list").addEventListener("scroll", rafThrottle(renderRolloutWindow));
+$("#tm-list").addEventListener(
+  "scroll",
+  rafThrottle(() => {
+    renderRolloutWindow();
+    const list = $("#tm-list");
+    if (list.scrollTop + list.clientHeight > list.scrollHeight - 300) loadMoreEpisodes();
+  })
+);
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#tm-back").addEventListener("click", () => {
   closeDrawer();
   activateTab("report");
 });
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
+function shiftStep(delta) {
+  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
+  selectStepByIndex(idx < 0 ? 0 : idx + delta);
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
-  if ($("#trace-modal").hidden || e.target.matches("input, select, textarea")) return;
+  if (
+    !$("#trace-modal").hidden &&
+    traceView === "replay" &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    e.key.toLowerCase() === "t" &&
+    !e.target.matches("input[type=text], input[type=search], textarea")
+  ) {
+    e.preventDefault();
+    setReplayThinking(!replay?.showThinking);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "Home") {
+    e.preventDefault();
+    setReplayFollow(false);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "End") {
+    e.preventDefault();
+    setReplayFollow(true);
+    return;
+  }
+  if (e.target.matches("input, select, textarea")) return;
+  if ($("#trace-modal").hidden) {
+    // the step bar walks with the arrow keys, like its ‹ › buttons
+    if (state.tab !== "traces" || state.traces.mode !== "step") return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); shiftStep(-1); }
+    if (e.key === "ArrowRight") { e.preventDefault(); shiftStep(1); }
+    return;
+  }
   if (e.key === "ArrowDown") { e.preventDefault(); stepRollout(1); }
   if (e.key === "ArrowUp") { e.preventDefault(); stepRollout(-1); }
   if (e.key === "ArrowLeft") { e.preventDefault(); modalStep(-1); }
@@ -3932,30 +5529,30 @@ $("#trace-view-mode").addEventListener("click", async (e) => {
 });
 $("#tm-view").addEventListener("click", (e) => {
   const button = e.target.closest("[data-view]");
-  if (button && button.dataset.view !== traceView) setTraceView(button.dataset.view);
+  if (button && button.dataset.view !== traceView) {
+    setTraceView(button.dataset.view);
+  }
 });
-$("#tm-timeline").addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-tl-trace]");
-  if (!target) return;
-  e.stopPropagation();
-  currentTraceIdx = +target.dataset.tlTrace;
-  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
-  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+
+async function openTimelineNodeInTranscript(traceIndex, node, call) {
+  currentTraceIdx = traceIndex;
   if (node != null) {
     const trace = currentEpisode?.traces?.[currentTraceIdx];
     const branches = trace ? traceBranches(trace) : [];
     const branch = branches.findIndex((path) => path.includes(node));
     currentBranchIdx = branch >= 0 ? branch : -1;
+    currentEvidenceView = null;
     pendingTimelineNode = node;
     pendingTimelineCall = call;
     state.traces.viewMode = "messages";
   } else {
     currentBranchIdx = 0;
+    currentEvidenceView = null;
     pendingTimelineNode = null;
     pendingTimelineCall = call;
     if (call != null) state.traces.viewMode = "messages";
   }
-  await setTraceView("transcript");
+  await setTraceView("transcript", { persist: false });
   requestAnimationFrame(() => {
     const entry =
       pendingTimelineCall == null
@@ -3965,10 +5562,73 @@ $("#tm-timeline").addEventListener("click", async (e) => {
         : $(`#tm-messages [data-call-index="${pendingTimelineCall}"]`);
     entry?.scrollIntoView({ block: "center" });
     const details = entry?.closest("details");
-    if (details) details.open = true;
+    if (details) {
+      details.open = true;
+      clearSemanticTranscriptOrigin();
+      details.classList.add("semantic-origin");
+      semanticTranscriptOrigin = details;
+    }
     pendingTimelineNode = null;
     pendingTimelineCall = null;
   });
+}
+
+document.addEventListener("click", () => clearSemanticTranscriptOrigin());
+
+$("#tm-timeline").addEventListener("click", async (e) => {
+  const runControl = e.target.closest("[data-sg-collapse-run]");
+  if (runControl) {
+    const key = runControl.dataset.sgCollapseRun;
+    if (semanticExpandedRuns.has(key)) semanticExpandedRuns.delete(key);
+    else semanticExpandedRuns.add(key);
+    renderSemanticGraph();
+    return;
+  }
+  const semanticNode = e.target.closest(".sg-turn");
+  if (semanticNode) {
+    timelineTip.hidden = true;
+    const event = semanticNodeDetails.get(semanticNode.dataset.sgKey);
+    if (event) openSemanticCallInspector(event);
+    return;
+  }
+  const semanticScope = e.target.closest("[data-sg-scope]");
+  if (semanticScope) {
+    timelineTip.hidden = true;
+    const scope = semanticScopeDetails.get(semanticScope.dataset.sgScope);
+    if (scope) openSemanticScopeInspector(scope);
+    return;
+  }
+  const target = e.target.closest("[data-tl-trace]");
+  if (!target) return;
+  e.stopPropagation();
+  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+  await openTimelineNodeInTranscript(+target.dataset.tlTrace, node, call);
+});
+let timelineResizeFrame = null;
+window.addEventListener("resize", () => {
+  if (traceView !== "semantic") return;
+  if (timelineResizeFrame != null) cancelAnimationFrame(timelineResizeFrame);
+  timelineResizeFrame = requestAnimationFrame(() => {
+    timelineResizeFrame = null;
+    renderSemanticGraph();
+  });
+});
+$("#tm-episode-prev").addEventListener("click", () => stepRollout(-1));
+$("#tm-episode-next").addEventListener("click", () => stepRollout(1));
+$("#sg-inspector-close").addEventListener("click", () => {
+  const hadSelection = semanticSelection != null;
+  semanticSelection = null;
+  $("#sg-inspector").hidden = true;
+  if (hadSelection && traceView === "semantic") renderSemanticGraph();
+});
+$("#sg-open-transcript").addEventListener("click", () => {
+  if (semanticSelection?.kind !== "call") return;
+  openTimelineNodeInTranscript(
+    semanticSelection.traceIndex,
+    semanticSelection.nodeIndex,
+    semanticSelection.callIndex
+  );
 });
 const timelineTip = document.createElement("div");
 timelineTip.className = "tl-tooltip";
@@ -4001,11 +5661,15 @@ $("#tm-timeline").addEventListener("mouseout", (e) => {
 });
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
-  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
+  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; currentEvidenceView = null; renderEpisode(); }
 });
 $("#tm-branch-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-branch]");
-  if (btn) { currentBranchIdx = +btn.dataset.branch; renderEpisode(); }
+  if (btn) { currentBranchIdx = +btn.dataset.branch; currentEvidenceView = null; renderEpisode(); }
+});
+$("#tm-evidence-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-evidence]");
+  if (btn) { currentEvidenceView = btn.dataset.evidence; renderEpisode(); }
 });
 $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
@@ -4018,7 +5682,30 @@ $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered]");
+  if (e.target.closest("#replay-top")) {
+    setReplayFollow(false);
+    return;
+  }
+  if (e.target.closest("#replay-live")) {
+    setReplayFollow(true);
+    return;
+  }
+  if (e.target.closest("#replay-play")) {
+    replay?.playing ? stopReplay() : playReplay();
+    paintReplay(true);
+    return;
+  }
+  if (e.target.closest("#replay-restart")) {
+    if (!replay) return;
+    stopReplay();
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    playReplay();
+    return;
+  }
+  const btn = e.target.closest(
+    "[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered], [data-copy-task], [data-copy-judge]"
+  );
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
@@ -4027,6 +5714,16 @@ $("#tm-messages").addEventListener("click", (e) => {
   if (btn.dataset.copy != null) {
     const node = trace.nodes?.[+btn.dataset.copy];
     if (node) copyText(messageText(node.message), btn);
+    return;
+  }
+  if (btn.dataset.copyTask != null) {
+    const value = trace.task?.data?.[btn.dataset.copyTask];
+    if (value != null) copyText(evidenceText(value), btn);
+    return;
+  }
+  if (btn.dataset.copyJudge != null) {
+    const record = trace.info?.judge_calls?.[+btn.dataset.copyJudge];
+    if (record) copyText(JSON.stringify(record, null, 2), btn);
     return;
   }
   const tools = normalizedTools(trace.tools);
@@ -4048,6 +5745,54 @@ $("#tm-messages").addEventListener("click", (e) => {
     return copyText(JSON.stringify(ids), btn);
   }
 });
+$("#tm-messages").addEventListener(
+  "scroll",
+  (e) => {
+    if (!e.target.matches?.("#replay-output") || !replay) return;
+    const atBottom = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 24;
+    replay.followOutput = atBottom;
+    $("#replay-top")?.classList.toggle("active", !atBottom);
+    $("#replay-live")?.classList.toggle("active", atBottom);
+  },
+  true,
+);
+$("#tm-messages").addEventListener("input", (e) => {
+  if (!e.target.matches("#replay-progress") || !replay) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.elapsed = replay.duration * (+e.target.value / 1000);
+  replay.lastFrame = -1;
+  paintReplay(true);
+  if (wasPlaying) playReplay();
+});
+$("#tm-messages").addEventListener("change", (e) => {
+  if (!replay) return;
+  if (e.target.matches("#replay-show-thinking")) {
+    setReplayThinking(e.target.checked);
+    return;
+  }
+  if (e.target.matches("#replay-skip-inference")) {
+    const wasPlaying = replay.playing;
+    stopReplay();
+    replay.skipInference = e.target.checked;
+    Object.assign(replay, replayEvents(replay.trace, replay.branches, replay.skipInference));
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    const badge = $("#replay-timing-badge");
+    if (badge)
+      badge.textContent = replay.skipInference
+        ? "tool timing · inference skipped"
+        : replay.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace";
+    paintReplay(true);
+    if (wasPlaying) playReplay();
+    return;
+  }
+  if (!e.target.matches("#replay-speed")) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.speed = +e.target.value;
+  if (wasPlaying) playReplay();
+});
 $("#tm-meta").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copytext]");
   if (btn) copyText(btn.dataset.copytext, btn);
@@ -4063,6 +5808,12 @@ function resizeCharts() {
   }
 }
 window.addEventListener("resize", resizeCharts);
+// The histogram is an SVG drawn to a measured width, so it has to be redrawn whenever
+// that width changes. Observing the host covers every way it can: the first paint
+// before the tab is laid out, switching to the traces tab, and resizing the window.
+new ResizeObserver(() => {
+  if (state.traces.histWidth !== Math.max(320, $("#trace-hist").clientWidth)) renderHistogram();
+}).observe($("#trace-hist"));
 
 function savePrefs() {
   localStorage.setItem(
@@ -4077,9 +5828,11 @@ function savePrefs() {
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
-      traceSort: `${state.traces.sort}:${state.traces.order}`,
+      traceMode: state.traces.mode,
+      traceSortStream: state.traces.sorts.stream,
+      traceSortStep: state.traces.sorts.step,
       traceViewMode: state.traces.viewMode,
-      traceView,
+      traceView: preferredTraceView,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,
@@ -4144,7 +5897,8 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
+  const signal = prefs.tokenSignal ?? "";
+  $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));

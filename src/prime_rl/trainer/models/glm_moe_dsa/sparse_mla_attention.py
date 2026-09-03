@@ -10,11 +10,9 @@ from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import gather_for_cp
 
 try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
-    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
 except ImportError:
-    sparse_mla_fwd_interface = None  # type: ignore
-    sparse_mla_bwd = None  # type: ignore
+    sparse_mla = None  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -34,23 +32,6 @@ class SparseMlaAttentionArgs:
     index_topk: int
     use_index_cache: bool = False
     skip_topk: bool = False
-
-
-class _SparseMLA(torch.autograd.Function):
-    """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
-
-    @staticmethod
-    def forward(ctx, q, kv, indices, sm_scale):
-        out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
-        ctx.save_for_backward(q, kv, out, indices, lse)
-        ctx.sm_scale = sm_scale
-        return out
-
-    @staticmethod
-    def backward(ctx, do):
-        q, kv, out, indices, lse = ctx.saved_tensors
-        dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
-        return dq, dkv, None, None
 
 
 def apply_rope_interleave_single(
@@ -177,7 +158,7 @@ class GlmMoeDsaAttention(nn.Module):
     def cp_enabled(self) -> bool:
         return self._cp_world_size > 1
 
-    def attn_projections(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
         k_compressed, k_rope = compressed_kv.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
@@ -224,15 +205,6 @@ class GlmMoeDsaAttention(nn.Module):
         assert sparse_kv.shape[1] == s_full + 1
         return sparse_q, sparse_kv, w_v
 
-    def _mla_unabsorb(self, out: torch.Tensor, w_v: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("bshk,hdk->bshd", out, w_v)
-
-    def output_proj(self, attn_output: torch.Tensor, w_v: torch.Tensor) -> torch.Tensor:
-        attn_output = self._mla_unabsorb(attn_output, w_v)
-        batch_size, total_tokens = attn_output.shape[:2]
-        attn_output = attn_output.reshape(batch_size, total_tokens, -1)
-        return self.o_proj(attn_output)
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -241,7 +213,7 @@ class GlmMoeDsaAttention(nn.Module):
         ke: torch.Tensor | None = None,
         cached_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        q_latent, k_compressed_normed, k_rope = self.attn_projections(hidden_states)
+        q_latent, k_compressed_normed, k_rope = self.mla_latents(hidden_states)
 
         if self.cp_enabled:
             k_compressed_normed = gather_for_cp(k_compressed_normed, self._cp_group)
@@ -268,6 +240,9 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
+        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
+        out = torch.einsum("bshk,hdk->bshd", out, w_v)
+        batch_size, total_tokens = out.shape[:2]
+        out = out.reshape(batch_size, total_tokens, -1)
         cached_indices = indices if self.use_index_cache else None
-        return self.output_proj(out, w_v), cached_indices
+        return self.o_proj(out), cached_indices

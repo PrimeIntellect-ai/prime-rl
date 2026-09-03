@@ -158,7 +158,15 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     only the master keeping everything, each rank copies its owned slice to CPU —
     so the D2H traffic and the shard writes are split across ranks. The copies are
     plain blocking transfers; no stream-ordering assumptions.
+
+    Parameters the model reports via ``keep_in_fp32_for_weight_transfer`` skip the
+    downcast. Those lists exist because the inference engine's kernels require fp32
+    for them: vLLM's DeepSeek V4 hyper-connection kernels, for instance, assert
+    ``fn``/``base``/``scale`` are fp32, and its loader silently casts a bf16 tensor
+    back up rather than failing, so a downcast here shows up as lost mantissa in a
+    Sinkhorn normalization rather than as an error.
     """
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
@@ -169,7 +177,8 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
         for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
-                value = cast(DTensor, value.to(dtype)).full_tensor()
+                target_dtype = torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else dtype
+                value = cast(DTensor, value.to(target_dtype)).full_tensor()
             if owners[key] != world.rank:
                 continue
             partial[resolve_fqn(model, key)] = value.to("cpu")

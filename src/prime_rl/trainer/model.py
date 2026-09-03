@@ -15,7 +15,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
@@ -33,21 +32,18 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
+from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.checkpointing import (
-    get_supported_targets,
-    set_selective_activation_checkpointing,
-    supports_selective_activation_checkpointing,
-)
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
@@ -686,6 +682,18 @@ def get_model(
             "but this architecture resolved to model.impl='hf'."
         )
 
+    # Past the check above, cp > 1 implies impl_to_use == "custom", so the model class always
+    # resolves. Queried here so a misconfigured job dies at setup rather than at the first forward.
+    if config.cp > 1:
+        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        support = cp_model_cls.cp_support(model_config)
+        if config.cp_style not in support.styles:
+            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
+            raise ValueError(
+                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
+                f"({support.reason}); {supported}."
+            )
+
     if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
         raise ValueError(
             "VLM training requires a registered custom PrimeRL VLM implementation; "
@@ -883,10 +891,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
     if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
+        last_transformer_block = reversed_transformer_blocks[0]
+        prefetch_modules = [last_transformer_block]
+        last_mlp = getattr(last_transformer_block, "mlp", None)
+        if last_mlp is not None and isinstance(last_mlp, MoE):
+            prefetch_modules.append(last_mlp.experts)
+            if isinstance(last_mlp.router, FSDPModule):
+                prefetch_modules.append(last_mlp.router)
+
         if shard_norm_and_lm_head:
-            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
         else:
-            model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.set_modules_to_backward_prefetch(prefetch_modules)
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
@@ -1094,50 +1110,20 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    logger = get_logger()
     language_model = get_language_model(model)
-    target_list = sorted(frozenset(ac_config.targets))
-    selective_layers = 0
-    full_layers = 0
-    fallback_layer_types: set[str] = set()
-    model_supported_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config)
+    checkpointed_layers = 0
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
-        if ac_config.mode == "selective" and supports_selective_activation_checkpointing(transformer_block):
-            model_supported_targets.update(get_supported_targets(transformer_block))
-            set_selective_activation_checkpointing(transformer_block, target_list)
-            selective_layers += 1
-        else:
-            if ac_config.mode == "selective":
-                fallback_layer_types.add(type(transformer_block).__name__)
-            transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-            full_layers += 1
+        language_model.layers.register_module(layer_name, wrap_block(transformer_block))
+        checkpointed_layers += 1
 
-        language_model.layers.register_module(layer_name, transformer_block)
-
-    if ac_config.mode == "selective":
-        unsupported_targets = frozenset(target_list) - model_supported_targets
-        if unsupported_targets:
-            raise ValueError(
-                f"Selective activation checkpoint targets {sorted(unsupported_targets)} are not supported "
-                f"by the selected model layers. Supported targets across the model: {sorted(model_supported_targets)}"
-            )
-        if fallback_layer_types:
-            logger.warning(
-                "Selective activation checkpointing is not supported for layer types "
-                f"{sorted(fallback_layer_types)}; falling back to full checkpointing for those layers."
-            )
-        logger.info(
-            "Applied selective activation checkpointing "
-            f"(freq={ac_config.freq}, targets={target_list}, selective_layers={selective_layers}, "
-            f"full_fallback_layers={full_layers})"
-        )
-        return
-
-    logger.info(f"Applied activation checkpointing (freq={ac_config.freq})")
+    get_logger().info(
+        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+    )
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
@@ -1356,7 +1342,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    # Opaque model-family adapter output.
+    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1369,6 +1355,11 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+
+    # Sampling masks are consumed by the injected prime lm_head; HF
+    # forwards don't know the kwarg, so only pass it when present.
+    if sampling_mask is not None:
+        kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

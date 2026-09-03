@@ -30,20 +30,13 @@ class GCConfig(BaseConfig):
 
 class ActivationCheckpointConfig(BaseConfig):
     mode: Literal["full", "selective"] = "full"
-    """``full`` checkpoints whole transformer blocks; ``selective`` checkpoints only the subcomponents listed in ``targets`` inside supported custom decoder layers."""
+    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains selected operations."""
 
     freq: int = Field(1, ge=1)
     """Apply activation checkpointing to every N layers."""
 
-    targets: list[str] = ["norm"]
-    """Selective checkpoint targets. ``norm`` checkpoints every norm module inside selected layers. ``attn_proj`` checkpoints projection-side attention work outside the kernel (input/output projections, attention-local norms, RoPE, gating, model-specific MLA projection helpers). ``mlp`` checkpoints the entire dense MLP forward (not for MoE). ``mla_up_proj`` checkpoints MLA Q/KV up-projection where supported. ``linear_attn`` checkpoints non-softmax token mixers (NemotronH Mamba, Qwen3.5-MoE GatedDeltaNet, AFMoE sliding-window attention)."""
-
-    @model_validator(mode="after")
-    def validate_selective_targets(self):
-        self.targets = list(dict.fromkeys(self.targets))
-        if self.mode == "selective" and not self.targets:
-            raise ValueError("Selective activation checkpointing requires at least one target.")
-        return self
+    targets: list[str] | None = None
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -345,12 +338,6 @@ class ModelConfig(BaseModelConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
-        return self
-
-    @model_validator(mode="after")
-    def selective_ac_only_with_custom_impl(self):
-        if self.ac is not None and self.ac.mode == "selective" and self.impl not in ("custom", "auto"):
-            raise ValueError("Selective activation checkpointing requires model.impl='custom' or 'auto'")
         return self
 
     @model_validator(mode="after")
@@ -680,9 +667,6 @@ class TrainerConfig(BaseConfig):
 
     metrics_server: MetricsServerConfig | None = None
     """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
-
-    enable_token_export: bool = False
-    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""

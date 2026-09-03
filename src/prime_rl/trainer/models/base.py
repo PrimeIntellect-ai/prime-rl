@@ -1,5 +1,19 @@
+from dataclasses import dataclass
+from typing import Literal
+
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
+
+CPStyle = Literal["ring", "ulysses"]
+ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
+
+
+@dataclass(frozen=True)
+class CPSupport:
+    """Which context-parallel styles an architecture can train under, and why not the rest."""
+
+    styles: frozenset[CPStyle]
+    reason: str = ""
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -10,6 +24,16 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
     after loading with meta device.
     """
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        """CP styles this architecture supports, given its config.
+
+        Softmax attention runs through the shared ``FlashAttention._compute_attention``, which both
+        ``substitute_ring_attn`` and ``substitute_ulysses_attn`` rebind, so the default is both styles.
+        Architectures whose attention sits outside that path declare their own support.
+        """
+        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -145,4 +169,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["PreTrainedModelPrimeRL"]
+__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]

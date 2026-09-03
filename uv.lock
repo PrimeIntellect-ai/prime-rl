@@ -45,7 +45,6 @@ members = [
     "alphabet-sort",
     "apex-shortlist",
     "arxivmath",
-    "automationbench-env",
     "bfcl-v3",
     "browsecomp",
     "browsecomp-plus",
@@ -137,6 +136,7 @@ members = [
     "wordle",
 ]
 overrides = [
+    { name = "apache-tvm-ffi", specifier = "==0.1.11" },
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.6.2" },
     { name = "openenv-core" },
@@ -183,45 +183,33 @@ name = "aime24"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/aime24" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "aime25"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/aime25" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "aime26"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/aime26" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "aiofiles"
@@ -322,21 +310,20 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.104.1"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "distro" },
     { name = "docstring-parser" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jiter" },
     { name = "pydantic" },
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/c7/7a655b948916f777354648ce979f68b94d5b8dbdb5f61fed1f37fad9378c/anthropic-0.104.1.tar.gz", hash = "sha256:17362b6c45f527afcc9b0fdf62011ffd359726ab2ebcb1978ea0cc41bd8d8d40", size = 850081, upload-time = "2026-05-22T15:36:57.432Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/aa/4978e58035bd6c638c7b483450a68b7ef2d732ab78885e27bb9db0cff1a2/anthropic-1.0.0.tar.gz", hash = "sha256:42be3c97604af7252c5898413aee076ace6c46e9bca0d0d90ceb77c7d3719027", size = 1077769, upload-time = "2026-08-20T19:59:00.565Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/12/d9ab42790494d7c428391a46cd28492395566a6a8ccb138d681978594455/anthropic-0.104.1-py3-none-any.whl", hash = "sha256:35c8cb456f5a4405aafe1f10f03f6fcc54fa51fa8ec01d655cc4b437d120e9b7", size = 832996, upload-time = "2026-05-22T15:36:59.519Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/5b/db4a854aebf5d33a5ab714c46af6eb85ee44f390ed29b7b325c00b9f11ed/anthropic-1.0.0-py3-none-any.whl", hash = "sha256:32dd52e9e1d774393b27182f451398ba4262287a4d0eab30887f89f1481b3ae4", size = 1171725, upload-time = "2026-08-20T19:58:58.725Z" },
 ]
 
 [[package]]
@@ -381,15 +368,11 @@ name = "apex-shortlist"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/apex_shortlist" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "appdirs"
@@ -423,15 +406,11 @@ name = "arxivmath"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/arxivmath" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "astor"
@@ -461,46 +440,25 @@ wheels = [
 ]
 
 [[package]]
-name = "automation-bench"
-version = "1.0.5"
-source = { git = "https://github.com/mikasenghaas/AutomationBench.git?rev=6f0e683#6f0e6834930cf6906ed932e9c5b716206def40d7" }
-dependencies = [
-    { name = "anthropic" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "rich" },
-    { name = "verifiers" },
-]
-
-[[package]]
-name = "automationbench-env"
-version = "0.1.0"
-source = { editable = "deps/prime-envs/environments/tool_use/automationbench_env" }
-dependencies = [
-    { name = "automation-bench" },
-    { name = "datasets" },
-    { name = "mcp" },
-    { name = "openai" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "automation-bench", git = "https://github.com/mikasenghaas/AutomationBench.git?rev=6f0e683" },
-    { name = "datasets" },
-    { name = "mcp", specifier = "<2" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.3.0" },
-]
-
-[[package]]
 name = "backoff"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
+name = "backports-zstd"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/f0/9ba1b05811aa5f5434f69768253129460a5744e1814f359efba39a01ce20/backports_zstd-1.7.0.tar.gz", hash = "sha256:1a967189c1822b6e85a2e550fdfc88a3272c17633ea0a4732dac5911a8034f2b", size = 1003722, upload-time = "2026-08-15T17:26:43.96Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/24/5556959c7d03bfee5ff14d7f07dd9bf8de737c69f81d823a32784ab39c34/backports_zstd-1.7.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:bab192b934fdf5a03df4752556d9c8af2d058163fdfbafd4a253cdfe25449a6f", size = 367666, upload-time = "2026-08-15T17:25:39.233Z" },
+    { url = "https://files.pythonhosted.org/packages/40/4b/820acbc2c1d1d945aedca0c0d22546a948630ffb186df523098fbd669a95/backports_zstd-1.7.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1c55e55e1e9dee312bc5e186386e6aa5207482a6d2242bd7c14709ded254f87f", size = 478240, upload-time = "2026-08-15T17:25:41.806Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/40/121917bd2671bc3f1507c25503c0554f0b52483edcca4e6210e6d22228df/backports_zstd-1.7.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:470895d0bcddc850766e593d1b26764fb138c2feed149f515a2627ef9587d54c", size = 496195, upload-time = "2026-08-15T17:25:45.503Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/a4/372c3dd3017c3f93cda0acbc282f8073b70efdc1b56d1fdeebe023660725/backports_zstd-1.7.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:132ba81fad59d44958b7d10da31545e7128c469cfbc2e268d0eaab96daa64175", size = 484276, upload-time = "2026-08-15T17:25:48.129Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/d0/e36c18c87a74421954502d123ff7027e0a63a7624dffa99ec0f7474deff9/backports_zstd-1.7.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:468b636ed365627b364c94be1c35a52858e13b5bc1fa3f068bbc71b1af65f3d7", size = 500735, upload-time = "2026-08-15T17:25:56.064Z" },
 ]
 
 [[package]]
@@ -618,7 +576,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.3.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -714,17 +672,11 @@ name = "browsecomp"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/browsecomp" }
 dependencies = [
-    { name = "httpx" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "browsecomp-plus"
@@ -732,9 +684,6 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/browsecomp_plus" }
 dependencies = [
     { name = "bm25s" },
-    { name = "datasets" },
-    { name = "mcp" },
-    { name = "openai" },
     { name = "pystemmer" },
     { name = "tokenizers" },
     { name = "verifiers" },
@@ -743,12 +692,9 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bm25s", specifier = ">=0.2.0" },
-    { name = "datasets" },
-    { name = "mcp", specifier = ">=1,<2" },
-    { name = "openai" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.3.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -873,16 +819,14 @@ name = "charxiv"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/charxiv" }
 dependencies = [
-    { name = "datasets" },
     { name = "pillow" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -936,17 +880,11 @@ name = "clbench"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/long_context/clbench" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "click"
@@ -1396,7 +1334,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "deepdiff"
@@ -1416,32 +1354,22 @@ name = "deepdive"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/deepdive" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "deepseek-prover"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/deepseek_prover" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "deprecation"
@@ -1481,7 +1409,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "verifiers", specifier = ">=0.3.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -1597,7 +1525,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -1642,17 +1570,19 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
+    { name = "mcp" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
-    { name = "verifiers", specifier = ">=0.3.0" },
+    { name = "mcp", specifier = ">=2,<3" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -1905,8 +1835,8 @@ wheels = [
 
 [[package]]
 name = "flash-attn-4"
-version = "4.0.0b20.dev2+g82d6441"
-source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441#82d6441eec5d4dfec120153db2c0145ae855a083" }
+version = "4.0.0b27"
+source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105#0251105a2fb19d2957484b7f023cd8c115286ced" }
 dependencies = [
     { name = "apache-tvm-ffi" },
     { name = "einops" },
@@ -1980,15 +1910,11 @@ name = "forth-lang"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "frontierscience"
@@ -1996,15 +1922,13 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/science/frontierscience" }
 dependencies = [
     { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -2055,15 +1979,11 @@ name = "general-agent"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/tool_use/general_agent" }
 dependencies = [
-    { name = "pydantic" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pydantic" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" },
-]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "genson"
@@ -2130,15 +2050,11 @@ name = "goedel-pset"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/goedel_pset" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "google-auth"
@@ -2205,32 +2121,22 @@ name = "gpqa"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/science/gpqa" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "graphwalks"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/graphwalks" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "greenlet"
@@ -2243,15 +2149,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/78/ac/5c5b959999b6f09c3026b5dfe171575bc3121c5236ce74f495096f25b203/greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:147b25a42e5ca5be3d42356e8f608b37af715a1c196e9bf9d1627f3341adfe1d", size = 621439, upload-time = "2026-08-10T13:40:49.391Z" },
     { url = "https://files.pythonhosted.org/packages/c8/8b/6acf112ed8aee499f25b4d6949820fb02ac950ff9c1f3d793bd5be0599f2/greenlet-3.5.5-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:27493374cff1d1b7919dc8126547f2aea582737e3046147b434b1e12de56389b", size = 1581342, upload-time = "2026-08-10T14:15:05.653Z" },
     { url = "https://files.pythonhosted.org/packages/b8/d7/734e5f198888876b42d7616ff6644c075baf6b8a2412deadd6b0e1b8b20c/greenlet-3.5.5-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:12e2ee66c2aba86133f10fd99d6a8856c6d351ffb7be0e4d52ef2cc5fbb705b2", size = 1645744, upload-time = "2026-08-10T13:40:30.353Z" },
-]
-
-[[package]]
-name = "griffelib"
-version = "2.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9d/82/74f4a3310cdabfbb10da554c3a672847f1ed33c6f61dd472681ce7f1fe67/griffelib-2.0.2.tar.gz", hash = "sha256:3cf20b3bc470e83763ffbf236e0076b1211bac1bc67de13daf494640f2de707e", size = 166461, upload-time = "2026-03-27T11:34:51.091Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/8c/c9138d881c79aa0ea9ed83cbd58d5ca75624378b38cee225dcf5c42cc91f/griffelib-2.0.2-py3-none-any.whl", hash = "sha256:925c857658fb1ba40c0772c37acbc2ab650bd794d9c1b9726922e36ea4117ea1", size = 142357, upload-time = "2026-03-27T11:34:46.275Z" },
 ]
 
 [[package]]
@@ -2396,18 +2293,14 @@ name = "hle"
 version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/knowledge/hle" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "pillow" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "pillow", specifier = ">=10.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -2439,6 +2332,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8", size = 85484, upload-time = "2025-04-24T22:06:22.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl", hash = "sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55", size = 78784, upload-time = "2025-04-24T22:06:20.566Z" },
+]
+
+[[package]]
+name = "httpcore2"
+version = "2.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h11" },
+    { name = "truststore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/ad/f4f0e57345f1870f3e8cb624e058d7eca6e5a27d33bcc3311d9b618734cd/httpcore2-2.12.0.tar.gz", hash = "sha256:9293522bba0aa7c4c8e9e3f040c16575bd8868e155a77fa30c7a9085a5eae648", size = 67548, upload-time = "2026-08-18T13:22:08.211Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/74/d370e55600d9bcfa0d9794b0166126d49291a3d2b20c268fc98c453a4948/httpcore2-2.12.0-py3-none-any.whl", hash = "sha256:7e04258ce01013d7d615e5b910a3b27fac937d7a95038227e79652b4ba3b4ceb", size = 83074, upload-time = "2026-08-18T13:22:05.854Z" },
 ]
 
 [[package]]
@@ -2482,6 +2388,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
+]
+
+[[package]]
+name = "httpx2"
+version = "2.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "httpcore2" },
+    { name = "idna" },
+    { name = "truststore" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/f8/579a8b51e42e38ee32647df9f08aa25643ae788e275cc625b199829c4671/httpx2-2.12.0.tar.gz", hash = "sha256:7631fe9887a8a2275f4a2540e053aa670fcc50742864a9ae7c66e609fdcf12cf", size = 100040, upload-time = "2026-08-18T13:22:09.086Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/95/411ba65569158e862368917aaf56597f3e5fa3b91b0502919638465a08f3/httpx2-2.12.0-py3-none-any.whl", hash = "sha256:cc8b6eecb8661c146b8f89a60e97456ee086e91a784ed31ac450c3a9e613dd36", size = 95427, upload-time = "2026-08-18T13:22:06.834Z" },
 ]
 
 [[package]]
@@ -2536,15 +2458,11 @@ name = "humaneval"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/code/humaneval" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "humming-kernels"
@@ -2589,16 +2507,14 @@ name = "i3-code"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/code/i3_code" }
 dependencies = [
-    { name = "datasets" },
     { name = "orjson" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "orjson" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -2606,20 +2522,16 @@ name = "i3-logic"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/reasoning/i3_logic" }
 dependencies = [
-    { name = "datasets" },
     { name = "markdown" },
-    { name = "math-verify" },
     { name = "sympy" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "markdown", specifier = ">=3.5.1" },
-    { name = "math-verify", specifier = ">=0.8.0" },
     { name = "sympy", specifier = ">=1.12.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -2627,30 +2539,22 @@ name = "i3-math"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/i3_math" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "i3-science"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/science/i3_science" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "identify"
@@ -2663,11 +2567,11 @@ wheels = [
 
 [[package]]
 name = "idna"
-version = "3.16"
+version = "3.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1a/88/bcf9709822fe69d02c2a6a77956c98ce6ea8ca8767a9aadcedc7eb6a2390/idna-3.16.tar.gz", hash = "sha256:d7a6da03db833450fca25d2358ac9ff06cd624577a4aea3a596d5c0f77b8e03d", size = 203770, upload-time = "2026-05-22T00:16:18.781Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/f7/abb373e5757eaec4b922b92f97ec8d6d7e057cf06778247604fbc4e7c3f3/idna-3.19.tar.gz", hash = "sha256:5e0811a4383b21dc5838069f801c4fb62113b7447663d2530d2bd6e77b49bf15", size = 215237, upload-time = "2026-08-18T05:14:24.27Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/16/70255075a9859a0e3adb789b68ceb0e210dec03934245fd98d248226572f/idna-3.16-py3-none-any.whl", hash = "sha256:cc246e3a3f89580c3a951b5ad298ca4638078b2cdd4f115654332b5c26daded5", size = 74165, upload-time = "2026-05-22T00:16:16.698Z" },
+    { url = "https://files.pythonhosted.org/packages/57/b0/0e52c878c53f245edd3a11020f20979b3f490f245af532c7cae3027754b5/idna-3.19-py3-none-any.whl", hash = "sha256:815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4", size = 68550, upload-time = "2026-08-18T05:14:22.343Z" },
 ]
 
 [[package]]
@@ -2675,7 +2579,6 @@ name = "ifbench"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/if/ifbench" }
 dependencies = [
-    { name = "datasets" },
     { name = "emoji" },
     { name = "immutabledict" },
     { name = "langdetect" },
@@ -2689,7 +2592,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "emoji" },
     { name = "immutabledict" },
     { name = "langdetect" },
@@ -2698,7 +2600,7 @@ requires-dist = [
     { name = "setuptools", specifier = "<78" },
     { name = "spacy" },
     { name = "syllapy" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -2706,7 +2608,6 @@ name = "ifeval"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/if/ifeval" }
 dependencies = [
-    { name = "datasets" },
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
@@ -2715,11 +2616,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3084,15 +2984,11 @@ name = "kimina"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/kimina" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "kiwisolver"
@@ -3151,7 +3047,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "langdetect"
@@ -3245,7 +3141,6 @@ name = "livecodebench"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/code/livecodebench" }
 dependencies = [
-    { name = "datasets" },
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
@@ -3253,9 +3148,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3308,7 +3202,6 @@ version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/long_context/longbenchpro" }
 dependencies = [
     { name = "datasets" },
-    { name = "openai" },
     { name = "pytrec-eval-terrier" },
     { name = "verifiers" },
 ]
@@ -3316,9 +3209,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "openai" },
     { name = "pytrec-eval-terrier" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3340,16 +3232,14 @@ name = "longcot-env"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/longcot_env" }
 dependencies = [
-    { name = "datasets" },
     { name = "longcot" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3357,16 +3247,14 @@ name = "longcot-mini"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/longcot_mini" }
 dependencies = [
-    { name = "datasets" },
     { name = "longcot" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3374,15 +3262,11 @@ name = "longpdfs"
 version = "0.0.1"
 source = { editable = "deps/prime-envs/environments/long_context/longpdfs" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=3.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "mamba-ssm"
@@ -3455,15 +3339,11 @@ name = "math-env"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/math_env" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "math-verify"
@@ -3482,15 +3362,11 @@ name = "math500"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/math/math500" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "matplotlib"
@@ -3529,15 +3405,15 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.27.1"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "httpx" },
-    { name = "httpx-sse" },
+    { name = "httpx2" },
     { name = "jsonschema" },
+    { name = "mcp-types" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
-    { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
     { name = "sse-starlette" },
@@ -3546,28 +3422,39 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/83/d1efe7c2980d8a3afa476f4e3d42d53dd54c0ab94c27bee5d755b45c8b73/mcp-1.27.1.tar.gz", hash = "sha256:0f47e1820f8f8f941466b39749eb1d1839a04caddca2bc60e9d46e8a99914924", size = 608458, upload-time = "2026-05-08T16:50:12.601Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/33/32d4dff2c95bb5d897c3ef4c83649a08996b17b58f0a326d2495d4c81179/mcp-2.0.0.tar.gz", hash = "sha256:0f440e735c13ece8bb19bc62cf0b86f4313448432fbb77d35e14034f4e050728", size = 1662284, upload-time = "2026-07-28T13:45:32.346Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/73/42d9596facebdb533b7f0b86c1b0364ef350d1f8ba78b1052e8a58b48b65/mcp-1.27.1-py3-none-any.whl", hash = "sha256:1af3c4203b329430fde7a87b4fcb6392a041f5cb851fd68fc674016ab4e7c06f", size = 216260, upload-time = "2026-05-08T16:50:10.547Z" },
+    { url = "https://files.pythonhosted.org/packages/67/72/7d7897418912c1d12e87556630dfb7bf0eac71160e9bef8b447960804ee3/mcp-2.0.0-py3-none-any.whl", hash = "sha256:1cb4c75d2d2c7b8c1d756355e5d82a39f2822cc7f13e22a2051d7ca3592349d6", size = 349980, upload-time = "2026-07-28T13:45:28.853Z" },
 ]
 
 [[package]]
 name = "mcp-atlas"
-version = "0.3.1"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
-    { name = "httpx" },
-    { name = "prime-sandboxes" },
+    { name = "mcp" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
-    { name = "httpx" },
-    { name = "prime-sandboxes", specifier = ">=0.2.37" },
-    { name = "verifiers", specifier = ">=0.3.0" },
+    { name = "mcp", specifier = ">=2,<3" },
+    { name = "verifiers", specifier = ">=0.3.1" },
+]
+
+[[package]]
+name = "mcp-types"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bb/56/9b8e1c152f61f6c6b07c4b5896c88c7d0ae90bac6ee6306f852fcc5c1eb0/mcp_types-2.0.0.tar.gz", hash = "sha256:d7d939b9285c9961ae8866ba75ef85da34d12bafe276efbf4eb6a131786d8379", size = 66632, upload-time = "2026-07-28T13:45:33.804Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/4c/c78d78c3d52b0ac594ad7cc8ef5972adfe070e3597a8a4c6ce0cd39196ea/mcp_types-2.0.0-py3-none-any.whl", hash = "sha256:6b2de797ca2797f568b79529e1b25948e34de511bcc0bd82fef1039a6d1b8eb0", size = 69649, upload-time = "2026-07-28T13:45:30.713Z" },
 ]
 
 [[package]]
@@ -3596,15 +3483,11 @@ name = "minif2f"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/minif2f" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "mistral-common"
@@ -3683,18 +3566,14 @@ name = "mmk12"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/mmk12" }
 dependencies = [
-    { name = "datasets" },
-    { name = "math-verify" },
     { name = "pillow" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
-    { name = "math-verify" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3702,31 +3581,25 @@ name = "mmlu-pro"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/knowledge/mmlu_pro" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "mmmu"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/knowledge/mmmu" }
 dependencies = [
-    { name = "datasets" },
     { name = "pillow" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3734,16 +3607,14 @@ name = "mmmu-pro"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/mmmu_pro" }
 dependencies = [
-    { name = "datasets" },
     { name = "pillow" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3843,15 +3714,13 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/mrcr_v2" }
 dependencies = [
     { name = "filelock" },
-    { name = "httpx" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "filelock" },
-    { name = "httpx" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3883,7 +3752,7 @@ wheels = [
 [[package]]
 name = "multi-swe-bench"
 version = "1.1.2"
-source = { registry = "https://pypi.org/simple" }
+source = { url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" }
 dependencies = [
     { name = "dataclasses-json" },
     { name = "docker" },
@@ -3895,10 +3764,24 @@ dependencies = [
     { name = "tqdm" },
     { name = "unidiff" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz", hash = "sha256:44944bc6608d7d9b8d4390f3ce0a3b2c69122ea6be6e35766c6fde2328f50392", size = 1267660, upload-time = "2025-12-18T07:16:09.584Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/a8/060eb46096742944d8d37c34094d4e0fb34b28c6291a877388543ea65660/multi_swe_bench-1.1.2-py3-none-any.whl", hash = "sha256:09a5770096d6a035383c5240762ffa8c87b1e8df7d374110de8fb781b4e5a9f9", size = 4942355, upload-time = "2025-12-18T07:16:07.468Z" },
+sdist = { hash = "sha256:44944bc6608d7d9b8d4390f3ce0a3b2c69122ea6be6e35766c6fde2328f50392" }
+
+[package.metadata]
+requires-dist = [
+    { name = "dataclasses-json" },
+    { name = "docker" },
+    { name = "gitpython" },
+    { name = "prettier", marker = "extra == 'dev'" },
+    { name = "pygithub" },
+    { name = "pyyaml" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "swe-rex" },
+    { name = "toml" },
+    { name = "tqdm" },
+    { name = "typos", marker = "extra == 'dev'" },
+    { name = "unidiff" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "multidict"
@@ -3936,16 +3819,14 @@ name = "multiswe"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/multiswe" }
 dependencies = [
-    { name = "datasets" },
     { name = "multi-swe-bench" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
-    { name = "multi-swe-bench" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
+    { name = "multi-swe-bench", url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -4053,17 +3934,11 @@ name = "nl2repobench"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/nl2repobench" }
 dependencies = [
-    { name = "datasets" },
-    { name = "prime-sandboxes" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.16" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "nltk"
@@ -4109,15 +3984,11 @@ name = "numina"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/numina" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "numpy"
@@ -4454,7 +4325,6 @@ name = "oolong-pairs"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/oolong_pairs" }
 dependencies = [
-    { name = "datasets" },
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
@@ -4462,9 +4332,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -4472,40 +4341,30 @@ name = "oolong-real"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/oolong_real" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "oolong-synth"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/oolong_synth" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "python-dateutil" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
 name = "openai"
-version = "2.38.0"
+version = "2.54.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -4517,28 +4376,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8f/12/cfa322c5f5dd8fa21aab9a7a8e979e7a11123800f86ca8d82eb68a83d213/openai-2.38.0.tar.gz", hash = "sha256:798694c6cf74145541fda94325b6f8f72d8e1fd0262cc137c8d728177a6a4ce3", size = 772764, upload-time = "2026-05-21T21:23:42.105Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/9a/8c75e8c8a5b407a0586faeb2afac91674ff955c191ecc1d6d3b6669f6788/openai-2.54.0.tar.gz", hash = "sha256:e3e6f8bc1ba30ddf381ace1a14340eed381cb984a1a59bd0f34b5be3b5d49cfa", size = 1100285, upload-time = "2026-08-11T18:46:59.035Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/bf/ccff9be562e24207716d04ef9dc931c76aff0c89a7265da43e2104d7fe06/openai-2.38.0-py3-none-any.whl", hash = "sha256:ec6661c57b2dcc47414a767e6e3335c7ed3d19c9696999283a3c82e95c756a3c", size = 1344910, upload-time = "2026-05-21T21:23:39.636Z" },
-]
-
-[[package]]
-name = "openai-agents"
-version = "0.17.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "griffelib" },
-    { name = "mcp" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "requests" },
-    { name = "types-requests" },
-    { name = "typing-extensions" },
-    { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/16/b79c1849125eb6d19cae98c21ff35caa2e55b5ec8d7a02b354b711917ef7/openai_agents-0.17.3.tar.gz", hash = "sha256:63b6dda6bd4fb51169e2a2cbd5d187a4e5ce823bbd15f965c8ed1d3b89072eec", size = 5406135, upload-time = "2026-05-19T01:28:15.971Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/80/ec/775a14cfd5f12f4ffe458c7ac9527831093c72e8c1aef682898fc6394106/openai_agents-0.17.3-py3-none-any.whl", hash = "sha256:a048bb0752d40913d18bccf6562f56260b603bb57c972597b6da58f60123f4bd", size = 841541, upload-time = "2026-05-19T01:28:13.334Z" },
+    { url = "https://files.pythonhosted.org/packages/64/a8/bb76c7356de8ad57f59d5ff993d434df0607f07f08bcc9c9a5c275e399c0/openai-2.54.0-py3-none-any.whl", hash = "sha256:89089789197ccdb87f173a03145ed1598d00795220c93e96cf712b1cbf5e5f2b", size = 1660351, upload-time = "2026-08-11T18:46:56.684Z" },
 ]
 
 [[package]]
@@ -4576,22 +4416,17 @@ name = "openseeker"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/openseeker" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "openswe"
 version = "0.1.3"
 source = { editable = "deps/prime-envs/environments/swe/openswe" }
 dependencies = [
-    { name = "datasets" },
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
@@ -4599,9 +4434,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -4738,7 +4572,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "orderly-set"
@@ -4813,17 +4647,11 @@ name = "papersearchqa"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/papersearchqa" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "parso"
@@ -4864,7 +4692,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "nltk", specifier = ">=3.8" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -4899,18 +4727,14 @@ name = "pinchbench"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/pinchbench" }
 dependencies = [
-    { name = "openai" },
-    { name = "prime-sandboxes" },
     { name = "pyyaml" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "openai" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -5143,7 +4967,8 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pybase64" },
     { name = "pyzmq" },
-    { name = "renderers" },
+    { name = "pyzstd" },
+    { name = "renderers", extra = ["multimodal"] },
     { name = "rich" },
     { name = "setproctitle" },
     { name = "tenacity" },
@@ -5272,7 +5097,7 @@ requires-dist = [
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu130" },
-    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441" },
+    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "sys_platform == 'linux' and extra == 'gpt-oss'" },
@@ -5305,8 +5130,9 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
+    { name = "pyzstd", specifier = ">=0.16.2" },
     { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", specifier = ">=0.4.1" },
-    { name = "renderers", editable = "deps/renderers" },
+    { name = "renderers", extras = ["multimodal"], editable = "deps/renderers" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "setproctitle", specifier = ">=1.3.0" },
@@ -5364,7 +5190,7 @@ dependencies = [
 requires-dist = [
     { name = "prime-pydantic-config", specifier = ">=0.4.3" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "renderers", specifier = ">=0.1.10" },
+    { name = "renderers", specifier = ">=0.1.11" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "verifiers", specifier = ">=0.3.0" },
@@ -5428,21 +5254,17 @@ name = "programbench-env"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/programbench_env" }
 dependencies = [
-    { name = "datasets" },
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
-    { name = "prime-sandboxes" },
     { name = "programbench" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "prime-sandboxes", specifier = ">=0.2.23" },
     { name = "programbench", specifier = ">=1.0.2" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -5454,7 +5276,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "prometheus-client"
@@ -5563,15 +5385,11 @@ name = "proverbench"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/proverbench" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "psutil"
@@ -6044,6 +5862,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pyzstd"
+version = "0.19.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "backports-zstd" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/66/59fed71d0d2065e02974b40296f836a237c364c8bbe07295f2d0dc33c278/pyzstd-0.19.1.tar.gz", hash = "sha256:36723d3c915b3981de9198d0a2c82b2f5fe3eaa36e4d8d586937830a8afc7d72", size = 69531, upload-time = "2025-12-13T08:15:33.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/62/f55d1363512d1b1cc122af6ca5951008e42605b63675c7d6781affc7c475/pyzstd-0.19.1-py3-none-any.whl", hash = "sha256:267e2eb0de0291dfcb7ccfebc4ffe75b2f9d84e7007ac38844f6ccafc6dce081", size = 23779, upload-time = "2025-12-13T08:15:31.979Z" },
+]
+
+[[package]]
 name = "quack-kernels"
 version = "0.6.4"
 source = { registry = "https://pypi.org/simple" }
@@ -6086,15 +5917,11 @@ name = "r2e-gym"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/r2e_gym" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "rank-bm25"
@@ -6150,15 +5977,11 @@ name = "redsearcher"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/redsearcher" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "referencing"
@@ -6198,6 +6021,12 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
+]
+
+[package.optional-dependencies]
+multimodal = [
+    { name = "pillow" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -6353,7 +6182,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -6386,15 +6215,11 @@ name = "scaleswe"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/scaleswe" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "scantree"
@@ -6414,15 +6239,11 @@ name = "scicode"
 version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/code/scicode" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "scikit-learn"
@@ -6482,7 +6303,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev73" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -6574,34 +6395,22 @@ name = "simpleqa"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/knowledge/simpleqa" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "simpleqa-verified"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/knowledge/simpleqa_verified" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "six"
@@ -6907,7 +6716,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swebench-pro"
@@ -6918,7 +6727,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swebench-verified"
@@ -6929,37 +6738,29 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swelego"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/swelego" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swerebench-v2"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/swerebench_v2" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swesmith"
@@ -6971,7 +6772,6 @@ name = "swesmith-env"
 version = "0.1.3"
 source = { editable = "deps/prime-envs/environments/swe/swesmith_env" }
 dependencies = [
-    { name = "datasets" },
     { name = "swebench" },
     { name = "swesmith" },
     { name = "verifiers" },
@@ -6979,10 +6779,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "swebench", specifier = ">=4.1.0,<5" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -7062,7 +6861,7 @@ dependencies = [
 
 [[package]]
 name = "tau2-bench"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/tool_use/tau2_bench" }
 dependencies = [
     { name = "tau2" },
@@ -7073,7 +6872,7 @@ dependencies = [
 requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -7123,7 +6922,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "terminal-lego"
@@ -7138,7 +6937,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -7287,7 +7086,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
 
 [[package]]
 name = "tokenizers"
@@ -7677,14 +7476,19 @@ name = "triviaqa"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/knowledge/triviaqa" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
+
+[[package]]
+name = "truststore"
+version = "0.10.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
 
 [[package]]
@@ -7816,15 +7620,11 @@ name = "unscramble"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/reasoning/unscramble" }
 dependencies = [
-    { name = "datasets" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "urllib3"
@@ -7844,20 +7644,20 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "uvicorn"
-version = "0.48.0"
+version = "0.52.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click", version = "8.4.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "click", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/bf/f6544ba992ddb9a6077343a576f9844f7f8f06ab819aefd00206e9255f18/uvicorn-0.48.0.tar.gz", hash = "sha256:a5504207195d08c2511bf9125ede5ac4a4b71725d519e758d01dcf0bc2d31c37", size = 91074, upload-time = "2026-05-24T12:08:41.925Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/0f/3f86e61397dd33bf2ccf28188c40db6a740658aeebbbf6e7dbc101a1f487/uvicorn-0.52.4.tar.gz", hash = "sha256:73acfee47a0b133c5de13d219492d62d8a31e935f4fe6e41a232451a15379f86", size = 100627, upload-time = "2026-08-19T06:27:41.821Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/be/72532be3da7acc5fdfbccdb95215cd04f995a0886532a5b423f929cda4cc/uvicorn-0.48.0-py3-none-any.whl", hash = "sha256:48097851328b87ec36117d3d575234519eb58c2b22d79666e9bbc6c49a761dad", size = 71410, upload-time = "2026-05-24T12:08:40.258Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/79/4a20b54ab0491485ccd8c077db2d39187c7f12b3e15485d38a7be37c81b4/uvicorn-0.52.4-py3-none-any.whl", hash = "sha256:f86e41a149d7d05a9969337e3946a9c171c06a5d42680896daaba624aeac8da1", size = 79871, upload-time = "2026-08-19T06:27:40.36Z" },
 ]
 
 [package.optional-dependencies]
@@ -7895,7 +7695,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "faker", specifier = ">=20.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -7903,31 +7703,28 @@ name = "verifiers"
 source = { editable = "deps/verifiers" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "aiolimiter" },
     { name = "anthropic" },
-    { name = "datasets" },
     { name = "gepa" },
+    { name = "h11" },
     { name = "httpx" },
+    { name = "httpx2" },
     { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp" },
     { name = "msgpack" },
     { name = "numpy" },
     { name = "openai" },
-    { name = "openai-agents" },
     { name = "prime-pydantic-config", extra = ["toml"] },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
     { name = "pyzmq" },
-    { name = "renderers" },
-    { name = "requests" },
+    { name = "renderers", extra = ["multimodal"] },
     { name = "rich" },
-    { name = "setproctitle" },
     { name = "tenacity" },
     { name = "tomli-w" },
     { name = "typing-extensions" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -7942,58 +7739,45 @@ ta = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
-    { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "anthropic", specifier = ">=0.78.0" },
-    { name = "datasets", specifier = ">=3.3.0,<6.0.0" },
+    { name = "anthropic", specifier = ">=1.0.0" },
+    { name = "datasets", marker = "extra == 'lean'", specifier = ">=3.3.0,<6.0.0" },
     { name = "gepa", specifier = ">=0.0.6" },
+    { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx2", specifier = ">=2.12.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "mcp", specifier = ">=1.24.0,<2" },
+    { name = "mcp", specifier = "==2.0.0" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "nemo-gym", marker = "python_full_version >= '3.12' and extra == 'nemo-gym'", specifier = "==0.4.0" },
-    { name = "nest-asyncio", marker = "extra == 'notebook'", specifier = ">=1.6.0" },
     { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
     { name = "numpy", specifier = ">=2.1.0" },
-    { name = "openai", specifier = ">=2.9.0" },
-    { name = "openai-agents", specifier = ">=0.8.2" },
+    { name = "openai", specifier = ">=2.54.0,<3.0.0" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-sandboxes", specifier = ">=0.2.39" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "reasoning-gym", marker = "extra == 'rg'", specifier = ">=0.1.8" },
-    { name = "renderers", specifier = ">=0.1.10" },
-    { name = "requests" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12.dev2" },
     { name = "rich", specifier = ">=11.0.0" },
-    { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.4.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "typing-extensions", specifier = ">=4.12.2" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
+    { name = "uvicorn", specifier = ">=0.52.0" },
 ]
-provides-extras = ["browser", "harbor", "modal", "nemo-gym", "notebook", "openenv", "rg", "ta"]
+provides-extras = ["harbor", "lean", "modal", "openenv", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "nest-asyncio", specifier = ">=1.6.0" },
-    { name = "nltk", specifier = ">=3.9.2" },
     { name = "pre-commit", specifier = ">=2.19.0" },
     { name = "pytest", specifier = ">=7.0.0,<9.1.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "reasoning-gym", specifier = ">=0.1.8" },
     { name = "ruff", specifier = ">=0.16.0" },
-    { name = "stagehand", specifier = ">=3.4.0" },
-    { name = "textarena", specifier = "==0.7.4" },
     { name = "ty", specifier = ">=0.0.63" },
 ]
 examples = [
@@ -8022,19 +7806,15 @@ name = "virl39k"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/virl39k" }
 dependencies = [
-    { name = "datasets" },
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
-    { name = "math-verify" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "math-verify" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -8655,17 +8435,11 @@ name = "wideseek"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/search/wideseek" }
 dependencies = [
-    { name = "datasets" },
-    { name = "openai" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.2.dev27" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "widgetsnbextension"
@@ -8702,7 +8476,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev65" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "wordle"

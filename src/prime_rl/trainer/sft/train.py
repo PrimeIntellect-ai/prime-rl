@@ -40,7 +40,13 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import get_dataset_state, load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import (
+    get_dataset_progress,
+    get_dataset_state,
+    load_sft_dataset,
+    setup_dataloader,
+    setup_dataset,
+)
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -156,13 +162,10 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
-        from prime_rl.utils.cp import assert_cp_style_supports_model
-
-        assert_cp_style_supports_model(config.model.cp_style, model)
         # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; with ring
-        # we'd have already raised above.
+        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
+        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
         if config.model.cp_style == "ulysses":
             setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
@@ -590,7 +593,8 @@ def train(config: SFTConfig):
         num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
         num_tokens = dp_size * num_local_tokens
         progress.total_tokens += num_tokens
-        progress.total_samples = dataset.step
+        dataset_progress = get_dataset_progress(dataloader)
+        progress.total_samples = dataset_progress["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -612,24 +616,26 @@ def train(config: SFTConfig):
         logger.success(step_message)
 
         # Log progress metrics
-        total_samples = sum(dataset.num_samples.values())
-        total_tokens = sum(dataset.num_tokens.values())
+        samples_by_source = dataset_progress["num_samples"]
+        tokens_by_source = dataset_progress["num_tokens"]
+        total_samples = sum(samples_by_source.values())
+        total_tokens = sum(tokens_by_source.values())
         progress_metrics = {
-            "progress/epoch": dataset.epoch,
+            "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
         # At least two subsets/splits
-        if len(dataset.num_samples) > 1:
+        if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{
                     f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in dataset.num_samples.items()
+                    for subset_or_split, num_samples in samples_by_source.items()
                 },
                 **{
                     f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in dataset.num_tokens.items()
+                    for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
         asyncio.run(monitors.log(progress_metrics, step=progress.step))

@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import TypedDict
 
+import numpy as np
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -30,12 +31,21 @@ class TensorMicroBatch(TypedDict):
     env_names: list[str]
     sequence_lengths: list[int]
 
+    # Per-sequence branch identity, parallel to sequence_lengths; None on
+    # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
+    trace_ids: list[str] | None
+    branch_indices: list[int] | None
+
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
+
+    # Sampling-mask token ids per position, padded with -1 to the micro batch's
+    # maximum mask size. A row containing only -1 has no mask.
+    sampling_mask: Int[Tensor, "batch seq mask"] | None
 
     # Materialized immediately before this microbatch's forward pass.
     mm_refs: MMRefs | None
@@ -115,10 +125,13 @@ class FakeDataLoader:
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * input_ids.shape[0],
             "sequence_lengths": sequence_lengths,
+            "trace_ids": None,
+            "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
+            "sampling_mask": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -144,10 +157,13 @@ class FakeDataLoader:
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "env_names": ["fake"] * self.seq_len,
             "sequence_lengths": [self.seq_len],
+            "trace_ids": None,
+            "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
+            "sampling_mask": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -194,6 +210,16 @@ class DataLoader:
                 .to(torch.int32)
                 .unsqueeze(0)
             )
+        sampling_mask = None
+        packed_sampling_mask = micro_batch.sampling_mask
+        if packed_sampling_mask is not None:
+            counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
+            ids = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
+            # Boolean assignment fills row-major, matching the flat concat order.
+            max_mask_size = max(int(counts.max()), 1) if counts.size else 1
+            padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
+            padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
+            sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -206,6 +232,8 @@ class DataLoader:
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
+            trace_ids=micro_batch.trace_ids,
+            branch_indices=micro_batch.branch_indices,
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
@@ -214,6 +242,7 @@ class DataLoader:
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
+            sampling_mask=sampling_mask,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,

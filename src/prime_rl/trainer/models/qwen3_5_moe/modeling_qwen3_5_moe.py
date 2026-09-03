@@ -19,7 +19,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisio
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_3_varlen_func,
     flash_attn_4_varlen_func,
@@ -278,18 +278,6 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
         self.q_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-    def output_proj(
-        self,
-        attn_output: torch.Tensor,
-        gate: torch.Tensor,
-    ) -> torch.Tensor:
-        input_shape = gate.shape[:-1]
-        if attn_output.dim() == 4:
-            attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.contiguous().view(*input_shape, -1)
-        attn_output = attn_output * torch.sigmoid(gate)
-        return self.o_proj(attn_output)
-
 
 class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
     """Gated softmax attention using Flash Attention varlen functions."""
@@ -326,21 +314,13 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             out = out[0]
         return out
 
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> torch.Tensor:
-        return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-
-    def attn_projections(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -360,24 +340,10 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
 
-        return query_states, key_states, value_states, gate
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(
-            query_states,
-            key_states,
-            value_states,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
-        return self.output_proj(attn_output, gate), None
+        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        attn_output = attn_output.contiguous().view(*input_shape, -1)
+        attn_output = attn_output * torch.sigmoid(gate)
+        return self.o_proj(attn_output), None
 
 
 QWEN35MOE_ATTN_IMPL2CLASS = {
@@ -631,6 +597,19 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {
         "hidden_states": Qwen3_5MoeDecoderLayer,
     }
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        # VLM configs nest the layer schedule under `text_config`.
+        text_config = getattr(config, "text_config", config)
+        if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
+            return CPSupport(
+                frozenset({"ulysses"}),
+                "ring CP is a softmax-attention algorithm and cannot run this model's DeltaNet "
+                "layers, whereas ulysses' all-to-all on Q/K/V leaves the linear-attention kernel "
+                "unchanged",
+            )
+        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
