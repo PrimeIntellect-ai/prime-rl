@@ -36,11 +36,10 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.inference.admin import AdminPlane
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import InferenceClient, setup_admin_plane
+from prime_rl.orchestrator.clients import AdminClient, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -120,7 +119,7 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     clients: InferenceClient | None
-    admin_clients: AdminPlane | None
+    admin_client: AdminClient | None
     sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -173,7 +172,7 @@ class Orchestrator:
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
         self.clients = None
-        self.admin_clients = None
+        self.admin_client = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -209,7 +208,7 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_clients = setup_admin_plane(config.model.client, config.model.name)
+        self.admin_client = AdminClient(config.model.client)
 
         await monitors.setup(
             producer="orch",
@@ -291,7 +290,7 @@ class Orchestrator:
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
-        await self.admin_clients.wait_for_ready(config.model.name)
+        await self.admin_client.wait_for_ready(config.model.name)
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -308,7 +307,7 @@ class Orchestrator:
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
-            admin_plane=self.admin_clients,
+            admin_client=self.admin_client,
             model_name=config.model.name,
         )
         await self.receiver.initialize()
@@ -361,7 +360,7 @@ class Orchestrator:
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin_clients.clients,
+            self.admin_client.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
             log_metrics=config.collect_inference_metrics,
@@ -1057,8 +1056,8 @@ class Orchestrator:
                 await self.inference_metrics.stop()
             if self.clients is not None:
                 await self.clients.aclose()
-            if self.admin_clients is not None:
-                await self.admin_clients.aclose()
+            if self.admin_client is not None:
+                await self.admin_client.aclose()
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:

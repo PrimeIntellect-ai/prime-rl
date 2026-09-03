@@ -7,11 +7,10 @@ from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
-    AdminClients,
+    AdminClient,
     _is_retryable_lora_error,
     check_health,
     load_lora_adapter,
-    setup_admin_plane,
     setup_client,
 )
 
@@ -43,12 +42,12 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
 
 def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client = AsyncMock()
-    admin_plane = MagicMock(clients=[mock_client])
+    admin_client = MagicMock(clients=[mock_client])
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_client, "test-lora", Path("/test/path")))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
@@ -57,22 +56,16 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_setup_admin_plane_uses_static_clients():
-    admin_plane = setup_admin_plane(ClientConfig(), "test-model")
-    assert isinstance(admin_plane, AdminClients)
-    asyncio.run(admin_plane.aclose())
-
-
-def test_static_admin_plane_initializes_nccl():
-    admin_plane = setup_admin_plane(ClientConfig(), "test-model")
+def test_admin_client_initializes_nccl():
+    admin_client = AdminClient(ClientConfig())
     client = AsyncMock()
     response = MagicMock()
     response.raise_for_status.return_value = None
     client.post.return_value = response
-    admin_plane.clients = [client]
+    admin_client.clients = [client]
 
     asyncio.run(
-        admin_plane.initialize_nccl(
+        admin_client.initialize_nccl(
             host="trainer",
             port=29501,
             timeout=1200,
@@ -91,7 +84,7 @@ def test_static_admin_plane_initializes_nccl():
             "quantize_in_weight_transfer": False,
         },
     )
-    asyncio.run(admin_plane.aclose())
+    asyncio.run(admin_client.aclose())
 
 
 def test_setup_client_creates_renderer_client():

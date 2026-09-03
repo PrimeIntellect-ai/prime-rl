@@ -9,7 +9,7 @@ from typing import final
 import torch.nn as nn
 
 from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.inference.admin import AdminPlane
+from prime_rl.orchestrator.clients import AdminClient
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
@@ -121,13 +121,13 @@ class WeightReceiver(ABC):
         self,
         broadcast_dir: Path,
         config: WeightBroadcastConfig,
-        admin_plane: AdminPlane,
+        admin_client: AdminClient,
         model_name: str,
     ) -> None:
         self.logger = get_logger()
         self.broadcast_dir = broadcast_dir
         self.config = config
-        self.admin_plane = admin_plane
+        self.admin_client = admin_client
         self.model_name = model_name
 
     async def initialize(self) -> None:

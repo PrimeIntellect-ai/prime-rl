@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 
 from prime_rl.configs.trainer import LoRAConfig, WeightBroadcastConfig
-from prime_rl.inference.admin import AdminPlane
+from prime_rl.orchestrator.clients import AdminClient
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune_broadcasts_beyond
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
@@ -38,14 +38,14 @@ def setup_weight_sender(
 def setup_weight_receiver(
     broadcast_dir: Path,
     config: WeightBroadcastConfig,
-    admin_plane: AdminPlane,
+    admin_client: AdminClient,
     model_name: str,
 ) -> WeightReceiver:
     if config.type == "nccl":
-        return NCCLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+        return NCCLWeightReceiver(broadcast_dir, config, admin_client, model_name)
     elif config.type == "filesystem":
-        return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+        return FileSystemWeightReceiver(broadcast_dir, config, admin_client, model_name)
     elif config.type == "nixl":
-        return NIXLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+        return NIXLWeightReceiver(broadcast_dir, config, admin_client, model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

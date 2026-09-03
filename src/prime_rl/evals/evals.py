@@ -36,9 +36,8 @@ from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.evals.ckpt import CheckpointManager
-from prime_rl.inference.admin import AdminPlane
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.clients import InferenceClient, setup_admin_plane
+from prime_rl.orchestrator.clients import AdminClient, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -100,7 +99,7 @@ class Evals:
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
         self.clients: InferenceClient | None = None
-        self.admin_clients: AdminPlane | None = None
+        self.admin_client: AdminClient | None = None
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
@@ -126,7 +125,7 @@ class Evals:
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.eval.client, model_name=config.model)
-        self.admin_clients = setup_admin_plane(config.eval.client, config.model)
+        self.admin_client = AdminClient(config.eval.client)
 
         self.spawn_env_servers()
 
@@ -136,7 +135,7 @@ class Evals:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.admin_clients.wait_for_ready(config.model)
+        await self.admin_client.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         self.receiver: WeightReceiver | None = None
@@ -149,7 +148,7 @@ class Evals:
             self.receiver = setup_weight_receiver(
                 config.online.broadcasts_dir,
                 weight_broadcast,
-                admin_plane=self.admin_clients,
+                admin_client=self.admin_client,
                 model_name=config.model,
             )
             await self.receiver.initialize()
@@ -202,7 +201,7 @@ class Evals:
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin_clients.clients,
+            self.admin_client.clients,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints
@@ -213,7 +212,7 @@ class Evals:
         if not await self.inference_metrics.probe():
             concurrency = config.eval.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.admin_clients.clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin_client.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -580,8 +579,8 @@ class Evals:
             await self.dispatcher.stop()
         if self.clients is not None:
             await self.clients.aclose()
-        if self.admin_clients is not None:
-            await self.admin_clients.aclose()
+        if self.admin_client is not None:
+            await self.admin_client.aclose()
         cleanup_processes(self.env_server_procs)
 
 
