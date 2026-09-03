@@ -30,7 +30,7 @@ pre_run_command = "mkdir -p /tmp/nemotron35-lightning-hillclimb-testfrac-frontie
 type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
-num_infer_replicas = 1
+num_infer_replicas = 2
 
 [monitors.wandb]
 project = "hillclimb"
@@ -45,6 +45,7 @@ interval = 20
 keep_last = 10
 
 [resume]
+dir = "/shared/parker/prime-rl-outputs/nemotron35-lightning-hillclimb-testfrac-frontier496-bs512-online-p8-r1/checkpoints/step_20"
 
 [model]
 name = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
