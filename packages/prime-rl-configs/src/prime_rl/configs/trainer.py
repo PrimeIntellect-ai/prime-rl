@@ -375,6 +375,9 @@ class SGDConfig(BaseOptimizerConfig):
 class AdamWConfig(BaseOptimizerConfig):
     type: Literal["adamw"] = "adamw"
 
+    eps: float = Field(1e-8, gt=0)
+    """Numerical-stability epsilon in the AdamW denominator."""
+
     betas1: float = Field(0.9, ge=0)
     """Adam first-moment (β1) decay."""
 
@@ -455,6 +458,11 @@ class CheckpointConfig(BaseConfig):
 
 class DefaultLossConfig(BaseConfig):
     type: Literal["default"] = "default"
+
+    aggregation: Literal["token_mean", "group_token_mean"] = "token_mean"
+    """Loss reduction. ``token_mean`` averages over all active RL tokens;
+    ``group_token_mean`` averages tokens within each rollout group, then
+    averages the group means."""
 
     dppo_mask_low: float = Field(0.2, ge=0)
     """Lower DPPO masking threshold."""

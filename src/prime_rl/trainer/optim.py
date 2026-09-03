@@ -160,6 +160,7 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                eps=config.eps,
             )
         case "muon":
             return _create_muon_optimizer(config, named_params, parallel_dims, lr)

@@ -57,6 +57,50 @@ def test_gspo_loss():
     assert loss.shape == ()
 
 
+def test_group_token_mean_balances_groups_with_different_token_counts():
+    trainer_logprobs = [torch.zeros(2), torch.full((4,), -0.2)]
+    inference_logprobs = [torch.zeros(2), torch.full((4,), -0.3)]
+    advantages = [torch.full((2,), -1.0), torch.full((4,), -3.0)]
+    loss_mask = [torch.ones(2, dtype=torch.bool), torch.ones(4, dtype=torch.bool)]
+
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0, kl_tau=0.5))
+    group_loss, _ = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        rl_weights=None,
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=rl_loss_fn,
+        rl_scale=6,
+        ce_scale=1,
+        ref_kl_scale=1,
+        rl_aggregation="group_token_mean",
+        rl_group_token_counts=[2, 4],
+        rl_num_groups=2,
+    )
+    token_loss, _ = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        rl_weights=None,
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=rl_loss_fn,
+        rl_scale=6,
+        ce_scale=1,
+        ref_kl_scale=1,
+    )
+
+    group_two_per_token = 3.0 * torch.exp(torch.tensor(0.1)) + 0.5 * 0.1**2
+    assert torch.isclose(group_loss, (torch.tensor(1.0) + group_two_per_token) / 2)
+    assert torch.isclose(token_loss, (2.0 + 4.0 * group_two_per_token) / 6)
+
+
 def test_entropy_loss():
     shifted_logits = torch.randn(10, 10, 10, dtype=torch.float32).cuda()
     entropy = compute_entropy(shifted_logits)

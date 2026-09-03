@@ -65,6 +65,29 @@ def _worker_token_sums(batches_per_gpu) -> list[int]:
     return [sum(len(batch.input_ids) for batch in worker_batches) for worker_batches in batches_per_gpu]
 
 
+def test_prepare_batch_stamps_group_token_counts(make_training_example):
+    group_a_short = make_training_example()
+    group_a_short.group_id = "group-a"
+    group_a_long = make_training_example()
+    group_a_long.group_id = "group-a"
+    group_b = make_training_example()
+    group_b.group_id = "group-b"
+    group_b.rl_weights = [0.0, 0.0, 1.0, 0.0]
+
+    batches = prepare_batch(
+        [group_a_short, group_a_long, group_b],
+        seq_len=32,
+        num_train_workers=1,
+        idxs=[0, 0, 0],
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+    packed = _flatten_batches(batches)
+
+    assert {batch.rl_num_groups for batch in packed} == {2}
+    assert sorted(count for batch in packed for count in batch.rl_group_token_counts or []) == [1, 4, 4]
+
+
 def _has_loss_tokens(batch: MicroBatch) -> bool:
     return any(batch.loss_mask)
 

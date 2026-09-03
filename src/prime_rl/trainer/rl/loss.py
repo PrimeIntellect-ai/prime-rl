@@ -295,12 +295,17 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    rl_aggregation: str = "token_mean",
+    rl_group_token_counts: list[int] | None = None,
+    rl_num_groups: int | None = None,
+    rl_group_count_scale: int = 1,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
+    weight stream. CE and ref-KL use global token means; RL uses either the
+    global token mean or a mean of per-group token means:
 
     - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
       ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
@@ -326,6 +331,10 @@ def compute_loss(
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        rl_aggregation: RL reduction, ``token_mean`` or ``group_token_mean``
+        rl_group_token_counts: Active RL-token count for each sequence's group
+        rl_num_groups: Number of active RL groups in the global batch
+        rl_group_count_scale: Context-parallel replication factor for group counts
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -333,6 +342,16 @@ def compute_loss(
     all_metrics: dict[str, list[Tensor]] = {}
 
     n = len(trainer_logprobs)
+    if rl_aggregation not in {"token_mean", "group_token_mean"}:
+        raise ValueError(f"Unknown RL loss aggregation: {rl_aggregation}")
+    if rl_aggregation == "group_token_mean":
+        if rl_group_token_counts is None or len(rl_group_token_counts) != n:
+            raise ValueError("group_token_mean requires one RL group-token count per sequence")
+        if rl_num_groups is None or rl_num_groups < 0:
+            raise ValueError("group_token_mean requires a non-negative RL group count")
+        if rl_group_count_scale < 1:
+            raise ValueError("rl_group_count_scale must be at least 1")
+
     if ref_logprobs is None:
         ref_logprobs = [None] * n
     if rl_weights is None:
@@ -355,7 +374,8 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    group_counts = rl_group_token_counts or [0] * n
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, group_count in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -364,6 +384,7 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        group_counts,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -377,11 +398,22 @@ def compute_loss(
             )
 
         if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+            if bool(mask.any()):
+                sample_rl_loss = run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+                if rl_aggregation == "group_token_mean":
+                    if group_count < 1:
+                        raise ValueError("Active RL sequence has an empty group-token count")
+                    sample_rl_loss = sample_rl_loss / (group_count * rl_group_count_scale)
+                rl_loss = rl_loss + sample_rl_loss
         else:
             rl_mask = mask & (rl_w != 0)
             if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+                sample_rl_loss = run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+                if rl_aggregation == "group_token_mean":
+                    if group_count < 1:
+                        raise ValueError("Active RL sequence has an empty group-token count")
+                    sample_rl_loss = sample_rl_loss / (group_count * rl_group_count_scale)
+                rl_loss = rl_loss + sample_rl_loss
         if ce_w is not None:
             ce_mask = ce_w != 0
             if bool(ce_mask.any()):
@@ -391,7 +423,8 @@ def compute_loss(
             if bool(ref_kl_mask.any()):
                 ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
 
-    scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
+    rl_denominator = max(rl_num_groups or 0, 1) if rl_aggregation == "group_token_mean" else rl_scale
+    scaled_loss = rl_loss / rl_denominator + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
 
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():

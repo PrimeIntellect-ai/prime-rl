@@ -68,6 +68,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Rollout-group identity used by the packer to derive group-balanced loss
+    # normalization after filtering and truncation.
+    group_id: str | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -109,3 +113,8 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
+
+    # Global RL active-token count for each entry in sequence_lengths. All
+    # entries from the same rollout group carry the same count.
+    rl_group_token_counts: list[int] | None = None
+    rl_num_groups: int | None = None

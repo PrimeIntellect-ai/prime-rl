@@ -328,6 +328,9 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
+    has_group_counts = any(sample.rl_group_token_counts is not None for _, sample in bin_content.samples)
+    rl_group_token_counts: list[int] | None = [] if has_group_counts else None
+    rl_num_groups: int | None = None
 
     for lora_idx, sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -366,6 +369,13 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                     mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
         seq_lens.extend(sample.seq_lens)
         lora_num_tokens[lora_idx] += sample_len
+        if rl_group_token_counts is not None:
+            counts = sample.rl_group_token_counts
+            rl_group_token_counts.extend(counts if counts is not None else [0] * len(sample.sequence_lengths))
+            if sample.rl_num_groups is not None:
+                if rl_num_groups is not None and rl_num_groups != sample.rl_num_groups:
+                    raise ValueError("Packed samples disagree on the number of RL groups")
+                rl_num_groups = sample.rl_num_groups
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -389,6 +399,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
         seq_lens=seq_lens,
+        rl_group_token_counts=rl_group_token_counts,
+        rl_num_groups=rl_num_groups,
     )
 
 
@@ -545,6 +557,10 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
     assert sum(micro_batch.seq_lens) == num_tokens, f"seq_lens sum {sum(micro_batch.seq_lens)} != {num_tokens} tokens"
+    if micro_batch.rl_group_token_counts is not None:
+        assert len(micro_batch.rl_group_token_counts) == len(micro_batch.sequence_lengths), (
+            "rl_group_token_counts must align with sequence_lengths"
+        )
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
@@ -592,6 +608,21 @@ def prepare_batch(
     and distribute them so that at each step index, all ranks see the same modality.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
+
+    group_keys = [rollout.group_id or f"sample:{sample_idx}" for sample_idx, rollout in enumerate(rollouts)]
+    group_token_counts: dict[str, int] = {}
+    for group_key, (_, sample) in zip(group_keys, all_samples):
+        if sample.rl_weights is None:
+            count = sum(sample.loss_mask)
+        else:
+            count = sum(keep and weight != 0 for keep, weight in zip(sample.loss_mask, sample.rl_weights))
+        if count:
+            group_token_counts[group_key] = group_token_counts.get(group_key, 0) + count
+
+    num_groups = len(group_token_counts)
+    for group_key, (_, sample) in zip(group_keys, all_samples):
+        sample.rl_group_token_counts = [group_token_counts.get(group_key, 0)]
+        sample.rl_num_groups = num_groups
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]

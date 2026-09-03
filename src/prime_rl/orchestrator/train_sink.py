@@ -211,6 +211,10 @@ class TrainSink:
         # owns the grouping mechanics.
         await env.algorithm.finalize_group(survivors)
 
+        for rollout in survivors:
+            for sample in rollout.samples:
+                sample.group_id = str(group_id)
+
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).
         temperature = env.sampling_args["temperature"]

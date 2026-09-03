@@ -477,6 +477,10 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                rl_aggregation=getattr(config.loss, "aggregation", "token_mean"),
+                rl_group_token_counts=micro_batch["rl_group_token_counts"],
+                rl_num_groups=micro_batch["rl_num_groups"],
+                rl_group_count_scale=cp_size,
             )
 
             # Backward pass
@@ -561,8 +565,8 @@ def train(config: TrainerConfig):
             }
             token_exporter.mark_stable(ready_run_ids)
 
-        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
-        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        # compute_loss already applied the global loss normalization. Undo FSDP's per-rank
+        # averaging across dp_cp so rank-local contributions sum to the global objective.
         for param in model.parameters():
             if param.grad is not None:
                 param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)

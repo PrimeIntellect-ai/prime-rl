@@ -57,6 +57,8 @@ class TensorMicroBatch(TypedDict):
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
     run_step: int | None
+    rl_group_token_counts: list[int] | None
+    rl_num_groups: int | None
 
 
 class FakeDataLoader:
@@ -139,6 +141,8 @@ class FakeDataLoader:
             "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
+            "rl_group_token_counts": sequence_lengths,
+            "rl_num_groups": len(sequence_lengths) * self.dp_world_size,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -172,6 +176,8 @@ class FakeDataLoader:
             "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
+            "rl_group_token_counts": [self.seq_len],
+            "rl_num_groups": self.dp_world_size,
         }
 
 
@@ -276,6 +282,8 @@ class DataLoader:
             else None,
             run_id=micro_batch.run_id,
             run_step=micro_batch.run_step,
+            rl_group_token_counts=micro_batch.rl_group_token_counts,
+            rl_num_groups=micro_batch.rl_num_groups,
         )
 
 
