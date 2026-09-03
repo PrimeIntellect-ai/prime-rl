@@ -609,6 +609,13 @@ def get_model(
                 f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
             )
 
+    # TODO: drop this along with `ModelConfig.dsv4_attn` before merging. Architecture-specific
+    # stamping does not belong in the shared model setup; it is here only so end-to-end runs
+    # can be A/B'd during development. Once it goes, the model resolves `auto` on its own and
+    # tests and benchmarks set `dsv4_attn` on the `DeepseekV4Config` they build directly.
+    if getattr(model_config, "model_type", "") == "deepseek_v4":
+        model_config.dsv4_attn = config.dsv4_attn
+
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:

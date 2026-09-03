@@ -22,6 +22,8 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 
+DSV4AttnImplementation: TypeAlias = Literal["auto", "eager", "gather", "kernel"]
+
 
 class GCConfig(BaseConfig):
     interval: int = Field(50, ge=1)
@@ -289,6 +291,13 @@ class ModelConfig(BaseModelConfig):
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
+
+    # TODO: drop this field and its stamp in `trainer/model.py` before merging. It exists so
+    # end-to-end runs can be A/B'd against each other during development; the shipped surface
+    # is `auto` alone, resolved in the model, with no user-facing knob. `ModelConfig` is
+    # architecture-agnostic and should not carry a DeepSeek V4 field permanently.
+    dsv4_attn: DSV4AttnImplementation = "auto"
+    """DeepSeek V4 compressed sparse attention implementation. ``eager`` materializes a dense additive mask, ``gather`` runs a PyTorch reference over an explicit index tensor, and ``kernel`` runs the fused TileLang kernel. ``auto`` picks ``kernel`` when it can actually run (tilelang installed, head counts and head dim the kernel supports, bfloat16) and ``eager`` otherwise. Only read by DeepSeek V4 models."""
 
     freeze_moe_router: bool = False
     """Freeze MoE router parameters during training."""

@@ -139,13 +139,15 @@ def _leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
     """The same values as leaves of the float32 oracle, which is what makes the oracle exact.
 
-    `sparse_attention_gather` casts everything to float32 on the way in, so widening its leaves
-    leaves its forward bit-identical: a bfloat16 value is exactly representable in float32. Its
-    backward is not. With a bfloat16 `kv` leaf, autograd rounds each of the roughly 164k per-slot
-    gradient contributions back to bfloat16 and accumulates about 200 of them per KV position on
-    that coarse grid, worth `sqrt(200) * 2**-9`, about 2.6e-2 on `dkv`. That is an artifact of how
-    the oracle is built and not a property of the kernel: measured against a float32-leaf oracle
-    the same kernel deviates by 4.1e-3, and the two oracles disagree with each other by 2.6e-2.
+    `sparse_attention_gather` computes in whatever dtype it is handed, so widening the leaves is
+    what puts the oracle in float32 at all. Widening changes none of the values, a bfloat16 number
+    being exactly representable in float32, so the oracle answers for exactly the numbers the
+    kernel saw. Feeding it the bfloat16 leaves instead would round each of the roughly 164k
+    per-slot gradient contributions back to bfloat16 and accumulate about 200 of them per KV
+    position on that coarse grid, worth `sqrt(200) * 2**-9`, about 2.6e-2 on `dkv`. That is an
+    artifact of how the oracle is built and not a property of the kernel: measured against a
+    float32-leaf oracle the same kernel deviates by 4.1e-3, and the two oracles disagree with each
+    other by 2.6e-2.
     """
     return tuple(tensor.detach().float().clone().requires_grad_(True) for tensor in tensors)
 
@@ -173,9 +175,9 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
 
     with torch.no_grad():
         out, lse = dsv4_sparse_attn(q, kv, indices, sinks, _SM_SCALE)
-        # Float32 inputs to the oracle, so its output is the exact answer rather than one rounded
-        # back to bfloat16 on the way out. The arithmetic between is unchanged, since the oracle
-        # casts to float32 itself.
+        # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
+        # is handed. Widened here rather than inside it, so the exact answer is what the bound is
+        # measured against instead of one rounded back to bfloat16.
         reference_out = sparse_attention_gather(q.float(), kv.float(), indices, sinks, _SM_SCALE)
         reference_lse = _reference_lse(q, kv, indices, sinks)
 

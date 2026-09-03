@@ -103,8 +103,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     # V4 attention is eager-only, as in HF: FlashAttention caps the head dim at 256 while
     # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask
     # cannot grow to cover the compressed entries the block concatenates onto the KV axis.
-    # `DeepseekV4Attention` reads no dispatch table, so `config._attn_implementation` is
-    # inert here; these flags only keep transformers from advertising a backend we lack.
+    # `DeepseekV4Attention` picks its implementation from `config.dsv4_attn`, not from
+    # `config._attn_implementation`, which is inert here; these flags only keep transformers
+    # from advertising a backend we lack.
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False

@@ -26,6 +26,40 @@ from prime_rl.trainer.models.kernels.dsv4_sparse_attn_fwd import dsv4_sparse_att
 _LOG2E = 1.44269504
 
 
+def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
+    """The reason these kernels cannot serve this shape, or ``None`` if they can.
+
+    The forward, the backward and `auto` implementation selection in
+    `deepseek_v4/attention.py` all need the same answer, so the constraints live here only.
+    """
+    # The backward's `preprocess` tiles the channel axis at `block_ND = 32` and reads whole
+    # tiles, so a `dim` below that (or not a multiple of it) over-reads into the next head and
+    # silently corrupts `Delta`, hence every gradient. This subsumes `atomic_addx4`'s own
+    # requirement that four channels be contiguous.
+    if dim % 32 != 0:
+        return f"the kernels tile the channel axis at 32 and read whole tiles, but head_dim is {dim}"
+    # The kernels tile the head axis up to a power of two, at least 16, and index `Sinks`, `Q`,
+    # `dO`, `Lse` and `dQ` over that padded block. A head count the tiler pads runs off the end
+    # of all of them; `Q` and `Output` absorb the over-read into the next token's heads, but
+    # `Sinks` is one row with nothing after it.
+    head_kv = heads // kv_group
+    padded_heads = max(tilelang.math.next_power_of_2(head_kv), 16)
+    if padded_heads != head_kv:
+        return (
+            f"the kernels tile {padded_heads} heads per group but this shape has {head_kv}; "
+            "a head count the tiler pads would read and write past the end of the head axis"
+        )
+    # The backward runs `block_H = min(64, padded_H)` rows through a GEMM that needs at least 32.
+    # At 16 heads the forward compiles and runs, then the backward dies mid-step inside tilelang
+    # with "warp_row_tiles must be greater than 16", so a forward-only test will not catch this.
+    if head_kv < 32:
+        return (
+            f"the sparse attention backward needs at least 32 heads per group, got {head_kv}; "
+            "its GEMM over min(64, heads) rows fails to compile below that"
+        )
+    return None
+
+
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
 def dsv4_sparse_attn(
     q: torch.Tensor,
@@ -45,31 +79,11 @@ def dsv4_sparse_attn(
 
     assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
     assert kv.shape[0] == batch
-    # The backward's `preprocess` tiles the channel axis at `block_ND = 32` and reads whole
-    # tiles, so a `dim` below that (or not a multiple of it) over-reads into the next head and
-    # silently corrupts `Delta`, hence every gradient. This subsumes `atomic_addx4`'s own
-    # requirement that four channels be contiguous.
-    assert dim % 32 == 0, "the backward tiles the channel axis at 32 and reads whole tiles"
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    assert shape_error is None, shape_error
     topk = indices.shape[-1]
     assert indices.shape == (batch, seq_len, kv_group, topk)
     assert sinks.shape == (heads,)
-    # The kernel tiles the head axis up to a power of two, at least 16, and indexes `Sinks`
-    # over that padded block. `Q` and `Output` absorb the over-read into the next token's
-    # heads, but `Sinks` is one row with nothing after it, so refuse a head count that pads.
-    head_kv = heads // kv_group
-    padded_heads = max(tilelang.math.next_power_of_2(head_kv), 16)
-    assert padded_heads == head_kv, (
-        f"the kernel tiles {padded_heads} heads per group but sinks has {head_kv}; "
-        "a head count the tiler pads would read past the end of sinks"
-    )
-    # The constraint is the backward's, not this kernel's: it runs `block_H = min(64, padded_H)`
-    # rows through a GEMM that needs at least 32, so 16 heads compiles and runs here and then
-    # dies mid-step inside tilelang with "warp_row_tiles must be greater than 16". Refuse it up
-    # front, and do not relax this after testing only a forward pass.
-    assert head_kv >= 32, (
-        f"the sparse attention backward needs at least 32 heads per group, got {head_kv}; "
-        "its GEMM over min(64, heads) rows fails to compile below that"
-    )
 
     kernel = dsv4_sparse_attn_fwd(
         heads,
@@ -121,28 +135,12 @@ def dsv4_sparse_attn_backward(
     _, _, kv_group, _ = kv.shape
     assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
     assert kv.shape[0] == batch
-    # `preprocess` tiles the channel axis at `block_ND = 32` and reads whole tiles, so a `dim`
-    # below that (or not a multiple of it) over-reads into the next head and silently corrupts
-    # `Delta`, hence `dq`, `dkv` and `dsink`. This subsumes `atomic_addx4`'s own requirement
-    # that four channels be contiguous.
-    assert dim % 32 == 0, "preprocess tiles the channel axis at 32 and reads whole tiles"
+    # This op is public, so it repeats the forward's shape checks rather than trusting autograd.
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    assert shape_error is None, shape_error
     topk = indices.shape[-1]
     assert indices.shape == (batch, seq_len, kv_group, topk)
     assert lse.shape == (batch, seq_len, heads)
-    # This op is public, so it repeats the forward's head checks rather than trusting autograd.
-    # The kernel writes whole `block_H` tiles of `dQ` and reads whole tiles of `Q`, `dO` and
-    # `Lse`, so a head count the tiler pads runs off the end of all four. Below 32 heads the
-    # `block_H = min(64, padded_H)` GEMM fails to compile at all.
-    head_kv = heads // kv_group
-    padded_heads = max(tilelang.math.next_power_of_2(head_kv), 16)
-    assert padded_heads == head_kv, (
-        f"the kernel tiles {padded_heads} heads per group but q has {head_kv}; "
-        "a head count the tiler pads would read and write past the end of the head axis"
-    )
-    assert head_kv >= 32, (
-        f"the sparse attention backward needs at least 32 heads per group, got {head_kv}; "
-        "its GEMM over min(64, heads) rows fails to compile below that"
-    )
 
     preprocess_kernel = preprocess(heads, dim)
     bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True)

@@ -25,6 +25,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import get_args
 
 import torch
 import torch.utils._pytree as pytree
@@ -33,13 +34,9 @@ from torch.utils._python_dispatch import TorchDispatchMode
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig  # noqa: E402
+from prime_rl.configs.trainer import ActivationCheckpointConfig, DSV4AttnImplementation  # noqa: E402
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper  # noqa: E402
-from prime_rl.trainer.models.deepseek_v4.attention import (  # noqa: E402
-    _ATTN_IMPLS,
-    DeepseekV4Attention,
-    PackedContext,
-)
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4DecoderLayer  # noqa: E402
@@ -321,23 +318,6 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
     raise ValueError(f"unknown module {name!r}")
 
 
-def apply_attn_impl(point: Point, attn_impl: str) -> int:
-    """Snapshot `attn_impl` onto every `DeepseekV4Attention` the built module owns.
-
-    Setting `PRIME_RL_DSV4_ATTN` here would do nothing: the module global it feeds is read at
-    import time and this file imported the attention module before `main` ever ran. Each layer
-    copies that global into `self.attn_impl` at construction, so the override has to happen after
-    the module exists. Returns how many layers were retargeted, which is 0 for the modules that
-    own no attention layer.
-    """
-    if not isinstance(point.module, torch.nn.Module):
-        return 0
-    layers = [m for m in point.module.modules() if isinstance(m, DeepseekV4Attention)]
-    for layer in layers:
-        layer.attn_impl = attn_impl
-    return len(layers)
-
-
 MODULES = [
     "attn-sliding",
     "attn-csa",
@@ -471,9 +451,9 @@ def main() -> int:
     parser.add_argument("--ac", choices=["none", "full"], default="none", help="decoder-layer activation checkpointing")
     parser.add_argument(
         "--attn-impl",
-        choices=sorted(_ATTN_IMPLS),
+        choices=list(get_args(DSV4AttnImplementation)),
         default="kernel",
-        help="CSA attention implementation, applied after the module is built",
+        help="CSA attention implementation, set on the config the module is built from",
     )
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--out", type=Path, required=True)
@@ -533,6 +513,8 @@ def main() -> int:
     else:
         config = build_config()
         assert_real_config(config)
+    # Before `build_point`, since every attention layer resolves this at construction.
+    config.dsv4_attn = args.attn_impl
 
     seq_lens = document_layout(args.seq_len, args.doc_len)
     record["seq_lens"] = seq_lens
@@ -543,9 +525,7 @@ def main() -> int:
 
     try:
         point = build_point(args.module, config, seq_lens, dtype, device, args.ac, randomize)
-        n_retargeted = apply_attn_impl(point, args.attn_impl)
-        record["attn_impl_layers"] = n_retargeted
-        point.note = ", ".join(filter(None, [point.note, f"attn_impl={args.attn_impl}, attn_layers={n_retargeted}"]))
+        point.note = ", ".join(filter(None, [point.note, f"attn_impl={args.attn_impl}"]))
         record["note"] = point.note
         record["module_params"] = sum(p.numel() for p in point.parameters())
         if not args.tiny and args.module.startswith("attn-"):

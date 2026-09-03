@@ -107,7 +107,7 @@ table evaluated at positions other than the ones the causal thresholds count in,
 constructed. It runs once per model forward, since none of this depends on depth.
 """
 
-import os
+import functools
 from dataclasses import dataclass
 
 import torch
@@ -118,43 +118,65 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
-    from prime_rl.trainer.models.kernels.dsv4_sparse_attn import dsv4_sparse_attn
+    from prime_rl.trainer.models.kernels.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
+    sparse_attn_shape_error = None  # type: ignore
 
 _ATTN_IMPLS = frozenset({"eager", "gather", "kernel"})
-
-# Temporary scaffolding for the sparse-attention rollout, deliberately not a config field.
-# Only the default: every layer snapshots it into `self.attn_impl` at construction, so
-# rebinding this afterwards does nothing to a model that already exists.
-#
-# The default adapts to what is installed; an explicit request does not. tilelang ships only in
-# the linux-gated `gpu` extra, so an unconditional `kernel` default would leave a macOS or
-# extras-free install unable to import the model at all. Naming `kernel` by hand states an
-# intent, so it raises rather than silently running something slower than what was asked for.
-# Either way this ends up holding a concrete implementation, never a sentinel, so anything that
-# logs it reports what will actually run.
-if "PRIME_RL_DSV4_ATTN" in os.environ:
-    DSV4_ATTN_IMPL = os.environ["PRIME_RL_DSV4_ATTN"]
-    if DSV4_ATTN_IMPL not in _ATTN_IMPLS:
-        raise ValueError(f"PRIME_RL_DSV4_ATTN must be one of {sorted(_ATTN_IMPLS)}, got {DSV4_ATTN_IMPL!r}")
-    if DSV4_ATTN_IMPL == "kernel" and dsv4_sparse_attn is None:
-        raise ValueError(
-            "PRIME_RL_DSV4_ATTN='kernel' needs the tilelang sparse-attention kernel, which failed to "
-            "import. Install the `gpu` extra (tilelang) or pick another PRIME_RL_DSV4_ATTN value."
-        )
-else:
-    DSV4_ATTN_IMPL = "gather" if dsv4_sparse_attn is None else "kernel"
 
 # The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
 # `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production
 # config's `sliding_window + index_topk = 128 + 512 = 640` satisfies it for free; a toy config
 # does not, and pads with sentinel slots, which are masked and therefore semantically free.
 _SLOT_TILE = 64
+
+
+def _kernel_blocker(num_heads: int, head_dim: int, dtype: torch.dtype) -> str | None:
+    """Why the fused kernel cannot run at this shape and dtype, or ``None`` if it can."""
+    if dsv4_sparse_attn is None:
+        return "the tilelang sparse-attention kernel failed to import; install the `gpu` extra"
+    # CSA gives every query head the same single KV head, so the kernel's `kv_group` is 1. The
+    # shape constraints themselves are stated once, next to the kernels they come from.
+    shape_error = sparse_attn_shape_error(num_heads, 1, head_dim)
+    if shape_error is not None:
+        return shape_error
+    # FSDP mixed precision can make the compute dtype differ from the dtype a module is built
+    # under, so the default dtype is a heuristic for `auto` only. An explicit `kernel` request
+    # still raises at forward time, in `SparseAttnInputs.attend`, on non-bfloat16 queries.
+    if dtype != torch.bfloat16:
+        return f"the kernel runs in bfloat16 only, but the default dtype is {dtype}"
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def _resolve_attn_impl(requested: str, num_heads: int, head_dim: int, dtype: torch.dtype) -> str:
+    """The concrete CSA implementation, cached on everything the decision depends on."""
+    if requested != "auto" and requested not in _ATTN_IMPLS:
+        raise ValueError(f"dsv4_attn must be one of {['auto', *sorted(_ATTN_IMPLS)]}, got {requested!r}")
+
+    blocker = _kernel_blocker(num_heads, head_dim, dtype)
+    if requested == "kernel" and blocker is not None:
+        raise ValueError(f"dsv4_attn='kernel' cannot run: {blocker}")
+
+    if requested != "auto":
+        resolved, reason = requested, None
+    elif blocker is None:
+        resolved, reason = "kernel", None
+    else:
+        resolved, reason = "eager", blocker
+
+    if requested == "auto":
+        suffix = f" ({reason})" if reason is not None else ""
+        get_logger().info(f"Auto-resolved dsv4_attn='auto' to '{resolved}'{suffix}")
+    else:
+        get_logger().info(f"Using dsv4_attn='{resolved}'")
+    return resolved
 
 
 class DeepseekV4GroupedLinear(nn.Linear):
@@ -206,7 +228,7 @@ def eager_attention_with_sinks(
 
 
 def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: Tensor, scale: float) -> Tensor:
-    """Attention of each query over the `n_slots` KV positions it gathers, in float32.
+    """Attention of each query over the `n_slots` KV positions it gathers, in `q.dtype`.
 
     `q` is `(batch, seq_len, heads, head_dim)`, `kv_buf` is `(batch, n_positions, 1, head_dim)`,
     `indices` is `(batch, seq_len, 1, n_slots)` int32 addressing `kv_buf`'s position axis, and
@@ -216,26 +238,33 @@ def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: T
     A slot holding the sentinel (the trailing zero position of `kv_buf`) is masked out, so a
     query with a short window or fewer picks than slots costs nothing but the loads.
 
-    This materializes the `(batch, seq_len, n_slots, head_dim)` gather in float32: at production
-    shapes (640 slots, 512 channels) that is 1.3 MB per token, about 86 GB at `seq_len = 65536`.
-    It is an oracle for the kernel that replaces it and a small-shape fallback, not a
-    long-context path. It runs entirely in float32 so it matches a kernel accumulating in fp32.
+    This materializes the `(batch, seq_len, n_slots, head_dim)` gather: at production shapes
+    (640 slots, 512 channels) in bfloat16 that is 0.66 MB per token, about 43 GB at
+    `seq_len = 65536`. It is an oracle for the kernel that replaces it and an explicitly
+    selectable path for installs and dtypes that kernel cannot serve, never what `auto` falls
+    back to, and not a long-context path.
+
+    Arithmetic follows `q.dtype`, exactly as `eager_attention_with_sinks` does, so the two paths
+    differ in which keys they read and not in precision. Handed float32 tensors it is still the
+    float32 oracle for a kernel accumulating in fp32.
     """
     sentinel = kv_buf.shape[1] - 1
     slot_idx = indices[:, :, 0, :].to(torch.int64)  # (b, s, k)
     batch_idx = torch.arange(kv_buf.shape[0], device=kv_buf.device)[:, None, None]
-    keys = kv_buf[batch_idx, slot_idx, 0].float()  # (b, s, k, d)
+    keys = kv_buf[batch_idx, slot_idx, 0].to(q.dtype)  # (b, s, k, d)
 
-    logits = torch.einsum("bshd,bskd->bshk", q.float(), keys) * scale
+    logits = torch.einsum("bshd,bskd->bshk", q, keys) * scale
     logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
 
     # The sink logit is unscaled, as in `eager_attention_with_sinks`, which adds it after the
-    # dot products are scaled. Subtracting the row max keeps a fully sentinel row finite.
-    sink_logits = sinks.float().reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
+    # dot products are scaled. Subtracting the row max keeps a fully sentinel row finite, and in
+    # bfloat16 it is also what keeps the exponentials from overflowing.
+    sink_logits = sinks.to(logits.dtype).reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
     combined_logits = torch.cat([logits, sink_logits], dim=-1)
-    probs = F.softmax(combined_logits - combined_logits.max(dim=-1, keepdim=True).values, dim=-1)
+    combined_logits = combined_logits - combined_logits.max(dim=-1, keepdim=True).values
+    probs = F.softmax(combined_logits, dim=-1, dtype=combined_logits.dtype)
 
-    return torch.einsum("bshk,bskd->bshd", probs[..., :-1], keys).to(q.dtype)
+    return torch.einsum("bshk,bskd->bshd", probs[..., :-1], keys)
 
 
 def build_sliding_window_mask(*, tok_doc_idx: Tensor, sliding_window: int, dtype: torch.dtype) -> Tensor:
@@ -530,7 +559,7 @@ class SparseAttnInputs:
         return out
 
     def _attend_eager_gather(self, q: Tensor, sinks: Tensor, scale: float) -> Tensor:
-        """Same attention as `attend`, unfused, through the float32 `sparse_attention_gather`.
+        """Same attention as `attend`, unfused, through `sparse_attention_gather`.
 
         "Eager" is the PyTorch sense of unfused here, not the dense-mask `eager` layer path,
         which reaches attention without ever building these inputs.
@@ -826,10 +855,9 @@ class DeepseekV4Attention(nn.Module):
         )
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
         self.sinks = nn.Parameter(torch.zeros(self.num_heads))
-        # Per-layer rather than a global read at call time, which makes the choice explicit and
-        # steerable in a test without patching process-wide state. Temporary scaffolding for the
-        # sparse-attention rollout, to be replaced along with `DSV4_ATTN_IMPL` itself.
-        self.attn_impl = DSV4_ATTN_IMPL
+        self.attn_impl = _resolve_attn_impl(
+            config.dsv4_attn, config.num_attention_heads, config.head_dim, torch.get_default_dtype()
+        )
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
