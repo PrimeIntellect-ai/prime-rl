@@ -9,6 +9,8 @@ from typing import cast
 # have incompatible CUDA requirements. We only enable it explicitly for models that need it (GPT-OSS).
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
+from collections import Counter
+
 import torch
 import torch._dynamo
 import torch.nn as nn
@@ -433,6 +435,21 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
     # so absence of custom-impl MoE routers is the common case, not an error.
     if num_routers > 0:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
+
+
+def log_attention_impl(model: nn.Module) -> None:
+    """Record which attention implementation the layers resolved to.
+
+    DeepSeek V4 picks between a dense path, a gather reference and a fused kernel, per layer at
+    construction, from an environment variable. Without this a run leaves no record of which of
+    the three produced its numbers, which is exactly the confusion a measurement run cannot
+    afford. A no-op for architectures that do not carry the attribute.
+    """
+    logger = get_logger()
+    impls = Counter(module.attn_impl for module in model.modules() if hasattr(module, "attn_impl"))
+    if impls:
+        summary = ", ".join(f"{count} layers on '{impl}'" for impl, count in sorted(impls.items()))
+        logger.info(f"Attention implementation: {summary}")
 
 
 def get_full_offload_dtype_policy(
@@ -1272,6 +1289,8 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
+
+    log_attention_impl(model)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

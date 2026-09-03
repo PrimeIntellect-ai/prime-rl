@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive `profile_ds_v4.py` over the (module, seq_len, mode) grid, eight modules at a time.
+# Drive `profile_ds_v4.py` over the (module, attn impl, seq_len, mode) grid, eight jobs at a time.
 #
 # One subprocess per measured point, because the sweep is designed to hit OOM and a process that
 # has raised `OutOfMemoryError` reports garbage for every peak after it. One GPU handles one
@@ -11,14 +11,22 @@
 #
 #   ./notes/ds-v4-kernels/bench/sweep.sh
 #
+# Every axis is overridable from the environment, so one module or one implementation can be
+# re-swept without editing this file:
+#
+#   MODULES=attn-csa IMPLS="eager gather kernel" LENS="2048 4096" ./notes/ds-v4-kernels/bench/sweep.sh
+#
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 
 RAW=notes/ds-v4-kernels/bench/raw
 LOGS=outputs/ds-v4-kernels/logs
 HARNESS=notes/ds-v4-kernels/bench/profile_ds_v4.py
-LENS=(2048 4096 8192 12288 16384 24576 32768)
-MODULES=(attn-csa attn-hca attn-sliding indexer-scorer indexer compressor-csa hyperconnection compressor-hca rmsnorm rotary packed-context)
+read -r -a LENS <<< "${LENS:-2048 4096 8192 12288 16384 24576 32768}"
+read -r -a MODULES <<< "${MODULES:-attn-csa attn-hca attn-sliding indexer-scorer indexer compressor-csa hyperconnection compressor-hca rmsnorm rotary packed-context}"
+# Only the CSA modules have more than one implementation, so the default is the single one the
+# harness itself defaults to; widen it explicitly to compare paths.
+read -r -a IMPLS <<< "${IMPLS:-kernel}"
 
 mkdir -p "$RAW" "$LOGS"
 
@@ -28,8 +36,12 @@ status_of() {
 }
 
 run_point() {
-  local gpu=$1 module=$2 t=$3 mode=$4
+  local gpu=$1 module=$2 t=$3 mode=$4 impl=$5
+  # `eager` keeps the bare tag the pre-impl sweep wrote, since those files are all eager: that is
+  # what lets an existing point still resume. The other implementations take a segment of their
+  # own, without which the second impl would skip every point the first one already wrote.
   local tag="${module}__t${t}__${mode}"
+  [[ "$impl" != "eager" ]] && tag="${module}__t${t}__${impl}__${mode}"
   local out="$RAW/${tag}.json"
   if [[ -f "$out" ]]; then
     status_of "$out"
@@ -41,7 +53,7 @@ run_point() {
   local budget=()
   [[ "$mode" == "timing" ]] && budget=(--warmup 300 --rep 3000)
   CUDA_VISIBLE_DEVICES="$gpu" uv run --no-sync "$HARNESS" "$module" "$t" \
-    --mode "$mode" "${budget[@]}" --out "$out" > "$LOGS/${tag}.log" 2>&1
+    --mode "$mode" --attn-impl "$impl" "${budget[@]}" --out "$out" > "$LOGS/${tag}.log" 2>&1
   if [[ ! -f "$out" ]]; then
     echo "crash"
     return
@@ -50,12 +62,12 @@ run_point() {
 }
 
 run_module() {
-  local gpu=$1 module=$2
+  local gpu=$1 module=$2 impl=$3
   local survived=()
   for t in "${LENS[@]}"; do
     local status
-    status=$(run_point "$gpu" "$module" "$t" memory)
-    echo "[gpu$gpu] $module t=$t memory -> $status"
+    status=$(run_point "$gpu" "$module" "$t" memory "$impl")
+    echo "[gpu$gpu] $module/$impl t=$t memory -> $status"
     if [[ "$status" == "ok" ]]; then
       survived+=("$t")
     else
@@ -65,18 +77,20 @@ run_module() {
   done
   for t in "${survived[@]}"; do
     local status
-    status=$(run_point "$gpu" "$module" "$t" timing)
-    echo "[gpu$gpu] $module t=$t timing -> $status"
+    status=$(run_point "$gpu" "$module" "$t" timing "$impl")
+    echo "[gpu$gpu] $module/$impl t=$t timing -> $status"
   done
 }
 
 gpu=0
 for module in "${MODULES[@]}"; do
-  run_module "$gpu" "$module" &
-  gpu=$(((gpu + 1) % 8))
-  # More modules than GPUs: let the first wave finish before starting the wrap-around, so no two
-  # processes ever share a device.
-  if ((gpu == 0)); then wait; fi
+  for impl in "${IMPLS[@]}"; do
+    run_module "$gpu" "$module" "$impl" &
+    gpu=$(((gpu + 1) % 8))
+    # More jobs than GPUs: let the first wave finish before starting the wrap-around, so no two
+    # processes ever share a device.
+    if ((gpu == 0)); then wait; fi
+  done
 done
 wait
 echo "sweep complete: $(ls "$RAW" | wc -l) points in $RAW"

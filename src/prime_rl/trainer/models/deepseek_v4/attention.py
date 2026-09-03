@@ -131,14 +131,24 @@ _ATTN_IMPLS = frozenset({"eager", "gather", "kernel"})
 # Temporary scaffolding for the sparse-attention rollout, deliberately not a config field.
 # Only the default: every layer snapshots it into `self.attn_impl` at construction, so
 # rebinding this afterwards does nothing to a model that already exists.
-DSV4_ATTN_IMPL = os.environ.get("PRIME_RL_DSV4_ATTN", "eager")
-if DSV4_ATTN_IMPL not in _ATTN_IMPLS:
-    raise ValueError(f"PRIME_RL_DSV4_ATTN must be one of {sorted(_ATTN_IMPLS)}, got {DSV4_ATTN_IMPL!r}")
-if DSV4_ATTN_IMPL == "kernel" and dsv4_sparse_attn is None:
-    raise ValueError(
-        "PRIME_RL_DSV4_ATTN='kernel' needs the tilelang sparse-attention kernel, which failed to "
-        "import. Install the `gpu` extra (tilelang) or pick another PRIME_RL_DSV4_ATTN value."
-    )
+#
+# The default adapts to what is installed; an explicit request does not. tilelang ships only in
+# the linux-gated `gpu` extra, so an unconditional `kernel` default would leave a macOS or
+# extras-free install unable to import the model at all. Naming `kernel` by hand states an
+# intent, so it raises rather than silently running something slower than what was asked for.
+# Either way this ends up holding a concrete implementation, never a sentinel, so anything that
+# logs it reports what will actually run.
+if "PRIME_RL_DSV4_ATTN" in os.environ:
+    DSV4_ATTN_IMPL = os.environ["PRIME_RL_DSV4_ATTN"]
+    if DSV4_ATTN_IMPL not in _ATTN_IMPLS:
+        raise ValueError(f"PRIME_RL_DSV4_ATTN must be one of {sorted(_ATTN_IMPLS)}, got {DSV4_ATTN_IMPL!r}")
+    if DSV4_ATTN_IMPL == "kernel" and dsv4_sparse_attn is None:
+        raise ValueError(
+            "PRIME_RL_DSV4_ATTN='kernel' needs the tilelang sparse-attention kernel, which failed to "
+            "import. Install the `gpu` extra (tilelang) or pick another PRIME_RL_DSV4_ATTN value."
+        )
+else:
+    DSV4_ATTN_IMPL = "gather" if dsv4_sparse_attn is None else "kernel"
 
 # The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
 # `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production

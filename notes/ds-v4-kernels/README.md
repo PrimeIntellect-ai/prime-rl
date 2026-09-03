@@ -12,6 +12,7 @@ point, no parallelism.
 | `memory-model.md` | closed-form bytes per tensor, fitted and validated to 1.1% |
 | `static-analysis.md` | by-eye bottlenecks from four reviews, annotated with what measurement said |
 | `megatron-survey.md` | what Megatron-LM `dev` already has for DS V4, and how portable it is |
+| `before-after.md` | phase 1: what the fused CSA attention kernel measured, against this baseline |
 | `bench/` | the throwaway harness, the sweep driver, and the renderer |
 
 ## Three structural findings
@@ -101,8 +102,8 @@ measured. Times are `do_bench` medians at `t = 8192`.
 
 | # | target | bytes saved at `t=8192` | projected at `t=65536` | time saved | reuse or write | depends on |
 |---|---|---|---|---|---|---|
-| 1 | **Banded + gathered flash attention core** replacing `eager_attention_with_sinks` | 30.1 GB (CSA), 24.0 GB (sliding), per layer | 1923 GB (CSA), 1539 GB (sliding) | most of 290 ms fwd+bwd per CSA layer | **write**: no stock kernel takes `head_dim 512` on sm90; prime-rl's TileLang `sparse_mla_fwd` is the closest base | needs #2 first (index representation) |
-| 2 | **Sparse index representation**: keep `top_k_indices`, drop the dense `block_bias` and the mask `cat` | 0.19 GB per CSA layer | 12 GB per CSA layer | small on its own | **reuse**: Megatron's THD index algebra (`csa.py:225-352`) | none; enabling change for #1 |
+| 1 | **Banded + gathered flash attention core** replacing `eager_attention_with_sinks`. **Done for CSA**, see `before-after.md`; sliding untouched | measured 18.7 GB fwd and 36.5 GB bwd per CSA layer; 24.0 GB (sliding) projected | ceiling moved 12288 to 24576 per CSA layer, and the forward is now indexer-bound, not attention-bound; 1539 GB (sliding) projected | measured 229 of 290 ms fwd+bwd per CSA layer, 6.0x at t=12288 | **written**: no stock kernel takes `head_dim 512` on sm90, so this is a TileLang kernel | needed #2 first (index representation) |
+| 2 | **Sparse index representation**: keep `top_k_indices`, drop the dense `block_bias` and the mask `cat`. **Done for CSA**, HCA still renders a dense bias | 0.19 GB per CSA layer | 12 GB per CSA layer | small on its own, and it is what made #1 possible | **written**: the index contract is `SparseAttnInputs` in `deepseek_v4/attention.py` | none; enabling change for #1 |
 | 3 | **Drop the dense sliding mask** for `(cu_seqlens, sliding_window)` | 0.8 GB transient, 0.12 GB resident (once per forward, not per layer) | 52 GB transient, 8.0 GB resident | 1.6 ms per forward | **write**, trivial once #1 consumes bounds | #1 |
 | 4 | **mHC fused norm + projection** replacing the fp32 flatten at `hyperconnections.py:51` | 1.68 GB per instance, x86 instances | 13.3 GB per instance | ~0.7 of 8.1 ms per instance | **partial reuse**: `quack.rmsnorm(x, None, ...)` is a one-line drop-in for the norm; Megatron's `fused_proj_rms_compute_h` is cuTile-only and unavailable on H200 | none |
 | 5 | **Fused Sinkhorn** replacing the 39-step loop | 0.03 GB saved state per instance | 0.20 GB per instance | launch-bound: 10,234 launches to 86 per forward | **reuse**: Megatron `fused_sinkhorn`, Triton, sm90-clean, semantics verified byte-identical | none |

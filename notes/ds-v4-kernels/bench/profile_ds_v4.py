@@ -24,7 +24,6 @@ import importlib.util
 import json
 import sys
 import time
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -37,6 +36,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from prime_rl.configs.trainer import ActivationCheckpointConfig  # noqa: E402
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.attention import (  # noqa: E402
+    _ATTN_IMPLS,
     DeepseekV4Attention,
     PackedContext,
 )
@@ -229,7 +229,11 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
 
     if name in ("attn-sliding", "attn-csa", "attn-hca"):
         return attention(
-            {"attn-sliding": "sliding_attention", "attn-csa": "compressed_sparse_attention", "attn-hca": "heavily_compressed_attention"}[name]
+            {
+                "attn-sliding": "sliding_attention",
+                "attn-csa": "compressed_sparse_attention",
+                "attn-hca": "heavily_compressed_attention",
+            }[name]
         )
 
     if name in ("compressor-csa", "compressor-hca"):
@@ -246,8 +250,12 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
         q_residual = attn.q_a_norm(attn.q_a_proj(hidden)).detach().requires_grad_(True)
         if name == "indexer":
             # `topk` returns int64 indices, so there is nothing to take a backward through.
-            return Point(indexer, lambda: indexer(hidden, q_residual, packed), differentiable=False,
-                         note="forward only: output is int64 topk indices")
+            return Point(
+                indexer,
+                lambda: indexer(hidden, q_residual, packed),
+                differentiable=False,
+                note="forward only: output is int64 topk indices",
+            )
         from prime_rl.trainer.models.deepseek_v4.rotary import apply_rotary_pos_emb_interleaved
 
         compressed_kv = indexer.compressor.compress(hidden, packed).detach().requires_grad_(True)
@@ -261,15 +269,20 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
         with torch.device(device), default_dtype(dtype):
             module = DeepseekV4HyperConnection(config)
         randomize(module)
-        streams = torch.randn(batch, seq_len, config.hc_mult, config.hidden_size, device=device, dtype=dtype,
-                              requires_grad=True)
+        streams = torch.randn(
+            batch, seq_len, config.hc_mult, config.hidden_size, device=device, dtype=dtype, requires_grad=True
+        )
         # Backward is taken through `collapsed`, the only one of the three the sublayer consumes
         # as a tensor of activations; `post` and `comb` are gates of size O(t * hc^2).
         return Point(module, lambda: module(streams)[2], note="backward through `collapsed`")
 
     if name == "rotary":
-        return Point(rotary, lambda: rotary(packed.position_ids, "compress", dtype=dtype)[0], differentiable=False,
-                     note="buffers only, no parameters")
+        return Point(
+            rotary,
+            lambda: rotary(packed.position_ids, "compress", dtype=dtype)[0],
+            differentiable=False,
+            note="buffers only, no parameters",
+        )
 
     if name == "rmsnorm":
         with torch.device(device), default_dtype(dtype):
@@ -294,26 +307,51 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
         layer_type = "compressed_sparse_attention" if name == "decoder-csa" else "heavily_compressed_attention"
         # The first three layers are hash-routed and read `input_ids`, so take the first layer of
         # the wanted type that runs the standard router instead.
-        idx = next(i for i, t in enumerate(config.layer_types)
-                   if t == layer_type and i >= config.num_hash_layers)
+        idx = next(i for i, t in enumerate(config.layer_types) if t == layer_type and i >= config.num_hash_layers)
         with torch.device(device), default_dtype(dtype):
             module = DeepseekV4DecoderLayer(config, idx)
         randomize(module)
         if ac == "full":
             module = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode="full", freq=1))(module)
-        streams = torch.randn(batch, seq_len, config.hc_mult, config.hidden_size, device=device, dtype=dtype,
-                              requires_grad=True)
+        streams = torch.randn(
+            batch, seq_len, config.hc_mult, config.hidden_size, device=device, dtype=dtype, requires_grad=True
+        )
         return Point(module, lambda: module(streams, packed=packed), note=f"layer_idx={idx}, ac={ac}")
 
     raise ValueError(f"unknown module {name!r}")
 
 
+def apply_attn_impl(point: Point, attn_impl: str) -> int:
+    """Snapshot `attn_impl` onto every `DeepseekV4Attention` the built module owns.
+
+    Setting `PRIME_RL_DSV4_ATTN` here would do nothing: the module global it feeds is read at
+    import time and this file imported the attention module before `main` ever ran. Each layer
+    copies that global into `self.attn_impl` at construction, so the override has to happen after
+    the module exists. Returns how many layers were retargeted, which is 0 for the modules that
+    own no attention layer.
+    """
+    if not isinstance(point.module, torch.nn.Module):
+        return 0
+    layers = [m for m in point.module.modules() if isinstance(m, DeepseekV4Attention)]
+    for layer in layers:
+        layer.attn_impl = attn_impl
+    return len(layers)
+
+
 MODULES = [
-    "attn-sliding", "attn-csa", "attn-hca",
-    "compressor-csa", "compressor-hca",
-    "indexer", "indexer-scorer",
-    "hyperconnection", "rotary", "rmsnorm", "packed-context",
-    "decoder-csa", "decoder-hca",
+    "attn-sliding",
+    "attn-csa",
+    "attn-hca",
+    "compressor-csa",
+    "compressor-hca",
+    "indexer",
+    "indexer-scorer",
+    "hyperconnection",
+    "rotary",
+    "rmsnorm",
+    "packed-context",
+    "decoder-csa",
+    "decoder-hca",
 ]
 
 
@@ -371,8 +409,9 @@ def measure_timing(point: Point, warmup: int = 25, rep: int = 100) -> dict:
     def forward_backward():
         _scalar(point.forward()).backward()
 
-    both = triton.testing.do_bench(forward_backward, warmup=warmup, rep=rep, quantiles=quantiles,
-                                   grad_to_none=params or None)
+    both = triton.testing.do_bench(
+        forward_backward, warmup=warmup, rep=rep, quantiles=quantiles, grad_to_none=params or None
+    )
     result["fwd_bwd_ms"] = {"p50": both[0], "p20": both[1], "p80": both[2]}
     result["bwd_ms"] = both[0] - fwd[0]
     return result
@@ -430,6 +469,12 @@ def main() -> int:
     parser.add_argument("--mode", choices=["memory", "timing", "attribution"], default="memory")
     parser.add_argument("--doc-len", type=int, default=8192, help="document length packed into the row")
     parser.add_argument("--ac", choices=["none", "full"], default="none", help="decoder-layer activation checkpointing")
+    parser.add_argument(
+        "--attn-impl",
+        choices=sorted(_ATTN_IMPLS),
+        default="kernel",
+        help="CSA attention implementation, applied after the module is built",
+    )
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--trace-dir", type=Path, default=None)
@@ -447,6 +492,7 @@ def main() -> int:
         "doc_len": args.doc_len,
         "mode": args.mode,
         "ac": args.ac,
+        "attn_impl": args.attn_impl,
         "dtype": args.dtype,
         "tiny": args.tiny,
         "device_name": torch.cuda.get_device_name(0),
@@ -456,14 +502,33 @@ def main() -> int:
 
     if args.tiny:
         config = DeepseekV4Config(
-            vocab_size=64, hidden_size=128, moe_intermediate_size=64, num_hidden_layers=5,
-            num_attention_heads=4, num_key_value_heads=1, head_dim=32, q_lora_rank=64,
-            partial_rotary_factor=0.5, max_position_embeddings=256, sliding_window=6,
-            o_groups=2, o_lora_rank=16, index_n_heads=4, index_head_dim=24, index_topk=8,
-            n_routed_experts=8, num_experts_per_tok=2, num_hash_layers=1,
+            vocab_size=64,
+            hidden_size=128,
+            moe_intermediate_size=64,
+            num_hidden_layers=5,
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=32,
+            q_lora_rank=64,
+            partial_rotary_factor=0.5,
+            max_position_embeddings=256,
+            sliding_window=6,
+            o_groups=2,
+            o_lora_rank=16,
+            index_n_heads=4,
+            index_head_dim=24,
+            index_topk=8,
+            n_routed_experts=8,
+            num_experts_per_tok=2,
+            num_hash_layers=1,
             compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
-            layer_types=["sliding_attention", "compressed_sparse_attention", "heavily_compressed_attention",
-                         "compressed_sparse_attention", "sliding_attention"],
+            layer_types=[
+                "sliding_attention",
+                "compressed_sparse_attention",
+                "heavily_compressed_attention",
+                "compressed_sparse_attention",
+                "sliding_attention",
+            ],
         )
     else:
         config = build_config()
@@ -478,6 +543,9 @@ def main() -> int:
 
     try:
         point = build_point(args.module, config, seq_lens, dtype, device, args.ac, randomize)
+        n_retargeted = apply_attn_impl(point, args.attn_impl)
+        record["attn_impl_layers"] = n_retargeted
+        point.note = ", ".join(filter(None, [point.note, f"attn_impl={args.attn_impl}, attn_layers={n_retargeted}"]))
         record["note"] = point.note
         record["module_params"] = sum(p.numel() for p in point.parameters())
         if not args.tiny and args.module.startswith("attn-"):
