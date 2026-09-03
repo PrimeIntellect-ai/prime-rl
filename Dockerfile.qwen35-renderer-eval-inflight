@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=prime-rl-v071dev83-qwen35-renderer-eval:latest
+FROM ${BASE_IMAGE}
+
+USER root
+WORKDIR /app
+
+# Small source overlay on the already-tested Qwen3.5 renderer image.
+COPY packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py /app/packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py
+COPY src/prime_rl/orchestrator/dispatcher.py /app/src/prime_rl/orchestrator/dispatcher.py
+COPY src/prime_rl/orchestrator/orchestrator.py /app/src/prime_rl/orchestrator/orchestrator.py
+
+# Included so the overlay can be validated before publication.
+COPY tests/unit/test_configs.py /app/tests/unit/test_configs.py
+COPY tests/unit/orchestrator/test_dispatcher_capacity.py /app/tests/unit/orchestrator/test_dispatcher_capacity.py
+
+ENTRYPOINT []
+CMD ["/bin/bash"]
