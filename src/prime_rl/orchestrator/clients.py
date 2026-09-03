@@ -81,9 +81,8 @@ class AdminClients:
     so these clients bypass it via ``admin_base_url``.
 
     The client order is load-bearing: ``admin_base_url`` order must match the
-    GPU rank order — the ``rank_offset`` math in ``init_nccl_broadcast`` /
-    ``init_nixl_broadcast`` and the metrics collector's role list index into
-    it."""
+    GPU rank order used by NCCL/NIXL initialization and the metrics collector's
+    role list index."""
 
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
