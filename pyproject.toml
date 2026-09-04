@@ -240,8 +240,6 @@ torchao = false
 prime-kernels = false
 
 [tool.uv.sources]
-# TEMPORARY: prime-runs is not on PyPI yet (PrimeIntellect-ai/prime #856); drop once 0.1.0 is published
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-runs", rev = "aba26790" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.
