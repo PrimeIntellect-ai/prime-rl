@@ -1,4 +1,9 @@
-"""DeepSeek V4 checks that need a GPU.
+"""DeepSeek V4 modeling checks that need a GPU, at toy shapes.
+
+Everything that reaches a kernel, and everything that needs the real V4-Flash shapes to be
+meaningful at all, lives in `test_deepseek_v4_kernels.py`. What is left here is the config, the
+checkpoint and vLLM boundaries, the rotary tables, and the packing invariants, all of which a
+five-layer toy `_MODEL` expresses as well as a production one and far more cheaply.
 
 There is no HF oracle here. `transformers.models.deepseek_v4` only exists from transformers 5.15
 and the repo pins an older version, so every assertion is either self-consistency (packed against
@@ -75,7 +80,7 @@ _MODEL = dict(
 _MODEL_BATCH, _MODEL_SEQ = 2, 32
 _MODULE_BATCH = 2
 
-_CSA_LAYER, _HCA_LAYER = 1, 2
+_SLIDING_LAYER, _CSA_LAYER, _HCA_LAYER = 0, 1, 2
 _COMPRESS_RATE = _MODEL["compress_rates"]["compressed_sparse_attention"]
 _HCA_COMPRESS_RATE = _MODEL["compress_rates"]["heavily_compressed_attention"]
 
@@ -134,27 +139,28 @@ def _randomize(module: nn.Module) -> None:
                 buffer.copy_(_tid2eid(buffer.shape[0], router.num_experts, router.top_k))
 
 
-def _prime_config() -> DeepseekV4Config:
-    return DeepseekV4Config(**_MODEL)
+def _prime_config(attn_impl: str = "eager") -> DeepseekV4Config:
+    """The toy config. It defaults to eager because the kernel cannot tile 4 attention heads."""
+    return DeepseekV4Config(**_MODEL, _attn_impl=attn_impl)
 
 
-def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
+def get_prime_model(dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config())
+        model = DeepseekV4ForCausalLM._from_config(_prime_config(attn_impl))
     _randomize(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
 
-def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
+def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
     """One attention layer of the same config the whole-model tests use.
 
     `DeepseekV4Attention` reads no MoE or hyper-connection field, so the layer this builds is
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_prime_config(), layer_idx=layer_idx)
+        module = DeepseekV4Attention(_prime_config(attn_impl), layer_idx=layer_idx)
     _randomize(module)
     return module
 
@@ -692,6 +698,7 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
 
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
 
+    # The dense mask is an eager-path artifact; the count below is one call per layer.
     prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
@@ -844,8 +851,12 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 
 @pytest.mark.parametrize(
     ("layer_idx", "doc_lens"),
-    [(_CSA_LAYER, _MID_WINDOW_DOCS), (_HCA_LAYER, _EXACT_MULTIPLE_DOCS)],
-    ids=["csa", "hca"],
+    [
+        (_CSA_LAYER, _MID_WINDOW_DOCS),
+        (_HCA_LAYER, _EXACT_MULTIPLE_DOCS),
+        (_SLIDING_LAYER, _MID_WINDOW_DOCS),
+    ],
+    ids=["csa", "hca", "sliding"],
 )
 def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm):  # noqa: F811
     """The same invariant, one whole attention layer at a time rather than one compressor.
@@ -857,16 +868,30 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
 
     Sharper than `test_deepseek_v4`, which asserts the same property through the logits at a bf16
     floor: this runs in float32 and compares the layer's own output, forward and backward.
+
+    A sliding layer has no compressor and so no entry selection at all; it reads nothing but its
+    own clipped window, which makes it the case where the boundary handling stands alone.
     """
+    # The kernel's own packing invariant is asserted at the Flash shapes in
+    # `test_deepseek_v4_kernels.py`.
     module = prime_attention(layer_idx, dtype=torch.float32)
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)
 
-    q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-    _, block_bias = module.compressor(packed_input.detach(), q_residual, packed)
-    assert (block_bias[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
-        "vacuous probe: no query of the second document reads a compressed entry"
-    )
+    if module.compressor is None:
+        # The second document opens inside a window, so an unclipped one would reach back into
+        # the first. Without that the comparison below would hold under no clipping at all.
+        readable = packed.window_indices[doc_lens[0]] >= 0
+        assert readable.sum() < module.config.sliding_window, (
+            "vacuous probe: the second document's first query is not window-clipped at the boundary"
+        )
+    else:
+        q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
+        _, picks = module.compressor(packed_input.detach(), q_residual, packed)
+        # (batch, seq_len, n_picks), with `-1` where the query had no entry left to pick.
+        assert (picks[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
+            "vacuous probe: no query of the second document picks a compressed entry"
+        )
 
     packed_output, _ = module(packed_input, packed=packed)
     with torch.device("cuda"):
