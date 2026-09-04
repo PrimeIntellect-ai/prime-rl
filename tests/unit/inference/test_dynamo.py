@@ -1,8 +1,14 @@
 import asyncio
+import base64
+import importlib
+import io
+import sys
 import time
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import numpy as np
 import pytest
 
 from prime_rl.configs.shared import ClientConfig
@@ -15,6 +21,10 @@ from prime_rl.inference.dynamo import (
 )
 from prime_rl.inference.dynamo import (
     parse_dynamo_workers as _parse_dynamo_workers,
+)
+from prime_rl.inference.vllm.routed_experts import (
+    install_native_routed_experts_normalizer,
+    normalize_native_routed_experts,
 )
 from prime_rl.orchestrator.clients import setup_admin_plane
 
@@ -1249,3 +1259,101 @@ def test_dynamo_rejects_nixl_initialization_without_admin_mutation():
         )
 
     asyncio.run(admin.aclose())
+
+
+def test_native_npy_routed_experts_are_normalized_at_prime_boundary():
+    routed = np.arange(12, dtype=np.int32).reshape(3, 2, 2)
+    encoded = io.BytesIO()
+    np.save(encoded, routed, allow_pickle=False)
+    result = {"routed_experts": base64.b64encode(encoded.getvalue()).decode("ascii")}
+
+    normalize_native_routed_experts(result, start=7)
+
+    payload = result["routed_experts"]
+    assert payload["shape"] == [3, 2, 2]
+    assert payload["dtype"] == "uint8"
+    assert payload["start"] == 7
+    assert base64.b64decode(payload["data"]) == routed.astype(np.uint8).tobytes()
+
+
+def test_native_npy_routed_experts_canonicalizes_big_endian_indices():
+    routed = np.array([1, 300], dtype=">i4").reshape(1, 1, 2)
+    encoded = io.BytesIO()
+    np.save(encoded, routed, allow_pickle=False)
+    result = {"routed_experts": base64.b64encode(encoded.getvalue()).decode("ascii")}
+
+    normalize_native_routed_experts(result)
+
+    payload = result["routed_experts"]
+    assert payload["dtype"] == "uint16"
+    assert np.frombuffer(base64.b64decode(payload["data"]), dtype=np.uint16).tolist() == [1, 300]
+
+
+@pytest.mark.parametrize("value", [-1, 65536])
+def test_native_npy_routed_experts_rejects_invalid_indices(value):
+    encoded = io.BytesIO()
+    np.save(encoded, np.array([value], dtype=np.int32).reshape(1, 1, 1), allow_pickle=False)
+    result = {"routed_experts": base64.b64encode(encoded.getvalue()).decode("ascii")}
+
+    with pytest.raises(ValueError, match="between 0 and 65535"):
+        normalize_native_routed_experts(result)
+
+
+def test_native_npy_routed_experts_rejects_oversized_declared_shape():
+    encoded = io.BytesIO()
+    np.lib.format.write_array_header_1_0(
+        encoded,
+        {
+            "descr": np.lib.format.dtype_to_descr(np.dtype(np.uint16)),
+            "fortran_order": False,
+            "shape": (1, 1, 32 * 1024 * 1024 + 1),
+        },
+    )
+    result = {"routed_experts": base64.b64encode(encoded.getvalue()).decode("ascii")}
+
+    with pytest.raises(ValueError, match="64 MiB"):
+        normalize_native_routed_experts(result)
+
+
+def test_prime_routed_experts_envelope_is_left_unchanged():
+    payload = {"data": "AQID", "shape": [1, 1, 3], "dtype": "uint8", "start": 0}
+    result = {"routed_experts": payload}
+
+    normalize_native_routed_experts(result, start=9)
+
+    assert result["routed_experts"] is payload
+
+
+def test_renderer_boundary_supplies_prime_prompt_start(monkeypatch):
+    import renderers.client as renderer_client
+
+    routed = np.arange(4, dtype=np.int16).reshape(1, 2, 2)
+    encoded = io.BytesIO()
+    np.save(encoded, routed, allow_pickle=False)
+
+    async def generate(**kwargs):
+        return {"routed_experts": base64.b64encode(encoded.getvalue()).decode("ascii")}
+
+    monkeypatch.setattr(renderer_client, "generate", generate)
+    install_native_routed_experts_normalizer()
+
+    result = asyncio.run(renderer_client.generate(sampling_params={"routed_experts_prompt_start": 11}))
+
+    assert result["routed_experts"]["start"] == 11
+
+
+def test_env_server_workers_install_native_routed_experts_normalizer(monkeypatch):
+    utils_module = ModuleType("prime_rl.utils.utils")
+    utils_module.clean_exit = lambda function: function
+    monkeypatch.setitem(sys.modules, "prime_rl.utils.utils", utils_module)
+    sys.modules.pop("prime_rl.entrypoints.env_server", None)
+    env_server = importlib.import_module("prime_rl.entrypoints.env_server")
+
+    installed: list[bool] = []
+    monkeypatch.setattr(env_server, "setup_env_server_logging", lambda *_args: None)
+    monkeypatch.setattr(env_server, "set_base_sandbox_labels", lambda _labels: None)
+    monkeypatch.setattr(env_server, "install_native_routed_experts_normalizer", lambda: installed.append(True))
+
+    env_server.setup_worker(None, False, [])
+
+    assert installed == [True]
