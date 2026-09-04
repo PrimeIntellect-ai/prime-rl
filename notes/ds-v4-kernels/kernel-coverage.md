@@ -33,6 +33,67 @@ indexer, which needs no gradient.
 | 16 | MoE dispatch / combine | torch a2a, DeepEP (CUDA) | same | fwd, caller wires bwd | **have** |
 | 17 | LM head + chunked CE | eager, chunked | quack (CuTe DSL) | fwd+bwd | **have** |
 
+## Attention: can we borrow a library?
+
+Row 8's `have` is doing a lot of work: could a library kernel replace the in-repo TileLang
+`dsv4_sparse_attn` kernel outright? No, once per candidate, for reasons that don't overlap.
+
+**Megatron-LM.** Two separate sparse-attention families live there and only one touches TileLang. The
+DS-V4-hybrid CSA/HCA path (`csa.py`, `deepseek_v4_hybrid_attention.py`) rejects TileLang outright
+(`transformer_config.py:1911-1915`: *"dsv4_hybrid does not support dsa_kernel_backend='tilelang'"*)
+and dispatches to cuDNN-Frontend `develop` plus FlashMLA `nv_dev` instead, both git-branch-only and
+absent from PyPI (`no_pypi_wheels` in Megatron's own `pyproject.toml`). The other family, DSA
+(V3.2-style), does dispatch through TileLang (`ops/tilelang_sparse_mla_{fwd,bwd}.py`), but it's the
+same upstream tile-ai/tilelang fork this repo already vendors, and this repo's version is arguably
+ahead: dynamic shapes so one compiled kernel serves every packed length, wrapped as a proper
+`torch.library.custom_op` with `register_fake`. The DS-V4-hybrid layer is itself `dev`-branch-only,
+about four months old, `tensor_model_parallel_size=1`-only, and has no inference path of its own, so
+it isn't a more mature target, just a differently-shaped one. Nothing here replaces the attention
+core; what is portable is the index-construction algebra and the sink/RoPE/indexer-loss pieces, see
+the portability shortlist in `megatron-survey.md`.
+
+**FlashAttention (FA4).** Installed at 2.8.3, but its absorbed-MLA `head_dim_v==512` path is
+compute-capability gated to sm100/sm110 in `_validate_head_dims`, capping at `head_dim<=256` on
+Hopper (sm90, the deployed hardware). CSA runs at `head_dim=512`. That's a hardware wall baked into a
+compile-time assert, not a shape mismatch to route around.
+
+**cuDNN-Frontend / FlashMLA.** The exact two dependencies Megatron's own DS V4 path needs, and
+they're unobtainable the same way for us: `nvidia-cudnn-frontend` pinned to an unreleased git commit,
+`flash_mla` pinned to `deepseek-ai/FlashMLA@nv_dev`, neither on PyPI. Independent of the packaging
+problem, cuDNN's `fused_compressor` shim is gated to `compute_capability == (10, 0)` by equality, so
+it never fires on Hopper or on sm120 either.
+
+**vLLM / flashinfer (inference-serving kernels).** vLLM ships an actual DS V4 sparse-MLA backend
+(`vllm/models/deepseek_v4/sparse_mla.py`, `nvidia/flashmla.py`) with shapes matching production
+exactly: `head_dim=512` (448 NoPE + 64 RoPE), `topk_tokens=index_topk`, compress ratios `{1,4,128}`
+for SWA/CSA/HCA, and it runs on Hopper (`supported_compute_capability` includes major version 9).
+flashinfer's parallel sparse-MLA kernel is Blackwell-consumer-only (sm120/121). Neither has any
+transplant value for training: both are forward-only with no backward registered anywhere, built
+around paged KV-cache blocks and CUDA-graph-captured decode/prefill scheduling with no analog in a
+packed training forward pass, and the compute core is a prebuilt CUDA/cutlass extension
+(`vllm._flashmla_C`, adapted from `deepseek-ai/FlashMLA`) rather than modifiable source. The reusable
+idea, once more, is index construction, not the kernel.
+
+**Triton.** No Triton kernel found anywhere in this survey implements the attention core itself
+(`QK^T`, softmax, `...V`) at `head_dim=512`. Every Triton file that touched CSA-shaped attention
+(Megatron's indexer-KL teacher `csa_teacher_lse.py`, its `fused_mla_yarn_rope_apply.py`, vLLM's
+top-k metadata kernel, GLM DSA's `fp8_indexer.py`) does index, metadata, or scoring work around the
+core, never the core. That lines up with the FlashAttention finding: nobody has a Triton, or stock
+FlashAttention, implementation of sparse attention at this head_dim. Only TileLang and cutlass/CUDA
+implementations exist.
+
+**GLM DSA's `sparse_mla` (in-repo sibling).** The closest thing to a real drop-in: same repo, same
+TileLang fork, already GPU-verified (`models/kernels/sparse_mla_{fwd,bwd}.py`, used by
+`glm_moe_dsa/sparse_mla_attention.py`). Not a bare substitute, though. GLM DSA's MLA has a
+decoupled-RoPE "tail" of score-only channels that DS V4 doesn't need (V4 has `K == V`, so all 512
+channels feed both score and output), and no attention-sink term. `dsv4_sparse_attn_fwd.py`'s own
+header documents this divergence. The DS V4 kernel already *is* this kernel, forked and adapted;
+there's nothing left here to borrow.
+
+Every library with a real fused kernel for DS-V4-shaped attention (`head_dim=512`, sparse top-k
+gather, a learned sink) either isn't on PyPI, doesn't run on Hopper, or has no backward. The
+tile-ai/tilelang fork is the one exception, which is why it's what's vendored.
+
 ## Notes
 
 **Row 1.** No fused kernel builds the band, but Megatron has the index construction:
