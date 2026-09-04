@@ -1,6 +1,6 @@
 import pickle
 from pathlib import Path
-from typing import Callable, Generator, cast
+from typing import Callable, Generator
 
 import torch
 import torch.distributed as dist
@@ -98,7 +98,7 @@ def resolve_dtensors(
         if isinstance(value, DTensor):
             # only gather after the downcast as it will be faster
             target_dtype = resolve_wire_dtype(keep_in_fp32, key, default_dtype)
-            state_dict[key] = cast(DTensor, value.to(target_dtype)).full_tensor()
+            state_dict[key] = value.to(target_dtype).full_tensor()
     return state_dict
 
 
