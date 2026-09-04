@@ -153,11 +153,17 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["filesystem", "nccl", "nixl", "mx_refit"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        version_uid: str | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Update every inference engine through its configured weight transport.
+
+        ``version_uid`` addresses one ModelExpress WeightVersion; mx_refit pulls
+        by version instead of from a path, so it is the only transport that sets
+        it and the only one for which ``weight_dir`` is None.
+        """
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
         await _pause_engines(self.clients, step=step)
@@ -169,7 +175,7 @@ class AdminPlane:
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        json={"weight_dir": weight_dir_posix, "version_uid": version_uid},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in self.clients
@@ -457,6 +463,31 @@ async def init_nixl_broadcast(
     await asyncio.gather(
         *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
     )
+
+
+async def init_mx_refit_broadcast(
+    admin_plane: AdminPlane,
+    host: str,
+    port: int,
+    timeout: int,
+) -> None:
+    """Build a ModelExpress reshard generator client on every vLLM worker.
+
+    Only the MX server address is needed: the version lifecycle carries the trainer
+    sources, so there is no rank offset or source count to configure (the worker
+    absorbs the nixl/nccl-shaped extras of ``/init_broadcaster``).
+    """
+    admin_clients = admin_plane.clients
+
+    async def initialize(admin_client: AsyncClient) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            json={"host": host, "port": port},
+        )
+
+    await asyncio.gather(*[initialize(admin_client) for admin_client in admin_clients])
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

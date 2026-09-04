@@ -12,6 +12,9 @@ from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    MXRefitWeightBroadcastConfig as OrchestratorMXRefitWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
@@ -30,6 +33,9 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    MXRefitWeightBroadcastConfig as TrainerMXRefitWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
@@ -162,6 +168,29 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+class SharedMXRefitWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    run_uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    """Per-run token that lets both sides name the same WeightVersion.
+
+    The trainer creates each version as ``{run_uid}:{step}`` and the orchestrator
+    computes the same string, so the version identity needs no out-of-band
+    handoff. Fresh per launch rather than fixed, so a version left behind by a
+    crashed run can never collide with a new one. Set it explicitly only to
+    reattach to an already-running fleet.
+
+    Deliberately not $PRL_RUN_ID, which ``auto_setup_run_identity`` keeps
+    runtime-only and out of the sub-configs. This is not the run's identity; it is
+    a namespace for MX version names that both processes must agree on before
+    either starts, and it has to be present even for a local run where
+    $PRL_RUN_ID is unset.
+    """
+
+
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -170,7 +199,10 @@ class SharedFileSystemWeightBroadcastConfig(BaseConfig):
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    SharedFileSystemWeightBroadcastConfig
+    | SharedNCCLWeightBroadcastConfig
+    | SharedNIXLWeightBroadcastConfig
+    | SharedMXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
@@ -474,7 +506,7 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.weight_broadcast.type in ("nccl", "nixl", "mx_refit"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
@@ -492,13 +524,22 @@ class RLConfig(BaseConfig):
                 )
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
+            elif self.weight_broadcast.type == "nixl":
                 transport_config = dict(
                     session_id=self.weight_broadcast.session_id,
                     overlap_transfer_and_replay=self.weight_broadcast.overlap_transfer_and_replay,
                 )
                 trainer_config_type = TrainerNIXLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
+            else:  # mx_refit
+                # mx_refit versions are keyed by model_name + version UID, so no
+                # session_id (unlike nixl, which names NIXL session buffers with it).
+                # run_uid has to reach both sides from here: resolving this config
+                # once and dumping the resolved sub-configs is what makes the two
+                # processes agree on a uid they each compute independently.
+                transport_config = dict(run_uid=self.weight_broadcast.run_uid)
+                trainer_config_type = TrainerMXRefitWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorMXRefitWeightBroadcastConfig
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
