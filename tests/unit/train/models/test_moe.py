@@ -162,3 +162,61 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     assert moe.experts.activation is ActivationDispatch[activation]
     assert (moe.shared_expert.gate_proj is not None) == has_gate
     assert moe.shared_expert.activation is ActivationDispatch[activation]
+
+
+class _NonLocalTokenDispatcher:
+    def __init__(self, inner: LocalTokenDispatcher) -> None:
+        self._inner = inner
+
+    def dispatch(self, *args, **kwargs):
+        return self._inner.dispatch(*args, **kwargs)
+
+    def combine(self, *args, **kwargs):
+        return self._inner.combine(*args, **kwargs)
+
+    def run(self, *args, **kwargs):
+        return self._inner.run(*args, **kwargs)
+
+    def synchronize(self) -> None:
+        return self._inner.synchronize()
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="overlap path only runs on CUDA")
+def test_overlapped_shared_expert_matches_sequential():
+    def build_moe() -> MoE:
+        torch.manual_seed(42)
+        moe = MoE.from_args(
+            MoEArgs(num_experts=4, top_k=2, load_balance_coeff=None),
+            dim=16,
+            hidden_dim=32,
+            shared_expert=FeedForward(dim=16, hidden_dim=32),
+        ).to("cuda")
+        moe.experts.init_weights(0.02)
+        moe.router.init_weights(0.02)
+        moe.shared_expert.init_weights(0.02)
+        moe.set_token_dispatcher(
+            _NonLocalTokenDispatcher(LocalTokenDispatcher(num_experts=4, top_k=2, token_group_alignment=1))
+        )
+        return moe
+
+    x = torch.randn(3, 8, 16, device="cuda", requires_grad=True)
+
+    moe_sequential = build_moe()
+    out_sequential = moe_sequential(x)
+    out_sequential.sum().backward()
+    grad_sequential = x.grad.clone()
+    x.grad = None
+
+    moe_overlapped = build_moe()
+    moe_overlapped.set_overlap_shared_expert(True)
+    out_overlapped = moe_overlapped(x)
+    out_overlapped.sum().backward()
+    grad_overlapped = x.grad.clone()
+
+    torch.testing.assert_close(out_sequential, out_overlapped)
+    torch.testing.assert_close(grad_sequential, grad_overlapped)
+    for (name, p_sequential), (_, p_overlapped) in zip(
+        moe_sequential.named_parameters(), moe_overlapped.named_parameters()
+    ):
+        torch.testing.assert_close(p_sequential.grad, p_overlapped.grad, msg=f"param grad mismatch: {name}")
