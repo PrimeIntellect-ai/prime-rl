@@ -44,7 +44,8 @@ blocks, so the tile is scattered with `atomic_addx4`, four contiguous channels a
 why `dKV` is float32 while everything else here is bfloat16, and why `postprocess` exists.
 
 Masked slots skip the store rather than adding their exact zero, and no predicate is written for
-it: TileLang already guards the atomic with `0 <= idx`, and a masked slot's index is negative.
+it: TileLang already guards the atomic on both bounds, `0 <= idx < N`, and a masked slot's index is
+negative.
 
 [How the loop runs]
 
@@ -307,10 +308,10 @@ def bwd(
 
                     # A masked slot accumulates exactly zero, and issuing its atomic would only
                     # serialize the scatter. No predicate is written here because TileLang already
-                    # emits `if (0 <= idx)` around the store, which skips a negative index for
-                    # free. Do not add one back: predicating on the `mask` fragment compiles
-                    # cleanly but pins this loop to the four threads owning those fragment
-                    # elements.
+                    # emits `if (0 <= idx)` and `if (idx < S_kv)` around the store, so a negative
+                    # index skips it for free and an out-of-range one cannot write past the end of
+                    # dKV. Do not add a predicate back: reading the `mask` fragment here compiles
+                    # cleanly but pins this loop to the four threads owning those elements.
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
                         slot_i = i_i * BS + bi_i + s * (BS // split_store)
                         T.atomic_addx4(
