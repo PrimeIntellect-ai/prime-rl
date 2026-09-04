@@ -70,6 +70,7 @@ dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
@@ -191,6 +192,15 @@ requires-dist = [
     "torch>=2.6.0",
 ]
 
+# Mirror the upstream Pydantic compatibility correction until the next release.
+[[tool.uv.dependency-metadata]]
+name = "ai-dynamo-runtime"
+version = "1.4.2"
+requires-dist = [
+    "pydantic>=2.10.6,<=2.13.4",
+    "uvloop>=0.21.0",
+]
+
 # NIXL publishes its CUDA 12 package as a base dependency even when the
 # caller requests its CUDA 13 extra. Use the requested CUDA 13 package only.
 [[tool.uv.dependency-metadata]]
@@ -212,6 +222,8 @@ requires-dist = [
 # verifiers pins harbor==0.21.0, published minutes inside the rolling window;
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-08-11T00:00:00Z"
+ai-dynamo = "2026-08-29T00:00:00Z"
+ai-dynamo-runtime = "2026-08-29T00:00:00Z"
 # we want latest vllm, remove next patch
 vllm = false
 tokenspeed-mla = false
