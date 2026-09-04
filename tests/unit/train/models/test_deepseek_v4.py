@@ -1,4 +1,9 @@
-"""DeepSeek V4 checks that need a GPU.
+"""DeepSeek V4 modeling checks that need a GPU, at toy shapes.
+
+Everything that reaches a kernel, and everything that needs the real V4-Flash shapes to be
+meaningful at all, lives in `test_deepseek_v4_kernels.py`. What is left here is the config, the
+checkpoint and vLLM boundaries, the rotary tables, and the packing invariants, all of which a
+five-layer toy `_MODEL` expresses as well as a production one and far more cheaply.
 
 There is no HF oracle here. `transformers.models.deepseek_v4` only exists from transformers 5.15
 and the repo pins an older version, so every assertion is either self-consistency (packed against
@@ -882,7 +887,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     """
     # Float32, which the kernel cannot run, and the `_PACKED_RTOL` bounds below were measured on
     # the dense path, so pin it rather than letting `dsv4_attn='auto'` decide. The sparse path's
-    # own packing invariant is asserted at the Flash shapes further down.
+    # own packing invariant is asserted at the Flash shapes in `test_deepseek_v4_kernels.py`.
     module = prime_attention(layer_idx, dtype=torch.float32, dsv4_attn="eager")
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)

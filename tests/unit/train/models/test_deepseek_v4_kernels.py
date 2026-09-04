@@ -1,13 +1,18 @@
-"""The fused DeepSeek V4 sparse-attention kernel against its float32 gather oracle.
+"""Every DeepSeek V4 kernel check that needs a GPU, in two sections.
 
-Everything here calls `prime_rl::dsv4_sparse_attn` directly on hand-built tensors, so the kernel
-is exercised without any of the modeling code that normally produces its inputs. The tests that
-need a real `DeepseekV4Attention` live beside the other sparse tests in `test_deepseek_v4.py`,
-which already owns the Flash-shaped config.
+The first calls `prime_rl::dsv4_sparse_attn` directly on hand-built tensors, so the kernel is
+exercised without any of the modeling code that normally produces its inputs, and its numerics are
+compared against a float32 gather oracle. The second builds real `DeepseekV4Attention` layers and
+asserts that the modeling code hands the kernel inputs it can act on, that the indices it
+constructs address exactly the keys the dense mask admits, and that a packed row still answers each
+document as if it stood alone.
 
-Only the real DeepSeek V4 Flash shapes appear below. The backward does not compile below 32 heads
+Only the real DeepSeek V4 Flash shapes appear here. The backward does not compile below 32 heads
 and the forward does not compile at `head_dim = 32`, and no configuration this model runs is
-anywhere near those, so a smaller shape would only test a kernel nobody instantiates.
+anywhere near those, so a smaller shape would only test a kernel nobody instantiates. The toy
+`_MODEL` config that `test_deepseek_v4.py` uses cannot reach any of this: the kernel does not tile
+4 heads over 32 channels, and the sparse path's slot padding, top-k saturation and index arithmetic
+are all invisible at that size.
 """
 
 import copy
@@ -432,8 +437,9 @@ def test_kernel_traces_under_torch_compile():
         _assert_relative(compiled_leaf.grad, eager_leaf.grad, _COMPILE_RTOL, label)
 
 
-# Everything below runs the real DeepSeek V4 Flash attention shapes instead of the toy `_MODEL`
-# above, written out as a literal so nothing here depends on a local HF cache. The sparse gather
+# Everything below reaches the kernel through the modeling code rather than on hand-built tensors,
+# at the same Flash shapes, written out as a literal so nothing here depends on a local HF cache.
+# The sparse gather
 # path only exists at those shapes: a CSA query reads `sliding_window + index_topk = 640` keys
 # over 512 channels with 64 heads, and the slot padding, the top-k saturation and the index
 # arithmetic that the sparse representation has to get right are all invisible at toy sizes. The
@@ -611,7 +617,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     indices, n_positions = recorded["indices"], recorded["kv_buf"].shape[1]
     # The slot count is `sliding_window + index_topk` rounded up to the kernel's slot tile.
     # The Flash shapes need no rounding, 640 being a multiple of 64 already, so the padding
-    # itself is covered by the toy `_MODEL` under `dsv4_attn='gather'` and not here.
+    # itself is covered by `test_deepseek_v4.py` under `dsv4_attn='gather'` and not here.
     n_slots = indices.shape[-1]
     assert n_slots >= _FLASH_MODEL["sliding_window"] + _FLASH_MODEL["index_topk"]
     assert n_slots % dsv4_attention._SLOT_TILE == 0
@@ -672,13 +678,13 @@ def test_sparse_attention_gather_matches_eager(doc_lens, monkeypatch):
     _assert_relative(gather_input.grad, eager_input.grad, _GATHER_GRAD_RTOL, "hidden states gradient")
 
 
-# One CSA layer in bfloat16, so `_PACKED_RTOL` (float32, and three orders of magnitude tighter
-# than a kernel accumulating bfloat16 inputs) does not apply, but neither does `_MODEL_GRAD_RTOL`,
-# which is sized for four hyper-connected layers amplifying a bf16 expert floor. Each bound below
-# is the tightest round number holding over 30 seeds; the worst is 1.4e-3 on the output and
-# 7.6e-3 on a gradient, against 6.9e-4 and 6.2e-3 on the fixed seed the test actually runs. The
-# gradient bound is the tighter fit of the two, at 1.3x: every seed lands between 5.8e-3 and
-# 7.6e-3, so the bound sits just above a well-sampled ceiling rather than above a long tail.
+# One CSA layer in bfloat16, so `_PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
+# accumulating bfloat16 inputs) does not apply, but neither does the whole-model bound `test_deepseek_v4.py`
+# carries, which is sized for four hyper-connected layers amplifying a bfloat16 expert floor. Each bound below
+# is the tightest round number holding over 30 seeds; the worst is 1.4e-3 on the output and 7.6e-3 on a
+# gradient, against 6.9e-4 and 6.2e-3 on the fixed seed the test actually runs. The gradient bound is the
+# tighter fit of the two, at 1.3x: every seed lands between 5.8e-3 and 7.6e-3, so the bound sits just above a
+# well-sampled ceiling rather than above a long tail.
 _KERNEL_RTOL, _KERNEL_GRAD_RTOL = 5e-3, 1e-2
 
 # `compress_rate = 4` yields 129 + 254 = 383 compressed entries, under `index_topk = 512`, so
@@ -818,8 +824,8 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
     `test_deepseek_v4_backward` makes this assertion through the assembled model, but only on the
-    gather path: the kernel does not tile the toy `_MODEL` shapes. This is the same assertion at
-    module level and at the real Flash shapes, and it is not implied by its neighbour above, which
+    gather path: the kernel does not tile the toy shapes that file runs. This is the same assertion
+    at module level and at the real Flash shapes, and it is not implied by its neighbour above, which
     compares two runs of the same path and would pass unchanged if both left a parameter at zero.
 
     The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today
@@ -881,7 +887,7 @@ def test_flash_hca_attention_packed_matches_unpacked():
     HCA has no indexer and no sparse path: `DeepseekV4Attention` sends any layer that is not
     `compressed_sparse_attention` to the dense `_eager_with_entries` regardless of `attn_impl`,
     so there is no second implementation to compare against and this asserts self-consistency
-    rather than equivalence. What it covers is the part the toy `_MODEL` cannot reach: a compress
+    rather than equivalence. What it covers is the part the toy shapes cannot reach: a compress
     rate of 128 over 512 channels, where an entry pools 128 tokens and a document boundary that
     the compressor failed to respect would pull a whole other document into one entry.
 
