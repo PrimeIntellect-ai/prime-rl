@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, Field, model_validator
-from pydantic import field_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
