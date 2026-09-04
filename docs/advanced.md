@@ -70,7 +70,7 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
-- **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
+- **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100. Set `overlap_shared_expert = true` to run the shared expert on a side CUDA stream concurrently with the routed-expert dispatch/combine all-to-all instead of after it; requires a model with a shared expert and is a no-op otherwise.
 - **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml

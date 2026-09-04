@@ -203,7 +203,7 @@ class TorchMoEDispatchConfig(BaseConfig):
     """Wire format for routed activations and their reverse-path gradients."""
 
     overlap_shared_expert: bool = False
-    """Run the shared expert FFN on a different CUDA steam than the reouted dispatch/combine a2a. Requires a modle with shared experts, no-op otherwise."""
+    """Run the shared expert FFN on a different CUDA stream than the routed dispatch/combine a2a. Requires a model with shared experts, no-op otherwise."""
 
 
 class DeepEPMoEDispatchConfig(BaseConfig):

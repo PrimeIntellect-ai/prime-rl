@@ -164,6 +164,23 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     assert moe.shared_expert.activation is ActivationDispatch[activation]
 
 
+class _NonLocalTokenDispatcher:
+    def __init__(self, inner: LocalTokenDispatcher) -> None:
+        self._inner = inner
+
+    def dispatch(self, *args, **kwargs):
+        return self._inner.dispatch(*args, **kwargs)
+
+    def combine(self, *args, **kwargs):
+        return self._inner.combine(*args, **kwargs)
+
+    def run(self, *args, **kwargs):
+        return self._inner.run(*args, **kwargs)
+
+    def synchronize(self) -> None:
+        return self._inner.synchronize()
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="overlap path only runs on CUDA")
 def test_overlapped_shared_expert_matches_sequential():
@@ -178,7 +195,9 @@ def test_overlapped_shared_expert_matches_sequential():
         moe.experts.init_weights(0.02)
         moe.router.init_weights(0.02)
         moe.shared_expert.init_weights(0.02)
-        moe.set_token_dispatcher(LocalTokenDispatcher(num_experts=4, top_k=2, token_group_alignment=1))
+        moe.set_token_dispatcher(
+            _NonLocalTokenDispatcher(LocalTokenDispatcher(num_experts=4, top_k=2, token_group_alignment=1))
+        )
         return moe
 
     x = torch.randn(3, 8, 16, device="cuda", requires_grad=True)

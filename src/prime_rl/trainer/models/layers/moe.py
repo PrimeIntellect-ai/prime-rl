@@ -19,17 +19,15 @@ from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
 
-_comm_stream: torch.cuda.Stream | None = None
+_shared_expert_overlap_stream: torch.cuda.Stream | None = None
 
 
-def _get_comm_stream() -> torch.cuda.Stream:
+def _get_shared_expert_overlap_stream() -> torch.cuda.Stream:
     # Shared global side CUDA stream to overlap MoE shared expert FNN with dispatch/combine a2a - per process.
-    # A distinct stream per layer makes no sense as it allocates a lot of streams and fragments the CUDA caching allocator
-    # as blocks allocated by stream X cannot be reused by stream Y without an explicit cross-stream sync
-    global _comm_stream
-    if _comm_stream is None:
-        _comm_stream = torch.cuda.Stream()
-    return _comm_stream
+    global _shared_expert_overlap_stream
+    if _shared_expert_overlap_stream is None:
+        _shared_expert_overlap_stream = torch.cuda.Stream()
+    return _shared_expert_overlap_stream
 
 
 @torch.library.custom_op(
@@ -442,7 +440,14 @@ class MoE(nn.Module):
                 routing_confidence_sum,
             )
 
-        if self._overlap_shared_expert and self.shared_expert is not None and x.is_cuda:
+        # LocalTokenDispatcher has no a2a comms to overlap with, so overlapping would just add
+        # side-stream bookkeeping overhead for nothing.
+        if (
+            self._overlap_shared_expert
+            and self.shared_expert is not None
+            and x.is_cuda
+            and not isinstance(self.token_dispatcher, LocalTokenDispatcher)
+        ):
             routed_output, shared_output = self._dispatch_experts_overlapped(x, top_scores, selected_experts_indices)
         else:
             routed_output = self.token_dispatcher.run(
@@ -473,12 +478,13 @@ class MoE(nn.Module):
         top_scores: torch.Tensor,
         selected_experts_indices: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Overlap the shared expert with the routed dispatch/combine a2a on a different CUDA stream.
-        # Autograd replays the op on its own original stream so this overlap works in backward too.
-        comm_stream = _get_comm_stream()
+        comm_stream = _get_shared_expert_overlap_stream()
         master_stream = torch.cuda.current_stream()
         comm_stream.wait_stream(master_stream)
         with torch.cuda.stream(comm_stream):
+            x.record_stream(comm_stream)
+            top_scores.record_stream(comm_stream)
+            selected_experts_indices.record_stream(comm_stream)
             routed_input, num_tokens_per_expert, state = self.token_dispatcher.dispatch(
                 self.prepare_expert_input(x),
                 top_scores,
@@ -489,6 +495,7 @@ class MoE(nn.Module):
         shared_output = self.shared_expert(x)
         master_stream.wait_event(dispatch_done)
         routed_input.record_stream(master_stream)
+        num_tokens_per_expert.record_stream(master_stream)
         routed_output = self.experts(routed_input, num_tokens_per_expert)
         comm_stream.wait_stream(master_stream)
         with torch.cuda.stream(comm_stream):
