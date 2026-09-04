@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
-from prime_rl.trainer.model import forward
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import _validate_vlm_implementation, forward
 
 
 class _CaptureModel(nn.Module):
@@ -16,6 +18,28 @@ class _CaptureModel(nn.Module):
         self.kwargs = kwargs
         input_ids = kwargs["input_ids"]
         return {"logits": torch.zeros(*input_ids.shape, 4)}
+
+
+def test_generic_hf_vlm_rejects_multiple_trainers_when_custom_impl_exists():
+    config = ModelConfig(
+        impl="hf",
+        attn="flash_attention_2",
+        vlm={
+            "vision_encoder_attr": "model.visual",
+            "language_model_attr": "model.language_model",
+            "pack_samples": False,
+        },
+    )
+
+    with pytest.raises(ValueError, match="one trainer process"):
+        _validate_vlm_implementation(
+            config,
+            model_type="qwen3_5",
+            is_vlm_arch=True,
+            custom_vlm_available=True,
+            impl_to_use="hf",
+            world_size=2,
+        )
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():

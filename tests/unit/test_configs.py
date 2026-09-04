@@ -13,6 +13,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
@@ -425,6 +426,416 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
+
+def test_dynamo_discovery_config_is_nested_under_client():
+    config = ClientConfig.model_validate(
+        {
+            "base_url": "http://dynamo-frontend:8000/v1",
+            "dynamo": {
+                "discovery_url": "http://dynamo-frontend:8001",
+                "expected_namespace": "dynamo",
+                "admin_host_allowlist": ["localhost", "10.0.0.7/24"],
+            },
+        }
+    )
+
+    assert config.dynamo is not None
+    assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
+    assert config.dynamo.expected_namespace == "dynamo"
+    assert config.dynamo.admin_host_allowlist == ("localhost", "10.0.0.0/24")
+
+
+def test_dynamo_admin_origin_allowlist_is_canonicalized():
+    config = ClientConfig.model_validate(
+        {
+            "dynamo": {
+                "discovery_url": "http://dynamo-frontend:8001",
+                "expected_namespace": "dynamo",
+                "admin_host_allowlist": ["localhost", "::1"],
+                "admin_origin_allowlist": ["HTTP://LOCALHOST", "https://[::1]"],
+            }
+        }
+    )
+
+    assert config.dynamo is not None
+    assert config.dynamo.admin_origin_allowlist == ("http://localhost:80", "https://[::1]:443")
+
+
+def test_dynamo_admin_credentials_allow_explicit_exact_origin():
+    config = ClientConfig.model_validate(
+        {
+            "dynamo": {
+                "discovery_url": "http://dynamo-frontend:8001",
+                "expected_namespace": "dynamo",
+                "admin_host_allowlist": ["worker"],
+                "admin_origin_allowlist": ["https://worker:8120"],
+                "admin_api_key_var": "DYNAMO_ADMIN_API_KEY",
+            }
+        }
+    )
+
+    assert config.dynamo is not None
+    assert config.dynamo.admin_origin_allowlist == ("https://worker:8120",)
+
+
+@pytest.mark.parametrize("field", ["headers", "admin_headers"])
+def test_dynamo_rejects_static_headers(field):
+    with pytest.raises(ValidationError, match=field):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": "http://localhost:8001",
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": ["localhost"],
+                    field: {"Authorization": "Bearer secret"},
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize("origin", ["worker:8120", "http://worker:8120/control", "http://10.0.0.0/24"])
+def test_dynamo_admin_origin_allowlist_requires_exact_http_origins(origin):
+    with pytest.raises(ValidationError, match="admin_origin_allowlist"):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": "http://dynamo-frontend:8001",
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": ["worker"],
+                    "admin_origin_allowlist": [origin],
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "dynamo",
+    [
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "admin_host_allowlist": ["localhost"],
+        },
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "expected_namespace": "dynamo",
+        },
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "expected_namespace": "dynamo",
+            "admin_host_allowlist": [],
+        },
+    ],
+)
+def test_dynamo_discovery_requires_namespace_and_admin_host_allowlist(dynamo):
+    with pytest.raises(ValidationError):
+        ClientConfig.model_validate({"dynamo": dynamo})
+
+
+@pytest.mark.parametrize(
+    "admin_host_allowlist",
+    [
+        ["*.example.com"],
+        ["http://worker.example.com"],
+        ["10.0.0.0/999"],
+        [""],
+        [f"worker-{index}.example.com" for index in range(129)],
+    ],
+)
+def test_dynamo_discovery_rejects_invalid_or_excessive_admin_host_allowlist(admin_host_allowlist):
+    with pytest.raises(ValidationError, match="admin_host_allowlist"):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": "http://dynamo-frontend:8001",
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": admin_host_allowlist,
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "discovery_url",
+    [
+        "dynamo-frontend:8001",
+        "ftp://dynamo-frontend:8001",
+        "http://user:password@dynamo-frontend:8001",
+        "http://dynamo-frontend:8001?namespace=other",
+        "http://dynamo-frontend:8001#workers",
+        "http://dynamo-frontend:not-a-port",
+        "http://dynamo-frontend:70000",
+    ],
+)
+def test_dynamo_discovery_url_is_validated_at_config_load(discovery_url):
+    with pytest.raises(ValidationError, match="discovery_url"):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": discovery_url,
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": ["localhost"],
+                }
+            }
+        )
+
+
+def test_standalone_orchestrator_allows_dynamo_with_legacy_weight_broadcast():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "default"},
+            "collect_inference_metrics": False,
+            "model": {
+                "client": {
+                    "dynamo": {
+                        "discovery_url": "http://dynamo-frontend:8001",
+                        "expected_namespace": "dynamo",
+                        "admin_host_allowlist": ["localhost"],
+                    }
+                }
+            },
+        }
+    )
+
+    assert config.weight_broadcast.type == "filesystem"
+
+
+def test_dynamo_admin_plane_accepts_nccl_weight_broadcast():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "default"},
+            "model": {
+                "client": {
+                    "dynamo": {
+                        "discovery_url": "http://localhost:8001",
+                        "expected_namespace": "dynamo",
+                        "admin_host_allowlist": ["localhost"],
+                    }
+                }
+            },
+            "weight_broadcast": {"type": "nccl", "port": 29501},
+        }
+    )
+
+    assert config.weight_broadcast.type == "nccl"
+
+
+@pytest.mark.parametrize("weight_broadcast", [None, {"type": "nccl", "port": 29501}])
+def test_rl_dynamo_accepts_resolved_nccl(weight_broadcast):
+    data = {
+        "trainer": {},
+        "orchestrator": {
+            "model": {
+                "client": {
+                    "dynamo": {
+                        "discovery_url": "http://localhost:8001",
+                        "expected_namespace": "dynamo",
+                        "admin_host_allowlist": ["localhost"],
+                    }
+                }
+            }
+        },
+        "inference": {},
+    }
+    if weight_broadcast is not None:
+        data["weight_broadcast"] = weight_broadcast
+
+    config = RLConfig.model_validate(data)
+
+    assert config.weight_broadcast is not None
+    assert config.weight_broadcast.type == "nccl"
+    assert config.orchestrator.weight_broadcast.inference_world_size == 1
+
+def test_rl_dynamo_accepts_explicit_filesystem_weight_broadcast():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "dynamo": {
+                            "discovery_url": "http://localhost:8001",
+                            "expected_namespace": "dynamo",
+                            "admin_host_allowlist": ["localhost"],
+                        }
+                    }
+                }
+            },
+            "inference": {},
+            "weight_broadcast": {"type": "filesystem"},
+        }
+    )
+
+    assert config.orchestrator.weight_broadcast.type == "filesystem"
+
+
+def test_online_evals_dynamo_accepts_nccl():
+    config = EvalsConfig.model_validate(
+        {
+            "eval": {
+                "source": [{"env": {"taskset": {"id": "openenv", "base_url": "http://localhost"}}}],
+                "client": {
+                    "dynamo": {
+                        "discovery_url": "http://localhost:8001",
+                        "expected_namespace": "dynamo",
+                        "admin_host_allowlist": ["localhost"],
+                    }
+                },
+            },
+            "online": {},
+            "weight_broadcast": {"type": "nccl"},
+        }
+    )
+
+    assert config.weight_broadcast is not None
+    assert config.weight_broadcast.type == "nccl"
+
+
+def test_rl_dynamo_external_nccl_requires_explicit_world_size():
+    with pytest.raises(ValidationError, match="set weight_broadcast.inference_world_size"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "model": {
+                        "client": {
+                            "dynamo": {
+                                "discovery_url": "http://localhost:8001",
+                                "expected_namespace": "dynamo",
+                                "admin_host_allowlist": ["localhost"],
+                            }
+                        }
+                }
+            },
+            "weight_broadcast": {"type": "nccl", "port": 29501},
+        }
+    )
+
+
+def test_rl_dynamo_external_nccl_accepts_explicit_world_size():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "dynamo": {
+                            "discovery_url": "http://localhost:8001",
+                            "expected_namespace": "dynamo",
+                            "admin_host_allowlist": ["localhost"],
+                        }
+                }
+            }
+        },
+        "weight_broadcast": {"type": "nccl", "port": 29501, "inference_world_size": 3},
+    }
+)
+
+    assert config.orchestrator.weight_broadcast.inference_world_size == 3
+    assert config.trainer.weight_broadcast.inference_world_size == 3
+
+
+def test_rl_dynamo_local_nccl_uses_single_node_gpu_allocation_before_inference_defaults():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "dynamo": {
+                            "discovery_url": "http://localhost:8001",
+                            "expected_namespace": "dynamo",
+                            "admin_host_allowlist": ["localhost"],
+                        }
+                    }
+                }
+            },
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 4},
+            "weight_broadcast": {"type": "nccl", "inference_world_size": 4},
+        }
+    )
+
+    assert config.orchestrator.weight_broadcast.inference_world_size == 4
+    assert config.trainer.weight_broadcast.inference_world_size == 4
+
+
+def test_rl_dynamo_local_nccl_rejects_world_size_conflicting_with_gpu_allocation():
+    with pytest.raises(ValidationError, match=r"conflicts with automatically derived local inference world size \(4\)"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "model": {
+                        "client": {
+                            "dynamo": {
+                                "discovery_url": "http://localhost:8001",
+                                "expected_namespace": "dynamo",
+                                "admin_host_allowlist": ["localhost"],
+                            }
+                        }
+                    }
+                },
+                "inference": {},
+                "deployment": {"num_train_gpus": 1, "num_infer_gpus": 4},
+                "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
+            }
+        )
+
+
+def test_rl_propagates_trainer_vlm_to_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {
+                "model": {
+                    "impl": "hf",
+                    "attn": "flash_attention_2",
+                    "optimization_dtype": "bfloat16",
+                    "reduce_dtype": "bfloat16",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                        "pack_samples": False,
+                    },
+                }
+            },
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+
+    assert config.orchestrator.model.vlm is not None
+    assert config.orchestrator.model.vlm.pack_samples is False
+
+
+def test_rl_dynamo_local_nccl_uses_multi_node_gpu_allocation_before_inference_defaults():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "dynamo": {
+                            "discovery_url": "http://localhost:8001",
+                            "expected_namespace": "dynamo",
+                            "admin_host_allowlist": ["localhost"],
+                        }
+                    }
+                }
+            },
+            "inference": {"vllm": {"tensor_parallel_size": 4}},
+            "deployment": {
+                "type": "multi_node",
+                "gpus_per_node": 8,
+                "num_train_nodes": 1,
+                "num_infer_nodes": 2,
+            },
+            "slurm": {},
+            "weight_broadcast": {"type": "nccl", "inference_world_size": 16},
+        }
+    )
+
+    assert config.orchestrator.weight_broadcast.inference_world_size == 16
+    assert config.trainer.weight_broadcast.inference_world_size == 16
 
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(

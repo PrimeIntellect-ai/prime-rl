@@ -149,7 +149,11 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
-    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
+    if (
+        config.model.vlm is not None
+        and config.model.vlm.pack_samples
+        and not getattr(model, "supports_packed_multimodal_training", False)
+    ):
         raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
