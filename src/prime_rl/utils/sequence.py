@@ -20,19 +20,8 @@ def get_cu_seqlens_from_position_ids(position_ids: torch.Tensor) -> tuple[torch.
         [torch.zeros(1, dtype=zero_starts.dtype, device=zero_starts.device), zero_starts]
     ).unique_consecutive()
 
-    ends = torch.cat(
-        [
-            starts[1:],
-            torch.tensor([total_tokens], dtype=starts.dtype, device=starts.device),
-        ]
-    )
-    seqlens = ends - starts
-
-    cu_seqlens = torch.empty(seqlens.numel() + 1, dtype=torch.int32, device=position_ids.device)
-    cu_seqlens[0] = 0
-    cu_seqlens[1:] = seqlens.cumsum(dim=0, dtype=torch.int32)
-
-    return cu_seqlens, seqlens.max().item()
+    boundaries = torch.cat([starts, starts.new_tensor([total_tokens])])
+    return boundaries.to(dtype=torch.int32), boundaries.diff().max().item()
 
 
 def get_cu_seqlens_from_seq_lens(seq_lens: torch.Tensor, total_tokens: int | None = None) -> tuple[torch.Tensor, int]:

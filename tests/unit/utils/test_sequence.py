@@ -10,6 +10,9 @@ from prime_rl.utils.sequence import (
 @pytest.mark.parametrize(
     ("position_ids", "expected_cu_seqlens", "expected_max_seqlen"),
     [
+        (torch.tensor([[0]]), [0, 1], 1),
+        (torch.tensor([[5]]), [0, 1], 1),
+        (torch.tensor([[0, 0, 0]]), [0, 1, 2, 3], 1),
         (torch.arange(8).unsqueeze(0), [0, 8], 8),
         (torch.arange(8, 16).unsqueeze(0), [0, 8], 8),
         (torch.tensor([[0, 1, 2, 3, 0, 1, 2]]), [0, 4, 7], 4),

@@ -121,16 +121,14 @@ def format_log_message(
     if train_env_names or eval_env_names:
         env_log_dir = log_dir / "envs"
         log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
-        if train_env_names:
-            log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
-            for name in train_env_names:
+        for split, names in (("train", train_env_names), ("eval", eval_env_names)):
+            if not names:
+                continue
+            label = f"{split.title()}:"
+            log_lines.append(f"{i2}{label:<{col - 1}}tail -F {env_log_dir}/{split}/*.log")
+            for name in names:
                 short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
-        if eval_env_names:
-            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*.log")
-            for name in eval_env_names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}.log")
+                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/{split}/{name}.log")
     return "Logs:\n" + "\n".join(log_lines)
 
 
@@ -228,19 +226,17 @@ def get_step_path(path: Path, step: int) -> Path:
 
 def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     """Gets all checkpoint steps from the checkpoint directory, sorted in ascending order."""
-    step_dirs = list(ckpt_dir.glob("step_*"))
-    return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
+    return sorted(int(step_dir.name.split("_")[-1]) for step_dir in ckpt_dir.glob("step_*"))
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+    logger = get_logger()
     steps = get_all_ckpt_steps(ckpt_dir)
-    if len(steps) == 0:
-        logger = get_logger()
+    if not steps:
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
     latest_step = steps[-1]
-    logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
 
@@ -260,9 +256,8 @@ def has_run_artifacts(run_dir: Path) -> bool:
     """Check if the run directory contains artifacts beyond what the launcher pre-writes."""
     if not run_dir.exists():
         return False
-    launcher_entries = {entry for pattern in LAUNCHER_ARTIFACTS for entry in run_dir.glob(pattern)}
     for entry in run_dir.iterdir():
-        if entry in launcher_entries:
+        if entry.name in LAUNCHER_ARTIFACTS:
             continue
         if entry.name == "logs" and entry.is_dir() and not any(path.is_file() for path in entry.rglob("*")):
             continue
