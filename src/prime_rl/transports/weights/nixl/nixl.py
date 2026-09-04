@@ -20,6 +20,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
@@ -463,12 +464,13 @@ class NIXLWeightReceiver(WeightReceiver):
         )
 
     async def initialize(self) -> None:
-        await self.admin_plane.initialize_nixl(
-            host=self.config.host,
-            port=self.config.port,
-            timeout=self.config.timeout,
-            inference_world_size=self.config.inference_world_size,
-            session_id=self.config.session_id,
+        await init_nixl_broadcast(
+            self.admin_plane,
+            self.config.host,
+            self.config.port,
+            self.config.timeout,
+            self.config.inference_world_size,
+            self.config.session_id,
         )
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
 

@@ -107,11 +107,6 @@ class AdminPlane:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def ensure_topology_current(self) -> None:
-        """Verify that the administrative targets are still authoritative."""
-
-        return None
-
     async def initialize_nccl(
         self,
         *,
@@ -121,7 +116,6 @@ class AdminPlane:
         inference_world_size: int,
         quantize_in_weight_transfer: bool = False,
     ) -> None:
-        await self.ensure_topology_current()
         gpus_per_server = inference_world_size // len(self.clients)
         get_logger().info(
             f"Initializing NCCL broadcast: {len(self.clients)} servers, "
@@ -155,17 +149,6 @@ class AdminPlane:
             )
         )
 
-    async def initialize_nixl(
-        self,
-        *,
-        host: str,
-        port: int,
-        timeout: int,
-        inference_world_size: int,
-        session_id: str,
-    ) -> None:
-        await init_nixl_broadcast(self, host, port, timeout, inference_world_size, session_id)
-
     async def update_weights(
         self,
         weight_dir: Path | None,
@@ -177,7 +160,6 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        await self.ensure_topology_current()
         await _pause_engines(self.clients, step=step)
         try:
             if on_paused is not None:
@@ -195,9 +177,6 @@ class AdminPlane:
             )
         finally:
             await _resume_engines(self.clients)
-
-    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
-        await load_lora_adapter(self, lora_name, lora_path)
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -428,12 +407,9 @@ async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    results = await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients],
-        return_exceptions=True,
+    await asyncio.gather(
+        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
     )
-    if failure := next((result for result in results if isinstance(result, BaseException)), None):
-        raise failure
     logger.debug("All inference engines paused")
 
 
@@ -444,12 +420,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    results = await asyncio.gather(
-        *[_admin_post(client, "/resume") for client in admin_clients],
-        return_exceptions=True,
-    )
-    if failure := next((result for result in results if isinstance(result, BaseException)), None):
-        raise failure
+    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -487,8 +458,6 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
-    await admin_plane.ensure_topology_current()
-
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
         stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
@@ -497,9 +466,7 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await _bounded_request(
-            admin_client,
-            "POST",
+        response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
@@ -518,7 +485,6 @@ async def init_nixl_broadcast(
     session_id: str,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    await admin_plane.ensure_topology_current()
     admin_clients = admin_plane.clients
     workers_per_server = inference_world_size // len(admin_clients)
 

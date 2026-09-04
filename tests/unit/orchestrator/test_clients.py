@@ -88,17 +88,13 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
 def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client = AsyncMock()
     admin_plane = MagicMock(clients=[mock_client])
-    admin_plane.ensure_topology_current = AsyncMock()
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
 
-    with patch("prime_rl.orchestrator.clients._bounded_request", new=AsyncMock(return_value=mock_response)) as request:
-        asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
 
-    admin_plane.ensure_topology_current.assert_awaited_once_with()
-    request.assert_awaited_once_with(
-        mock_client,
-        "POST",
+    mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),

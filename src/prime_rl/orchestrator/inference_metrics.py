@@ -11,18 +11,11 @@ from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
 from prime_rl import monitors
-from prime_rl.orchestrator.clients import _bounded_request
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
 POLL_INTERVAL = 5.0
 FETCH_TIMEOUT = 5.0
-MAX_METRICS_RESPONSE_BYTES = 4 * 1024 * 1024
-MAX_CONCURRENT_METRICS_FETCHES = 4
-MAX_METRICS_LINES = 50_000
-MAX_METRICS_ENGINES_PER_ENDPOINT = 64
-MAX_METRICS_PER_ENGINE = 10_000
-MAX_TOTAL_METRICS = 100_000
 METRIC_PREFIX = "vllm:"
 CACHE_CONFIG_FAMILY = "vllm:cache_config_info"
 PD_ROLES = {"prefill", "decode"}
@@ -123,21 +116,6 @@ def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
                 elif sample.name.endswith("_bucket"):
                     le = float(sample.labels["le"])
                     histogram.buckets[le] = histogram.buckets.get(le, 0.0) + sample.value
-    return engines
-
-
-def snapshot_metric_count(snapshot: EngineSnapshot) -> int:
-    return len(snapshot.gauges) + len(snapshot.counters) + len(snapshot.histograms) + len(snapshot.cache_config)
-
-
-def parse_bounded_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
-    if text.count("\n") > MAX_METRICS_LINES:
-        raise ValueError(f"Metrics response exceeds {MAX_METRICS_LINES} lines")
-    engines = parse_prometheus_text(text)
-    if len(engines) > MAX_METRICS_ENGINES_PER_ENDPOINT:
-        raise ValueError(f"Metrics response exceeds {MAX_METRICS_ENGINES_PER_ENDPOINT} engines")
-    if any(snapshot_metric_count(snapshot) > MAX_METRICS_PER_ENGINE for snapshot in engines.values()):
-        raise ValueError(f"Metrics response exceeds {MAX_METRICS_PER_ENGINE} metrics per engine")
     return engines
 
 
@@ -310,7 +288,6 @@ class InferenceMetricsCollector:
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
         self.log_metrics = log_metrics
-        self._fetch_semaphore = asyncio.Semaphore(MAX_CONCURRENT_METRICS_FETCHES)
         get_logger().info(
             "Collecting inference metrics from "
             + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
@@ -346,39 +323,23 @@ class InferenceMetricsCollector:
     async def collect_and_log(self):
         now = time.monotonic()
 
-        async def fetch(endpoint: MetricsEndpoint) -> list[EngineSample]:
+        async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
-                async with self._fetch_semaphore:
-                    async with asyncio.timeout(FETCH_TIMEOUT):
-                        response = await _bounded_request(
-                            endpoint.client,
-                            "GET",
-                            "/metrics",
-                            max_response_bytes=MAX_METRICS_RESPONSE_BYTES,
-                            timeout=FETCH_TIMEOUT,
-                        )
-                    response.raise_for_status()
-                    snapshots = await asyncio.to_thread(parse_bounded_prometheus_text, response.text)
-                    return [
-                        EngineSample(
-                            endpoint=endpoint,
-                            engine_label=engine_label,
-                            timestamp=now,
-                            snapshot=snapshot,
-                        )
-                        for engine_label, snapshot in sorted(snapshots.items())
-                    ]
+                response = await endpoint.client.get("/metrics", timeout=FETCH_TIMEOUT)
+                response.raise_for_status()
+                return response.text
             except Exception as e:
                 get_logger().debug(f"Failed to fetch metrics from {endpoint.client.base_url}: {e!r}")
-                return []
+                return None
 
         results = await asyncio.gather(*[fetch(endpoint) for endpoint in self.endpoints])
-        samples = [sample for endpoint_samples in results for sample in endpoint_samples]
+        samples = [
+            EngineSample(endpoint=endpoint, engine_label=engine_label, timestamp=now, snapshot=snapshot)
+            for endpoint, text in zip(self.endpoints, results)
+            if text is not None
+            for engine_label, snapshot in sorted(parse_prometheus_text(text).items())
+        ]
         if not samples:
-            return
-        total_metrics = sum(snapshot_metric_count(sample.snapshot) for sample in samples)
-        if total_metrics > MAX_TOTAL_METRICS:
-            get_logger().warning(f"Inference metrics poll exceeds the fleet limit of {MAX_TOTAL_METRICS} metrics")
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
@@ -403,9 +364,7 @@ class InferenceMetricsCollector:
         if endpoint.key in self.max_model_len_by_endpoint:
             return
         try:
-            async with self._fetch_semaphore:
-                async with asyncio.timeout(FETCH_TIMEOUT):
-                    response = await _bounded_request(endpoint.client, "GET", "/v1/models", timeout=FETCH_TIMEOUT)
+            response = await endpoint.client.get("/v1/models", timeout=FETCH_TIMEOUT)
             response.raise_for_status()
             lengths = [card.get("max_model_len") for card in response.json().get("data", [])]
             lengths = [length for length in lengths if length]
