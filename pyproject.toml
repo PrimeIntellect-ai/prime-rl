@@ -197,7 +197,7 @@ requires-dist = [
 name = "ai-dynamo-runtime"
 version = "1.4.2"
 requires-dist = [
-    "pydantic>=2.10.6,<=2.13.4",
+    "pydantic>=2.10.6,<=2.13.5",
     "uvloop>=0.21.0",
 ]
 
