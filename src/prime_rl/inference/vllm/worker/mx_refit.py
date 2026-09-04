@@ -9,7 +9,21 @@ from modelexpress_rl import (
 )
 from torch.nn import Module
 
+from prime_rl.transports.weights.mx_phases import timed_refit
 from prime_rl.transports.weights.mx_rdma import apply_rdma_defaults
+
+
+def _step_of(version_uid: str) -> int:
+    """Recover the step from a ``{run_uid}:{step}`` version uid.
+
+    The worker is handed a uid, not a step, and the phase records are only
+    joinable against the trainer's and orchestrator's if they agree on one. A
+    uid that does not carry a step is reported as -1 rather than refused: the
+    split is diagnostic, so it must never be the reason a refit fails.
+    """
+    _, _, suffix = version_uid.rpartition(":")
+    return int(suffix) if suffix.isdigit() else -1
+
 
 # Type hints for the Worker class without extending it at runtime, as required by
 # the vLLM worker-extension mechanism.
@@ -63,8 +77,12 @@ class MXRefitUpdateWorker(Worker):
         del weight_dir  # mx_refit pulls by version, not a path
         if version_uid is None:
             raise ValueError("mx_refit update_weights requires version_uid")
-        staged = self._generator.stage_weight(version=WeightVersionRef(version_uid))
-        try:
-            self._generator.apply_weight(staged)
-        finally:
-            staged.release()
+        with timed_refit("generator", _step_of(version_uid), version_uid) as timer:
+            with timer.phase("wire"):
+                staged = self._generator.stage_weight(version=WeightVersionRef(version_uid))
+            try:
+                with timer.phase("install"):
+                    self._generator.apply_weight(staged)
+            finally:
+                with timer.phase("release"):
+                    staged.release()

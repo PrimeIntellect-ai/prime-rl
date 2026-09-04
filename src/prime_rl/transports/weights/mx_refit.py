@@ -41,6 +41,7 @@ from prime_rl.configs.trainer import MXRefitWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_mx_refit_broadcast
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.mx_phases import timed_refit
 
 # How often rank 0 checks whether the generator has started pulling.
 RELEASE_POLL_INTERVAL = 0.05
@@ -154,35 +155,44 @@ class MXRefitWeightSender(WeightSender):
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         del step_dir  # mx_refit addresses versions by uid, not by path
-        if not self._initialized:
-            self._initialize(model)
-        assert self._client is not None
-
-        # Every rank derives the uid, so there is nothing to broadcast. The
-        # collective still has to stay, as a barrier: it is what guarantees rank 0
-        # has created the version before any rank publishes a shard into it.
         uid = weight_version_uid(self.config.run_uid, step)
-        if self.world.is_master:
-            assert self._control is not None
-            self._control.create_weight_version(
-                model_name=self.model_name,
-                idempotency_key=uid,
-                payload_format=WeightPayloadFormat.FULL_TENSOR,
-                expected_source_slots=self._expected_slots,
-                uid=uid,
-            )
-        dist.barrier()
+        with timed_refit("trainer", step, uid) as timer:
+            if not self._initialized:
+                # Only ever paid once, but paid inside the first broadcast, so it
+                # is timed separately rather than inflating that step's publish.
+                with timer.phase("init"):
+                    self._initialize(model)
+            assert self._client is not None
 
-        self._client.publish_version(version=WeightVersionRef(uid))
+            with timer.phase("publish"):
+                # Every rank derives the uid, so there is nothing to broadcast. The
+                # collective still has to stay, as a barrier: it is what guarantees
+                # rank 0 has created the version before any rank publishes into it.
+                if self.world.is_master:
+                    assert self._control is not None
+                    self._control.create_weight_version(
+                        model_name=self.model_name,
+                        idempotency_key=uid,
+                        payload_format=WeightPayloadFormat.FULL_TENSOR,
+                        expected_source_slots=self._expected_slots,
+                        uid=uid,
+                    )
+                dist.barrier()
+                self._client.publish_version(version=WeightVersionRef(uid))
 
-        # Block until the generator has pulled (the receiver retired the version,
-        # moving it to RELEASING) so training does not overwrite the staging
-        # arenas mid-read. Rank 0 observes RELEASING; the barrier propagates that
-        # to every rank before any of them withdraw their shard.
-        if self.world.is_master:
-            self._wait_released(uid)
-        dist.barrier()
-        self._client.release_version(version=WeightVersionRef(uid))
+            # Block until the generator has pulled (the receiver retired the
+            # version, moving it to RELEASING) so training does not overwrite the
+            # staging arenas mid-read. Rank 0 observes RELEASING; the barrier
+            # propagates that to every rank before any of them withdraw a shard.
+            # This is trainer idle time, not transport cost, and separating the
+            # two is the point of the split.
+            with timer.phase("rendezvous"):
+                if self.world.is_master:
+                    self._wait_released(uid)
+                dist.barrier()
+
+            with timer.phase("release"):
+                self._client.release_version(version=WeightVersionRef(uid))
 
     def _wait_released(self, uid: str) -> None:
         assert self._control is not None
@@ -225,21 +235,26 @@ class MXRefitWeightReceiver(WeightReceiver):
 
     async def receive(self, step: int) -> None:
         assert self._control is not None
-        # Acknowledge first, then wait for the version. The sender is held at the
-        # marker handshake until this ack lands and only creates the version
-        # afterwards, so waiting for the version before acknowledging would
-        # deadlock the pair.
-        self._ack(step)
-        uid = await resolve_ready_version(
-            self._control,
-            weight_version_uid(self.config.run_uid, step),
-        )
-        await self.admin_plane.update_weights(
-            None,
-            transport="mx_refit",
-            step=step,
-            version_uid=uid,
-        )
-        # Retiring the version moves it to RELEASING, which is what unblocks the
-        # trainer's broadcast.
-        await asyncio.to_thread(self._control.delete_weight_version, uid)
+        uid = weight_version_uid(self.config.run_uid, step)
+        with timed_refit("orchestrator", step, uid) as timer:
+            # Acknowledge first, then wait for the version. The sender is held at
+            # the marker handshake until this ack lands and only creates the
+            # version afterwards, so waiting for the version before acknowledging
+            # would deadlock the pair.
+            self._ack(step)
+            with timer.phase("discovery"):
+                await resolve_ready_version(self._control, uid)
+            # Wall time of the engines' pull and install, seen from this side. The
+            # worker emits its own wire/install split; the difference between the
+            # two is the pause/resume and RPC overhead this call adds.
+            with timer.phase("update_rpc"):
+                await self.admin_plane.update_weights(
+                    None,
+                    transport="mx_refit",
+                    step=step,
+                    version_uid=uid,
+                )
+            # Retiring the version moves it to RELEASING, which is what unblocks
+            # the trainer's broadcast.
+            with timer.phase("retire"):
+                await asyncio.to_thread(self._control.delete_weight_version, uid)
