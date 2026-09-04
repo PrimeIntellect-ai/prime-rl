@@ -178,6 +178,20 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
 
+    async def initialize_nixl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        await init_nixl_broadcast(self, host, port, timeout, inference_world_size, session_id)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
+        await load_lora_adapter(self, lora_name, lora_path)
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
