@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive `profile_ds_v4.py` over the (module, attn impl, seq_len, mode) grid, eight jobs at a time.
+# Drive `profile_ds_v4.py` over the (module, attn impl, seq_len, mode) grid, one job per visible GPU.
 #
 # One subprocess per measured point, because the sweep is designed to hit OOM and a process that
 # has raised `OutOfMemoryError` reports garbage for every peak after it. One GPU handles one
@@ -27,6 +27,16 @@ read -r -a MODULES <<< "${MODULES:-attn-csa attn-hca attn-sliding indexer-scorer
 # Only the CSA modules have more than one implementation, so the default is the single one the
 # harness itself defaults to; widen it explicitly to compare paths.
 read -r -a IMPLS <<< "${IMPLS:-kernel}"
+# A caller who restricts the pool means it: two memory-profiling processes on one device would
+# report garbage peaks for both. Take the inherited ids verbatim, in their order, and only ask the
+# driver for the full set when nothing was inherited.
+GPUS=()
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  IFS=',' read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
+else
+  read -r -a GPUS <<< "$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr '\n' ' ')"
+  ((${#GPUS[@]})) || GPUS=(0 1 2 3 4 5 6 7)
+fi
 
 mkdir -p "$RAW" "$LOGS"
 
@@ -82,14 +92,14 @@ run_module() {
   done
 }
 
-gpu=0
+slot=0
 for module in "${MODULES[@]}"; do
   for impl in "${IMPLS[@]}"; do
-    run_module "$gpu" "$module" "$impl" &
-    gpu=$(((gpu + 1) % 8))
+    run_module "${GPUS[slot]}" "$module" "$impl" &
+    slot=$(((slot + 1) % ${#GPUS[@]}))
     # More jobs than GPUs: let the first wave finish before starting the wrap-around, so no two
     # processes ever share a device.
-    if ((gpu == 0)); then wait; fi
+    if ((slot == 0)); then wait; fi
   done
 done
 wait
