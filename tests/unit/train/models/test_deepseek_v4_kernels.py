@@ -621,12 +621,13 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
         module(hidden_states, packed=packed)
 
     indices, n_positions = recorded["indices"], recorded["kv_buf"].shape[1]
-    # The slot count is `sliding_window + index_topk` rounded up to the kernel's slot tile.
-    # The Flash shapes need no rounding, 640 being a multiple of 64 already, so the padding
-    # itself is covered by `test_deepseek_v4.py` under `dsv4_attn='gather'` and not here.
+    # The exact width: the window plus the picks the row actually affords, tile-aligned. A row with
+    # fewer entries than `index_topk` gets a narrower slot count, not a `-1`-padded one.
+    n_entries = n_positions - sum(doc_lens)
+    n_picks = min(_FLASH_MODEL["index_topk"], n_entries)
+    tile = dsv4_attention._SLOT_TILE
     n_slots = indices.shape[-1]
-    assert n_slots >= _FLASH_MODEL["sliding_window"] + _FLASH_MODEL["index_topk"]
-    assert n_slots % dsv4_attention._SLOT_TILE == 0
+    assert n_slots == ((_FLASH_MODEL["sliding_window"] + n_picks + tile - 1) // tile) * tile
     assert (indices >= -1).all(), "a gather slot addresses a KV position below the `-1` marker"
     assert (indices <= n_positions - 1).all(), "a gather slot addresses past the end of the KV buffer"
 
