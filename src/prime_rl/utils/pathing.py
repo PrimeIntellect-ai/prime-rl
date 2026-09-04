@@ -204,8 +204,14 @@ def get_ckpt_dir(output_dir: Path) -> Path:
     return output_dir / "checkpoints"
 
 
-def get_rollout_dir(output_dir: Path) -> Path:
-    return output_dir / "rollouts"
+def get_batch_dir(output_dir: Path) -> Path:
+    return output_dir / "batches"
+
+
+def get_file_monitor_dir(output_dir: Path) -> Path:
+    """Everything the file monitor dumps locally: the metrics, and the traces with
+    the annotations about them."""
+    return output_dir / "monitors" / "file"
 
 
 def get_eval_dir(output_dir: Path) -> Path:
@@ -305,12 +311,12 @@ def validate_run_dir(
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts past ``resume_step`` and broadcasts from it onward.
+    """Remove stale step artifacts past ``resume_step`` and broadcasts from it onward.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
     cleanup_rules = [
-        (get_rollout_dir(output_dir), lambda step: step > resume_step),
+        (get_batch_dir(output_dir), lambda step: step > resume_step),
         (get_broadcast_dir(output_dir), lambda step: step >= resume_step),
     ]
 

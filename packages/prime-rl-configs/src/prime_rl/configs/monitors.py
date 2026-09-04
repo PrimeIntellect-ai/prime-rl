@@ -25,7 +25,22 @@ class WandbMonitorConfig(BaseConfig):
 
 class FileMonitorConfig(BaseConfig):
     path: Path = Path("metrics.jsonl")
-    """Path of the JSONL file, relative to the component's ``output_dir`` (absolute paths win)."""
+    """Path of the metrics JSONL file, relative to the file monitor's directory under the
+    component's ``output_dir`` (``monitors/file/``; absolute paths win)."""
+
+    chunk_bytes: int = 5 * 1024**3
+    """Size at which a trace stream (the episodes, each producer's annotations) rolls to
+    a new numbered chunk file. A line never spans chunks."""
+
+    compress: bool = True
+    """Seal full chunks with zstd once the stream rolls past them (the live chunk stays
+    plain text). Sealed chunks use seekable frames: a reader still lands on one line,
+    and ``zstd -dcf stream/* | jq`` reads a whole stream."""
+
+    float_decimals: int | None = 4
+    """Decimals kept for per-token float streams (logprobs, entropies, advantages) in
+    trace and annotation records; ``None`` keeps every digit. Training reads the wire,
+    not the records, so this only trades record size against overlay precision."""
 
 
 class PrimeMonitorConfig(BaseConfig):

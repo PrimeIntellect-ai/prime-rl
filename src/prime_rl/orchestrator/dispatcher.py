@@ -190,6 +190,7 @@ class Dispatcher:
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
+        self.source_indices_by_group: dict[str, int] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -466,6 +467,8 @@ class Dispatcher:
             return False
         gid = uuid.uuid4()
         self.groups[gid] = fresh
+        if fresh.source_index is not None:
+            self.source_indices_by_group[str(gid)] = fresh.source_index
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
@@ -493,7 +496,11 @@ class Dispatcher:
             episodes_to_schedule=group_size,
             target_episodes=group_size,
             policy_version_at_start=self.policy.version,
+            source_index=request.source_index,
         )
+
+    def pop_source_index(self, group_id: str) -> int | None:
+        return self.source_indices_by_group.pop(group_id, None)
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
         """Dispatch one ``run`` task for this group.
@@ -545,6 +552,7 @@ class Dispatcher:
             task=group.task,
             policy_version=group.policy_version_at_start,
             step=group.step,
+            source_index=group.source_index,
             client_config=client,
             started_at=time.monotonic(),
         )
@@ -710,6 +718,7 @@ class Dispatcher:
 
         if claimed:
             await safe_cancel_all([task for task, _ in claimed])
+        self.source_indices_by_group.pop(str(group_id), None)
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -721,6 +730,7 @@ class Dispatcher:
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
+        self.source_indices_by_group.clear()
         if tasks:
             await safe_cancel_all(tasks)
 

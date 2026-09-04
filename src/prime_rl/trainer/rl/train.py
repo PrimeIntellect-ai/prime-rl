@@ -31,11 +31,12 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
+    selective_log_softmax_with_sampling_mask,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.trainer.rl.token_export import setup_token_exporter
+from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -203,17 +204,12 @@ def train(config: TrainerConfig):
 
             substitute_hf_ulysses_attn(cp_group)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import (
-            assert_cp_style_supports_model,
-            setup_model_cp,
-            setup_sparse_mla_cp,
-        )
+        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
-        assert_cp_style_supports_model(config.model.cp_style, model)
         # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; with ring
-        # we'd have already raised above.
+        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
+        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
         if config.model.cp_style == "ulysses":
             setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
@@ -257,7 +253,9 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
+    annotation_writer = AnnotationWriter(
+        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -377,6 +375,10 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
+            sampling_mask = (
+                micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
+            )
+
             # Multimodal kwargs are an opaque per-model dict (e.g.
             # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
             # just {"pixel_values": ...} for Gemma3-VL) — we move every
@@ -397,6 +399,10 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
+            if sampling_mask is not None:
+                # Sampling masks ride at the sampled token's own position (like inference
+                # logprobs); shift to align with the label each position predicts.
+                sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
 
             seq_lens_are_pre_shard = False
 
@@ -417,6 +423,10 @@ def train(config: TrainerConfig):
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
+                if sampling_mask is not None:
+                    # The LM head consumes masks after any deferred VLM sharding, so
+                    # they must follow the label shard rather than the input shard.
+                    sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
@@ -436,6 +446,12 @@ def train(config: TrainerConfig):
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
 
+            if sampling_mask is not None:
+                assert sampling_mask.shape[:2] == labels.shape, (
+                    f"sampling_mask shape {tuple(sampling_mask.shape)} is not aligned with "
+                    f"labels shape {tuple(labels.shape)}"
+                )
+
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
@@ -449,6 +465,7 @@ def train(config: TrainerConfig):
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
+                    sampling_mask=sampling_mask,
                 )
 
             if out.get("logprobs") is None:
@@ -457,7 +474,10 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                if sampling_mask is not None:
+                    out["logprobs"] = selective_log_softmax_with_sampling_mask(scaled_logits, labels, sampling_mask)
+                else:
+                    out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
@@ -537,14 +557,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(
-                progress.step,
-                micro_step,
-                micro_batch,
-                out,
-                sequence_lengths,
-                config.loss,
-            )
+            annotation_writer.export(micro_batch, out)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -566,9 +579,7 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        if config.enable_token_export:
-            dist.barrier()
-            token_exporter.mark_stable()
+        annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -644,6 +655,13 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
+        active_step_time = step_time - wait_for_batch_time
+        if progress.step > start_step and wait_for_batch_time >= active_step_time:
+            logger.warning(
+                f"Trainer waited {format_time(wait_for_batch_time)} for a batch, at least as long as its "
+                f"{format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
+                "add more inference nodes."
+            )
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats['entropy/all/mean']:.4f}"
         if "mismatch_kl/all/mean" in tensor_stats:
             step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"
@@ -731,8 +749,6 @@ def train(config: TrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    token_exporter.close()
-
     # Write final checkpoint
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
@@ -744,6 +760,7 @@ def train(config: TrainerConfig):
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")
+    asyncio.run(monitors.finalize())
 
     # Stop metrics/health server if configured
     if metrics_server is not None:
