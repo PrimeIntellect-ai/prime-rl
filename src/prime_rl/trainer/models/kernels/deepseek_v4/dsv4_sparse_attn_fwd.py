@@ -1,8 +1,97 @@
-# Sparse attention forward kernel for the DeepSeek V4 CSA layers.
-# The TileLang scaffolding is vendored from tile-ai/tilelang (Apache 2.0) and modified for dynamic
-# shapes. The attention itself differs from tilelang's sparse MLA: there is no score-only channel
-# tail (every channel feeds both the score and the output), and a per-head learnable sink logit is
-# folded into the online softmax as the initial running max and denominator.
+"""
+[DeepSeek V4 Sparse Attention: Forward]
+
+Each query attends to an explicit list of `K` KV positions supplied by the caller, rather than to
+a contiguous causal span. This kernel only reads that list; it has no opinion on how the positions
+were chosen. Because every query carries a different list, the kernel runs one block per query
+position instead of tiling over a block of queries the way dense flash attention does.
+
+Shapes, with the capital of an index letter naming that axis's size:
+
+    Q[b, s, h, d]        (B, S, H, D)   queries, bfloat16
+    KV[b, n, g, d]       (B, N, G, D)   keys, bfloat16; V == K here, so one buffer is both
+    Indices[b, s, g, k]  (B, S, G, K)   int32 positions into KV's `n` axis
+    Sinks[h]             (H,)           float32, one learnable logit per query head
+    Output[b, s, h, d]   (B, S, H, D)   bfloat16
+    Lse[b, s, h]         (B, S, H)      float32
+
+  - `b`  batch index
+  - `s`  query position
+  - `n`  KV position
+  - `k`  gather slot, one of the `K` a query reads
+  - `d`  head dimension
+  - `h`  query head index
+  - `g`  KV head index, always of size 1; see below
+
+`G` is always 1: every query head reads the same single KV head. The axis survives from the
+vendored scaffolding, where `G > 1` would split the `H` query heads into `G` contiguous blocks of
+`H / G`, each reading its own KV head. Nothing exercises that path, and the head-padding case
+asserts `G == 1` outright, so the equations below fix `g = 0` and drop it. Note that the parameter
+is spelled `kv_group` but counts KV heads; the query heads per KV head are `H / G`, spelled
+`head_kv`.
+
+[What it computes]
+
+Write `key[b,s,k,d] = KV[b, Indices[b,s,0,k], 0, d]` for the gathered keys. Summing over repeated
+indices, and with `scale = D ** -0.5`:
+
+    logit[b,s,h,k]  = scale * Q[b,s,h,d] key[b,s,k,d]
+    Z[b,s,h]        = exp(Sinks[h]) + sum_k exp(logit[b,s,h,k])
+    p[b,s,h,k]      = exp(logit[b,s,h,k]) / Z[b,s,h]
+    Output[b,s,h,d] = p[b,s,h,k] key[b,s,k,d]
+    Lse[b,s,h]      = log2(Z[b,s,h])
+
+Note: the sink logit is unscaled; `scale` multiplies the dot products and not `Sinks`. And `Lse`
+is a base-2 logarithm of a partition function built from natural exponentials, not `ln Z`; that is
+what lets the backward recover `p` as `exp2(logit * log2(e) - Lse)` with a single `exp2`.
+
+The sink contributes to the denominator but owns no key, so `sum_k p[b,s,h,k] < 1` and `Output` is
+a shrunken combination of the gathered keys. That is how a head attends to nothing in particular.
+
+[What the caller must guarantee]
+
+`K` is fixed when the kernel compiles and is part of its compilation key, so it is sized for the
+most keys any query could need and a given query will often have fewer. Every unused slot must
+hold the sentinel, position `N - 1`, whose row of `KV` the caller zeroes. A slot is masked when
+
+    Indices[b,s,0,k] > N - 2
+
+and that is the only masking the kernel performs. It applies no causality test and never compares
+`k` against `s`: whatever the caller means by a valid key is encoded entirely in the index values.
+That is also what keeps the kernel correct when `s` is a local index that does not correspond to a
+global KV position.
+
+Every other entry must be a real position in `[0, N - 1)`. Nothing checks this at runtime, since a
+clamp in the inner gather loop would cost more than it is worth, so an out-of-range index reads
+out of bounds and corrupts silently.
+
+[How the loop runs]
+
+The grid is `(query position, batch, KV head)`, so with `G == 1` that is one block per query
+position per batch index, holding all `H` query heads of that query at once, or a 64-head chunk
+when `H > 64` (`REPLICATE_H`). The block walks the `K` slots in tiles of `block_I`,
+software-pipelined `num_stages` deep, and per tile:
+
+  1. gather `KV_shared[k,d] = KV[b, Indices[b,s,0,k], 0, d]` into one shared tile of keys
+  2. `acc_s[h,k] = Q_shared[h,d] KV_shared[k,d]`, pre-seeded to `-inf` at masked slots
+  3. rescale the running max, the denominator and `acc_o` (online softmax)
+  4. `acc_o[h,d] += acc_s[h,k] KV_shared[k,d]`, reusing that same tile as values
+
+Step 4 reusing step 1's tile is the `V == K` property: the gather is paid for once and feeds both
+GEMMs.
+
+The online softmax is seeded from the sink rather than from an empty sum. `m_i` is carried in raw
+dot-product units, so seeding it with `Sinks[h] / scale` makes `m_i * scale * log2(e)` equal
+`Sinks[h] * log2(e)`, and seeding `sumexp` to `1` is exactly that term's own exponential relative
+to that max. `T.reduce_max(..., clear=False)` then keeps the sink as a floor on the running max. A
+query whose slots are all sentinel therefore emits `Output = 0` and a finite
+`Lse = Sinks[h] * log2(e)`, where a zero-seeded denominator would divide by zero.
+
+The TileLang scaffolding is vendored from tile-ai/tilelang (Apache 2.0) and modified for dynamic
+shapes. The attention itself differs from tilelang's sparse MLA: there is no score-only channel
+tail (every channel feeds both the score and the output), and the per-head learnable sink logit is
+folded into the online softmax as described above.
+"""
 
 # TileLang ships a libcudart stub that proxies to the real CUDA runtime via
 # dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
