@@ -373,6 +373,22 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_nodes: int = Field(2, ge=1)
     """Inference nodes."""
 
+    nodes_per_replica: int = Field(1, ge=1)
+    """Nodes in each independent aggregate inference replica."""
+
+    @property
+    def num_replicas(self) -> int:
+        return self.num_nodes // self.nodes_per_replica
+
+    @model_validator(mode="after")
+    def validate_replica_shape(self):
+        if self.num_nodes % self.nodes_per_replica != 0:
+            raise ValueError(
+                "deployment.num_nodes must be divisible by deployment.nodes_per_replica "
+                f"({self.num_nodes} is not divisible by {self.nodes_per_replica})"
+            )
+        return self
+
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
 # prefill and decode node groups. Requires NIXL for KV transfer and a router for
@@ -484,6 +500,12 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        if (
+            self.deployment.type == "multi_node"
+            and self.deployment.nodes_per_replica > 1
+            and not self.vllm.enable_expert_parallel
+        ):
+            raise ValueError("Multi-node aggregate replicas require inference.vllm.enable_expert_parallel = true.")
         return self
 
     @model_validator(mode="after")

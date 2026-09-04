@@ -124,7 +124,7 @@ class EvalSamplingConfig(BaseConfig):
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. None defers to the inference server default."""
 
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
+    reasoning_effort: Literal["minimal", "low", "medium", "high", "max"] | None = None
     """Reasoning effort constraint for reasoning models."""
 
     extra_body: dict[str, Any] = {}
