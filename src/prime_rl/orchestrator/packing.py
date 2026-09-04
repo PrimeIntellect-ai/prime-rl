@@ -13,6 +13,7 @@ class BatchPacker:
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
         self.pad_to_multiple_of = config.pad_to_multiple_of
+        self.pack_samples = config.model.vlm is None or config.model.vlm.pack_samples
         try:
             model_config = AutoConfig.from_pretrained(
                 config.model.name, trust_remote_code=config.tokenizer.trust_remote_code
@@ -32,4 +33,5 @@ class BatchPacker:
             num_train_workers=self.num_train_workers,
             bin_cost=self.bin_cost,
             pad_to_multiple_of=self.pad_to_multiple_of,
+            pack_samples=self.pack_samples,
         )

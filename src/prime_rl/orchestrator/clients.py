@@ -178,9 +178,31 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
 
+    async def initialize_nixl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        await init_nixl_broadcast(self, host, port, timeout, inference_world_size, session_id)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
+        await load_lora_adapter(self, lora_name, lora_path)
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
+
+
+def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+    if client_config.dynamo is not None:
+        from prime_rl.inference.dynamo import DynamoAdminPlane
+
+        return DynamoAdminPlane(client_config, model_name)
+    return AdminPlane(client_config)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -238,6 +260,8 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
+        headers = {name: value for name, value in headers.items() if name.lower() != "accept-encoding"}
+        headers["Accept-Encoding"] = "identity"
 
         # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
@@ -246,10 +270,44 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
+            timeout=httpx.Timeout(min(30.0, max(1.0, float(client_config.wait_for_ready_timeout)))),
+            trust_env=False,
         )
 
     return [_setup_admin_client(base_url) for base_url in urls]
+
+
+MAX_ADMIN_RESPONSE_BYTES = 1024 * 1024
+
+
+async def _bounded_request(
+    client: AsyncClient,
+    method: str,
+    path: str,
+    *,
+    max_response_bytes: int = MAX_ADMIN_RESPONSE_BYTES,
+    **kwargs,
+) -> httpx.Response:
+    """Send an admin request without eagerly buffering an unbounded response."""
+
+    request_headers = kwargs.pop("headers", {})
+    request_headers = {name: value for name, value in request_headers.items() if name.lower() != "accept-encoding"}
+    request_headers["Accept-Encoding"] = "identity"
+    async with client.stream(method, path, headers=request_headers, **kwargs) as response:
+        content_encoding = response.headers.get("Content-Encoding")
+        if content_encoding and content_encoding.strip().lower() != "identity":
+            raise ValueError(f"Admin endpoint returned unsupported Content-Encoding {content_encoding!r}")
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            if len(body) + len(chunk) > max_response_bytes:
+                raise ValueError(f"Admin response body exceeds {max_response_bytes} bytes")
+            body.extend(chunk)
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=bytes(body),
+            request=response.request,
+        )
 
 
 async def maybe_check_has_model(
@@ -259,7 +317,9 @@ async def maybe_check_has_model(
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    results = await asyncio.gather(
+        *[_bounded_request(admin_client, "GET", "/v1/models") for admin_client in admin_clients]
+    )
     for admin_client, result in zip(admin_clients, results):
         models = result.json()["data"]
         if not any(model["id"] == model_name for model in models):
@@ -284,7 +344,7 @@ async def check_health(
         logger.debug("Pinging /health until the inference server is ready")
         while wait_time < timeout:
             try:
-                response = await admin_client.get("/health")
+                response = await _bounded_request(admin_client, "GET", "/health")
                 if response.status_code == 404:
                     logger.warning("The route /health does not exist. Skipping health check.")
                     return
@@ -312,17 +372,15 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
         # client errors (4xx) won't fix themselves on retry.
         return exception.response.status_code >= 500
     # Retry on transport-level failures (timeouts, connection resets, etc.) so the
-    # per-attempt read timeout below turns a stuck server into a bounded retry loop
-    # instead of hanging forever on the global timeout=None admin client.
-    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
+    # per-attempt read timeout below turns a stuck server into a bounded retry loop.
+    if isinstance(exception, (TimeoutError, httpx.TimeoutException, httpx.TransportError)):
         return True
     return False
 
 
-# Per-attempt read timeout for admin ops, overridable per call. The admin
-# AsyncClient uses `timeout=None`, so without this a stuck server would hang the
-# weight update forever: the read timeout converts a hang into a TimeoutException
-# that tenacity retries. Sized for `/pause`, which drains in-flight requests
+# Per-attempt read timeout for admin ops, overridable per call. The read timeout
+# converts a stuck server into a TimeoutException that tenacity retries. Sized
+# for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
@@ -330,24 +388,33 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
-    """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs
+) -> httpx.Response:
+    """POST an admin op with absolute per-attempt and total timeouts, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
-    async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
-        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    ):
-        with attempt:
-            response = await client.post(
-                path,
-                timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
-                **kwargs,
-            )
-            response.raise_for_status()
+    async with asyncio.timeout(2 * timeout_s):
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_retryable_admin_error),
+            stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            reraise=True,
+        ):
+            with attempt:
+                async with asyncio.timeout(timeout_s):
+                    response = await _bounded_request(
+                        client,
+                        "POST",
+                        path,
+                        timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
+                        **kwargs,
+                    )
+                    response.raise_for_status()
+                    return response
+
+    raise RuntimeError("Admin request retry loop exited without a response")
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
@@ -385,9 +452,7 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 
 
 # Per-attempt and total bounds for `/load_lora_adapter`. A LoRA load is fast
-# (small adapter file + KV cache reset, single-digit seconds in practice) but
-# the global admin AsyncClient uses `timeout=None`, so a stuck server would
-# hang the orchestrator forever.
+# (small adapter file + KV cache reset, single-digit seconds in practice).
 # `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
 # `_TOTAL` is the wall-clock budget across all retries — pick whichever
 # stop condition fires first.
@@ -407,7 +472,6 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
-
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
         stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
