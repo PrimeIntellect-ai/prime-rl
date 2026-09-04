@@ -3,6 +3,7 @@ from typing import Any, NamedTuple
 
 import torch
 from torch import nn
+from torch.distributed.tensor import Shard
 
 from prime_rl.utils.weights import resolve_fqn
 
@@ -154,6 +155,24 @@ def packed_parameters(model: nn.Module) -> Iterator[PackedParameterInfo]:
                 parameter=module.get_parameter(packed.name),
                 packed=packed,
             )
+
+
+def fsdp_shard_placement(model: nn.Module) -> Callable[[nn.Parameter], Shard | None]:
+    """FSDP placement that keeps every packed parameter's packing dimension unsharded.
+
+    Splitting a DTensor along an unsharded dimension is a local view, so the canonical
+    state-dict entries alias the packed storage and in-place loads reach it. FSDP's default
+    ``Shard(0)`` is kept for everything else, including parameters packed along dim 0 that
+    have no other dimension to shard.
+    """
+    packing_dims = {id(info.parameter): info.packed.dim for info in packed_parameters(model)}
+
+    def shard_placement(parameter: nn.Parameter) -> Shard | None:
+        if packing_dims.get(id(parameter)) == 0 and parameter.ndim > 1:
+            return Shard(1)
+        return None
+
+    return shard_placement
 
 
 def optimizer_state_dict_for_checkpoint(model: nn.Module, state_dict: dict[str, Any]) -> dict[str, Any]:
