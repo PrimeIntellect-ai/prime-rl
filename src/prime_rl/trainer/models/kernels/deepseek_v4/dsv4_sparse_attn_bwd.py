@@ -110,6 +110,7 @@ def bwd(
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
+    n_sentinel=1,
 ):
     assert is_causal is True, "non-casual is not supported now"
     assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
@@ -170,10 +171,10 @@ def bwd(
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
 
-            # See dsv4_sparse_attn_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
-            # live in [0, S_kv - 1). Using this single bound makes the kernel work for
+            # See dsv4_sparse_attn_fwd: the last n_sentinel rows are zero KV, valid indices
+            # live in [0, S_kv - n_sentinel). Using this single bound makes the kernel work for
             # both full and CP-sharded Q without needing a global Q offset.
-            max_kv_i = S_kv - 2
+            max_kv_i = S_kv - 1 - n_sentinel
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :], Q_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :], dO_shared)

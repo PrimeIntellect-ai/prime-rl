@@ -1035,9 +1035,9 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
         recorded["eager"] = real_eager(query, key, value, sinks, attention_mask, **kwargs)
         return recorded["eager"]
 
-    def gather(q, kv_buf, indices, sinks, scale):
-        recorded["kv_buf"], recorded["indices"] = kv_buf, indices
-        recorded["gather"] = real_gather(q, kv_buf, indices, sinks, scale)
+    def gather(q, kv_buf, indices, sinks, scale, n_sentinel=1):
+        recorded["kv_buf"], recorded["indices"], recorded["n_sentinel"] = kv_buf, indices, n_sentinel
+        recorded["gather"] = real_gather(q, kv_buf, indices, sinks, scale, n_sentinel=n_sentinel)
         return recorded["gather"]
 
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", eager)
@@ -1076,16 +1076,18 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
         module(hidden_states, packed=packed)
 
     admitted = recorded["mask"][0, 0] == 0  # (seq_len, seq_len + n_entries)
-    n_positions = recorded["kv_buf"].shape[1]
-    seq_len, n_entries = sum(doc_lens), n_positions - 1 - sum(doc_lens)
+    n_positions, n_sentinel = recorded["kv_buf"].shape[1], recorded["n_sentinel"]
+    seq_len, n_entries = sum(doc_lens), n_positions - n_sentinel - sum(doc_lens)
     assert n_entries == sum(length // _FLASH_COMPRESS_RATE for length in doc_lens)
     if n_entries:
         assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
 
-    # The trailing position is the sentinel, which is "no key" on the sparse side and has no
-    # column at all on the dense one.
+    # The trailing n_sentinel positions are the sentinel region, which is "no key" on the sparse
+    # side and has no column at all on the dense one.
     selected = _selected_positions(recorded["indices"], n_positions)
-    assert torch.equal(selected[:, :-1], admitted), "the sparse and dense paths select different keys"
+    assert torch.equal(selected[:, : n_positions - n_sentinel], admitted), (
+        "the sparse and dense paths select different keys"
+    )
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
@@ -1106,7 +1108,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     with torch.no_grad():
         module(hidden_states, packed=packed)
 
-    indices, n_positions = recorded["indices"], recorded["kv_buf"].shape[1]
+    indices, n_positions, n_sentinel = recorded["indices"], recorded["kv_buf"].shape[1], recorded["n_sentinel"]
     # The slot count is `sliding_window + index_topk` rounded up to the kernel's slot tile.
     # The Flash shapes need no rounding, 640 being a multiple of 64 already, so the padding
     # itself is covered by the toy `_MODEL` under `dsv4_attn='gather'` and not here.
@@ -1119,7 +1121,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     slot_idx = indices[0, :, 0, :].long()
     counts = torch.zeros((slot_idx.shape[0], n_positions), dtype=torch.int32, device="cuda")
     counts.scatter_add_(1, slot_idx, torch.ones_like(slot_idx, dtype=torch.int32))
-    assert (counts[:, :-1] <= 1).all(), "a query gathers the same key twice"
+    assert (counts[:, : n_positions - n_sentinel] <= 1).all(), "a query gathers the same key twice"
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
@@ -1208,9 +1210,9 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, kv_buf, indices, sinks, scale, n_sentinel=1):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, kv_buf, indices, sinks, scale, n_sentinel=n_sentinel)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -1256,9 +1258,9 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, kv_buf, indices, sinks, scale, n_sentinel=1):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, kv_buf, indices, sinks, scale, n_sentinel=n_sentinel)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
