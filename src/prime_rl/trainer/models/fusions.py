@@ -3,7 +3,9 @@ from typing import Any, NamedTuple
 
 import torch
 from torch import nn
+from torch.distributed.tensor import Shard
 
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.weights import resolve_fqn
 
 # Replaces some of a module's parameters with a packed one. Advertised by modules
@@ -112,7 +114,8 @@ def fuse_qkv_projections(module: nn.Module) -> None:
         projection.bias = None
 
 
-def apply_model_fusions(model: nn.Module, requested: Sequence[str]) -> dict[str, int]:
+def apply_model_fusions(model: nn.Module, requested: Sequence[str], raise_on_fail: bool = True) -> dict[str, int]:
+    """Apply each requested fusion to every module that supports it; returns the module count per fusion."""
     applied: dict[str, int] = {}
     for name in requested:
         count = 0
@@ -123,7 +126,11 @@ def apply_model_fusions(model: nn.Module, requested: Sequence[str]) -> dict[str,
             fusion(module)
             count += 1
         if count == 0:
-            raise ValueError(f"The model does not support the {name!r} runtime fusion")
+            message = f"The model does not support the {name!r} runtime fusion"
+            if raise_on_fail:
+                raise ValueError(message)
+            get_logger().warning(f"{message}; continuing without it")
+            continue
         applied[name] = count
     return applied
 
@@ -156,6 +163,24 @@ def packed_parameters(model: nn.Module) -> Iterator[PackedParameterInfo]:
                 parameter=module.get_parameter(packed.name),
                 packed=packed,
             )
+
+
+def fsdp_shard_placement(model: nn.Module) -> Callable[[nn.Parameter], Shard | None]:
+    """FSDP placement that keeps every packed parameter's packing dimension unsharded.
+
+    Splitting a DTensor along an unsharded dimension is a local view, so the canonical
+    state-dict entries alias the packed storage instead of being replicated copies. FSDP's
+    default ``Shard(0)`` is kept for everything else, including parameters packed along
+    dim 0 that have no other dimension to shard.
+    """
+    packing_dims = {id(info.parameter): info.packed.dim for info in packed_parameters(model)}
+
+    def shard_placement(parameter: nn.Parameter) -> Shard | None:
+        if packing_dims.get(id(parameter)) == 0 and parameter.ndim > 1:
+            return Shard(1)
+        return None
+
+    return shard_placement
 
 
 def load_packed_parameters(model: nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
