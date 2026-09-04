@@ -15,7 +15,9 @@ class PackedParameter:
     """One physical parameter packing several logical parameters along a dimension.
 
     Training allocates, computes on, and optimizes the packed parameter. The logical
-    parameters keep their canonical names in checkpoints, as views of the packed storage.
+    parameters keep their canonical names in checkpoints. They alias the packed storage
+    unless the parameter is a DTensor sharded along the packing dimension, where a split
+    has to redistribute and yields copies instead.
 
     ``name`` and ``logical_names`` are relative to the module the packing is registered
     on, and may name parameters of its children. ``dim`` is a non-negative dimension
@@ -156,8 +158,19 @@ def packed_parameters(model: nn.Module) -> Iterator[PackedParameterInfo]:
             )
 
 
+def load_packed_parameters(model: nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+    """Write the logical entries of a state dict loaded in place back into the packed parameters.
+
+    Loading into ``model.state_dict()`` in place only reaches a packed parameter through
+    entries that alias it, so the entries that are copies are packed and written back here.
+    """
+    with torch.no_grad():
+        for info in packed_parameters(model):
+            info.parameter.copy_(info.packed.pack([state_dict[name] for name in info.logical_names]))
+
+
 def optimizer_state_dict_for_checkpoint(model: nn.Module, state_dict: dict[str, Any]) -> dict[str, Any]:
-    """Expose packed optimizer tensors as logical zero-copy views for DCP."""
+    """Expose packed optimizer tensors under their logical names for DCP."""
     packings = list(packed_parameters(model))
     if not packings:
         return state_dict
@@ -190,12 +203,29 @@ def optimizer_state_dict_for_checkpoint(model: nn.Module, state_dict: dict[str, 
     return checkpoint_state_dict
 
 
+def load_packed_optimizer_state(
+    model: nn.Module, optimizers: Sequence[torch.optim.Optimizer], checkpoint_state_dict: dict[str, Any]
+) -> None:
+    """Pack the logical optimizer state DCP loaded in place into the optimizers' live state."""
+    packings = {id(info.parameter): info for info in packed_parameters(model)}
+    with torch.no_grad():
+        for optimizer in optimizers:
+            for parameter, state in optimizer.state.items():
+                info = packings.get(id(parameter))
+                if info is None:
+                    continue
+                logical_states = [checkpoint_state_dict["state"][name] for name in info.logical_names]
+                for state_name, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.shape == info.parameter.shape:
+                        value.copy_(info.packed.pack([logical_state[state_name] for logical_state in logical_states]))
+
+
 def optimizer_state_dict_for_runtime(
     model: nn.Module,
     checkpoint_state_dict: dict[str, Any],
     runtime_state_dict: dict[str, Any],
 ) -> dict[str, Any]:
-    """Restore packed optimizer names after DCP loads through logical views."""
+    """Pack the logical optimizer state DCP loaded back into the runtime optimizer state."""
     packings = list(packed_parameters(model))
     if not packings:
         return checkpoint_state_dict
@@ -208,12 +238,16 @@ def optimizer_state_dict_for_runtime(
 
     for info in packings:
         if info.name in restored_state_dict["state"]:
-            # DCP wrote every tensor through the logical views, which alias the packed
-            # storage. Only values it could not write in place are carried over here.
             physical_state = restored_state_dict["state"][info.name]
+            logical_states = [checkpoint_state_dict["state"][name] for name in info.logical_names]
             first_view = info.packed.views(info.parameter)[0]
-            for state_name, value in checkpoint_state_dict["state"][info.logical_names[0]].items():
-                if not (isinstance(value, torch.Tensor) and value.shape == first_view.shape):
+            for state_name, value in logical_states[0].items():
+                if isinstance(value, torch.Tensor) and value.shape == first_view.shape:
+                    with torch.no_grad():
+                        physical_state[state_name].copy_(
+                            info.packed.pack([logical_state[state_name] for logical_state in logical_states])
+                        )
+                else:
                     physical_state[state_name] = value
 
         for group in restored_state_dict["param_groups"]:

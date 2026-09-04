@@ -19,7 +19,11 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
-from prime_rl.trainer.models.fusions import optimizer_state_dict_for_checkpoint, optimizer_state_dict_for_runtime
+from prime_rl.trainer.models.fusions import (
+    load_packed_optimizer_state,
+    optimizer_state_dict_for_checkpoint,
+    optimizer_state_dict_for_runtime,
+)
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
@@ -80,10 +84,9 @@ class AppState(Stateful):
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
-        # Runtime fusions own one physical state tensor per fused parameter, so the
-        # checkpoint gets zero-copy logical views of it under the canonical names. This
-        # dict is also the template dcp_load writes into, which lands the loaded values
-        # directly in the fused storage.
+        # Runtime fusions own one physical state tensor per fused parameter; the checkpoint
+        # sees it under the canonical names. This dict is also the template dcp_load writes
+        # into, and load_state_dict packs the loaded entries back into the runtime state.
         state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict_for_checkpoint(self.model, optimizer_state_dict),
@@ -123,13 +126,15 @@ class AppState(Stateful):
             # apply the model side here and flip the wrappers to initialized so
             # subsequent steps take the steady-state path.
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            # The template only aliases a packed parameter's state where the packing
+            # dimension is unsharded, so the loaded logical entries are packed back in.
+            load_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
         else:
-            # dcp_load already wrote the fused parameters' state through the logical
-            # views in the template, so the runtime state dict read back here holds the
-            # loaded values under their physical names.
+            # The runtime state dict read back here keys the fused parameters' state by their
+            # physical names; the loaded logical entries are packed into it.
             _, runtime_optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
             set_state_dict(
                 self.model,

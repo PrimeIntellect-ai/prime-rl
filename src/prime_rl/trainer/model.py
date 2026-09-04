@@ -42,7 +42,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
-from prime_rl.trainer.models.fusions import apply_model_fusions
+from prime_rl.trainer.models.fusions import apply_model_fusions, load_packed_parameters
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -1007,6 +1007,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    load_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
