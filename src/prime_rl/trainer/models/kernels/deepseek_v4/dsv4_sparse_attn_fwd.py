@@ -51,25 +51,19 @@ a shrunken combination of the gathered keys. That is how a head attends to nothi
 [What the caller must guarantee]
 
 `K` is fixed when the kernel compiles and is part of its compilation key, so it is sized for the
-most keys any query could need and a given query will often have fewer. Every unused slot must
-hold `-1`. A slot is masked when
+most keys any query could need and a given query will often have fewer.
 
-    Indices[b,s,0,k] < 0
+Every unused slot must hold a negative index, which is the masking condition:
 
-and that is the only masking the kernel performs. It applies no causality test and never compares
+    Indices[b,s,0,k] < 0 .
+
+This is the only masking the kernel performs. It applies no causality test and never compares
 `k` against `s`: whatever the caller means by a valid key is encoded entirely in the index values.
 That is also what keeps the kernel correct when `s` is a local index that does not correspond to a
 global KV position.
 
-Nothing clamps the gather, and nothing needs to. TileLang lowers it to `cp_async_gs_conditional`
-under the condition `0 <= Indices < N`, passing a `cp.async` src-size of 0 when that fails, which
-PTX zero-fills. A masked slot therefore reads as a zero key rather than reading out of bounds.
-That behavior is load-bearing: a fully masked query relies on it to emit exactly `Output = 0`
-rather than a product against garbage.
-
-Every other entry must be a real position in `[0, N)`. Nothing checks this at runtime, since
-checking would cost the caller a device sync, so an index at or past `N` is masked by the same
-guard and silently contributes nothing rather than raising.
+Every other entry must be a real position in `[0, N)`. Nothing checks that: a device-side check
+would cost a sync, so an out-of-range index silently corrupts that query's softmax.
 
 [How the loop runs]
 
