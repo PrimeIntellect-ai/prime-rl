@@ -174,19 +174,15 @@ def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, 
     assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
-def _packed_context(
-    doc_lens: tuple[int, ...], dtype: torch.dtype, config: DeepseekV4Config | None = None
-) -> PackedContext:
+def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
     half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at. `config` defaults to the toy `_MODEL`; the Flash-shaped tests
-    at the bottom of this file pass their own.
+    be the one the caller runs at.
     """
-    config = config if config is not None else _prime_config()
     with torch.device("cuda"), default_dtype(dtype):
-        rotary = DeepseekV4RotaryEmbedding(config)
+        rotary = DeepseekV4RotaryEmbedding(_prime_config())
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
