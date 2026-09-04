@@ -27,6 +27,7 @@ from prime_rl.orchestrator.clients import (
     UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
     _admin_post,
+    _bounded_request,
     check_health,
     maybe_check_has_model,
     setup_admin_clients,
@@ -348,7 +349,27 @@ class DynamoAdminPlane(AdminPlane):
         self.workers: tuple[DynamoWorker, ...] = ()
         self._fingerprint: tuple[tuple[object, ...], ...] | None = None
         self._control_terminal = False
+        self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
+        self._nccl_initialized_worker_indexes: tuple[int, ...] = ()
         self._mutation_lock = asyncio.Lock()
+
+    @property
+    def nccl_initialization_state(self) -> Literal["uninitialized", "initializing", "ready", "terminal"]:
+        return self._nccl_initialization_state
+
+    def _require_uninitialized_nccl(self) -> None:
+        if self._nccl_initialization_state != "uninitialized":
+            raise RuntimeError(
+                "Dynamo NCCL can only be initialized once; restart the inference workers before retrying"
+            )
+
+    def _require_ready_nccl(self) -> None:
+        if self._nccl_initialization_state != "ready":
+            raise RuntimeError("Dynamo weight updates require a ready NCCL initialization")
+
+    def _terminalize_nccl(self) -> None:
+        self._nccl_initialization_state = "terminal"
+        self._control_terminal = True
 
     async def _discover(self) -> tuple[DynamoWorker, ...]:
         dynamo = self._client_config.dynamo
@@ -456,6 +477,10 @@ class DynamoAdminPlane(AdminPlane):
             return_exceptions=True,
         )
         if failure := next((result for result in results if isinstance(result, BaseException)), None):
+            if isinstance(failure, httpx.HTTPStatusError) and failure.response.status_code >= 500:
+                raise failure
+            if isinstance(failure, (httpx.TransportError, TimeoutError)):
+                raise failure
             raise RuntimeError(
                 "A discovered Dynamo worker does not expose the required vLLM development admin contract"
             ) from failure
@@ -507,21 +532,41 @@ class DynamoAdminPlane(AdminPlane):
             raise RuntimeError("Could not verify the pinned Dynamo topology") from last_error
         raise RuntimeError("Dynamo topology changed but could not be confirmed")
 
+    def _rank_offsets(self, inference_world_size: int) -> tuple[int, ...]:
+        worker_world_sizes = tuple(worker.world_size for worker in self.workers)
+        discovered_world_size = sum(worker_world_sizes)
+        if discovered_world_size != inference_world_size:
+            raise ValueError(
+                f"Discovered worker world sizes ({discovered_world_size}) do not match "
+                f"inference_world_size ({inference_world_size})"
+            )
+
+        offsets: list[int] = []
+        next_offset = 0
+        for worker_world_size in worker_world_sizes:
+            offsets.append(next_offset)
+            next_offset += worker_world_size
+        return tuple(offsets)
+
     async def _collective_rpc(
         self,
         client: httpx.AsyncClient,
         *,
-        method: Literal["liveness_probe", "update_weights_from_path"],
+        method: Literal["init_broadcaster", "liveness_probe", "update_weights_from_path"],
         timeout: int | float,
         args: list[object],
         expected_result_count: int,
     ) -> None:
-        response = await _admin_post(
-            client,
-            "/collective_rpc",
-            timeout_s=max(1.0, float(timeout)),
-            json={"method": method, "timeout": float(timeout), "args": args, "kwargs": {}},
-        )
+        operation_timeout = max(1.0, float(timeout))
+        async with asyncio.timeout(operation_timeout + 15.0):
+            response = await _bounded_request(
+                client,
+                "POST",
+                "/collective_rpc",
+                timeout=httpx.Timeout(connect=10.0, read=operation_timeout, write=10.0, pool=10.0),
+                json={"method": method, "timeout": operation_timeout, "args": args, "kwargs": {}},
+            )
+            response.raise_for_status()
         payload = response.json()
         if (
             not isinstance(payload, dict)
@@ -541,13 +586,17 @@ class DynamoAdminPlane(AdminPlane):
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        if transport != "filesystem":
-            raise ValueError("The standalone Dynamo admin plane only supports filesystem weight updates")
+        if transport not in ("filesystem", "nccl"):
+            raise ValueError("The Dynamo admin plane supports only filesystem and NCCL weight updates")
         if weight_dir is None:
-            raise ValueError("Filesystem weight updates require a broadcast directory")
+            raise ValueError(f"{transport.upper()} weight updates require a broadcast directory")
+        if transport == "nccl":
+            self._require_ready_nccl()
         async with self._mutation_lock:
             await self.ensure_topology_current()
             self._control_terminal = True
+            if transport == "nccl":
+                self._nccl_initialization_state = "terminal"
 
             pause_results = await asyncio.gather(
                 *(
@@ -580,8 +629,10 @@ class DynamoAdminPlane(AdminPlane):
                 return_exceptions=True,
             )
             if failure := next((result for result in update_results if isinstance(result, BaseException)), None):
+                if transport == "nccl":
+                    self._terminalize_nccl()
                 raise RuntimeError(
-                    "Dynamo filesystem update failed; engines remain paused and restart is required"
+                    f"Dynamo {transport} update failed; engines remain paused and restart is required"
                 ) from failure
 
             resume_results = await asyncio.gather(
@@ -589,11 +640,20 @@ class DynamoAdminPlane(AdminPlane):
                 return_exceptions=True,
             )
             if failure := next((result for result in resume_results if isinstance(result, BaseException)), None):
+                if transport == "nccl":
+                    self._terminalize_nccl()
                 raise RuntimeError("Dynamo resume failed; worker state is unknown and restart is required") from failure
             self._control_terminal = False
-            get_logger().info(
-                f"Applied filesystem weights for policy v{step} across {len(self.clients)} Dynamo worker endpoints"
-            )
+            if transport == "nccl":
+                self._nccl_initialization_state = "ready"
+            if transport == "filesystem":
+                get_logger().info(
+                    f"Applied filesystem weights for policy v{step} across {len(self.clients)} Dynamo worker endpoints"
+                )
+            else:
+                get_logger().info(
+                    f"Applied NCCL weights for policy v{step} across {len(self.clients)} Dynamo worker endpoints"
+                )
 
     async def initialize_nccl(
         self,
@@ -604,7 +664,66 @@ class DynamoAdminPlane(AdminPlane):
         inference_world_size: int,
         quantize_in_weight_transfer: bool = False,
     ) -> None:
-        raise ValueError("The standalone Dynamo admin plane does not support NCCL weight updates")
+        async with self._mutation_lock:
+            if self._control_terminal:
+                raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
+            self._require_uninitialized_nccl()
+            self._nccl_initialization_state = "initializing"
+            try:
+                await self.ensure_topology_current()
+                rank_offsets = self._rank_offsets(inference_world_size)
+                get_logger().info(
+                    f"Initializing Dynamo NCCL broadcast: {len(self.clients)} workers, "
+                    f"inference_world_size={inference_world_size}, "
+                    f"worker_world_sizes={tuple(worker.world_size for worker in self.workers)}"
+                )
+                results = await asyncio.gather(
+                    *(
+                        self._collective_rpc(
+                            client,
+                            method="init_broadcaster",
+                            timeout=timeout,
+                            args=[
+                                host,
+                                port,
+                                rank_offset,
+                                inference_world_size,
+                                timeout,
+                                quantize_in_weight_transfer,
+                                "default",
+                            ],
+                            expected_result_count=worker.world_size,
+                        )
+                        for client, worker, rank_offset in zip(
+                            self.clients,
+                            self.workers,
+                            rank_offsets,
+                            strict=True,
+                        )
+                    ),
+                    return_exceptions=True,
+                )
+            except asyncio.CancelledError:
+                self._terminalize_nccl()
+                raise
+            except BaseException as error:
+                self._terminalize_nccl()
+                raise RuntimeError(
+                    "Dynamo NCCL initialization failed; inference workers must restart before retrying"
+                ) from error
+
+            failures = tuple(index for index, result in enumerate(results) if isinstance(result, BaseException))
+            successes = tuple(index for index, result in enumerate(results) if not isinstance(result, BaseException))
+            self._nccl_initialized_worker_indexes = successes
+            if failures:
+                first_failure = results[failures[0]]
+                assert isinstance(first_failure, BaseException)
+                self._terminalize_nccl()
+                raise RuntimeError(
+                    "Dynamo NCCL initialization could not be reconciled because no supported teardown RPC exists; "
+                    f"successful workers={successes}, failed workers={failures}; inference workers must restart"
+                ) from first_failure
+            self._nccl_initialization_state = "ready"
 
     async def initialize_nixl(
         self,
