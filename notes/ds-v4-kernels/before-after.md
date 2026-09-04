@@ -1,9 +1,11 @@
-# DS V4 kernel work, phase 1: CSA attention, measured
+# DS V4 kernel work: attention on the fused kernel, measured
 
-What the fused sparse-attention kernel did to a CSA layer, measured the same way phase 0 measured
-the baseline: one `DeepseekV4Attention` at `layer_idx = 2` of the real `DeepSeek-V4-Flash-0731`
-config, batch 1, bf16, one H200 per point, no parallelism, no activation checkpointing. Memory
-columns are net of the module's own parameter and buffer baseline. Timing is `do_bench` with
+What the fused sparse-attention kernel did to the attention block, measured the same way phase 0
+measured the baseline. Phase 1 converted CSA and is below; phase 2 converted the sliding and HCA
+layers and is at the end. Conditions for both: one `DeepseekV4Attention` of the real
+`DeepSeek-V4-Flash-0731` config, at the layer index that config gives its type, batch 1, bf16, one
+H200 per point, no parallelism, no activation checkpointing. Memory columns are net of the
+module's own parameter and buffer baseline. Timing is `do_bench` with
 `--warmup 300 --rep 3000`, whose p20/p80 spread is under 0.7% on every point below except `gather`
 at 4096, where it is 1.3%.
 
@@ -152,24 +154,105 @@ context is the price of asking for it rather than something a default can inflic
 the advanced-indexing backward with something that does not scatter into a single hot index, which
 is the kernel, which already exists.
 
+## Phase 2: sliding and HCA on the same kernel
+
+The other 22 layers of 43 now gather too, so no attention layer of any type builds a dense mask.
+Neither conversion needed a new kernel. A sliding layer passes no entries at all, so its buffer is
+the token stream plus the sentinel; HCA's readable entries are the contiguous run its document has
+completed, which the compressor computes arithmetically instead of rendering as a bias. Same
+harness and conditions, `layer_idx = 0` for sliding and `3` for HCA, the real config's own choice.
+
+Forward peak:
+
+| t | sliding eager | kernel | vs eager | HCA eager | kernel | vs eager |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2048 | 2.30 GB | **0.99 GB** | **2.33x** | 2.33 GB | **1.00 GB** | **2.34x** |
+| 4096 | 7.56 GB | **1.94 GB** | **3.90x** | 7.66 GB | **1.96 GB** | **3.91x** |
+| 8192 | 27.09 GB | **3.85 GB** | **7.04x** | 27.45 GB | **3.89 GB** | **7.06x** |
+| 12288 | 58.62 GB | **5.76 GB** | **10.18x** | 59.39 GB | **5.82 GB** | **10.21x** |
+| 16384 | 102.15 GB | **7.67 GB** | **13.32x** | 103.49 GB | **7.74 GB** | **13.36x** |
+| 24576 | OOM | **11.49 GB** | **fits** | OOM | **11.60 GB** | **fits** |
+| 32768 | OOM | **15.31 GB** | **fits** | OOM | **15.46 GB** | **fits** |
+
+Backward peak:
+
+| t | sliding eager | kernel | vs eager | HCA eager | kernel | vs eager |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2048 | 2.72 GB | **1.61 GB** | **1.69x** | 2.74 GB | **1.61 GB** | **1.70x** |
+| 4096 | 9.25 GB | **3.02 GB** | **3.06x** | 9.33 GB | **3.03 GB** | **3.08x** |
+| 8192 | 34.32 GB | **5.85 GB** | **5.87x** | 34.60 GB | **5.86 GB** | **5.91x** |
+| 12288 | 75.39 GB | **8.68 GB** | **8.69x** | 76.00 GB | **8.68 GB** | **8.75x** |
+| 16384 | 132.45 GB | **11.50 GB** | **11.51x** | 133.51 GB | **11.51 GB** | **11.60x** |
+| 24576 | OOM | **17.16 GB** | **fits** | OOM | **17.17 GB** | **fits** |
+| 32768 | OOM | **22.82 GB** | **fits** | OOM | **22.82 GB** | **fits** |
+
+Forward plus backward time, `do_bench` p50:
+
+| t | sliding eager | kernel | speedup | HCA eager | kernel | speedup |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2048 | 20.7 ms | 8.1 ms | 2.6x | 22.1 ms | 9.5 ms | 2.3x |
+| 4096 | 65.9 ms | 15.3 ms | 4.3x | 69.6 ms | 17.5 ms | 4.0x |
+| 8192 | 228.5 ms | 29.7 ms | 7.7x | 236.4 ms | 32.9 ms | 7.2x |
+| 12288 | 475.3 ms | 44.0 ms | 10.8x | 478.1 ms | 48.9 ms | 9.8x |
+| 16384 | 811.9 ms | 58.5 ms | 13.9x | 833.1 ms | 64.4 ms | 12.9x |
+| 24576 | OOM | 87.6 ms | - | OOM | 96.3 ms | - |
+| 32768 | OOM | 118.2 ms | - | OOM | 128.8 ms | - |
+
+| module | attn | largest `t` that fits | first `t` that OOMs |
+|---|---|---:|---:|
+| `attn-sliding` | eager | 16384 | 24576 |
+| `attn-sliding` | kernel | 32768 | none in sweep |
+| `attn-hca` | eager | 16384 | 24576 |
+| `attn-hca` | kernel | 32768 | none in sweep |
+
+## Both are linear, and they cost almost the same
+
+Every kernel column above doubles when `t` doubles, to within a percent: sliding runs 3.85, 7.67
+and 15.31 GB at 8192, 16384 and 32768. The quadratic term is gone rather than reduced, so the
+ratio against eager keeps growing instead of settling, 2.3x at 2048 and 13.4x at 16384.
+
+Sliding and HCA land within 1% of each other at every point, which is the arithmetic working out
+rather than a coincidence. Peak is set by the slot count, and the harness packs 8192-token
+documents, so HCA affords `8192 / 128 = 64` picks against sliding's none: 192 slots to 128, both
+far below CSA's 640. That is also why CSA still peaks higher, and why HCA's slot count is 192 at
+every length in the table. It follows the longest document, not the packed row.
+
+## The remaining ceiling is the indexer, and it is not attention's to move
+
+Attention at 8192 now costs 3.85 GB forward on a sliding layer. Measured on this branch at the same
+lengths, `indexer` costs 0.85, 3.21, 12.46, 27.74, 49.04 and 109.75 GB, and OOMs at 32768 where
+attention runs at 15.31 GB. So the attention block is no longer what binds a long row anywhere in
+the sweep; the Lightning Indexer's fp32 `scores[b,s,h,e]` is, and it is quadratic in `t` for the
+same reason attention used to be.
+
+Those indexer figures are the phase-0 baseline, not the ones in the follow-on section above. The
+scorer rewrite that section reports is not on this branch; it lives on `feat/ds-v4-kernels-indexer`
+and has not reached `feat/ds-v4-kernels`. Read the two sets of numbers accordingly.
+
+CSA re-measures identically to phase 1 at every length, 1.41, 4.31, 14.61, 30.95, 53.32 and
+116.15 GB forward, so deriving the slot count from the index tensors rather than the config cost it
+nothing.
+
 ## What this does not do
 
-This phase converts the 21 CSA layers of 43. The 20 HCA layers and 2 sliding layers still build
-dense score tensors, and `PackedContext.attention_mask`, the dense `(1, 1, t, t)` sliding mask,
-still exists because they consume it. The model-level ceiling therefore does not move to 64k. What
-moved is the per-layer ceiling for half the layers, from 12288 to 24576, plus a proven kernel and
-index contract for HCA to reuse.
+No attention layer of any type builds a dense mask now, and `PackedContext` carries nothing wider
+than `O(S)` per query. What that does not buy is a 64k model: these are single modules on one GPU,
+the indexer still holds a quadratic term, and the 43-layer model's retained activations were never
+in this measurement at all. Context parallelism remains blocked, for a reason the dense mask was
+only ever the descriptor of: the sliding window is built from post-shard document boundaries, which
+global ones cannot address.
 
 ## Reproducing
 
 ```bash
 uv sync --all-extras
-IMPLS="eager gather kernel" MODULES="attn-csa" ./notes/ds-v4-kernels/bench/sweep.sh
+IMPLS="eager kernel" MODULES="attn-csa attn-hca attn-sliding" ./notes/ds-v4-kernels/bench/sweep.sh
 uv run notes/ds-v4-kernels/bench/render.py
 ```
 
-The whole sweep is about 20 minutes. Raw per-point JSON lands in `bench/raw/`, which is gitignored;
-the committed artifact is this file.
+The whole sweep is about 20 minutes. `sweep.sh` honours `CUDA_VISIBLE_DEVICES`; leave it unset to
+use every device, and never co-locate two points on one, since each reads a global peak. Raw
+per-point JSON lands in `bench/raw/`, which is gitignored; the committed artifact is this file.
 
 ## Verification performed
 
@@ -186,3 +269,20 @@ the committed artifact is this file.
    not a converged quantile. **Pass, with that one point weaker than the rest.**
 4. The indexer attribution above is corroborated by an independent phase-0 measurement of the
    indexer in isolation, not inferred from the attention rows. **Pass.**
+5. The phase-2 baseline reproduces phase 0 before any code changed: 27.09 GB forward at 8192 for
+   sliding against `measured.md`'s 27.09, and 27.45 against 27.44 for HCA. The second differs in
+   the last digit shown, which is allocator noise at 0.04%. **Pass.**
+6. CSA is unchanged by phase 2. Re-measured on the finished tree, its kernel rows reproduce phase
+   1 exactly at all six lengths, so deriving the slot count from the index tensors rather than
+   from the config neither cost nor saved anything. **Pass.**
+7. All three layer types reach the keys the dense rules admit, as integer set equality per query
+   with no tolerance, on five document layouts including rows whose leading document is too short
+   to compress. The dense side is built from the document lengths, never from `window_indices` or
+   from the index tensor, so the comparison cannot be satisfied by agreeing with itself. **Pass.**
+8. The kernel rows really ran the kernel, now checked at the dispatcher: a `TorchDispatchMode`
+   counts `prime_rl::dsv4_sparse_attn` and the parity tests assert one call on the kernel module
+   and none on the eager ones, so a silent fallback fails rather than passing. **Pass.**
+9. HCA's slot count follows the longest document, not the packed row. It is 192 at every length
+   from 2048 to 32768 with the harness's 8192-token documents, and takes five distinct values
+   across documents from 64 to 65536 tokens, so the minimum-width rule costs few recompiles.
+   **Pass.**

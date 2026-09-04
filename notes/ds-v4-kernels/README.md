@@ -1,9 +1,9 @@
-# DS V4 kernel work, phase 0: measure before optimizing
+# DS V4 kernel work: measurements and the target list
 
-Measurements, analysis, and a ranked target list for the DeepSeek V4 kernel effort. **No model
-code was changed.** Everything here was produced on this branch from the real
-`DeepSeek-V4-Flash-0731` config, batch 1, bf16, one NVIDIA H200 (sm90, 143771 MiB) per measured
-point, no parallelism.
+Measurements, analysis, and a ranked target list for the DeepSeek V4 kernel effort. The figures
+below are the phase-0 baseline, taken before any model code changed; `before-after.md` carries
+what the attention work did to them. Every point comes from the real `DeepSeek-V4-Flash-0731`
+config, batch 1, bf16, one NVIDIA H200 (sm90, 143771 MiB), no parallelism.
 
 | file | what it holds |
 |---|---|
@@ -102,21 +102,22 @@ measured. Times are `do_bench` medians at `t = 8192`.
 
 | # | target | bytes saved at `t=8192` | projected at `t=65536` | time saved | reuse or write | depends on |
 |---|---|---|---|---|---|---|
-| 1 | **Banded + gathered flash attention core** replacing `eager_attention_with_sinks`. **Done for CSA**, see `before-after.md`; sliding untouched | measured 18.7 GB fwd and 36.5 GB bwd per CSA layer; 24.0 GB (sliding) projected | ceiling moved 12288 to 24576 per CSA layer, and the forward is now indexer-bound, not attention-bound; 1539 GB (sliding) projected | measured 229 of 290 ms fwd+bwd per CSA layer, 6.0x at t=12288 | **written**: no stock kernel takes `head_dim 512` on sm90, so this is a TileLang kernel | needed #2 first (index representation) |
-| 2 | **Sparse index representation**: keep `top_k_indices`, drop the dense `block_bias` and the mask `cat`. **Done for CSA**, HCA still renders a dense bias | 0.19 GB per CSA layer | 12 GB per CSA layer | small on its own, and it is what made #1 possible | **written**: the index contract is `SparseAttnInputs` in `deepseek_v4/attention.py` | none; enabling change for #1 |
-| 3 | **Drop the dense sliding mask** for `(cu_seqlens, sliding_window)` | 0.8 GB transient, 0.12 GB resident (once per forward, not per layer) | 52 GB transient, 8.0 GB resident | 1.6 ms per forward | **write**, trivial once #1 consumes bounds | #1 |
+| 1 | **Banded + gathered flash attention core** replacing `eager_attention_with_sinks`. **Done** for all three layer types, see `before-after.md` | measured 18.7 GB fwd and 36.5 GB bwd per CSA layer; 24.0 GB (sliding) projected | ceiling moved 12288 to 24576 per CSA layer, and the forward is now indexer-bound, not attention-bound; 1539 GB (sliding) projected | measured 229 of 290 ms fwd+bwd per CSA layer, 6.0x at t=12288 | **written**: no stock kernel takes `head_dim 512` on sm90, so this is a TileLang kernel | needed #2 first (index representation) |
+| 2 | **Sparse index representation**: keep `top_k_indices`, drop the dense `block_bias` and the mask `cat`. **Done**: HCA's picks are arithmetic, not a bias | 0.19 GB per CSA layer | 12 GB per CSA layer | small on its own, and it is what made #1 possible | **written**: the index contract is `SparseAttnInputs` in `deepseek_v4/attention.py` | none; enabling change for #1 |
+| 3 | **Drop the dense sliding mask** for `window_indices`. **Done** | 0.8 GB transient, 0.12 GB resident (once per forward, not per layer) | 52 GB transient, 8.0 GB resident | 1.6 ms per forward | **write**, trivial once #1 consumes bounds | #1 |
 | 4 | **mHC fused norm + projection** replacing the fp32 flatten at `hyperconnections.py:51` | 1.68 GB per instance, x86 instances | 13.3 GB per instance | ~0.7 of 8.1 ms per instance | **partial reuse**: `quack.rmsnorm(x, None, ...)` is a one-line drop-in for the norm; Megatron's `fused_proj_rms_compute_h` needs the cuTile `tileiras` compiler and falls back without it | none |
 | 5 | **Fused Sinkhorn** replacing the 39-step loop | 0.03 GB saved state per instance | 0.20 GB per instance | launch-bound: 10,234 launches to 86 per forward | **reuse**: Megatron `fused_sinkhorn`, Triton with no arch gate, semantics verified byte-identical | none |
-| 6 | **Indexer einsum**: fold `softmax_scale` into `weights`, run the scorer in place under `no_grad`. **Done**, see `before-after.md` | measured 8.08 GB per CSA layer, 12.46 to 4.38 GB | 32768 now fits at 65.51 GB, where it used to OOM | measured 1.86 of 17.9 ms | **written**: three lines in `deepseek_v4/attention.py` | none |
+| 6 | **Indexer einsum**: fold `softmax_scale` into `weights`, run the scorer in place under `no_grad`. Lands separately | measured 8.08 GB per CSA layer, 12.46 to 4.38 GB | 32768 now fits at 65.51 GB, where it used to OOM | measured 1.86 of 17.9 ms | **written**: three lines in `deepseek_v4/attention.py` | none |
 | 7 | **In-place partial RoPE** replacing the 512-channel `cat` for a 64-channel rotation | ~2.8 GB churn per layer | ~22 GB per layer | part of the per-layer elementwise chain | **adapt**: Megatron's `fused_mla_rope_inplace` refuses adjacent-pair interleaving, which is what prime-rl uses | none |
 | 8 | **Fused `h_aggregate` / `h_post_bda`** for the mHC stream mixing | 1.1 GB per layer | 8.8 GB per layer | ~15 of 42 ms per forward | **reuse**: Megatron, Triton with no arch gate | none |
 
 Rows 1, 2, 3 and 6 are quadratic in `t` and so grow by 64x from `t=8192` to `t=65536`; rows 4, 5,
 7 and 8 are linear and grow by 8x.
 
-Items 1 through 3 are one project. Items 4, 5 and 8 are independent, cheap, and reusable from
-Megatron today. Item 6 is done: it moved the indexer's ceiling as well, which items 1 through 3
-were expected to be alone in doing.
+Items 1 through 3 were one project and are done: no attention layer of any type builds a dense
+mask, and peak memory is linear in `t`. What binds a long row now is the Lightning Indexer, item 6,
+which is handled on its own branch. Items 4, 5 and 8 are independent, cheap, and reusable from
+Megatron today.
 
 ## Reproducing
 
