@@ -119,11 +119,11 @@ total, of which roughly 120 GiB is available for activations after weights and g
 | 65536 | sliding | 512.0 GiB | 1563 GiB | no, by 13x |
 | 65536 | CSA | 640.0 GiB | 1949 GiB | no, by 16x |
 
-**64k is 13-16x beyond a single H200, and no amount of activation checkpointing changes that**,
-because the three-copy peak is a transient *inside* one attention call. Checkpointing removes the
-`0.996 * S` retained term, not the `3.005 * S` peak. The decoder-layer measurement confirms this
-directly: at `t = 8192`, `ac="full"` cuts retained memory from 18.23 GB to 0.33 GB and leaves the
-backward peak at 56.03 GB, identical to `ac="none"`.
+**64k is 13-16x beyond a single 140 GB GPU, and no amount of activation checkpointing changes
+that**, because the three-copy peak is a transient *inside* one attention call. Checkpointing
+removes the `0.996 * S` retained term, not the `3.005 * S` peak. The decoder-layer measurement
+confirms this directly: at `t = 8192`, `ac="full"` cuts retained memory from 18.23 GB to 0.33 GB
+and leaves the backward peak at 56.03 GB, identical to `ac="none"`.
 
 ## What a sparse kernel changes
 

@@ -32,12 +32,12 @@ CSA decoder layer at `t = 8192` has a 34.50 GB forward transient, of which **33.
 attention block** and roughly 1 GB is everything else including the entire 256-expert MoE. That
 ratio is the answer to "how much of the layer can this work reach": essentially all of it.
 
-**2. No stock flash kernel accepts `head_dim = 512` on H200.** FA4 is installed (flash-attn
+**2. No stock flash kernel accepts `head_dim = 512` on Hopper.** FA4 is installed (flash-attn
 2.8.3). `_validate_head_dims` in `flash_attn/cute/interface.py:112` gates the
-`is_deepseek_mla_absorbed_shape` path (`head_dim_v == 512`) to `compute_capability in [10, 11]`;
-the `compute_capability == 9` branch asserts `8 <= head_dim <= 256`. H200 is sm90. So the local
-sliding-window half needs either a banded custom kernel or the absorbed-MLA reformulation, not a
-drop-in `flash_attn_varlen_func`.
+`is_deepseek_mla_absorbed_shape` path (`head_dim_v == 512`) to `compute_capability in [10, 11]`,
+Blackwell only; the `compute_capability == 9` branch, Hopper (sm90, H100 and H200), asserts
+`8 <= head_dim <= 256`. So on Hopper the local sliding-window half needs either a banded custom
+kernel or the absorbed-MLA reformulation, not a drop-in `flash_attn_varlen_func`.
 
 **3. The window part and the top-k entry part share one softmax**, including a per-head learnable
 sink logit (`attention.py:158-162`). A sparse-MLA kernel covers only the entry half. The natural
@@ -86,7 +86,7 @@ Single module, single H200, no parallelism, no activation checkpointing.
 | `compressor-csa` | 24576 | 32768 |
 | `compressor-hca`, `hyperconnection`, `rmsnorm`, `rotary`, `packed-context` | 32768 | none in sweep |
 
-**The production aspiration of a 64k packed row is 13x to 16x beyond a single H200**, and
+**The production aspiration of a 64k packed row is 13x to 16x beyond a single 140 GB GPU**, and
 activation checkpointing does not help: it removes the `0.996 * S` retained term, not the
 `3.005 * S` transient peak inside one attention call. Measured at `t = 8192` on a full decoder
 layer, `ac="full"` cuts retained memory from 18.23 GB to 0.33 GB and leaves the backward peak
@@ -105,18 +105,18 @@ measured. Times are `do_bench` medians at `t = 8192`.
 | 1 | **Banded + gathered flash attention core** replacing `eager_attention_with_sinks`. **Done for CSA**, see `before-after.md`; sliding untouched | measured 18.7 GB fwd and 36.5 GB bwd per CSA layer; 24.0 GB (sliding) projected | ceiling moved 12288 to 24576 per CSA layer, and the forward is now indexer-bound, not attention-bound; 1539 GB (sliding) projected | measured 229 of 290 ms fwd+bwd per CSA layer, 6.0x at t=12288 | **written**: no stock kernel takes `head_dim 512` on sm90, so this is a TileLang kernel | needed #2 first (index representation) |
 | 2 | **Sparse index representation**: keep `top_k_indices`, drop the dense `block_bias` and the mask `cat`. **Done for CSA**, HCA still renders a dense bias | 0.19 GB per CSA layer | 12 GB per CSA layer | small on its own, and it is what made #1 possible | **written**: the index contract is `SparseAttnInputs` in `deepseek_v4/attention.py` | none; enabling change for #1 |
 | 3 | **Drop the dense sliding mask** for `(cu_seqlens, sliding_window)` | 0.8 GB transient, 0.12 GB resident (once per forward, not per layer) | 52 GB transient, 8.0 GB resident | 1.6 ms per forward | **write**, trivial once #1 consumes bounds | #1 |
-| 4 | **mHC fused norm + projection** replacing the fp32 flatten at `hyperconnections.py:51` | 1.68 GB per instance, x86 instances | 13.3 GB per instance | ~0.7 of 8.1 ms per instance | **partial reuse**: `quack.rmsnorm(x, None, ...)` is a one-line drop-in for the norm; Megatron's `fused_proj_rms_compute_h` is cuTile-only and unavailable on H200 | none |
-| 5 | **Fused Sinkhorn** replacing the 39-step loop | 0.03 GB saved state per instance | 0.20 GB per instance | launch-bound: 10,234 launches to 86 per forward | **reuse**: Megatron `fused_sinkhorn`, Triton, sm90-clean, semantics verified byte-identical | none |
-| 6 | **Indexer einsum**: fold `softmax_scale` into `weights`, replace the product-then-sum | 8.0 GB transient per CSA layer | 512 GB transient per CSA layer | part of 17.9 ms | **write**, two lines for two of three copies | none |
+| 4 | **mHC fused norm + projection** replacing the fp32 flatten at `hyperconnections.py:51` | 1.68 GB per instance, x86 instances | 13.3 GB per instance | ~0.7 of 8.1 ms per instance | **partial reuse**: `quack.rmsnorm(x, None, ...)` is a one-line drop-in for the norm; Megatron's `fused_proj_rms_compute_h` needs the cuTile `tileiras` compiler and falls back without it | none |
+| 5 | **Fused Sinkhorn** replacing the 39-step loop | 0.03 GB saved state per instance | 0.20 GB per instance | launch-bound: 10,234 launches to 86 per forward | **reuse**: Megatron `fused_sinkhorn`, Triton with no arch gate, semantics verified byte-identical | none |
+| 6 | **Indexer einsum**: fold `softmax_scale` into `weights`, run the scorer in place under `no_grad`. **Done**, see `before-after.md` | measured 8.08 GB per CSA layer, 12.46 to 4.38 GB | 32768 now fits at 65.51 GB, where it used to OOM | measured 1.86 of 17.9 ms | **written**: three lines in `deepseek_v4/attention.py` | none |
 | 7 | **In-place partial RoPE** replacing the 512-channel `cat` for a 64-channel rotation | ~2.8 GB churn per layer | ~22 GB per layer | part of the per-layer elementwise chain | **adapt**: Megatron's `fused_mla_rope_inplace` refuses adjacent-pair interleaving, which is what prime-rl uses | none |
-| 8 | **Fused `h_aggregate` / `h_post_bda`** for the mHC stream mixing | 1.1 GB per layer | 8.8 GB per layer | ~15 of 42 ms per forward | **reuse**: Megatron, Triton, sm90-clean | none |
+| 8 | **Fused `h_aggregate` / `h_post_bda`** for the mHC stream mixing | 1.1 GB per layer | 8.8 GB per layer | ~15 of 42 ms per forward | **reuse**: Megatron, Triton with no arch gate | none |
 
 Rows 1, 2, 3 and 6 are quadratic in `t` and so grow by 64x from `t=8192` to `t=65536`; rows 4, 5,
 7 and 8 are linear and grow by 8x.
 
-Items 1 through 3 are one project and are the only ones that move the OOM ceiling. Items 4, 5 and
-8 are independent, cheap, and reusable from Megatron today. Item 6 is two lines for half its
-benefit.
+Items 1 through 3 are one project. Items 4, 5 and 8 are independent, cheap, and reusable from
+Megatron today. Item 6 is done: it moved the indexer's ceiling as well, which items 1 through 3
+were expected to be alone in doing.
 
 ## Reproducing
 

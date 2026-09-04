@@ -85,8 +85,8 @@ about three of those copies against the attention core's one, but the numbers ar
 - FA4's head-dim gate is `_validate_head_dims` in `flash_attn/cute/interface.py:112`, the plan
   says `:114-126`. The claim itself is exactly right: `is_deepseek_mla_absorbed_shape`
   (`head_dim_v == 512`) is only reachable for `compute_capability in [10, 11]`, and the
-  `compute_capability == 9` branch asserts `8 <= head_dim <= 256`. H200 is sm90, so `head_dim 512`
-  is rejected outright.
+  `compute_capability == 9` branch asserts `8 <= head_dim <= 256`. So `head_dim 512` reaches a
+  kernel only on Blackwell, and is rejected outright on Hopper (sm90).
 - "39-iteration Sinkhorn loop" is loose but arithmetically right. `hc_sinkhorn_iters` defaults to
   20 and the real config sets 20; `hyperconnections.py:60-63` does one column normalization before
   the loop and two per iteration for `iters - 1 = 19` iterations, so 39 normalization steps, each

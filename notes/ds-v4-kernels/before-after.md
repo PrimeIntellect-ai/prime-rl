@@ -85,13 +85,37 @@ those four lengths (`measured.md`), just under each of the figures above.
 So the shape of the problem has changed. Attention was the ceiling; now the indexer is. Its fp32
 scorer materializes `scores[b,s,h,e]` over `h = 64` heads and `e = t/4` entries, which is 17.2 GB
 per copy at `t = 16384` and quadratic in `t`, exactly the term the attention kernel just removed
-from the other half of the layer. `24576` fits only because an H200 has 143 GB.
+from the other half of the layer. `24576` fits only because the GPU has 143 GB.
 
-That makes `DeepseekV4IndexerScorer` the next lever rather than anything in attention. It is
-cheaper to fix than attention was: the scores feed only a top-k, nothing retains them (the indexer
-receives no gradient, see `README.md`), and item 6 of the ranked target list already notes that
-folding `softmax_scale` into the head weights removes two of its three copies for two lines of
-change.
+That made `DeepseekV4IndexerScorer` the next lever rather than anything in attention, and it was
+cheaper to fix than attention was. See the follow-on section below.
+
+## Follow-on: the indexer scorer, measured
+
+`DeepseekV4Indexer.forward` now runs under `torch.no_grad()`, which is free but licenses the two
+changes that are not: the scorer mutates its `(batch, seq, heads, entries)` intermediate in place
+instead of copying it, and the two constant scales ride along on the per-head weights instead of
+costing a separate pass. Same harness, same conditions as above.
+
+| t | fwd peak before | after | vs before | fwd before | after | vs before |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2048 | 0.85 GB | **0.34 GB** | **2.47x** | 1.79 ms | 1.66 ms | 1.08x |
+| 4096 | 3.21 GB | **1.19 GB** | **2.70x** | 5.24 ms | 4.73 ms | 1.11x |
+| 8192 | 12.46 GB | **4.38 GB** | **2.85x** | 17.89 ms | 16.03 ms | 1.12x |
+| 12288 | 27.74 GB | **9.56 GB** | **2.90x** | 38.36 ms | 33.76 ms | 1.14x |
+| 16384 | 49.04 GB | **16.75 GB** | **2.93x** | 69.86 ms | 58.95 ms | 1.19x |
+| 24576 | 109.75 GB | **37.13 GB** | **2.96x** | 150.83 ms | 132.68 ms | 1.14x |
+| 32768 | OOM | **65.51 GB** | **fits** | OOM | 226.37 ms | **runs** |
+
+Three copies of the intermediate become one, so the ratio approaches 3x as that term comes to
+dominate, and the indexer clears 32768 for the first time. The 8.08 GB saved at 8192 is what item 6
+of the ranked target list predicted analytically (8.0 GB).
+
+Selection is unchanged. The in-place rewrite is bitwise identical to the previous scorer. Folding
+the scales perturbs scores by at most 7.2e-7, which left the selected entry sets identical at 2048
+and 8192 and on two packed multi-document rows, and reordered 102 of 4.19M slots within their own
+top-k, every one of them a near-tie with a score gap at or below 2.4e-7. Nothing downstream depends
+on that order: the indices become gather slots and attention softmaxes over all of them.
 
 ## `gather` is a memory win and a large time loss, and the time loss is not the dtype
 
