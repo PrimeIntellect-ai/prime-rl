@@ -43,10 +43,11 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
+from prime_rl.trainer.models.layers.fp8_recipe import Fp8LinearRecipe
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lowprecision import replace_all_linear_with_low_precision_linear
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
-from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.mxfp8_recipe import Mxfp8LinearRecipe
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
@@ -1144,14 +1145,16 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     if isinstance(quant, FP8Config):
-        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        replace_all_linear_with_low_precision_linear(model, Fp8LinearRecipe(), ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability != (10, 0):
             raise ValueError(
                 f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_all_linear_with_low_precision_linear(
+            model, Mxfp8LinearRecipe(quant.recipe), ignore_modules=quant.ignore_patterns
+        )
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
