@@ -118,6 +118,7 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.eager_reference import (
     block_bias_from_indices,
     build_sliding_window_mask,
+    dense_mask_from_indices,
     eager_attention_with_sinks,
 )
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
@@ -812,32 +813,35 @@ class DeepseekV4Attention(nn.Module):
         paired with this layer's entry selection in whatever form its attention path consumes:
         an additive `block_bias` to concatenate onto the dense mask for HCA, the indexer's picks
         to gather per query for CSA.
-        """
-        if compressed is None:
-            return self._eager(q, kv, packed.attention_mask)
 
-        if self.layer_type != "compressed_sparse_attention":
+        Every layer but HCA lays its slots out once, in `SparseAttnInputs`, and then differs only
+        in the attention core it hands them to, so the eager consumer is an oracle for the kernel
+        rather than a second answer to which keys a query reads.
+        """
+        if self.layer_type == "heavily_compressed_attention":
             compressed_kv, block_bias = compressed
             return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
 
-        compressed_kv, top_k_indices = compressed
-        if self.attn_impl == "eager":
-            block_bias = block_bias_from_indices(top_k_indices, compressed_kv.shape[2], packed.attention_mask.dtype)
-            return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
-        # Only the two gather-based implementations remain. An unrecognized one raises instead of
-        # picking a path, so a mistyped selection can never be measured as if it were the ask.
-        if self.attn_impl not in ("gather", "kernel"):
+        # An unrecognized implementation raises instead of picking a path, so a mistyped
+        # selection can never be measured as if it were the ask.
+        if self.attn_impl not in _ATTN_IMPLS:
             raise ValueError(f"attn_impl must be one of {sorted(_ATTN_IMPLS)}, got {self.attn_impl!r}")
 
-        # `eager_attention_with_sinks` drops attention weights, the gather-based paths do not,
-        # so they only agree at zero. The default is 0.0 but a config may set it.
-        assert self.attention_dropout == 0.0, "the sparse attention path implements no dropout"
+        compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
         inputs = SparseAttnInputs.build(
             kv=kv,
             compressed_kv=compressed_kv,
             top_k_indices=top_k_indices,
             window_indices=packed.window_indices,
         )
+        if self.attn_impl == "eager":
+            n_positions = inputs.kv_buf.shape[1]
+            attention_mask = dense_mask_from_indices(inputs.indices, n_positions, q.dtype)
+            return self._eager(q, inputs.kv_buf.transpose(1, 2), attention_mask)
+
+        # `eager_attention_with_sinks` drops attention weights, the gather-based paths do not,
+        # so they only agree at zero. The default is 0.0 but a config may set it.
+        assert self.attention_dropout == 0.0, "the gather-based attention paths implement no dropout"
         q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
         if self.attn_impl == "kernel":
             out, _lse = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
@@ -901,6 +905,7 @@ __all__ = [
     "SparseAttnInputs",
     "block_bias_from_indices",
     "build_sliding_window_mask",
+    "dense_mask_from_indices",
     "eager_attention_with_sinks",
     "sparse_attention_gather",
 ]
