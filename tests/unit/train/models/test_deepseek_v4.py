@@ -983,7 +983,7 @@ _FLASH_CSA_LAYER = 0
 _FLASH_COMPRESS_RATE = _FLASH_MODEL["compress_rates"]["compressed_sparse_attention"]
 
 # Document layouts for the sparse path, at `compress_rate = 4`. The first four leave every query
-# short of `index_topk = 512` readable entries, so the sentinel padding of the pick slots carries
+# short of `index_topk = 512` readable entries, so the `-1` padding of the pick slots carries
 # the difference; `(2600,)` saturates the picks instead, which the toy shapes cannot express at
 # all. `(3,)` compresses to no entries whatsoever, leaving the local window alone to answer.
 _FLASH_DOC_LENS = [(517, 1019), (3,), (300,), (3, 129, 1021), (2600,)]
@@ -1047,8 +1047,11 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
 
 def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor:
     """`(seq_len, n_positions)` bool: which KV positions each query's gather slots address."""
-    selected = torch.zeros((indices.shape[1], n_positions), dtype=torch.bool, device=indices.device)
-    return selected.scatter_(1, indices[0, :, 0, :].long(), True)
+    slots = indices[0, :, 0, :].long()
+    # `-1` marks an absent key; it goes into one throwaway column that is sliced back off.
+    safe = torch.where(slots >= 0, slots, n_positions)
+    selected = torch.zeros((indices.shape[1], n_positions + 1), dtype=torch.bool, device=indices.device)
+    return selected.scatter_(1, safe, True)[:, :n_positions]
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
@@ -1059,7 +1062,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     picks onto the sliding mask, the sparse path writes the window and the picks into one index
     tensor over a gathered KV buffer. Nothing else in the layer compares them, and every way of
     getting the sparse side wrong (a window base off by one, an entry index not offset by the
-    token count, a `-1` pick surviving, a stale sentinel) still produces a finite output.
+    token count, a stale index left over from a previous layout) still produces a finite output.
 
     Pure set equality on integers, so no tolerance enters. Both representations are captured from
     real forwards of the same module on the same input.
@@ -1077,15 +1080,13 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
 
     admitted = recorded["mask"][0, 0] == 0  # (seq_len, seq_len + n_entries)
     n_positions = recorded["kv_buf"].shape[1]
-    seq_len, n_entries = sum(doc_lens), n_positions - 1 - sum(doc_lens)
+    seq_len, n_entries = sum(doc_lens), n_positions - sum(doc_lens)
     assert n_entries == sum(length // _FLASH_COMPRESS_RATE for length in doc_lens)
     if n_entries:
         assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
 
-    # The trailing position is the sentinel, which is "no key" on the sparse side and has no
-    # column at all on the dense one.
     selected = _selected_positions(recorded["indices"], n_positions)
-    assert torch.equal(selected[:, :-1], admitted), "the sparse and dense paths select different keys"
+    assert torch.equal(selected, admitted), "the sparse and dense paths select different keys"
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
@@ -1095,8 +1096,8 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     A negative or out-of-range index reads whatever lies next to the buffer instead of raising,
     which the kernel that will consume these has no way to detect. A repeat is worse than
     wasteful: the duplicated key takes twice its share of the softmax, silently reweighting the
-    output. The sentinel is exempt from uniqueness, since padding every query out to a fixed slot
-    count is exactly what it is for.
+    output. The `-1` padding is exempt from uniqueness, since padding every query out to a fixed
+    slot count is exactly what it is for.
     """
     module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
     packed = _packed_context(doc_lens, torch.float32, _flash_config())
@@ -1113,13 +1114,15 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     n_slots = indices.shape[-1]
     assert n_slots >= _FLASH_MODEL["sliding_window"] + _FLASH_MODEL["index_topk"]
     assert n_slots % dsv4_attention._SLOT_TILE == 0
-    assert (indices >= 0).all(), "a gather slot addresses a negative KV position"
+    assert (indices >= -1).all(), "a gather slot addresses a KV position below the `-1` marker"
     assert (indices <= n_positions - 1).all(), "a gather slot addresses past the end of the KV buffer"
 
     slot_idx = indices[0, :, 0, :].long()
-    counts = torch.zeros((slot_idx.shape[0], n_positions), dtype=torch.int32, device="cuda")
-    counts.scatter_add_(1, slot_idx, torch.ones_like(slot_idx, dtype=torch.int32))
-    assert (counts[:, :-1] <= 1).all(), "a query gathers the same key twice"
+    # `-1` is counted in a throwaway column, since padding repeats it by design.
+    safe = torch.where(slot_idx >= 0, slot_idx, n_positions)
+    counts = torch.zeros((slot_idx.shape[0], n_positions + 1), dtype=torch.int32, device="cuda")
+    counts.scatter_add_(1, safe, torch.ones_like(safe, dtype=torch.int32))
+    assert (counts[:, :n_positions] <= 1).all(), "a query gathers the same key twice"
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)

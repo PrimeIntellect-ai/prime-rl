@@ -133,7 +133,7 @@ _ATTN_IMPLS = frozenset({"eager", "gather", "kernel"})
 # The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
 # `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production
 # config's `sliding_window + index_topk = 128 + 512 = 640` satisfies it for free; a toy config
-# does not, and pads with sentinel slots, which are masked and therefore semantically free.
+# does not, and pads with `-1` slots, which are masked and therefore semantically free.
 _SLOT_TILE = 64
 
 
@@ -235,8 +235,8 @@ def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: T
     `sinks` is `(heads,)`. The output is `(batch, seq_len, heads, head_dim)` in `q.dtype`, the
     layout `eager_attention_with_sinks` returns.
 
-    A slot holding the sentinel (the trailing zero position of `kv_buf`) is masked out, so a
-    query with a short window or fewer picks than slots costs nothing but the loads.
+    A slot holding `-1` marks an absent key and is masked out, so a query with a short window or
+    fewer picks than slots costs nothing but the loads.
 
     This materializes the `(batch, seq_len, n_slots, head_dim)` gather: at production shapes
     (640 slots, 512 channels) in bfloat16 that is 0.66 MB per token, about 43 GB at
@@ -248,16 +248,18 @@ def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: T
     differ in which keys they read and not in precision. Handed float32 tensors it is still the
     float32 oracle for a kernel accumulating in fp32.
     """
-    sentinel = kv_buf.shape[1] - 1
     slot_idx = indices[:, :, 0, :].to(torch.int64)  # (b, s, k)
+    absent = slot_idx < 0
+    # Torch negative indexing wraps, so a `-1` would silently gather the last KV position. The
+    # kernel needs no such clamp: TileLang guards its gather and zero-fills instead.
     batch_idx = torch.arange(kv_buf.shape[0], device=kv_buf.device)[:, None, None]
-    keys = kv_buf[batch_idx, slot_idx, 0].to(q.dtype)  # (b, s, k, d)
+    keys = kv_buf[batch_idx, slot_idx.clamp(min=0), 0].to(q.dtype)  # (b, s, k, d)
 
     logits = torch.einsum("bshd,bskd->bshk", q, keys) * scale
-    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
+    logits = logits.masked_fill(absent.unsqueeze(2), float("-inf"))
 
     # The sink logit is unscaled, as in `eager_attention_with_sinks`, which adds it after the
-    # dot products are scaled. Subtracting the row max keeps a fully sentinel row finite, and in
+    # dot products are scaled. Subtracting the row max keeps a fully masked row finite, and in
     # bfloat16 it is also what keeps the exponentials from overflowing.
     sink_logits = sinks.to(logits.dtype).reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
     combined_logits = torch.cat([logits, sink_logits], dim=-1)
@@ -488,14 +490,14 @@ class SparseAttnInputs:
 
         kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
                              n in [S, S + E) -> compressed entry (n - S)
-                             n = S + E       -> zeros; this position is also the sentinel index
 
-    Every index must be a real key in `[0, n_positions - 1)` or the sentinel, which `build`
-    guarantees. Nothing validates that at runtime: the kernel would need a clamp in its inner
-    gather loop and `sparse_attention_gather` a device sync, so a bad index corrupts silently.
+    Every index must be a real key in `[0, n_positions)` or `-1`, which marks an absent key. This
+    is the same marker `window_indices` and the indexer's picks already use, so nothing has to be
+    translated on the way in. Nothing validates it at runtime either, since checking would cost a
+    device sync per layer per step, so an out-of-range index corrupts silently.
     """
 
-    kv_buf: Tensor  # (batch, n_positions, 1, head_dim), trailing position is the zero pad slot
+    kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
     indices: Tensor  # (batch, seq_len, 1, n_slots) int32 into kv_buf's position axis
 
     def __post_init__(self) -> None:
@@ -510,11 +512,6 @@ class SparseAttnInputs:
         if self.indices.shape[-1] % _SLOT_TILE != 0:
             raise ValueError(f"n_slots must be a multiple of {_SLOT_TILE}, got {self.indices.shape[-1]}")
 
-    @property
-    def sentinel(self) -> int:
-        """The pad position, read off the buffer so the two cannot disagree."""
-        return self.kv_buf.shape[1] - 1
-
     @classmethod
     def build(
         cls,
@@ -527,24 +524,23 @@ class SparseAttnInputs:
         index_topk: int,
     ) -> "SparseAttnInputs":
         """Lay out one CSA layer's gather slots: the local window first, then the indexer's picks."""
-        batch, _, seq_len, head_dim = kv.shape
-        positions = torch.cat([kv, compressed_kv], dim=2).transpose(1, 2)  # (b, S + E, 1, d)
-        # The pad slot is appended here, so the sentinel index cannot disagree with the buffer.
-        kv_buf = torch.cat([positions, positions.new_zeros(batch, 1, 1, head_dim)], dim=1).contiguous()
-        sentinel = kv_buf.shape[1] - 1
+        batch, _, seq_len, _ = kv.shape
+        kv_buf = torch.cat([kv, compressed_kv], dim=2).transpose(1, 2).contiguous()  # (b, S + E, 1, d)
 
         # The slot count comes from the config and never from `top_k_indices.shape[-1]`: the
         # indexer returns only `min(index_topk, n_entries)` picks, so a shape-derived width would
         # vary with sequence length and force the kernel to recompile per shape.
         n_slots = ((sliding_window + index_topk + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
-        # Allocated at full width and prefilled with the sentinel, so the indices cannot be too
-        # narrow and everything the two writes below leave untouched is masked. That is what
-        # makes `n_entries < index_topk` safe.
-        indices = torch.full((batch, seq_len, 1, n_slots), sentinel, dtype=torch.int32, device=kv.device)
-        # `-1` is consumed here and never escapes into the buffer's index space.
-        indices[..., :sliding_window] = torch.where(window_indices >= 0, window_indices, sentinel).unsqueeze(1)
+        # Allocated at full width and prefilled with `-1`, so the indices cannot be too narrow and
+        # everything the two writes below leave untouched is masked. That is what makes
+        # `n_entries < index_topk` safe.
+        indices = torch.full((batch, seq_len, 1, n_slots), -1, dtype=torch.int32, device=kv.device)
+        # `window_indices` already marks an unused slot with `-1`, the same marker the kernel
+        # masks on, so it goes in unchanged.
+        indices[..., :sliding_window] = window_indices.unsqueeze(1)
         n_picks = top_k_indices.shape[-1]
-        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, sentinel)
+        # A surplus pick is `-1` and stays `-1`; a real pick shifts past the local token stream.
+        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
         indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
         return cls(kv_buf=kv_buf, indices=indices)
 
