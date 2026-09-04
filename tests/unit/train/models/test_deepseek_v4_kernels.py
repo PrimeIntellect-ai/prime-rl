@@ -14,8 +14,13 @@ import math
 
 import pytest
 import torch
+from torch import nn
 
-from prime_rl.trainer.models.deepseek_v4.attention import sparse_attention_gather
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, sparse_attention_gather
+from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
+from prime_rl.utils.utils import default_dtype
 
 # Guarded so collection survives on an install without tilelang: `pytest -m "not gpu"` imports every
 # module before deselecting by marker, and the kernel pulls in tilelang, which only the `gpu` extra
@@ -29,10 +34,109 @@ try:
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
 
-pytestmark = [
-    pytest.mark.gpu,
-    pytest.mark.skipif(dsv4_sparse_attn is None, reason="the DS V4 sparse attention kernel needs tilelang"),
-]
+pytestmark = [pytest.mark.gpu]
+
+# The fused kernel needs tilelang, which only the `gpu` extra provides and only on linux. Several
+# tests below reach the modeling code without ever compiling a kernel, so this is a per-test skip
+# rather than part of `pytestmark`.
+requires_tilelang = pytest.mark.skipif(
+    dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang"
+)
+
+
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    torch.manual_seed(0)
+
+
+def _randomize(module: nn.Module) -> None:
+    """Draw non-degenerate values for every parameter.
+
+    These modules allocate with `torch.empty`, and the values `init_weights` would write are
+    themselves degenerate for testing: norm gains default to ones and the sinks and position
+    biases to zeros, each of which leaves the path it controls indistinguishable from a no-op.
+    The position bias is drawn wide because it is a softmax logit over a pooling window; at the
+    projections' std the gate would stay near uniform.
+    """
+    for name, param in module.named_parameters():
+        with torch.no_grad():
+            if name.endswith("scale"):
+                param.uniform_(0.5, 1.5)
+            elif name.endswith("base"):
+                param.normal_(mean=0.0, std=0.5)
+            elif name.endswith("norm.weight"):
+                param.uniform_(0.5, 1.5)
+            elif name.endswith("sinks") or name.endswith("position_bias"):
+                param.normal_(mean=0.0, std=1.0)
+            else:
+                param.normal_(mean=0.0, std=0.02)
+
+
+def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype, config: DeepseekV4Config) -> PackedContext:
+    """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
+
+    A single-element `doc_lens` gives back the single-document context, which is what the unpacked
+    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
+    be the one the caller runs at.
+    """
+    with torch.device("cuda"), default_dtype(dtype):
+        rotary = DeepseekV4RotaryEmbedding(config)
+    return PackedContext.build(
+        rotary_emb=rotary,
+        seq_lens=torch.tensor(doc_lens, device="cuda"),
+        dtype=dtype,
+        device=torch.device("cuda"),
+    )
+
+
+def _doc_slice(doc_lens: tuple[int, ...], index: int) -> slice:
+    start = sum(doc_lens[:index])
+    return slice(start, start + doc_lens[index])
+
+
+# The module-level cases run in float32. `kv_proj` sees a different number of rows packed than
+# alone and cuBLAS may tile the two differently, so they never match bit for bit, and in bfloat16
+# that floor would swallow the cross-document leakage these tests exist to catch.
+_PACKED_RTOL = 1e-5
+# Gradients are bounded against the tensor's own scale instead: they are sums over the whole row,
+# so their near-zero entries are the ones whose summands cancelled, and an element-wise relative
+# bound would read out that cancellation noise rather than a document leak.
+_PACKED_GRAD_RTOL = 1e-5
+
+
+def _take_grads(module: nn.Module) -> dict[str, torch.Tensor | None]:
+    """Detach whatever gradients have accumulated and clear them for the next run."""
+    grads = {name: None if param.grad is None else param.grad.clone() for name, param in module.named_parameters()}
+    module.zero_grad(set_to_none=True)
+    return grads
+
+
+def _compare_accumulated_grads(
+    module: nn.Module, expected: dict[str, torch.Tensor | None], rtol: float = _PACKED_GRAD_RTOL
+) -> None:
+    """Compare the gradients now on `module` against a snapshot taken from an earlier backward.
+
+    Allows for a parameter that legitimately receives nothing: the Lightning Indexer reaches the
+    loss only through integer top-k indices, so neither run may hand its parameters a gradient.
+    """
+    for name, param in module.named_parameters():
+        if expected[name] is None:
+            assert param.grad is None, f"{name} received a gradient per document but not packed"
+            continue
+        assert param.grad is not None, f"{name} received no gradient per document"
+        _assert_relative(param.grad, expected[name], rtol, name)
+
+
+def _set_attn_impl(module: nn.Module, impl: str) -> None:
+    """Pin the CSA attention implementation on every attention layer `module` owns.
+
+    `modules()` yields `module` itself, so this covers a lone attention layer as well as a model
+    holding several of them.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, DeepseekV4Attention):
+            submodule.attn_impl = impl
+
 
 # The production DeepSeek V4 Flash CSA layer: 64 heads over 512 channels, each query gathering
 # `sliding_window + index_topk = 128 + 512` slots from a single KV group, in bfloat16.
@@ -167,6 +271,7 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), _SHAPES, ids=_SHAPE_IDS)
+@requires_tilelang
 def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv):
     """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
@@ -185,6 +290,7 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
     _assert_relative(lse, reference_lse, _LSE_RTOL, "lse")
 
 
+@requires_tilelang
 def test_fully_masked_query_reads_as_zero_keys():
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
@@ -210,6 +316,7 @@ def test_fully_masked_query_reads_as_zero_keys():
     assert torch.isfinite(out).all() and torch.isfinite(lse).all()
 
 
+@requires_tilelang
 def test_tilelang_zero_fills_an_out_of_range_gather():
     """An index outside `[0, n_positions)` must read as zeros, not as whatever it points at.
 
@@ -259,6 +366,7 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), _SHAPES, ids=_SHAPE_IDS)
+@requires_tilelang
 def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv):
     """All three differentiable inputs, each against its own bound.
 
@@ -286,6 +394,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     _assert_relative(kernel_sinks.grad, reference_sinks.grad, _DSINK_RTOL, "dsink")
 
 
+@requires_tilelang
 def test_kernel_traces_under_torch_compile():
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
