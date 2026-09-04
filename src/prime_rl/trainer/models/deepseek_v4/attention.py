@@ -659,11 +659,19 @@ class DeepseekV4IndexerScorer(nn.Module):
         self.weights_proj = nn.Linear(config.hidden_size, config.index_n_heads, bias=False)
 
     def forward(self, q: torch.Tensor, compressed_kv: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Score `q` `(batch, seq, heads, dim)` against `compressed_kv` `(batch, entries, dim)`."""
+        """Score `q` `(batch, seq, heads, dim)` against `compressed_kv` `(batch, entries, dim)`.
+
+        The `(batch, seq, heads, entries)` intermediate is 4 GB at 8192 tokens, so it is mutated in
+        place instead of copied. That is only correct with grad disabled, which the caller
+        `DeepseekV4Indexer.forward` guarantees.
+        """
         scores = torch.matmul(q.float(), compressed_kv.transpose(-1, -2).float().unsqueeze(1))
-        scores = F.relu(scores) * self.softmax_scale
-        weights = self.weights_proj(hidden_states).float() * self.weights_scaling
-        return (scores * weights.unsqueeze(-1)).sum(dim=2)
+        F.relu_(scores)
+        # Both scales are positive constants and cannot change the selection, so they ride along on
+        # the per-head weights rather than costing a second pass over the intermediate.
+        weights = self.weights_proj(hidden_states).float() * (self.weights_scaling * self.softmax_scale)
+        scores *= weights.unsqueeze(-1)
+        return scores.sum(dim=2)
 
 
 class DeepseekV4Indexer(nn.Module):
@@ -690,6 +698,7 @@ class DeepseekV4Indexer(nn.Module):
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.scorer = DeepseekV4IndexerScorer(config)
 
+    @torch.no_grad() # Returns non-differentiable integer indices.
     def forward(self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         compressed_kv = self.compressor.compress(hidden_states, packed)
