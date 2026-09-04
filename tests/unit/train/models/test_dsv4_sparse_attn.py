@@ -47,9 +47,9 @@ _SM_SCALE = _DIM**-0.5
 _SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 _SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
-# A quarter of the gather slots hold the sentinel, which is what a real query with a short
-# window or a saturated top-k looks like: the masked slots still cost a load and a GEMM column.
-_SENTINEL_FRACTION = 0.25
+# A quarter of the gather slots are masked, which is what a real query with a short window or a
+# saturated top-k looks like: the masked slots still cost a GEMM column.
+_MASKED_FRACTION = 0.25
 
 # Bounds on the largest absolute deviation against each tensor's own scale, not element-wise:
 # every entry is a sum over hundreds of terms, so the near-zero entries are the ones whose
@@ -94,24 +94,22 @@ def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float,
     assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
-def _build_indices(batch: int, seq_len: int, seq_len_kv: int, sentinel_fraction: float) -> torch.Tensor:
-    """`(batch, seq_len, kv_group, topk)` int32 gather slots, a mix of valid picks and sentinel.
+def _build_indices(batch: int, seq_len: int, seq_len_kv: int, masked_fraction: float) -> torch.Tensor:
+    """`(batch, seq_len, kv_group, topk)` int32 gather slots, a mix of valid picks and `-1`.
 
-    Valid KV positions are `[0, seq_len_kv - 1)`; `seq_len_kv - 1` is the zero sentinel. The
-    picks are drawn without replacement, since a real query never gathers the same key twice and
-    a duplicate would take twice its share of the softmax on both sides of the comparison.
+    Valid KV positions are `[0, seq_len_kv)`; `-1` marks an absent key. The picks are drawn
+    without replacement, since a real query never gathers the same key twice and a duplicate
+    would take twice its share of the softmax on both sides of the comparison.
     """
-    sentinel = seq_len_kv - 1
-    n_valid = seq_len_kv - 1
-    assert n_valid >= _TOPK, "not enough valid KV positions to fill the gather slots without repeats"
-    picks = torch.rand(batch, seq_len, n_valid, device="cuda").argsort(dim=-1)[..., :_TOPK]
-    masked = torch.rand(batch, seq_len, _TOPK, device="cuda") < sentinel_fraction
-    picks = torch.where(masked, torch.full_like(picks, sentinel), picks)
+    assert seq_len_kv >= _TOPK, "not enough valid KV positions to fill the gather slots without repeats"
+    picks = torch.rand(batch, seq_len, seq_len_kv, device="cuda").argsort(dim=-1)[..., :_TOPK]
+    masked = torch.rand(batch, seq_len, _TOPK, device="cuda") < masked_fraction
+    picks = torch.where(masked, torch.full_like(picks, -1), picks)
     return picks.to(torch.int32).unsqueeze(2).contiguous()
 
 
 def _inputs(
-    batch: int, seq_len: int, seq_len_kv: int, *, sentinel_fraction: float = _SENTINEL_FRACTION
+    batch: int, seq_len: int, seq_len_kv: int, *, masked_fraction: float = _MASKED_FRACTION
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """`q`, `kv`, `indices`, `sinks` at the Flash shapes, detached values rather than leaves.
 
@@ -123,13 +121,11 @@ def _inputs(
     with torch.device("cuda"):
         q = torch.randn(batch, seq_len, _HEADS, _DIM, dtype=torch.bfloat16)
         kv = torch.randn(batch, seq_len_kv, _KV_GROUP, _DIM, dtype=torch.bfloat16)
-        # The trailing position is the sentinel's target and reads as zeros.
-        kv[:, -1] = 0
         # A float32 sinks leaf, deliberately: the kernel casts `dsink` back to the leaf's dtype,
         # so a bfloat16 leaf would round both sides onto the same coarse grid and report a
         # deviation the rounding chose rather than one the kernel earned.
         sinks = torch.randn(_HEADS, dtype=torch.float32)
-    return q, kv, _build_indices(batch, seq_len, seq_len_kv, sentinel_fraction), sinks
+    return q, kv, _build_indices(batch, seq_len, seq_len_kv, masked_fraction), sinks
 
 
 def _leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -158,12 +154,11 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
     The oracle returns only the attention output, so its denominator is recomputed here from the
     same gather and the same unscaled sink logit, in float32.
     """
-    sentinel = kv.shape[1] - 1
     slot_idx = indices[:, :, 0, :].to(torch.int64)
     batch_idx = torch.arange(kv.shape[0], device=kv.device)[:, None, None]
-    keys = kv[batch_idx, slot_idx, 0].float()
+    keys = kv[batch_idx, slot_idx.clamp(min=0), 0].float()
     logits = torch.einsum("bshd,bskd->bshk", q.float(), keys) * _SM_SCALE
-    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
+    logits = logits.masked_fill((slot_idx < 0).unsqueeze(2), float("-inf"))
     sink_logits = sinks.float().reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
     return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1) * math.log2(math.e)
 
@@ -185,6 +180,29 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
     assert lse.shape == (batch, seq_len, _HEADS) and lse.dtype == torch.float32
     _assert_relative(out, reference_out, _OUT_RTOL, "output")
     _assert_relative(lse, reference_lse, _LSE_RTOL, "lse")
+
+
+def test_fully_masked_query_reads_as_zero_keys():
+    """A query with no keys at all must emit exactly zero, on the sink term alone.
+
+    The kernel never clamps its gather: it relies on TileLang lowering the indirect load under
+    `0 <= idx < seq_len_kv` and zero-filling the shared tile when that fails. Nothing else pins
+    that behavior, and if a TileLang upgrade left the tile undefined instead, `p = 0` would
+    multiply against garbage and this row would go NaN rather than zero. The sink also has to
+    carry the softmax denominator by itself here, which is what keeps `lse` finite instead of
+    dividing by a zero-seeded `sumexp`.
+    """
+    batch, seq_len, seq_len_kv = 1, 256, 1024
+    q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
+    indices[:, 0] = -1  # the first query gathers nothing
+
+    with torch.no_grad():
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, _SM_SCALE)
+
+    assert torch.equal(out[:, 0], torch.zeros_like(out[:, 0])), "a fully masked query must emit exactly zero"
+    expected_lse = sinks.float() * math.log2(math.e)
+    assert torch.allclose(lse[:, 0], expected_lse.expand_as(lse[:, 0])), "lse must fall back to the sink term"
+    assert torch.isfinite(out).all() and torch.isfinite(lse).all()
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), _SHAPES, ids=_SHAPE_IDS)

@@ -52,18 +52,24 @@ a shrunken combination of the gathered keys. That is how a head attends to nothi
 
 `K` is fixed when the kernel compiles and is part of its compilation key, so it is sized for the
 most keys any query could need and a given query will often have fewer. Every unused slot must
-hold the sentinel, position `N - 1`, whose row of `KV` the caller zeroes. A slot is masked when
+hold `-1`. A slot is masked when
 
-    Indices[b,s,0,k] > N - 2
+    Indices[b,s,0,k] < 0
 
 and that is the only masking the kernel performs. It applies no causality test and never compares
 `k` against `s`: whatever the caller means by a valid key is encoded entirely in the index values.
 That is also what keeps the kernel correct when `s` is a local index that does not correspond to a
 global KV position.
 
-Every other entry must be a real position in `[0, N - 1)`. Nothing checks this at runtime, since a
-clamp in the inner gather loop would cost more than it is worth, so an out-of-range index reads
-out of bounds and corrupts silently.
+Nothing clamps the gather, and nothing needs to. TileLang lowers it to `cp_async_gs_conditional`
+under the condition `0 <= Indices < N`, passing a `cp.async` src-size of 0 when that fails, which
+PTX zero-fills. A masked slot therefore reads as a zero key rather than reading out of bounds.
+That behavior is load-bearing: a fully masked query relies on it to emit exactly `Output = 0`
+rather than a product against garbage.
+
+Every other entry must be a real position in `[0, N)`. Nothing checks this at runtime, since
+checking would cost the caller a device sync, so an index at or past `N` is masked by the same
+guard and silently contributes nothing rather than raising.
 
 [How the loop runs]
 
@@ -84,7 +90,7 @@ The online softmax is seeded from the sink rather than from an empty sum. `m_i` 
 dot-product units, so seeding it with `Sinks[h] / scale` makes `m_i * scale * log2(e)` equal
 `Sinks[h] * log2(e)`, and seeding `sumexp` to `1` is exactly that term's own exponential relative
 to that max. `T.reduce_max(..., clear=False)` then keeps the sink as a floor on the running max. A
-query whose slots are all sentinel therefore emits `Output = 0` and a finite
+query whose slots are all masked therefore emits `Output = 0` and a finite
 `Lse = Sinks[h] * log2(e)`, where a zero-seeded denominator would divide by zero.
 
 The TileLang scaffolding is vendored from tile-ai/tilelang (Apache 2.0) and modified for dynamic
@@ -203,12 +209,16 @@ def dsv4_sparse_attn_fwd(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            # The indexer pre-filters indices using per-token `ke` and replaces out-of-range
-            # entries with the sentinel value `seq_len_kv - 1` (the last KV slot is a
-            # zero sentinel; valid K indices live in [0, seq_len_kv - 1)). This single
-            # bound preserves causality + varlen masking for both full and CP-sharded Q
-            # (where local q_i no longer matches the global K position).
-            max_kv_i = seq_len_kv - 2
+            # A negative index marks an absent key, and it is the only thing this kernel masks
+            # on. That preserves causality and varlen masking for both full and CP-sharded Q
+            # (where local q_i no longer matches the global K position), because the caller has
+            # already resolved all of it into the index values.
+            #
+            # No clamp guards the gather below. TileLang lowers it to `cp_async_gs_conditional`,
+            # whose condition is `0 <= idx < seq_len_kv` and whose `cp.async` src-size operand is
+            # 0 when that fails, so PTX zero-fills the shared tile. A masked slot therefore reads
+            # as a zero key. The backward relies on the same guard; the sibling
+            # `kernels/sparse_mla_{fwd,bwd}.py` still use a trailing zero sentinel row instead.
 
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
@@ -218,7 +228,7 @@ def dsv4_sparse_attn_fwd(
             # `m_i` carries raw dot-product units, so `m_i * sm_scale_mul_reciprocal_log2` equals
             # `sink * log2(e)` and the seed `sumexp` of 1 is exactly that term's own exponential.
             # `T.reduce_max(..., clear=False)` then keeps the sink as a floor on the running max.
-            # A row whose slots are all sentinel therefore emits `out = 0` and a finite
+            # A row whose slots are all masked therefore emits `out = 0` and a finite
             # `Lse = sink * log2(e)`, where a zero-seeded denominator would divide by zero.
             for h_i in T.Parallel(H_per_block):
                 sumexp[h_i] = 1.0
@@ -229,7 +239,7 @@ def dsv4_sparse_attn_fwd(
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
                 for bi_i in T.Parallel(BI):
-                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] <= max_kv_i
+                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] >= 0
 
                 for bi_i, d_i in T.Parallel(BI, D):
                     KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
