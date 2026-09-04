@@ -145,9 +145,6 @@ class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
-    inference_world_size: int | None = Field(None, ge=1)
-    """Expected inference world size for an external Dynamo deployment."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
@@ -479,11 +476,7 @@ class RLConfig(BaseConfig):
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
-                self.weight_broadcast.inference_world_size
-                if self.inference is None
-                and self.weight_broadcast.type == "nccl"
-                and self.weight_broadcast.inference_world_size is not None
-                else self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
+                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
                 else 1
             )

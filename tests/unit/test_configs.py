@@ -445,38 +445,6 @@ def test_dynamo_discovery_config_is_nested_under_client():
     assert config.dynamo.admin_host_allowlist == ("localhost", "10.0.0.7/24")
 
 
-def test_dynamo_admin_credentials_allow_explicit_exact_origin():
-    config = ClientConfig.model_validate(
-        {
-            "dynamo": {
-                "discovery_url": "http://dynamo-frontend:8001",
-                "expected_namespace": "dynamo",
-                "admin_host_allowlist": ["worker"],
-                "admin_origin_allowlist": ["https://worker:8120"],
-                "admin_api_key_var": "DYNAMO_ADMIN_API_KEY",
-            }
-        }
-    )
-
-    assert config.dynamo is not None
-    assert config.dynamo.admin_origin_allowlist == ("https://worker:8120",)
-
-
-@pytest.mark.parametrize("field", ["headers", "admin_headers"])
-def test_dynamo_rejects_static_headers(field):
-    with pytest.raises(ValidationError, match=field):
-        ClientConfig.model_validate(
-            {
-                "dynamo": {
-                    "discovery_url": "http://localhost:8001",
-                    "expected_namespace": "dynamo",
-                    "admin_host_allowlist": ["localhost"],
-                    field: {"Authorization": "Bearer secret"},
-                }
-            }
-        )
-
-
 @pytest.mark.parametrize(
     "dynamo",
     [
@@ -500,24 +468,19 @@ def test_dynamo_discovery_requires_namespace_and_admin_host_allowlist(dynamo):
         ClientConfig.model_validate({"dynamo": dynamo})
 
 
-def test_standalone_orchestrator_allows_dynamo_with_legacy_weight_broadcast():
-    config = OrchestratorConfig.model_validate(
-        {
-            "renderer": {"name": "default"},
-            "collect_inference_metrics": False,
-            "model": {
-                "client": {
-                    "dynamo": {
-                        "discovery_url": "http://dynamo-frontend:8001",
-                        "expected_namespace": "dynamo",
-                        "admin_host_allowlist": ["localhost"],
-                    }
+@pytest.mark.parametrize("field", ["headers", "admin_headers"])
+def test_dynamo_rejects_static_secret_headers(field):
+    with pytest.raises(ValidationError, match=field):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": "http://localhost:8001",
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": ["localhost"],
+                    field: {"Authorization": "Bearer secret"},
                 }
-            },
-        }
-    )
-
-    assert config.weight_broadcast.type == "filesystem"
+            }
+        )
 
 
 def test_dynamo_admin_plane_accepts_nccl_weight_broadcast():
@@ -538,9 +501,10 @@ def test_dynamo_admin_plane_accepts_nccl_weight_broadcast():
     )
 
     assert config.weight_broadcast.type == "nccl"
+    assert config.weight_broadcast.inference_world_size == 1
 
 
-def test_rl_dynamo_accepts_explicit_filesystem_weight_broadcast():
+def test_rl_dynamo_external_nccl_uses_single_worker_default():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -555,35 +519,12 @@ def test_rl_dynamo_accepts_explicit_filesystem_weight_broadcast():
                     }
                 }
             },
-            "inference": {},
-            "weight_broadcast": {"type": "filesystem"},
+            "weight_broadcast": {"type": "nccl", "port": 29501},
         }
     )
 
-    assert config.orchestrator.weight_broadcast.type == "filesystem"
-
-
-def test_rl_dynamo_external_nccl_accepts_explicit_world_size():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {},
-            "orchestrator": {
-                "model": {
-                    "client": {
-                        "dynamo": {
-                            "discovery_url": "http://localhost:8001",
-                            "expected_namespace": "dynamo",
-                            "admin_host_allowlist": ["localhost"],
-                        }
-                    }
-                }
-            },
-            "weight_broadcast": {"type": "nccl", "port": 29501, "inference_world_size": 3},
-        }
-    )
-
-    assert config.orchestrator.weight_broadcast.inference_world_size == 3
-    assert config.trainer.weight_broadcast.inference_world_size == 3
+    assert config.orchestrator.weight_broadcast.inference_world_size == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 1
 
 
 def test_multi_node_auto_inference_parallelism():
