@@ -639,6 +639,53 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
 
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
+def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_lens, monkeypatch):
+    """An unused gather slot must hold `-1`, never a position that `kv_buf` actually has.
+
+    This is the whole of the contract between `SparseAttnInputs.build` and the kernel, which masks
+    on `Indices[...] < 0` and on nothing else. The design it replaced appended a zero row to
+    `kv_buf` and pointed unused slots at that row's index instead, which looks equally valid: the
+    pad index is in range and the key it names is zero either way.
+
+    Under the kernel's masking the two are not equivalent at all. A non-negative pad index passes
+    the `< 0` test, so the slot counts as a live key, and the zero row it names scores `q . 0 = 0`
+    and enters the softmax with weight `exp(0)` rather than nothing. At these shapes the first
+    query of a row carries 639 pad slots against 1 real key, so its denominator would be wrong by
+    roughly three orders of magnitude, and nothing would raise.
+
+    The neighbouring index tests do fail if the pad row comes back, but on incidental symptoms:
+    every pad slot naming one row reads as "a query gathers the same key twice", and the extra row
+    reads as a compressed-entry count that does not match the layout. Neither names the cause, so
+    this asserts the contract directly.
+    """
+    module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
+    packed = _packed_context(doc_lens, torch.float32, _flash_config())
+    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
+    recorded = _record_attention(monkeypatch)
+
+    with torch.no_grad():
+        module(hidden_states, packed=packed)
+
+    indices, kv_buf = recorded["indices"], recorded["kv_buf"]
+    n_entries = sum(length // _FLASH_COMPRESS_RATE for length in doc_lens)
+    assert kv_buf.shape[1] == sum(doc_lens) + n_entries, (
+        "kv_buf holds more than the token stream and its compressed entries, so `build` is padding "
+        "it with rows that the `-1` marker makes unnecessary"
+    )
+    assert kv_buf[:, -1].abs().max() > 0, "the last row of kv_buf is zero, which is what a pad row looks like"
+
+    # The first query of the row can read one key, its own token: the window clips to the document
+    # and no complete compressed entry precedes it. Every other slot is padding, so this counts the
+    # padding directly rather than inferring it.
+    first_query = indices[0, 0, 0]
+    assert (first_query >= 0).sum() == 1, (
+        f"the first query holds {(first_query >= 0).sum().item()} non-negative slots against the 1 key it "
+        "may read, so absent slots are addressing a KV position instead of holding `-1`"
+    )
+    assert (first_query[first_query < 0] == -1).all(), "an absent slot is negative but is not the `-1` marker"
+
+
+@pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
 def test_sparse_attention_gather_matches_eager(doc_lens, monkeypatch):
     """The gather reference must reproduce the dense path's attention output and its gradients.
 
