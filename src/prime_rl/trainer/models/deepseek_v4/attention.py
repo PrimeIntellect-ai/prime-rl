@@ -261,6 +261,8 @@ class CompressionLayout:
     entry_tok_idx: Tensor  # (n_entries, compress_rate) int64 - token index in the packed sequence, per entry
     entry_doc_idx: Tensor  # (n_entries,) int64 - which document each entry belongs to
     entry_local_idx: Tensor  # (n_entries,) int64 - entry index within its own document
+    first_entry_of_doc: Tensor  # (n_docs,) int64 - sequence-global index of each document's first entry
+    max_entries_per_doc: int  # largest entry count any single document contributes
 
     @classmethod
     def build(cls, *, cu_seqlens: Tensor, compress_rate: int) -> "CompressionLayout":
@@ -291,6 +293,8 @@ class CompressionLayout:
             entry_tok_idx=entry_tok_idx,
             entry_doc_idx=entry_doc_idx,
             entry_local_idx=entry_local_idx,
+            first_entry_of_doc=first_entry_of_doc,
+            max_entries_per_doc=int(counts.max()),
         )
 
 
@@ -312,7 +316,7 @@ class PackedContext:
     position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
     tok_doc_idx: Tensor  # (seq_len,) int64 - which document each packed token belongs to
     position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type
-    window_indices: Tensor | None  # (seq_len, sliding_window) int32 - packed token per window slot, -1 where unused
+    window_indices: Tensor  # (seq_len, sliding_window) int32 - packed token per window slot, -1 where unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
     def __post_init__(self) -> None:
@@ -323,7 +327,7 @@ class PackedContext:
                 f"attention_mask covers {self.attention_mask.shape[-2]} query rows and position_ids "
                 f"{self.position_ids.shape[-1]} tokens, but the row has {total_tokens}"
             )
-        if self.window_indices is not None and self.window_indices.shape[0] != total_tokens:
+        if self.window_indices.shape[0] != total_tokens:
             raise ValueError(
                 f"window_indices covers {self.window_indices.shape[0]} query rows, but the row has {total_tokens}"
             )
@@ -360,25 +364,11 @@ class PackedContext:
             if layer_type in config.compress_rates
         }
 
-        # Only the sparse attention path reads these, so an architecture without a compressed
-        # layer builds none.
-        window_indices = None
-        if compress_rates:
-            # Query `s` may read token `n` when `n` lies in `s`'s own document and within the
-            # window, `0 <= s - n < sliding_window`. Since `n <= s`, only the lower bound binds,
-            # and the document starts at `s - position_ids[s]`.
-            base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
-            slots = base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
-            # An unused slot holds `-1` here, not the pad-slot index that the sparse path marks
-            # it with downstream: that index is `S + E`, and `E` varies with the layer's compress
-            # rate while this context is depth-independent. `SparseAttnInputs.build` translates.
-            window_indices = torch.where(slots <= tok_idx[:, None], slots, -1).to(torch.int32)
-            # TODO: these slots are `base[s] + arange(W)`, so materializing an (S, W) int32 slab is
-            # redundant. A kernel taking (window_base, top_k_indices) separately would avoid it, saving
-            # 4*W bytes per token (512 at W=128, 33.5 MB at S=65536 per CSA layer) plus the per-layer
-            # concatenation, and dropping W index loads per query. Deferred: computing the window slots
-            # arithmetically requires them to fill whole slot-tiles, i.e. W % block_I == 0. Production
-            # satisfies that at W=128, but it would constrain test configs to W in {64, 128}.
+        # `s` reads `n` in its own document with `0 <= s - n < W`; since `n <= s` only the lower bound binds.
+        window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
+        slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
+        window_indices = torch.where(slots <= tok_idx[:, None], slots, -1).to(torch.int32)
+        # TODO: slab is `window_base[s] + arange(W)`; passing both separately saves 4*W bytes/token if W % block_I == 0.
 
         return cls(
             attention_mask=build_sliding_window_mask(
