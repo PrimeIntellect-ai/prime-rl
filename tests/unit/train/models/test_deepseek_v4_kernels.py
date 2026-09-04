@@ -144,9 +144,59 @@ def _set_attn_impl(module: nn.Module, impl: str) -> None:
             submodule.attn_impl = impl
 
 
-# The production DeepSeek V4 Flash CSA layer: 64 heads over 512 channels, each query gathering
-# `sliding_window + index_topk = 128 + 512` slots from a single KV group, in bfloat16.
-_HEADS, _DIM, _TOPK, _KV_GROUP = 64, 512, 640, 1
+# The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
+# cache. Both sections of this file run them and nothing else: the kernel does not tile smaller ones, and the
+# sparse path it serves only exists at this size. The MoE fields are shrunk to nothing, since
+# `DeepseekV4Attention` reads none of them.
+_FLASH_MODEL = dict(
+    vocab_size=64,
+    hidden_size=4096,
+    num_attention_heads=64,
+    num_key_value_heads=1,
+    head_dim=512,
+    q_lora_rank=1024,
+    o_groups=8,
+    o_lora_rank=1024,
+    qk_rope_head_dim=64,
+    rope_theta=10000.0,
+    compress_rope_theta=160000.0,
+    sliding_window=128,
+    index_n_heads=64,
+    index_head_dim=128,
+    index_topk=512,
+    compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 128},
+    layer_types=["compressed_sparse_attention", "heavily_compressed_attention"],
+    num_hidden_layers=2,
+    rms_norm_eps=1e-6,
+    attention_dropout=0.0,
+    max_position_embeddings=65536,
+    moe_intermediate_size=64,
+    n_routed_experts=8,
+    num_experts_per_tok=3,
+    n_shared_experts=1,
+    scoring_func="sqrtsoftplus",
+    routed_scaling_factor=1.5,
+    swiglu_limit=10.0,
+    num_hash_layers=1,
+    hc_mult=4,
+    hc_sinkhorn_iters=20,
+    hc_eps=1e-6,
+    rope_scaling={
+        "beta_fast": 32,
+        "beta_slow": 1,
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "type": "yarn",
+    },
+)
+
+# The hand-built tensors of the first section describe the same CSA layer `_FLASH_MODEL` does, so
+# they are read off it rather than written out again: 64 heads over 512 channels, each query
+# gathering `sliding_window + index_topk = 128 + 512` slots from a single KV group, in bfloat16.
+_HEADS = _FLASH_MODEL["num_attention_heads"]
+_DIM = _FLASH_MODEL["head_dim"]
+_KV_GROUP = _FLASH_MODEL["num_key_value_heads"]
+_TOPK = _FLASH_MODEL["sliding_window"] + _FLASH_MODEL["index_topk"]
 _SM_SCALE = _DIM**-0.5
 
 # Three shapes. The first is aligned to both of the backward's tile sizes and the second to
@@ -437,54 +487,10 @@ def test_kernel_traces_under_torch_compile():
         _assert_relative(compiled_leaf.grad, eager_leaf.grad, _COMPILE_RTOL, label)
 
 
-# Everything below reaches the kernel through the modeling code rather than on hand-built tensors,
-# at the same Flash shapes, written out as a literal so nothing here depends on a local HF cache.
-# The sparse gather
-# path only exists at those shapes: a CSA query reads `sliding_window + index_topk = 640` keys
-# over 512 channels with 64 heads, and the slot padding, the top-k saturation and the index
-# arithmetic that the sparse representation has to get right are all invisible at toy sizes. The
-# MoE fields are shrunk to nothing, since `DeepseekV4Attention` reads none of them.
-_FLASH_MODEL = dict(
-    vocab_size=64,
-    hidden_size=4096,
-    num_attention_heads=64,
-    num_key_value_heads=1,
-    head_dim=512,
-    q_lora_rank=1024,
-    o_groups=8,
-    o_lora_rank=1024,
-    qk_rope_head_dim=64,
-    rope_theta=10000.0,
-    compress_rope_theta=160000.0,
-    sliding_window=128,
-    index_n_heads=64,
-    index_head_dim=128,
-    index_topk=512,
-    compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 128},
-    layer_types=["compressed_sparse_attention", "heavily_compressed_attention"],
-    num_hidden_layers=2,
-    rms_norm_eps=1e-6,
-    attention_dropout=0.0,
-    max_position_embeddings=65536,
-    moe_intermediate_size=64,
-    n_routed_experts=8,
-    num_experts_per_tok=3,
-    n_shared_experts=1,
-    scoring_func="sqrtsoftplus",
-    routed_scaling_factor=1.5,
-    swiglu_limit=10.0,
-    num_hash_layers=1,
-    hc_mult=4,
-    hc_sinkhorn_iters=20,
-    hc_eps=1e-6,
-    rope_scaling={
-        "beta_fast": 32,
-        "beta_slow": 1,
-        "factor": 16,
-        "original_max_position_embeddings": 65536,
-        "type": "yarn",
-    },
-)
+# Everything below reaches the kernel through the modeling code rather than on hand-built tensors, at the same
+# Flash shapes. What it adds is the index construction: a CSA query's slot padding, its top-k saturation and
+# the arithmetic mapping a compressed entry to a buffer position all live in `DeepseekV4Attention`, not in the
+# kernel, and none of them is expressible at the toy shapes `test_deepseek_v4.py` runs.
 
 _FLASH_CSA_LAYER = 0
 _FLASH_COMPRESS_RATE = _FLASH_MODEL["compress_rates"]["compressed_sparse_attention"]
