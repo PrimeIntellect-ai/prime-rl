@@ -1080,8 +1080,7 @@ def test_dynamo_nccl_initialization_assigns_rank_offsets_and_validates_results()
         )
 
     topology.assert_awaited_once_with()
-    assert admin.nccl_initialization_state == "ready"
-    assert admin._nccl_initialized_worker_indexes == (0, 1)
+    assert admin._nccl_initialization_state == "ready"
     assert [call.kwargs["args"][2] for call in collective_rpc.await_args_list] == [0, 2]
     assert [call.kwargs["expected_result_count"] for call in collective_rpc.await_args_list] == [2, 1]
     asyncio.run(admin.aclose())
@@ -1104,7 +1103,7 @@ def test_dynamo_nccl_initialization_rejects_world_size_mismatch_and_requires_res
         )
 
     assert isinstance(exc_info.value.__cause__, ValueError)
-    assert admin.nccl_initialization_state == "terminal"
+    assert admin._nccl_initialization_state == "terminal"
     assert admin._control_terminal is True
     asyncio.run(admin.aclose())
 
@@ -1140,8 +1139,7 @@ def test_dynamo_nccl_partial_initialization_awaits_all_workers_and_terminalizes(
 
     assert completed == [1]
     assert collective_rpc.await_count == 2
-    assert admin._nccl_initialized_worker_indexes == (1,)
-    assert admin.nccl_initialization_state == "terminal"
+    assert admin._nccl_initialization_state == "terminal"
     asyncio.run(admin.aclose())
 
 
@@ -1210,7 +1208,7 @@ def test_dynamo_nccl_update_uses_collective_rpc_and_returns_to_ready(tmp_path):
         args=[(tmp_path / "step_1").as_posix()],
         expected_result_count=1,
     )
-    assert admin.nccl_initialization_state == "ready"
+    assert admin._nccl_initialization_state == "ready"
     assert admin._control_terminal is False
     asyncio.run(admin.aclose())
 
@@ -1229,7 +1227,7 @@ def test_dynamo_nccl_update_failure_is_terminal_and_skips_resume(tmp_path):
         asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
 
     assert [call.args[1] for call in post.await_args_list] == ["/pause"]
-    assert admin.nccl_initialization_state == "terminal"
+    assert admin._nccl_initialization_state == "terminal"
     assert admin._control_terminal is True
     asyncio.run(admin.aclose())
 

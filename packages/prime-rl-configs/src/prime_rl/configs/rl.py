@@ -138,15 +138,15 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer."""
 
-    inference_world_size: int | None = Field(None, ge=1)
-    """Expected external inference transfer capacity when no local inference capacity is managed."""
-
 
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for NCCL weight broadcast."""
+
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference world size for an external Dynamo deployment."""
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
@@ -458,34 +458,6 @@ class RLConfig(BaseConfig):
         validate_shared_wandb_config(self.trainer, self.orchestrator)
         return self
 
-    def _resolve_in_memory_inference_world_size(self) -> int:
-        assert isinstance(self.weight_broadcast, (SharedNCCLWeightBroadcastConfig, SharedNIXLWeightBroadcastConfig))
-        explicit_world_size = self.weight_broadcast.inference_world_size
-        if self.inference is None:
-            if explicit_world_size is None:
-                raise ValueError(
-                    "Cannot determine inference world size for an external inference deployment; "
-                    "set weight_broadcast.inference_world_size."
-                )
-            return explicit_world_size
-
-        automatic_world_size: int | None = None
-        if self.deployment.type == "single_node" and self.deployment.num_infer_gpus > 0:
-            automatic_world_size = self.deployment.num_infer_gpus
-        elif self.deployment.type == "multi_node" and self.deployment.total_infer_nodes > 0:
-            automatic_world_size = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-        else:
-            automatic_world_size = self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-
-        if automatic_world_size is None:
-            raise ValueError("Cannot determine inference world size for the managed inference deployment")
-        if explicit_world_size is not None and explicit_world_size != automatic_world_size:
-            raise ValueError(
-                f"weight_broadcast.inference_world_size ({explicit_world_size}) conflicts with automatically "
-                f"derived local inference world size ({automatic_world_size})."
-            )
-        return automatic_world_size
-
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
@@ -506,7 +478,15 @@ class RLConfig(BaseConfig):
                 "have no disk artifact to load from."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = self._resolve_in_memory_inference_world_size()
+            inference_world_size = (
+                self.weight_broadcast.inference_world_size
+                if self.inference is None
+                and self.weight_broadcast.type == "nccl"
+                and self.weight_broadcast.inference_world_size is not None
+                else self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
+                if self.inference
+                else 1
+            )
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
@@ -844,11 +824,9 @@ class RLConfig(BaseConfig):
                 assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
-                if total_infer_workers > 0:
-                    self.trainer.weight_broadcast.inference_world_size = total_infer_workers
+                self.trainer.weight_broadcast.inference_world_size = total_infer_workers
                 assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
-                if total_infer_workers > 0:
-                    self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
+                self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         return self
 

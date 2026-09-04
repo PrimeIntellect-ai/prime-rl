@@ -619,32 +619,6 @@ def test_dynamo_admin_plane_accepts_nccl_weight_broadcast():
     assert config.weight_broadcast.type == "nccl"
 
 
-@pytest.mark.parametrize("weight_broadcast", [None, {"type": "nccl", "port": 29501}])
-def test_rl_dynamo_accepts_resolved_nccl(weight_broadcast):
-    data = {
-        "trainer": {},
-        "orchestrator": {
-            "model": {
-                "client": {
-                    "dynamo": {
-                        "discovery_url": "http://localhost:8001",
-                        "expected_namespace": "dynamo",
-                        "admin_host_allowlist": ["localhost"],
-                    }
-                }
-            }
-        },
-        "inference": {},
-    }
-    if weight_broadcast is not None:
-        data["weight_broadcast"] = weight_broadcast
-
-    config = RLConfig.model_validate(data)
-
-    assert config.weight_broadcast is not None
-    assert config.weight_broadcast.type == "nccl"
-    assert config.orchestrator.weight_broadcast.inference_world_size == 1
-
 def test_rl_dynamo_accepts_explicit_filesystem_weight_broadcast():
     config = RLConfig.model_validate(
         {
@@ -668,49 +642,6 @@ def test_rl_dynamo_accepts_explicit_filesystem_weight_broadcast():
     assert config.orchestrator.weight_broadcast.type == "filesystem"
 
 
-def test_online_evals_dynamo_accepts_nccl():
-    config = EvalsConfig.model_validate(
-        {
-            "eval": {
-                "source": [{"env": {"taskset": {"id": "openenv", "base_url": "http://localhost"}}}],
-                "client": {
-                    "dynamo": {
-                        "discovery_url": "http://localhost:8001",
-                        "expected_namespace": "dynamo",
-                        "admin_host_allowlist": ["localhost"],
-                    }
-                },
-            },
-            "online": {},
-            "weight_broadcast": {"type": "nccl"},
-        }
-    )
-
-    assert config.weight_broadcast is not None
-    assert config.weight_broadcast.type == "nccl"
-
-
-def test_rl_dynamo_external_nccl_requires_explicit_world_size():
-    with pytest.raises(ValidationError, match="set weight_broadcast.inference_world_size"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {
-                    "model": {
-                        "client": {
-                            "dynamo": {
-                                "discovery_url": "http://localhost:8001",
-                                "expected_namespace": "dynamo",
-                                "admin_host_allowlist": ["localhost"],
-                            }
-                        }
-                }
-            },
-            "weight_broadcast": {"type": "nccl", "port": 29501},
-        }
-    )
-
-
 def test_rl_dynamo_external_nccl_accepts_explicit_world_size():
     config = RLConfig.model_validate(
         {
@@ -723,94 +654,16 @@ def test_rl_dynamo_external_nccl_accepts_explicit_world_size():
                             "expected_namespace": "dynamo",
                             "admin_host_allowlist": ["localhost"],
                         }
+                    }
                 }
-            }
-        },
-        "weight_broadcast": {"type": "nccl", "port": 29501, "inference_world_size": 3},
-    }
-)
+            },
+            "weight_broadcast": {"type": "nccl", "port": 29501, "inference_world_size": 3},
+        }
+    )
 
     assert config.orchestrator.weight_broadcast.inference_world_size == 3
     assert config.trainer.weight_broadcast.inference_world_size == 3
 
-
-def test_rl_dynamo_local_nccl_uses_single_node_gpu_allocation_before_inference_defaults():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {},
-            "orchestrator": {
-                "model": {
-                    "client": {
-                        "dynamo": {
-                            "discovery_url": "http://localhost:8001",
-                            "expected_namespace": "dynamo",
-                            "admin_host_allowlist": ["localhost"],
-                        }
-                    }
-                }
-            },
-            "inference": {},
-            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 4},
-            "weight_broadcast": {"type": "nccl", "inference_world_size": 4},
-        }
-    )
-
-    assert config.orchestrator.weight_broadcast.inference_world_size == 4
-    assert config.trainer.weight_broadcast.inference_world_size == 4
-
-
-def test_rl_dynamo_local_nccl_rejects_world_size_conflicting_with_gpu_allocation():
-    with pytest.raises(ValidationError, match=r"conflicts with automatically derived local inference world size \(4\)"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {
-                    "model": {
-                        "client": {
-                            "dynamo": {
-                                "discovery_url": "http://localhost:8001",
-                                "expected_namespace": "dynamo",
-                                "admin_host_allowlist": ["localhost"],
-                            }
-                        }
-                    }
-                },
-                "inference": {},
-                "deployment": {"num_train_gpus": 1, "num_infer_gpus": 4},
-                "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
-            }
-        )
-
-
-def test_rl_dynamo_local_nccl_uses_multi_node_gpu_allocation_before_inference_defaults():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {},
-            "orchestrator": {
-                "model": {
-                    "client": {
-                        "dynamo": {
-                            "discovery_url": "http://localhost:8001",
-                            "expected_namespace": "dynamo",
-                            "admin_host_allowlist": ["localhost"],
-                        }
-                    }
-                }
-            },
-            "inference": {"vllm": {"tensor_parallel_size": 4}},
-            "deployment": {
-                "type": "multi_node",
-                "gpus_per_node": 8,
-                "num_train_nodes": 1,
-                "num_infer_nodes": 2,
-            },
-            "slurm": {},
-            "weight_broadcast": {"type": "nccl", "inference_world_size": 16},
-        }
-    )
-
-    assert config.orchestrator.weight_broadcast.inference_world_size == 16
-    assert config.trainer.weight_broadcast.inference_world_size == 16
 
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(

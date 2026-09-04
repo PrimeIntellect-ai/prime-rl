@@ -27,7 +27,6 @@ from prime_rl.orchestrator.clients import (
     UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
     _admin_post,
-    _bounded_request,
     check_health,
     maybe_check_has_model,
     setup_admin_clients,
@@ -36,6 +35,7 @@ from prime_rl.utils.logger import get_logger
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 MAX_DISCOVERY_BODY_BYTES = 1024 * 1024
+MAX_ADMIN_RESPONSE_BYTES = 1024 * 1024
 MAX_DISCOVERY_WORKERS = 128
 MAX_IDENTITY_LENGTH = 256
 MAX_MODEL_LENGTH = 512
@@ -120,6 +120,35 @@ class DynamoDiscoveryPending(RuntimeError):
     """The discovery endpoint is healthy but has not published a complete worker set."""
 
 
+async def _bounded_request(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    *,
+    max_response_bytes: int = MAX_ADMIN_RESPONSE_BYTES,
+    **kwargs,
+) -> httpx.Response:
+    """Send a Dynamo admin request without buffering an unbounded response."""
+    request_headers = kwargs.pop("headers", {})
+    request_headers = {name: value for name, value in request_headers.items() if name.lower() != "accept-encoding"}
+    request_headers["Accept-Encoding"] = "identity"
+    async with client.stream(method, path, headers=request_headers, **kwargs) as response:
+        content_encoding = response.headers.get("Content-Encoding")
+        if content_encoding and content_encoding.strip().lower() != "identity":
+            raise ValueError(f"Dynamo admin endpoint returned unsupported Content-Encoding {content_encoding!r}")
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            if len(body) + len(chunk) > max_response_bytes:
+                raise ValueError(f"Dynamo admin response body exceeds {max_response_bytes} bytes")
+            body.extend(chunk)
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=bytes(body),
+            request=response.request,
+        )
+
+
 def validate_dynamo_config(config: DynamoConfig) -> None:
     has_discovery_credentials = bool(config.api_key_var or config.headers_from_env)
     if has_discovery_credentials and not is_secure_or_loopback_url(config.discovery_url):
@@ -130,7 +159,9 @@ def validate_dynamo_config(config: DynamoConfig) -> None:
     if has_admin_credentials and any(
         not is_secure_or_loopback_url(origin) for origin in config.admin_origin_allowlist or ()
     ):
-        raise ValueError("dynamo.admin_origin_allowlist must use HTTPS or loopback when admin credentials are configured")
+        raise ValueError(
+            "dynamo.admin_origin_allowlist must use HTTPS or loopback when admin credentials are configured"
+        )
 
 
 def _admin_host_allowed(admin_base_url: str, allowlist: tuple[str, ...]) -> bool:
@@ -344,18 +375,17 @@ class DynamoAdminPlane(AdminPlane):
         self._timeout = client_config.wait_for_ready_timeout
         self._headers = _discovery_headers(client_config)
         self._admin_headers = _admin_headers(client_config)
-        self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
+        self._frontend_clients = setup_admin_clients(
+            client_config.model_copy(update={"admin_base_url": None}),
+            timeout=max(1.0, min(self._timeout, 30.0)),
+            trust_env=False,
+        )
         self.clients: list[httpx.AsyncClient] = []
         self.workers: tuple[DynamoWorker, ...] = ()
         self._fingerprint: tuple[tuple[object, ...], ...] | None = None
         self._control_terminal = False
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
-        self._nccl_initialized_worker_indexes: tuple[int, ...] = ()
         self._mutation_lock = asyncio.Lock()
-
-    @property
-    def nccl_initialization_state(self) -> Literal["uninitialized", "initializing", "ready", "terminal"]:
-        return self._nccl_initialization_state
 
     def _require_uninitialized_nccl(self) -> None:
         if self._nccl_initialization_state != "uninitialized":
@@ -714,7 +744,6 @@ class DynamoAdminPlane(AdminPlane):
 
             failures = tuple(index for index, result in enumerate(results) if isinstance(result, BaseException))
             successes = tuple(index for index, result in enumerate(results) if not isinstance(result, BaseException))
-            self._nccl_initialized_worker_indexes = successes
             if failures:
                 first_failure = results[failures[0]]
                 assert isinstance(first_failure, BaseException)

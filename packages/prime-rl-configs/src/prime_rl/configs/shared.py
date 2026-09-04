@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
+import pydantic
 from pydantic import AfterValidator, Field, model_validator
-from pydantic import field_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -259,10 +259,10 @@ class DynamoConfig(BaseConfig):
     """Exact Dynamo namespace expected in both the discovery snapshot and selected workers."""
 
     admin_host_allowlist: tuple[str, ...] = Field(min_length=1, max_length=128)
-    """Exact DNS/IP hosts and IP CIDRs permitted for discovered direct admin endpoints."""
+    """Exact DNS/IP hosts and IP CIDRs trusted for all ports unless admin_origin_allowlist is set."""
 
     admin_origin_allowlist: tuple[str, ...] | None = Field(None, min_length=1, max_length=128)
-    """Optional exact scheme, host, and effective port origins permitted for direct admin endpoints."""
+    """Recommended for restricting direct admin endpoints to exact scheme, host, and effective port origins."""
 
     api_key_var: str | None = Field(None, min_length=1, max_length=256)
     """Environment variable containing a discovery-only bearer token."""
@@ -276,27 +276,28 @@ class DynamoConfig(BaseConfig):
     admin_headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
     """Direct admin header names mapped to environment variables."""
 
-    @field_validator("discovery_url")
+    @pydantic.field_validator("discovery_url")
     @classmethod
     def validate_discovery_url(cls, value: str) -> str:
         return validate_http_url(value, field_name="dynamo.discovery_url")
 
-    @field_validator("admin_host_allowlist")
+    @pydantic.field_validator("admin_host_allowlist")
     @classmethod
     def validate_admin_host_allowlist(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(normalize_admin_host_allowlist_entry(value) for value in values))
 
-    @field_validator("admin_origin_allowlist")
+    @pydantic.field_validator("admin_origin_allowlist")
     @classmethod
     def validate_admin_origin_allowlist(cls, values: tuple[str, ...] | None) -> tuple[str, ...] | None:
         if values is None:
             return None
         return tuple(dict.fromkeys(normalize_admin_origin_allowlist_entry(value) for value in values))
 
-    @field_validator("headers_from_env", "admin_headers_from_env")
+    @pydantic.field_validator("headers_from_env", "admin_headers_from_env")
     @classmethod
     def validate_header_environment_mapping(cls, values: dict[str, str]) -> dict[str, str]:
         return _validate_header_environment_mapping(values)
+
 
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800
