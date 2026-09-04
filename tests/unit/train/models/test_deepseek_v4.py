@@ -1053,32 +1053,39 @@ def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor
 
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
 def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens, monkeypatch):
-    """The two CSA paths must reach the same keys, key for key, for every query.
+    """A CSA layer's gather slots must reach the keys the dense rules admit, key for key.
 
-    They render one selection two independent ways: the dense path concatenates the indexer's
-    picks onto the sliding mask, the sparse path writes the window and the picks into one index
-    tensor over a gathered KV buffer. Nothing else in the layer compares them, and every way of
-    getting the sparse side wrong (a window base off by one, an entry index not offset by the
-    token count, a `-1` pick surviving, a stale sentinel) still produces a finite output.
+    One selection rendered two independent ways: the dense rendering concatenates the indexer's
+    picks onto `PackedContext`'s sliding mask, which is built from the document boundaries rather
+    than from `window_indices`; the sparse one writes the window and the picks into a single index
+    tensor over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
+    the sparse side wrong (a window base off by one, an entry index not offset by the token count,
+    a `-1` pick surviving, a stale sentinel) still produces a finite output.
 
-    Pure set equality on integers, so no tolerance enters. Both representations are captured from
-    real forwards of the same module on the same input.
+    Pure set equality on integers, so no tolerance enters. Both the index tensor and the picks the
+    dense rendering is built from come from a real forward of the module on the input.
     """
-    module = flash_attention(_FLASH_CSA_LAYER)
+    module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
     packed = _packed_context(doc_lens, torch.float32, _flash_config())
     hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
     recorded = _record_attention(monkeypatch)
 
+    real_compressor = module.compressor.forward
+
+    def compressor(hidden_states, q_residual, packed):
+        compressed_kv, recorded["picks"] = real_compressor(hidden_states, q_residual, packed)
+        return compressed_kv, recorded["picks"]
+
+    monkeypatch.setattr(module.compressor, "forward", compressor)
+
     with torch.no_grad():
-        _set_attn_impl(module, "eager")
-        module(hidden_states, packed=packed)
-        _set_attn_impl(module, "gather")
         module(hidden_states, packed=packed)
 
-    admitted = recorded["mask"][0, 0] == 0  # (seq_len, seq_len + n_entries)
     n_positions = recorded["kv_buf"].shape[1]
     seq_len, n_entries = sum(doc_lens), n_positions - 1 - sum(doc_lens)
     assert n_entries == sum(length // _FLASH_COMPRESS_RATE for length in doc_lens)
+    block_bias = dsv4_attention.block_bias_from_indices(recorded["picks"], n_entries, torch.float32)
+    admitted = torch.cat([packed.attention_mask[0, 0], block_bias[0, 0]], dim=-1) == 0
     if n_entries:
         assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
 
