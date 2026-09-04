@@ -143,6 +143,19 @@ def bwd(
     NS = tilelang.cdiv(topk, block_size)
 
     split_store = 2
+    # The acc_dkv accumulator's per-thread layout (from the GEMMs that produce it) is only
+    # injective at this chunk granularity. TileLang's LayoutInference pass would reject a smaller
+    # chunk if the store loop below were written over its natural extent, but that loop instead
+    # iterates the full BS extent and masks with `if bi_i < chunk`, which bypasses the check: an
+    # invalid chunk silently emits an aliased address formula and corrupts dKV rather than
+    # raising. Verified this holds independent of warp specialization/TMA.
+    chunk = BS // split_store
+    if chunk < 8 or chunk & (chunk - 1) != 0:
+        raise ValueError(
+            f"block_size // split_store must be a power of two >= 8, got block_size={BS}, "
+            f"split_store={split_store} (chunk={chunk}); see comment above for why this silently "
+            "corrupts dKV instead of failing loudly if violated."
+        )
 
     @T.prim_func
     def dsv4_sparse_attn_bwd_kernel(
