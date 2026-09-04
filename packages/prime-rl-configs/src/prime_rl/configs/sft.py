@@ -323,12 +323,6 @@ class SFTConfig(BaseConfig):
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
-    def generic_hf_vlm_is_rl_only(self):
-        if self.model.vlm is not None and self.model.impl == "hf":
-            raise ValueError("Generic Hugging Face VLM training is currently supported only for RL")
-        return self
-
-    @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
         if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
             warnings.warn(

@@ -906,39 +906,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
-def test_generic_hf_vlm_requires_disabled_sample_packing():
-    vlm = {
-        "vision_encoder_attr": "model.visual",
-        "language_model_attr": "model.language_model",
-    }
-
-    with pytest.raises(ValidationError, match="pack_samples=false"):
-        TrainerModelConfig.model_validate({"impl": "hf", "attn": "flash_attention_2", "vlm": vlm})
-
-    config = TrainerModelConfig.model_validate(
-        {"impl": "hf", "attn": "flash_attention_2", "vlm": {**vlm, "pack_samples": False}}
-    )
-    assert config.vlm is not None
-    assert config.vlm.pack_samples is False
-
-
-def test_sft_rejects_generic_hf_vlm():
-    with pytest.raises(ValidationError, match="supported only for RL"):
-        SFTConfig.model_validate(
-            {
-                "model": {
-                    "impl": "hf",
-                    "attn": "flash_attention_2",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                        "pack_samples": False,
-                    },
-                }
-            }
-        )
-
-
 def test_shared_model_name_propagates_to_subconfigs():
     model_name = "PrimeIntellect/test-model"
     config = RLConfig.model_validate(

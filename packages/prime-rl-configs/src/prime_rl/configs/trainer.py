@@ -311,16 +311,6 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_vlm_implementation(self):
-        if self.vlm is None or self.impl == "custom":
-            return self
-        if self.impl != "hf" or self.vlm.pack_samples:
-            raise ValueError(
-                "Generic Hugging Face VLM training requires model.impl='hf' and model.vlm.pack_samples=false"
-            )
-        return self
-
-    @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
         if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
