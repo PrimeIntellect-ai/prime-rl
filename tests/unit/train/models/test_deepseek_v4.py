@@ -28,6 +28,12 @@ from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
+# The fused kernel needs tilelang, which only the `gpu` extra provides and only on linux. Most of
+# this module runs without it, so this is a per-test skip rather than part of `pytestmark`.
+requires_tilelang = pytest.mark.skipif(
+    dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang"
+)
+
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
 # branches are what carries any long-range signal.
@@ -1219,7 +1225,7 @@ _EAGER_KERNEL_RTOL, _EAGER_KERNEL_GRAD_RTOL = 8e-3, 2e-2
 
 
 @pytest.mark.parametrize("doc_lens", _EAGER_KERNEL_DOC_LENS, ids=_EAGER_KERNEL_DOC_IDS)
-@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+@requires_tilelang
 def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     """The fused kernel against the naive dense softmax, single-document and packed.
 
@@ -1278,7 +1284,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     _assert_relative(kernel_input.grad, eager_input.grad, _EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
-@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+@requires_tilelang
 def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
@@ -1328,7 +1334,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     _assert_relative(alone_input.grad, packed_input.grad, _KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
-@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+@requires_tilelang
 def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
