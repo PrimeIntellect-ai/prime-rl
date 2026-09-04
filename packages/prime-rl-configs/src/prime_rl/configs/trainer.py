@@ -311,9 +311,13 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def vlm_only_with_custom_impl(self):
-        if self.vlm is not None and self.impl != "custom":
-            raise ValueError("VLM training requires model.impl='custom'")
+    def validate_vlm_implementation(self):
+        if self.vlm is None or self.impl == "custom":
+            return self
+        if self.impl != "hf" or self.vlm.pack_samples:
+            raise ValueError(
+                "Generic Hugging Face VLM training requires model.impl='hf' and model.vlm.pack_samples=false"
+            )
         return self
 
     @model_validator(mode="after")

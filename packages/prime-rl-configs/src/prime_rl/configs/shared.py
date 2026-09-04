@@ -238,6 +238,9 @@ class VLMConfig(BaseConfig):
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
+    pack_samples: bool = True
+    """Pack multiple multimodal samples into one sequence. Disable for generic Hugging Face VLMs that do not accept Prime's packed-document boundaries."""
+
 
 class BaseModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
