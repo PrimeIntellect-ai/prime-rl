@@ -430,11 +430,12 @@ class PackedContext:
 
 @dataclass(frozen=True)
 class SparseAttnInputs:
-    """The KV buffer one CSA layer gathers from, and the gather indices addressing it.
+    """The KV buffer one attention layer gathers from, and the gather indices addressing it.
 
     `build` constructs the two together so they stay mutually consistent and cannot drift apart.
 
-    With `S` tokens in the packed row and `E` compressed entries for this layer's rate:
+    With `S` tokens in the packed row and `E` compressed entries for this layer's rate, `E` being
+    zero for a layer that reads no entries at all:
 
         kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
                              n in [S, S + E) -> compressed entry (n - S)
@@ -465,31 +466,36 @@ class SparseAttnInputs:
         cls,
         *,
         kv: Tensor,  # (batch, 1, seq_len, head_dim), the rotated local token stream
-        compressed_kv: Tensor,  # (batch, 1, n_entries, head_dim)
-        top_k_indices: Tensor,  # (batch, seq_len, min(index_topk, n_entries)) int64, -1 marks a surplus pick
+        compressed_kv: Tensor | None = None,  # (batch, 1, n_entries, head_dim)
+        top_k_indices: Tensor | None = None,  # (batch, seq_len, n_picks) int64, -1 marks a surplus pick
         window_indices: Tensor,  # (seq_len, sliding_window) int32, -1 marks an invalid slot
-        sliding_window: int,
-        index_topk: int,
     ) -> "SparseAttnInputs":
-        """Lay out one CSA layer's gather slots: the local window first, then the indexer's picks."""
+        """Lay out one layer's gather slots: the local window first, then any compressed picks."""
+        if (compressed_kv is None) != (top_k_indices is None):
+            raise ValueError("compressed_kv and top_k_indices describe the same entries: pass both or neither")
         batch, _, seq_len, _ = kv.shape
-        kv_buf = torch.cat([kv, compressed_kv], dim=2).transpose(1, 2).contiguous()  # (b, S + E, 1, d)
+        positions = kv if compressed_kv is None else torch.cat([kv, compressed_kv], dim=2)
+        kv_buf = positions.transpose(1, 2).contiguous()  # (b, S + E, 1, d)
 
-        # The slot count comes from the config and never from `top_k_indices.shape[-1]`: the
-        # indexer returns only `min(index_topk, n_entries)` picks, so a shape-derived width would
-        # vary with sequence length and force the kernel to recompile per shape.
-        n_slots = ((sliding_window + index_topk + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
-        # Allocated at full width and prefilled with `-1`, so the indices cannot be too narrow and
-        # everything the two writes below leave untouched is masked. That is what makes
-        # `n_entries < index_topk` safe.
+        sliding_window = window_indices.shape[-1]
+        n_picks = 0 if top_k_indices is None else top_k_indices.shape[-1]
+        # TODO: taking the width from the picks tensor cannot under-allocate, but it does vary, and
+        # `n_slots` is part of the kernel's tilelang specialization key, so each distinct width
+        # costs one compile (disk-cached, so once ever). CSA saturates at `sliding_window +
+        # index_topk` once a row carries `index_topk` entries; HCA's width tracks the longest
+        # document in the batch and keeps varying. Widths read from config would pin one kernel per
+        # layer type, at the cost of masking slots short documents never use and of a declared
+        # budget that can disagree with the picks it is meant to hold.
+        n_slots = ((sliding_window + n_picks + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
+        # Prefilled with `-1`, so every slot the writes below leave untouched is masked.
         indices = torch.full((batch, seq_len, 1, n_slots), -1, dtype=torch.int32, device=kv.device)
-        # `window_indices` already marks an unused slot with `-1`, the same marker the kernel
-        # masks on, so it goes in unchanged.
+        # `window_indices` already marks an unused slot with `-1`, the same marker the kernel masks
+        # on, so it goes in unchanged.
         indices[..., :sliding_window] = window_indices.unsqueeze(1)
-        n_picks = top_k_indices.shape[-1]
-        # A surplus pick is `-1` and stays `-1`; a real pick shifts past the local token stream.
-        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
-        indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
+        if top_k_indices is not None:
+            # A surplus pick is `-1` and stays `-1`; a real pick shifts past the local token stream.
+            entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
+            indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
         return cls(kv_buf=kv_buf, indices=indices)
 
 
@@ -831,8 +837,6 @@ class DeepseekV4Attention(nn.Module):
             compressed_kv=compressed_kv,
             top_k_indices=top_k_indices,
             window_indices=packed.window_indices,
-            sliding_window=self.config.sliding_window,
-            index_topk=self.config.index_topk,
         )
         q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
         if self.attn_impl == "kernel":
