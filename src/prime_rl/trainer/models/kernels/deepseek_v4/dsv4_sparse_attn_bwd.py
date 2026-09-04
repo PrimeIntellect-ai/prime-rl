@@ -1,8 +1,74 @@
-# Sparse attention backward kernels for the DeepSeek V4 CSA layers.
-# The TileLang scaffolding is vendored from tile-ai/tilelang (Apache 2.0) and modified for dynamic
-# shapes. The attention itself differs from tilelang's sparse MLA: there is no score-only channel
-# tail (every channel feeds both the score and the output), and Delta is exposed as an output so
-# the torch layer can form the per-head attention-sink gradient from it.
+"""
+[DeepSeek V4 Sparse Attention: Backward]
+
+Gradients for the forward in `dsv4_sparse_attn_fwd.py`, whose shapes, index letters and masking
+rule carry over unchanged. Three kernels:
+
+    preprocess    Delta, a per-query-head reduction over the channel axis
+    bwd           dQ, and dKV scattered into a float32 buffer
+    postprocess   casts that buffer back to bfloat16
+
+Beyond the forward's tensors:
+
+    dO[b, s, h, d]   (B, S, H, D)   incoming output gradient, bfloat16
+    Delta[b, s, h]   (B, S, H)      float32
+    dQ[b, s, h, d]   (B, S, H, D)   bfloat16
+    dKV[b, n, g, d]  (B, N, G, D)   float32 until `postprocess`
+
+[What it computes]
+
+With `key[b,s,k,d] = KV[b, Indices[b,s,0,k], 0, d]` and `scale = D ** -0.5` as in the forward:
+
+    Delta[b,s,h] = Output[b,s,h,d] dO[b,s,h,d]
+    p[b,s,h,k]   = exp2(scale * Q[b,s,h,d] key[b,s,k,d] * log2(e) - Lse[b,s,h])
+    dp[b,s,h,k]  = dO[b,s,h,d] key[b,s,k,d]
+    ds[b,s,h,k]  = scale * p[b,s,h,k] * (dp[b,s,h,k] - Delta[b,s,h])
+
+    dQ[b,s,h,d]   = ds[b,s,h,k] key[b,s,k,d]
+    dkey[b,s,k,d] = ds[b,s,h,k] Q[b,s,h,d] + p[b,s,h,k] dO[b,s,h,d]
+
+`dkey` has two terms because `V == K`: a gathered position is read once as a key inside the logit
+and once as a value inside the output. Per tile of `block_size` slots the block runs five GEMMs,
+two rebuilding `p` and `dp`, one for `dQ`, and two accumulating into the `dkey` tile.
+
+`p` is recovered from `Lse` with a single `exp2`, never by a second max pass. The sink needs no
+handling here: it is already inside the `Z` that `Lse` encodes, so this `p` is the shrunken
+probability the forward produced. No sink gradient is formed in this file; `Delta` is returned so a
+caller can build one from it.
+
+[dQ is local, dKV is a scatter]
+
+A block owns one query position, so that query's `dQ` accumulates in registers and is written once.
+`dKV` is the opposite: many queries gather the same KV position `n` and they live in different
+blocks, so the tile is scattered with `atomic_addx4`, four contiguous channels at a time. That is
+why `dKV` is float32 while everything else here is bfloat16, and why `postprocess` exists.
+
+Masked slots skip the store rather than adding their exact zero, and no predicate is written for
+it: TileLang already guards the atomic with `0 <= idx`, and a masked slot's index is negative.
+
+[How the loop runs]
+
+The grid is `(query position, batch, head block)`, the third axis also carrying the KV head when
+`G > 1`, and at `H <= 64` it is a single block covering every query head. The block walks the `K`
+slots in tiles of `block_size`, half the forward's tile, and per tile:
+
+  1. gather `KV_shared[k,d]`, and seed `acc_p` to `0` or `-inf` from the mask
+  2. `acc_p[h,k] += Q_shared[h,d] KV_shared[k,d]` onto that seed, then `exp2(... - Lse)` in place,
+     so a masked slot stays `-inf` and becomes exactly zero. This is `p`.
+  3. `acc_dp[h,k] = dO_shared[h,d] KV_shared[k,d]`, then `p * (dp - Delta) * scale` in place: `ds`
+  4. `acc_dq[h,d] += ds[h,k] KV_shared[k,d]`
+  5. `acc_dkv[k,d] = ds[h,k] Q_shared[h,d] + p[h,k] dO_shared[h,d]`, two GEMMs into one tile
+  6. scatter `acc_dkv` into `dKV`, in `split_store` passes through a staging buffer that holds
+     `block_size // split_store` slots
+
+`acc_dq` accumulates over every tile and is written once after the loop, while `acc_dkv` is cleared
+each tile because step 6 has already sent it to memory. Steps 2 and 3 leave float32 fragments,
+which are cast to bfloat16 and staged in shared memory before feeding the GEMMs of steps 4 and 5.
+
+The TileLang scaffolding is vendored from tile-ai/tilelang (Apache 2.0) and modified for dynamic
+shapes. As in the forward there is no score-only channel tail, and `Delta` is exposed as an output
+rather than kept internal so the caller can form the per-head sink gradient from it.
+"""
 
 # TileLang ships a libcudart stub that proxies to the real CUDA runtime via
 # dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
