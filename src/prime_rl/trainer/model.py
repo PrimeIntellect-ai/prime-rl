@@ -42,6 +42,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -456,20 +457,22 @@ def get_full_offload_dtype_policy(
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
-    """Freeze DSA sparse-attention indexer parameters.
+    """Freeze sparse-attention indexer parameters.
 
-    The indexer's `compute_sparse_indices` forward runs under `torch.no_grad()`, so its
-    params never receive a gradient and cannot be trained. Left with requires_grad=True
-    they stay stateless in the optimizer, which breaks strict checkpoint resume: DCP
-    materializes optimizer state for every requires_grad param at load time, but the
-    stateless params were never saved -> "Missing key in checkpoint state_dict". Freezing
-    them keeps the saved and loaded optimizer state symmetric.
+    An indexer forward runs under `torch.no_grad()`, so its params never receive a gradient
+    and cannot be trained. Left with requires_grad=True they stay stateless in the optimizer,
+    which breaks strict checkpoint resume: DCP materializes optimizer state for every
+    requires_grad param at load time, but the stateless params were never saved -> "Missing
+    key in checkpoint state_dict". Freezing them keeps the saved and loaded optimizer state
+    symmetric.
     """
+    # TODO: no model here trains its indexer. DeepSeek's auxiliary KL objective, which supervises
+    # the top-k selection, is unimplemented, so these params are frozen rather than learned.
     logger = get_logger()
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, Indexer):
+        if isinstance(module, (Indexer, DeepseekV4Indexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -1280,9 +1283,9 @@ def setup_model(
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
 
-    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
-    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
-    # save/resume. No-op for models without a sparse indexer.
+    # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
+    # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
+    # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
     if config.debug.force_balanced_routing:
