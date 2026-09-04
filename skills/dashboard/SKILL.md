@@ -15,6 +15,42 @@ The Config and Logs views default to `latest (attempt <n>)`. Select an attempt
 to inspect the immutable config or log files from an earlier launch. The Config
 view shows a copyable launch command above the launch TOML or resolved JSON.
 
+The trace viewer has separate **Transcript**, **Timeline**, **Replay**, and
+**Semantic** views. Timeline is a wall-clock Gantt of physical prefix branches.
+Replay renders the selected agent branch as a terminal session with play/pause,
+seek, restart, and speed controls. It preserves recorded model-call and
+tool-result delays. Since the trace schema records a complete model-call span
+but no per-token timestamps, response text is paced evenly across that measured
+span and labeled as inferred; events without timestamps remain ordered and are
+labeled untimed. Semantic projects Verifiers `MessageNode.semantic_parents` as a
+top-to-bottom causal graph of model calls, including subagent calls, returns,
+compactions, and custom edge types. Calls occupy compact causal ranks within
+bounded agent lanes: the root stays centered, concurrent children fan out
+symmetrically, and child slots are reused after return, so graph width reflects
+peak agent concurrency rather than total subagents. Compaction starts a visibly
+separate context segment. For display only, a missing continuation is recovered
+when the physical parent chain proves a completed tool round-trip; fragments
+that still cannot be placed are shown explicitly as unlinked instead of being
+presented as contexts. Hover or click an agent or context label to see its
+latest and peak prompt lengths first, followed by cumulative token processing
+and cost. Exact timing remains available on model-call hover and in Timeline.
+Traces without semantic parents keep the other views and disable Semantic.
+
+Replay defaults to 8× so long coding-agent model waits remain watchable; select
+1× for exact wall time or up to 32× for faster review. In-flight calls display
+their measured progress and recorded output-token usage even when they produce
+only tool calls. Enable **Skip inference** to collapse model calls to immediate
+responses while preserving the recorded command-to-tool-output delays. This is
+distinct from the speed control, which scales every delay uniformly. Recorded
+model thinking is shown by default. Toggle **Thinking** in the replay controls
+or press **T** while Replay is open to hide or show it without changing playback
+timing. Do not advertise Ctrl+T: browsers reserve it for a new tab before the
+page can handle the keypress. Use **Top** or the **Home** key to scroll to the
+beginning without pausing the replay. Use **Live** or **End** to resume
+following newly rendered output. Prompt-context nodes that were committed at
+response time are placed at the linked call's start so their serialization
+timestamp does not create a false blank wait before the replay.
+
 Every dashboard instance serves the dirs it was started with **plus** every dir
 in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`, re-read
 live). Launchers (`rl`, `sft`) register their output dir on every
@@ -73,7 +109,9 @@ curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view 
 
 `run` is required; other fields are optional and leave unspecified UI state
 unchanged. For trace evidence, supply `step`, `kind`, and `subset` together and
-address the episode by stable `id`. Use optional `trace` and `branch` indices
+address the episode by stable `id`. The traces tab opens on the whole stream;
+`subset: "effective"` switches it to the cohort that shipped at one step. Use
+optional `trace` and `branch` indices
 for multi-agent traces and `highlight` entries shaped as `{node, quote,
 reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.

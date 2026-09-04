@@ -23,6 +23,7 @@ import torch
 from pydantic import Field
 
 from prime_rl.utils.config import BaseConfig, cli
+from prime_rl.utils.pathing import get_file_monitor_dir
 
 MAX_LORAS = 4
 
@@ -207,13 +208,16 @@ def aggregate_metrics(metrics_path: Path) -> dict:
 
     Each metrics.jsonl line is one monitor.log call (``{"step": N, ...}``);
     merge the lines per step, drop the first (warmup) step, and compute
-    mean/std/min/max per metric like the old --bench JSON export did.
+    mean/std/min/max per metric like the old --bench JSON export did. Rows
+    keyed by wall time rather than step (``step: null``) are not per-step and
+    are skipped.
     """
     per_step: dict[int, dict] = {}
     with open(metrics_path) as f:
         for line in f:
             row = json.loads(line)
-            per_step.setdefault(row["step"], {}).update(row)
+            if row.get("step") is not None:
+                per_step.setdefault(row["step"], {}).update(row)
 
     steps = sorted(per_step)[1:]  # Exclude first warmup step
     columns = {
@@ -255,7 +259,8 @@ def run_benchmark(config: BenchmarkConfig) -> None:
         return
 
     # The SFT entrypoint writes to output_dir/<run.name>, the RL trainer to output_dir directly
-    metrics_path = output_dir / "bench" / "metrics.jsonl" if config.type == "sft" else output_dir / "metrics.jsonl"
+    run_dir = output_dir / "bench" if config.type == "sft" else output_dir
+    metrics_path = get_file_monitor_dir(run_dir) / "metrics.jsonl"
 
     start_time = time.perf_counter()
     try:

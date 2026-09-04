@@ -53,5 +53,9 @@ class Monitor(ABC):
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Log episodes."""
 
+    async def log_annotations(self, updates: list[dict[str, Any]]) -> None:
+        """Log trace updates — post-hoc facts about traces this run already logged.
+        Monitors that only carry scalars ignore them."""
+
     async def finalize(self) -> None:
         """Finalize run."""

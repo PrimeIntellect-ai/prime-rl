@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -356,9 +357,52 @@ def test_env_algo_overrides_top_level():
         )
 
 
-def test_trainer_enable_token_export_cli_flag():
-    assert not cli(TrainerConfig, args=[]).enable_token_export
-    assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
+def test_policy_sources_accept_different_top_p_values():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        config = OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "top-p-95",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.95},
+                        },
+                        {
+                            "name": "top-p-97",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.97},
+                        },
+                    ]
+                },
+            }
+        )
+
+    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+
+
+def test_policy_sources_reject_mixed_top_k_capture():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
+            OrchestratorConfig.model_validate(
+                {
+                    "renderer": {"name": "qwen3"},
+                    "train": {
+                        "source": [
+                            {
+                                "name": "truncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                                "sampling": {"top_p": 0.95},
+                            },
+                            {
+                                "name": "untruncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                            },
+                        ]
+                    },
+                }
+            )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():
@@ -827,3 +871,19 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_combined_replay_uses_v2_runner(monkeypatch):
+    from prime_rl.inference.server import setup_vllm_env
+
+    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    config = InferenceConfig(
+        enable_return_sampling_mask=True,
+        vllm={"enable_return_routed_experts": True},
+    )
+
+    setup_vllm_env(config)
+
+    assert config.enable_return_sampling_mask is True
+    assert config.vllm.enable_return_routed_experts is True
+    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"

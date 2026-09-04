@@ -19,11 +19,12 @@ from prime_rl.utils.logger import get_logger
 # ruff: noqa: F401
 from prime_rl.utils.pathing import (
     get_all_ckpt_steps,
+    get_batch_dir,
     get_broadcast_dir,
     get_ckpt_dir,
     get_eval_dir,
+    get_file_monitor_dir,
     get_log_dir,
-    get_rollout_dir,
     get_step_path,
     resolve_latest_ckpt_step,
     sync_wait_for_path,

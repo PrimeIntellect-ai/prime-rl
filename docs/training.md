@@ -58,6 +58,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | Knob | What it does |
 |---|---|
 | `orchestrator.batch_size` | Tasks per trainer step. |
+| `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
@@ -133,7 +134,9 @@ Pulled from the console logs and mirrored to W&B.
 | Source | Metric | Reading |
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
+| orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+
+The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
 ## SFT Trainer
 
@@ -351,13 +354,13 @@ tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 
 ### Dashboard
 
-`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with five views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, merged component logs, and markdown reports from `<run>/reports/`. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
+`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with five views per run: metrics (the W&B overview sections, read from the file monitor's `metrics.jsonl`), the resolved configs, a rollout trace viewer with per-token overlays (advantage, entropy, trainer/sampling mismatch, IPO stable mask, loss and content masks), merged component logs, and markdown reports from `<run>/reports/`. The trace viewer separates the transcript, the wall-clock timeline of physical prefix branches, a wall-clock terminal replay of model and tool activity, and a top-to-bottom semantic graph of labeled model-call relationships. Replay uses recorded model-call and message timestamps; because providers do not persist per-token timestamps, it reveals response text evenly across the measured call span and labels that cadence as inferred. Agent and context labels in the semantic graph show the latest and peak prompt lengths first, with cumulative token processing available below on hover and click. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
 
 A coding agent on the same machine can drive the open dashboard: `POST /api/view` with an on-disk address (`{"run", "tab", "step", "kind", "subset", "episode", "highlight": [...]}`) navigates every connected tab there and paints quote-anchored highlights in the trace viewer. Reports cite traces with `[^id]` markers whose JSON definitions carry the same address plus a verbatim quote; the dashboard re-checks each quote against the trace files and marks the citation verified or broken, so answers stay grounded in what is actually on disk. The `dashboard` skill documents the full contract.
 
 ### Weights & Biases
 
-W&B is off by default (the file monitor, which writes `metrics.jsonl` and the per-step trace files to the run directory, is on by default):
+W&B is off by default (the file monitor, which writes the metrics and the trace stream under the run's `monitors/file/` directory, is on by default):
 
 ```bash
 uv run rl @ rl.toml --monitors.wandb                      # default project, random name
