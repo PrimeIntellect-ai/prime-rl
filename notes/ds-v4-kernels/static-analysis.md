@@ -77,7 +77,8 @@ The `.float()` cast, the `x.float().square()` intermediate inside
 token per instance. That is the largest single linear term in the model.
 *Replace with:* `quack.rmsnorm(x, None, eps=...)` is a one-line drop-in that accepts `weight=None`
 and fp32 input and covers `N = 16384`. Megatron's `fused_proj_rms_compute_h` fuses norm and
-projection together, but it is cuTile-only and therefore unavailable on H200 in practice.
+projection together, but it needs the cuTile `tileiras` compiler and falls back to
+`@torch.compile` without it, on Hopper and Blackwell alike.
 
 **`hyperconnections.py:59-63` - the Sinkhorn loop is 39 normalization steps, 119 launches.**
 `hc_sinkhorn_iters = 20` gives one column normalization plus `19 * 2` more, each a
@@ -85,8 +86,8 @@ projection together, but it is cuTile-only and therefore unavailable on H200 in 
 *Measured:* 10,234 launches per 43-layer forward. `hyperconnection` forward is 8.98 ms at
 `t = 32768` against a `rmsnorm` forward of 0.14 ms, so the loop is launch-bound, not
 bandwidth-bound.
-*Replace with:* Megatron's `fused_sinkhorn` (Triton, sm90-clean, semantics verified byte-identical
-to prime-rl's, see `megatron-survey.md`).
+*Replace with:* Megatron's `fused_sinkhorn` (Triton with no arch gate, semantics verified
+byte-identical to prime-rl's, see `megatron-survey.md`).
 *Saving:* 10,234 launches to 86; and the saved-for-backward set drops from the whole 40-tensor
 trajectory to a single `(1,t,4,4)` initial matrix.
 
@@ -95,7 +96,8 @@ materialized before a reduction.** `(pre.unsqueeze(-1) * hidden_streams).sum(dim
 `(1,t,4,4096)` product in fp32 (silent promotion, since `pre` is fp32) purely to reduce it. The
 two decoder-layer expressions each allocate three full `(1,t,4,4096)` bf16 tensors.
 *Replace with:* `torch.einsum("btn,btnh->bth", pre.to(dtype), hidden_streams)`; Megatron's
-`fused_h_aggregate` and `fused_h_post_bda` are the fused forms, both Triton and both sm90-clean.
+`fused_h_aggregate` and `fused_h_post_bda` are the fused forms, both Triton and neither
+arch-gated.
 
 **`rotary.py:44-49` - the closing `torch.cat` copies 448 of 512 channels unchanged.**
 `apply_rotary_pos_emb_interleaved` rotates the trailing 64 of 512 channels but reads and writes

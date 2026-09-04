@@ -21,28 +21,28 @@ eager PyTorch**. There is no TileLang CSA path to lift.
 
 ## Component inventory
 
-| Component | What it is | Runs on sm90? | Portability |
+| Component | What it is | Runs on Hopper (sm90)? | Portability |
 |---|---|---|---|
 | `csa.py` (3056 lines) | `Compressor`, `CSAIndexer`, `CompressedSparseAttention`, with SBHD / THD / THD+CP paths | eager path yes | **Hard** as classes, **Easy** for the helpers |
 | `deepseek_v4_hybrid_attention.py` | `DSv4HybridSelfAttention(Attention)`, per-layer YaRN-vs-plain rope split | yes | **Hard**, and redundant |
 | `absorbed_mla.py` | Absorbed MLA for the DSA family | yes | **Hard**, and off the DS V4 path |
 | `dsa_kernels.py` | Backend-neutral dispatch shim, "return `None` means fall back to eager" | n/a | **Easy** pattern, irrelevant code |
 | `csa_utils/fused_sparse_attention.py` (2452 lines) | FlashMLA forward + cuDNN DSA backward, three integration paths | yes, with an sm90 carve-out | **Hard**: both kernel providers unobtainable |
-| `csa_utils/fused_compressor.py` | Dispatch shim onto `cudnn.csa.compressor` | **no, Blackwell only** | do not port |
+| `csa_utils/fused_compressor.py` | Dispatch shim onto `cudnn.csa.compressor` | **no, sm100 only** | do not port |
 | `csa_utils/csa_teacher_lse.py` (493 lines) | Three Triton kernels for the indexer KL loss teacher denominator | **yes** | **Easy**, zero Megatron imports |
 | `fusions/fused_mla_yarn_rope_apply.py` (1283 lines) | Six autotuned Triton RoPE kernels, in-place, with an `inverse=True` mode | **yes** | **Moderate**: interleaving mismatch |
 | `fusions/fused_mhc_kernels.py` (3129 lines) | `fused_sinkhorn`, `fused_h_aggregate`, `fused_h_post_bda` (Triton); `fused_proj_rms_compute_h` (cuTile only) | Triton ops yes, cuTile ops effectively no | **Easy** to **Moderate** |
 
-## sm90 status, and how it was determined
+## Hopper (sm90) status, and how it was determined
 
-`fused_compressor.py` is hard-gated to Blackwell by an **equality** test:
+`fused_compressor.py` is hard-gated to datacenter Blackwell by an **equality** test:
 
 ```python
 _SUPPORTED_COMPUTE_CAPABILITY = (10, 0)              # fused_compressor.py:74
 supported = torch.cuda.get_device_capability(index) == _SUPPORTED_COMPUTE_CAPABILITY   # :146
 ```
 
-On H200 it returns `False` before the frontend is probed, and `Compressor._forward_thd` silently
+On Hopper it returns `False` before the frontend is probed, and `Compressor._forward_thd` silently
 stays eager. Its 62-line module docstring is still worth reading: it is a precise numerics
 contract for what a prime-rl-native fused compressor would have to compute.
 
@@ -50,7 +50,7 @@ The cuTile kernels are gated by an external compiler probe, not an arch list:
 `_cutile_supports_current_device` (`fused_mhc_kernels.py:168-207`) shells out to
 `tileiras --gpu-name sm_{major}{minor}` and fails closed when the binary is absent. Because
 `fused_proj_rms_compute_h` has **no Triton variant**, the largest mHC op falls back to
-`@torch.compile` on any normal H200 install.
+`@torch.compile` on any install without the cuTile toolchain, Hopper and Blackwell alike.
 
 The Triton files carry no capability checks at all: `csa_teacher_lse.py`,
 `fused_mla_yarn_rope_apply.py`, and the Triton half of `fused_mhc_kernels.py` all JIT for the
@@ -167,7 +167,7 @@ confirmed by measurement, not inference: see `README.md`.
    term in the online-softmax denominator and relaxing `assert topk % block_I == 0`
    (`sparse_mla_fwd.py:44`). Note `128 + 512 = 640 = 10 * 64` already aligns for CSA.
    **Moderate**: kernel modification, not a port.
-3. **`fused_mla_yarn_rope_apply.py`.** One Megatron import, sm90-clean, and its `inverse=True`
+3. **`fused_mla_yarn_rope_apply.py`.** One Megatron import, no arch gate, and its `inverse=True`
    mode maps onto prime-rl's conjugate de-rotation. **Moderate**: prime-rl uses adjacent-pair
    interleaving, which the kernel refuses at `:433`, and half-width `cos`/`sin`.
 4. **`csa_teacher_lse.py` plus the indexer KL loss.** Closes a correctness gap, not a speed gap.
@@ -175,7 +175,7 @@ confirmed by measurement, not inference: see `README.md`.
 5. **`fused_sinkhorn` from `fused_mhc_kernels.py`.** Smallest absolute win, cheapest correct one:
    semantics are verified byte-identical, so it is a drop-in with an equivalence test. **Easy**.
 
-**Explicitly not recommended:** `fused_compressor.py` (Blackwell-only and unobtainable),
+**Explicitly not recommended:** `fused_compressor.py` (sm100-only and unobtainable),
 `fused_sparse_attention.py` as a whole (both kernel providers are git-branch-only), `absorbed_mla.py`
 (off the DS V4 path), `ops/tilelang_sparse_mla_*` and `ops/indexer.py` (prime-rl's forks are equal
 or better), the `csa.py` module classes (welded to `Attention` / `build_module` /

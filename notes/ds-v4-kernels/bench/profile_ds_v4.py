@@ -260,7 +260,12 @@ def build_point(name: str, config, seq_lens, dtype, device, ac: str, randomize) 
         q = indexer.q_b_proj(q_residual).view(batch, seq_len, -1, indexer.head_dim).transpose(1, 2)
         q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2).detach().requires_grad_(True)
         scorer = indexer.scorer
-        return Point(scorer, lambda: scorer(q, compressed_kv, hidden), note="fp32 matmul + relu + weighted sum")
+        return Point(
+            scorer,
+            lambda: scorer(q, compressed_kv, hidden),
+            differentiable=False,
+            note="fp32 matmul + relu + weighted sum, in place under no_grad",
+        )
 
     if name == "hyperconnection":
         with torch.device(device), default_dtype(dtype):
