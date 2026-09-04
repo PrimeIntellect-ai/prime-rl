@@ -993,15 +993,15 @@ _FLASH_HCA_DOCS = (256, 512)
 def test_flash_hca_attention_packed_matches_unpacked():
     """An HCA layer at production shapes must answer each document as if it stood alone.
 
-    HCA has no indexer and no sparse path: `DeepseekV4Attention` sends any layer that is not
-    `compressed_sparse_attention` to the dense `_eager_with_entries` regardless of `attn_impl`,
-    so there is no second implementation to compare against and this asserts self-consistency
-    rather than equivalence. What it covers is the part the toy shapes cannot reach: a compress
-    rate of 128 over 512 channels, where an entry pools 128 tokens and a document boundary that
-    the compressor failed to respect would pull a whole other document into one entry.
+    Run on the eager consumer, so this is the packing invariant on its own rather than a
+    comparison between implementations; `test_kernel_and_eager_consumers_agree_on_shared_weights`
+    is what ties the two consumers together on this layer type. What this covers is the part the
+    toy shapes cannot reach: a compress rate of 128 over 512 channels, where an entry pools 128
+    tokens and a document boundary the compressor failed to respect would pull a whole other
+    document into one entry.
 
     `test_attention_packed_matches_unpacked[hca]` asserts the same invariant at toy shapes and
-    rate 8. This is the only test that instantiates the Flash config's HCA layer at all.
+    rate 8.
     """
     module = flash_attention(_FLASH_HCA_LAYER, dtype=torch.float32, attn_impl="eager")
     assert module.layer_type == "heavily_compressed_attention", (
@@ -1012,8 +1012,9 @@ def test_flash_hca_attention_packed_matches_unpacked():
     packed = _packed_context(_FLASH_HCA_DOCS, torch.float32, _flash_config())
 
     q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-    _, block_bias = module.compressor(packed_input.detach(), q_residual, packed)
-    assert (block_bias[:, :, _doc_slice(_FLASH_HCA_DOCS, 1)] == 0).any(), (
+    _, picks = module.compressor(packed_input.detach(), q_residual, packed)
+    # (batch, seq_len, n_picks), with `-1` where the query had no entry left to pick.
+    assert (picks[:, _doc_slice(_FLASH_HCA_DOCS, 1)] >= 0).any(), (
         "vacuous probe: no query of the second document reads a compressed entry"
     )
 
