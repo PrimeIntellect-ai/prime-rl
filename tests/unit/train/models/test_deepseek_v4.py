@@ -881,7 +881,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
     if module.compressor is None:
         # The second document opens inside a window, so an unclipped one would reach back into
         # the first. Without that the comparison below would hold under no clipping at all.
-        readable = packed.attention_mask[0, 0, doc_lens[0]] == 0
+        readable = packed.window_indices[doc_lens[0]] >= 0
         assert readable.sum() < module.config.sliding_window, (
             "vacuous probe: the second document's first query is not window-clipped at the boundary"
         )
