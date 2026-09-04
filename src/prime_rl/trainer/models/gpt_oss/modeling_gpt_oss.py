@@ -18,7 +18,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import (
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     conversion_chain,
@@ -110,6 +110,15 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
     _compatible_flash_implementations = ["kernels-community/vllm-flash-attn3", "flash_attention_4"]
     _can_record_outputs = {"hidden_states": GptOssDecoderLayer}
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset(),
+            "its attention is HuggingFace's GptOssAttention, which passes per-head sink logits as "
+            "`s_aux`; neither the ring nor the ulysses path forwards them, so CP would silently drop "
+            "the sinks",
+        )
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

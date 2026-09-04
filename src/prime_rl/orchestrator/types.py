@@ -124,6 +124,12 @@ class TrainBatch:
     cohort: TrainEpisodes
     samples: list[TrainingSample]
     failures: list[DispatchFailure]
+    # Episodes with traces retained for a later batch are not discarded.
+    buffered_episode_ids: set[str]
+    # Group cancellations can account for attempts that returned no episode.
+    cancelled_attempts: int = 0
+    # Stale attempts are a subset of cancelled_attempts.
+    stale_attempts: int = 0
 
 
 @dataclass

@@ -19,12 +19,14 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from itertools import groupby
 from pathlib import Path
 
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
@@ -518,13 +520,30 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 # ------------------------------------------------------------------------ rollouts
 
 
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
 def traces_file(run_dir: Path) -> Path | None:
-    """The run's episode stream. prime-rl dumps it through the file monitor; a
-    verifiers ``uv run eval`` run writes its own at the run root."""
-    for path in (get_trace_stream(run_dir), run_dir / "traces.jsonl"):
-        if path.is_file() and path.stat().st_size > 0:
-            return path
+    """The run's episode stream: the chunk directory the file monitor writes, browsed
+    through its index, or the single ``traces.jsonl`` a verifiers ``uv run eval`` run
+    writes at the run root."""
+    stream = get_trace_stream(run_dir)
+    if _file_size(get_index_path(stream)) > 0:
+        return stream
+    bare = run_dir / "traces.jsonl"
+    if bare.is_file() and bare.stat().st_size > 0:
+        return bare
     return None
+
+
+def stream_version(path: Path) -> int:
+    """What a stream's readers key their caches on. Both shapes are append-only, so
+    a size is a version: the index for a chunked stream, the file itself for a bare one."""
+    return _file_size(get_index_path(path)) if path.is_dir() else _file_size(path)
 
 
 def require_stream(run_dir: Path) -> Path:
@@ -590,6 +609,11 @@ def line_offsets(path: Path) -> list[int]:
 
 
 def episode_summaries(path: Path) -> list[dict]:
+    """Every episode's full summary, nested reward/metric/timing maps included. Parsed
+    from the records themselves, resuming from the last one summarised, and persisted
+    so a revisit skips the parse."""
+    if path.is_dir():
+        return chunked_summaries(path)
     offsets = line_offsets(path)
     with _lock:
         cached_count, summaries = _lru_get(_summaries_cache, path) or (0, [])
@@ -616,6 +640,39 @@ def episode_summaries(path: Path) -> list[dict]:
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
     write_sidecar(path, summaries)
+    return summaries
+
+
+def chunked_summaries(stream: Path) -> list[dict]:
+    """The summaries of a chunked stream: its index says where each record sits, so the
+    walk opens each chunk once and seeks record to record."""
+    index = get_index_path(stream)
+    rows = index_rows(index) or []
+    with _lock:
+        cached_count, summaries = _lru_get(_summaries_cache, stream) or (0, [])
+        if cached_count > len(rows):
+            cached_count, summaries = 0, []
+    if cached_count == 0:
+        loaded = load_sidecar(index)
+        if loaded is not None:
+            summaries = loaded[: len(rows)]
+            cached_count = len(summaries)
+    if cached_count == len(rows):
+        with _lock:
+            _lru_put(_summaries_cache, stream, (cached_count, summaries))
+        return summaries
+    summaries = list(summaries[:cached_count])
+    for chunk, chunk_rows in groupby(rows[cached_count:], key=lambda row: row.get("chunk", 0)):
+        with open_chunk(stream, chunk) as f:
+            for row in chunk_rows:
+                f.seek(row.get("offset", 0))
+                try:
+                    summaries.append(summarize_episode(row["line"], orjson.loads(f.readline())))
+                except orjson.JSONDecodeError:
+                    summaries.append({"line": row["line"], "id": None, "error": "unparseable"})
+    with _lock:
+        _lru_put(_summaries_cache, stream, (len(rows), summaries))
+    write_sidecar(index, summaries)
     return summaries
 
 
@@ -717,54 +774,17 @@ def timeline_reward(trace: dict) -> float | None:
     )
 
 
-def _file_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return -1
-
-
-def annotations_files(run_dir: Path) -> list[Path]:
-    """The annotation records themselves, one file per producer — their indexes are
-    named for them, so a name that is already an index is one of those."""
+def annotation_streams(run_dir: Path) -> list[Path]:
+    """The annotation streams, one chunk directory per producer, each indexed beside it."""
     directory = get_annotations_dir(run_dir)
     if not directory.is_dir():
         return []
-    return sorted(path for path in directory.glob("*.jsonl") if not path.name.endswith(".index.jsonl"))
+    return sorted(path for path in directory.iterdir() if path.is_dir())
 
 
-def annotation_source(data: Path) -> Path:
-    """The file a producer's rows are read from: its index when it wrote one, else the
-    records themselves. Whatever depends on those rows versions itself by this file's
-    size - the record file can grow before its index row is flushed, and a version
-    taken from it would miss the index completing."""
-    index = get_index_path(data)
-    return index if index.is_file() else data
-
-
-def annotation_rows(data: Path) -> list[dict]:
-    """A producer's updates as index rows - ``{trace_id, info, offset}`` - read from its
-    index when it wrote one, and derived from the records themselves when it did not."""
-    rows = index_rows(get_index_path(data))
-    if rows is not None:
-        return rows
-    size = data.stat().st_size
-    with _lock:
-        cached = _lru_get(_index_cache, data)
-    if cached and cached[0] == size:
-        return cached[1]
-    rows, offset = [], 0
-    with data.open("rb") as f:
-        for raw in f:
-            try:
-                update = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                break
-            rows.append({"trace_id": update.get("trace_id"), "info": update.get("info"), "offset": offset})
-            offset += len(raw)
-    with _lock:
-        _lru_put(_index_cache, data, (size, rows))
-    return rows
+def annotation_rows(stream: Path) -> list[dict]:
+    """A producer's updates as its index rows - ``{trace_id, info, chunk, offset}``."""
+    return index_rows(get_index_path(stream)) or []
 
 
 def annotation_index(run_dir: Path) -> dict[str, dict]:
@@ -773,8 +793,8 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     Reads the producers' indexes when they exist, so answering "which cohort, what
     credit" never touches the token streams — they can outweigh the traces themselves.
     A producer that wrote no index is read in full."""
-    files = annotations_files(run_dir)
-    key = tuple((data.name, _file_size(annotation_source(data))) for data in files)
+    files = annotation_streams(run_dir)
+    key = tuple((data.name, stream_version(data)) for data in files)
     cache_key = get_annotations_dir(run_dir)
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
@@ -785,17 +805,17 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     # the previous one must not see it change size under it.
     consumed, index = ({}, {}) if cached is None else (dict(cached[2]), dict(cached[1]))
 
-    def note(trace_id: str | None, info: dict, data: Path, offset: int) -> None:
+    def note(trace_id: str | None, info: dict, data: Path, chunk: int, offset: int) -> None:
         if not trace_id:
             return
         entry = index.setdefault(trace_id, {"info": {}, "at": []})
         entry["info"].update(info)
-        entry["at"].append((data, offset))
+        entry["at"].append((data, chunk, offset))
 
     for data in files:
         rows = annotation_rows(data)
         for row in rows[consumed.get(data, 0) :]:
-            note(row.get("trace_id"), row.get("info") or {}, data, row.get("offset", 0))
+            note(row.get("trace_id"), row.get("info") or {}, data, row.get("chunk", 0), row.get("offset", 0))
         consumed[data] = len(rows)
     with _lock:
         _lru_put(_annotations_cache, cache_key, (key, index, consumed))
@@ -806,9 +826,9 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
     """Every update recorded against one trace, read by seeking to each record."""
     entry = annotation_index(run_dir).get(trace_id)
     updates = []
-    for path, offset in (entry or {}).get("at", []):
+    for stream, chunk, offset in (entry or {}).get("at", []):
         try:
-            with path.open("rb") as f:
+            with open_chunk(stream, chunk) as f:
                 f.seek(offset)
                 updates.append(orjson.loads(f.readline()))
         except (OSError, orjson.JSONDecodeError):
@@ -864,6 +884,7 @@ def activity_spans(
         if reasoning_tokens is None:
             reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         text = " ".join(message_text(node.get("message") or {}).split())
+        mask = node.get("mask")
         spans.append(
             {
                 "kind": "model_call",
@@ -881,6 +902,7 @@ def activity_spans(
                 "output_tokens": output_tokens,
                 "reasoning_tokens": reasoning_tokens,
                 "cost": usage.get("cost"),
+                "trainable": any(mask) if isinstance(mask, list) and mask else None,
             }
         )
     return sorted(spans, key=lambda span: span["started_at"] if span["started_at"] is not None else float("inf"))
@@ -971,6 +993,7 @@ def timeline_lane(
             "total_input_tokens": total_input_tokens,
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
+            "latest_context_tokens": context_lengths[-1] if context_lengths else None,
             "max_context_tokens": max(context_lengths, default=None),
             "total_tokens": total_tokens,
             "cost": total("cost"),
@@ -979,8 +1002,254 @@ def timeline_lane(
     }
 
 
+def trace_semantic_edges(trace: dict, trace_index: int) -> list[dict]:
+    """Resolve persisted ``MessageNode.semantic_parents`` into timeline edges."""
+    nodes = trace.get("nodes") or []
+    call_order = {
+        node_index: call_index
+        for call_index, call in enumerate(trace.get("calls") or [])
+        if isinstance((node_index := call.get("node")), int) and 0 <= node_index < len(nodes)
+    }
+    call_nodes = set(call_order)
+    edges = []
+    for target_node, node in enumerate(nodes):
+        if target_node not in call_nodes:
+            continue
+        for link in node.get("semantic_parents") or []:
+            source_node = link.get("node")
+            edge_type = link.get("type")
+            if source_node not in call_nodes or not isinstance(edge_type, str):
+                continue
+            edges.append(
+                {
+                    "trace_index": trace_index,
+                    "source_node": source_node,
+                    "target_node": target_node,
+                    "type": edge_type,
+                }
+            )
+    if not edges:
+        return []
+
+    incoming = {edge["target_node"] for edge in edges}
+    for target_node in sorted(call_nodes - incoming, key=call_order.get):
+        source_node = physical_continuation_source(nodes, call_nodes, target_node)
+        if source_node is None or call_order[source_node] >= call_order[target_node]:
+            continue
+        edges.append(
+            {
+                "trace_index": trace_index,
+                "source_node": source_node,
+                "target_node": target_node,
+                "type": "continuation",
+                "inferred": True,
+            }
+        )
+    return edges
+
+
+def physical_continuation_source(nodes: list[dict], call_nodes: set[int], target_node: int) -> int | None:
+    """Recover a missing continuation only from a completed tool round-trip."""
+    between = []
+    visited = {target_node}
+    cursor = nodes[target_node].get("parent")
+    while isinstance(cursor, int) and 0 <= cursor < len(nodes) and cursor not in visited:
+        if cursor in call_nodes:
+            source_node = cursor
+            break
+        visited.add(cursor)
+        between.append(cursor)
+        cursor = nodes[cursor].get("parent")
+    else:
+        return None
+
+    source_message = nodes[source_node].get("message") or {}
+    tool_call_ids = {
+        tool_call.get("id")
+        for tool_call in source_message.get("tool_calls") or []
+        if isinstance(tool_call, dict) and isinstance(tool_call.get("id"), str)
+    }
+    if not tool_call_ids or not between:
+        return None
+    for node_index in between:
+        message = nodes[node_index].get("message") or {}
+        if message.get("role") != "tool" or message.get("tool_call_id") not in tool_call_ids:
+            return None
+    return source_node
+
+
+def semantic_context_lanes(
+    trace: dict,
+    trace_index: int,
+    role: str,
+    edges: list[dict],
+) -> list[dict]:
+    """Project continuation components as execution-context timeline lanes.
+
+    ``continuation`` keeps calls in one context. ``subagent_call`` creates a child
+    agent, ``compaction_attempt`` creates a summary leaf beside its source context,
+    and ``compaction`` starts a new context for the same agent. Other edge labels
+    remain visible but do not invent session semantics.
+    """
+    nodes = trace.get("nodes") or []
+    call_nodes = {
+        node_index
+        for call in trace.get("calls") or []
+        if isinstance((node_index := call.get("node")), int) and 0 <= node_index < len(nodes)
+    }
+    if not call_nodes or not edges:
+        return []
+
+    representatives = {node_index: node_index for node_index in call_nodes}
+
+    def find(node_index: int) -> int:
+        while representatives[node_index] != node_index:
+            representatives[node_index] = representatives[representatives[node_index]]
+            node_index = representatives[node_index]
+        return node_index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            representatives[right_root] = left_root
+
+    for edge in edges:
+        if edge["type"] == "continuation":
+            union(edge["source_node"], edge["target_node"])
+
+    components: dict[int, set[int]] = {}
+    for node_index in call_nodes:
+        components.setdefault(find(node_index), set()).add(node_index)
+    component_for = {
+        node_index: component for component, node_indexes in components.items() for node_index in node_indexes
+    }
+
+    component_activities = {
+        component: activity_spans(trace, node_indexes) for component, node_indexes in components.items()
+    }
+
+    def component_start(component: int) -> float:
+        activities = component_activities[component]
+        starts = [span["started_at"] for span in activities if span["started_at"] is not None]
+        timestamps = [
+            nodes[node_index].get("timestamp")
+            for node_index in components[component]
+            if nodes[node_index].get("timestamp") is not None
+        ]
+        return min(starts or timestamps, default=float("inf"))
+
+    ordered_components = sorted(components, key=lambda component: (component_start(component), component))
+    cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
+    created_components = {
+        component_for[edge["target_node"]]
+        for edge in cross_edges
+        if edge["type"] in {"subagent_call", "compaction_attempt", "compaction"}
+    }
+    root_components = [component for component in ordered_components if component not in created_components]
+
+    # component -> (agent label, depth, context index)
+    identities: dict[int, tuple[str, int, int]] = {}
+    unlinked_components = set()
+    if root_components:
+        identities[root_components[0]] = (role, 0, 0)
+        for index, component in enumerate(root_components[1:], start=1):
+            identities[component] = (f"unlinked {index}", 0, 0)
+            unlinked_components.add(component)
+
+    subagent_number = 0
+    changed = True
+    while changed:
+        changed = False
+        for edge in cross_edges:
+            source = component_for[edge["source_node"]]
+            target = component_for[edge["target_node"]]
+            if source not in identities or target in identities:
+                continue
+            agent_label, depth, context_index = identities[source]
+            if edge["type"] == "subagent_call":
+                subagent_number += 1
+                identities[target] = (f"subagent {subagent_number}", depth + 1, 0)
+            elif edge["type"] == "compaction_attempt":
+                identities[target] = (agent_label, depth, context_index)
+            elif edge["type"] == "compaction":
+                identities[target] = (agent_label, depth, context_index + 1)
+            else:
+                continue
+            changed = True
+
+    unlinked_index = len(unlinked_components)
+    for component in ordered_components:
+        if component not in identities:
+            unlinked_index += 1
+            identities[component] = (f"unlinked {unlinked_index}", 0, 0)
+            unlinked_components.add(component)
+
+    lanes = []
+    accepted_attempt_nodes = {edge["source_node"] for edge in cross_edges if edge["type"] == "compaction"}
+    attempt_by_component = {
+        component_for[edge["target_node"]]: {
+            "source_node": edge["source_node"],
+            "target_node": edge["target_node"],
+            "accepted": edge["target_node"] in accepted_attempt_nodes,
+        }
+        for edge in cross_edges
+        if edge["type"] == "compaction_attempt"
+    }
+    for component in ordered_components:
+        agent_label, depth, context_index = identities[component]
+        activities = component_activities[component]
+        start = component_start(component)
+        end = max(
+            [span["ended_at"] for span in activities if span.get("ended_at") is not None]
+            + [
+                nodes[node_index].get("timestamp")
+                for node_index in components[component]
+                if nodes[node_index].get("timestamp") is not None
+            ],
+            default=None,
+        )
+        completed = bool(trace.get("is_completed"))
+        label = f"{agent_label} · context {context_index}"
+        lifecycle = (
+            [
+                {
+                    "kind": "agent",
+                    "label": label,
+                    "track": "lifecycle",
+                    "started_at": start,
+                    "ended_at": end if completed else None,
+                    "status": "completed" if completed else "running",
+                }
+            ]
+            if start != float("inf")
+            else []
+        )
+        lane = timeline_lane(
+            trace,
+            trace_index,
+            label=label,
+            depth=depth + 1,
+            branch=True,
+            lifecycle=lifecycle,
+            activities=activities,
+        )
+        lane["context"] = {
+            "agent": agent_label,
+            "index": context_index,
+        }
+        if component in unlinked_components:
+            lane["context"]["unlinked"] = True
+        if component in attempt_by_component:
+            lane["compaction_attempt"] = attempt_by_component[component]
+        lanes.append(lane)
+    return lanes
+
+
 def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
+    semantic_lane_groups = []
+    semantic_edges = []
     for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
         branch_paths = branch_node_paths(nodes)
@@ -1065,9 +1334,22 @@ def project_episode_timeline(episode: dict) -> dict:
             )
         branches.sort(key=lambda item: (item[0] if item[0] is not None else float("inf"), item[1]))
         lane_groups.append((parent, [lane for _, _, lane in branches]))
+        trace_edges = trace_semantic_edges(trace, trace_index)
+        semantic_lanes = semantic_context_lanes(trace, trace_index, role, trace_edges)
+        if semantic_lanes:
+            semantic_lane_groups.append((parent, semantic_lanes))
+            semantic_edges.extend(trace_edges)
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
-    return {"lanes": lanes}
+    semantic_lane_groups.sort(
+        key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf")
+    )
+    semantic_lanes = [lane for parent, children in semantic_lane_groups for lane in (parent, *children)]
+    return {
+        "lanes": lanes,
+        "semantic_lanes": semantic_lanes,
+        "semantic_edges": semantic_edges,
+    }
 
 
 NICE_BINS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]
@@ -1132,12 +1414,8 @@ def episode_rows(run_dir: Path) -> list[dict]:
     path = traces_file(run_dir)
     if path is None:
         return []
-    files = annotations_files(run_dir)
-    key = (
-        _file_size(stream_index_file(run_dir)),
-        path.stat().st_size,
-        *(_file_size(annotation_source(f)) for f in files),
-    )
+    files = annotation_streams(run_dir)
+    key = (stream_version(path), *(stream_version(f) for f in files))
     with _lock:
         cached = _lru_get(_rows_cache, run_dir)
     if cached and cached[0] == key:
@@ -1322,7 +1600,7 @@ def list_rollouts(run: str) -> dict:
 def stream_etag(run_dir: Path, path: Path) -> str:
     """What a listing depends on: the stream, and the annotations that give its rows
     their cohort and credit. Both are append-only, so their sizes are the version."""
-    return f"{path.stat().st_size}-{sum(_file_size(annotation_source(f)) for f in annotations_files(run_dir))}"
+    return f"{stream_version(path)}-{sum(stream_version(f) for f in annotation_streams(run_dir))}"
 
 
 def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
@@ -1439,15 +1717,19 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
-    """One episode. A written index carries the byte offset, so reading it never
-    touches the rest of the stream."""
-    if offset is None:
+def read_episode_at(path: Path, line: int, at: tuple[int, int] | None = None) -> dict:
+    """One episode. A written index says which chunk and byte offset it sits at, so
+    reading it never touches the rest of the stream; a bare file is scanned for its
+    line offsets instead."""
+    if at is None:
         offsets = line_offsets(path)
         if not 1 <= line <= len(offsets):
             raise HTTPException(404, "episode line out of range")
-        offset = offsets[line - 1]
-    with path.open("rb") as f:
+        f, offset = path.open("rb"), offsets[line - 1]
+    else:
+        chunk, offset = at
+        f = open_chunk(path, chunk)
+    with f:
         f.seek(offset)
         try:
             return orjson.loads(f.readline())
@@ -1456,11 +1738,16 @@ def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
             raise HTTPException(422, f"episode {line} is unparseable") from error
 
 
-def episode_offset(run_dir: Path, line: int) -> int | None:
+def episode_at(run_dir: Path, line: int) -> tuple[int, int] | None:
+    """Where the written index puts an episode: ``(chunk, offset)``. None only when the
+    stream has no index; an index that exists is authoritative for what lines there are."""
     rows = written_index(run_dir)
-    if rows is None or not 1 <= line <= len(rows):
+    if rows is None:
         return None
-    return rows[line - 1].get("offset")
+    if not 1 <= line <= len(rows):
+        raise HTTPException(404, "episode line out of range")
+    row = rows[line - 1]
+    return row.get("chunk", 0), row.get("offset", 0)
 
 
 @app.get("/api/runs/{run}/episodes/{line}")
@@ -1473,7 +1760,7 @@ def get_episode(
     """One episode, by its line in the stream, with every annotation folded on."""
     run_dir = get_run_dir(run)
     path = require_stream(run_dir)
-    rec = read_episode_at(path, line, episode_offset(run_dir, line))
+    rec = read_episode_at(path, line, episode_at(run_dir, line))
     # only the opened episode's streams are read, by seeking to each of its records
     for trace in rec.get("traces") or []:
         updates = trace_updates(run_dir, trace.get("id") or "")
@@ -1687,7 +1974,7 @@ async def view_events() -> "StreamingResponse":
 @app.get("/api/runs/{run}/episodes/{line}/timeline")
 def get_episode_timeline(run: str, line: int) -> dict:
     run_dir = get_run_dir(run)
-    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_offset(run_dir, line)))
+    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
 
 
 # -------------------------------------------------------------------------- static

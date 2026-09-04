@@ -2226,12 +2226,23 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let currentEvidenceView = null;
 let episodeOpenVersion = 0;
 let episodeEnrichmentVersion = 0;
 let currentTimeline = null;
-let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
+let preferredTraceView = ["timeline", "semantic"].includes(prefs.traceView) ? prefs.traceView : "transcript";
+let traceView = preferredTraceView;
 let pendingTimelineNode = null;
 let pendingTimelineCall = null;
+let semanticSelection = null;
+let semanticTranscriptOrigin = null;
+const semanticExpandedRuns = new Set();
+
+function clearSemanticTranscriptOrigin() {
+  semanticTranscriptOrigin?.classList.remove("semantic-origin");
+  semanticTranscriptOrigin = null;
+}
+let replay = null;
 
 const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "stable_mask"]);
 
@@ -2300,10 +2311,23 @@ function renderRolloutList() {
   renderRolloutWindow();
 }
 
+function renderSemanticEpisodeNav() {
+  const episodes = filteredRollouts();
+  const index = episodes.findIndex((episode) => episode.line === currentLine);
+  const episode = episodes[index];
+  $("#tm-episode-label").textContent = episode
+    ? `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
+    : "episode";
+  $("#tm-episode-prev").disabled = index <= 0;
+  const hasLoadedNext = index >= 0 && index < episodes.length - 1;
+  const hasUnloadedNext = index >= 0 && episodes.length < state.traces.total;
+  $("#tm-episode-next").disabled = !hasLoadedNext && !hasUnloadedNext;
+}
+
 async function stepRollout(delta) {
   let episodes = filteredRollouts();
   const idx = episodes.findIndex((e) => e.line === currentLine);
-  if (idx + delta >= episodes.length - 1) {
+  if (delta > 0 && idx + delta >= episodes.length) {
     await loadMoreEpisodes();
     episodes = filteredRollouts();
   }
@@ -2359,6 +2383,10 @@ function fetchEpisodeTimeline(line) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/episodes/${line}/timeline`);
 }
 
+function timelineHasSemantic(timeline = currentTimeline) {
+  return (timeline?.semantic_lanes || []).some((lane) => lane.context);
+}
+
 async function ensureTimeline() {
   if (currentTimeline || currentLine == null) return;
   const line = currentLine;
@@ -2387,6 +2415,7 @@ async function ensureTokens() {
 }
 
 async function openEpisode(line, target = {}) {
+  stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
@@ -2396,11 +2425,18 @@ async function openEpisode(line, target = {}) {
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
-  $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
+  const timelineTarget = $("#tm-timeline");
+  timelineTarget.classList.remove("semantic-canvas");
+  delete timelineTarget.dataset.semanticEpisode;
+  timelineTarget.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
   currentTimeline = null;
   pendingTimelineNode = null;
   pendingTimelineCall = null;
+  semanticSelection = null;
+  semanticExpandedRuns.clear();
+  clearSemanticTranscriptOrigin();
+  $("#sg-inspector").hidden = true;
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
@@ -2410,13 +2446,19 @@ async function openEpisode(line, target = {}) {
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
-  if (traceView === "timeline") await ensureTimeline();
+  currentEvidenceView = target.evidence ?? null;
+  traceView = currentEvidenceView == null ? preferredTraceView : "transcript";
+  if (traceView === "timeline" || traceView === "semantic") await ensureTimeline();
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
+  if (traceView === "semantic" && !timelineHasSemantic()) traceView = "transcript";
   renderEpisode();
+  if (traceView === "replay") return;
   await ensureTokens();
   if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
+  stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
@@ -2426,6 +2468,10 @@ function closeDrawer() {
   currentTimeline = null;
   pendingTimelineNode = null;
   pendingTimelineCall = null;
+  semanticSelection = null;
+  semanticExpandedRuns.clear();
+  clearSemanticTranscriptOrigin();
+  $("#sg-inspector").hidden = true;
   currentLine = null;
   pendingHighlight = null;
 }
@@ -2663,6 +2709,10 @@ function pyLiteral(value) {
 }
 
 function toolCallHtml(toolCall) {
+  return `<div class="tool-call">${esc(toolCallText(toolCall))}</div>`;
+}
+
+function toolCallText(toolCall) {
   const name = toolCall.function?.name ?? toolCall.name ?? "?";
   const raw = toolCall.function?.arguments ?? toolCall.arguments;
   let args;
@@ -2676,7 +2726,7 @@ function toolCallHtml(toolCall) {
   } catch {
     args = String(raw ?? "");
   }
-  return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
+  return `${name}(${args})`;
 }
 
 function reasoningBlock(content, marks = null) {
@@ -2733,6 +2783,88 @@ function toolDefinitionsHtml(trace) {
     `<button class="icon-btn" data-copy-tools title="copy all tool definitions">${COPY_SVG}</button>` +
     `<span class="entry-chev">›</span></summary>` +
     body + `</details>`
+  );
+}
+
+const TASK_SCAFFOLD_FIELDS = new Set([
+  "idx", "name", "description", "prompt", "system_prompt", "image", "workdir",
+  "network_allow", "network_block", "artifacts", "timeout", "resources",
+]);
+const TASK_EVIDENCE_FIELD_ORDER = new Map([["question", 0], ["answer", 1]]);
+
+function evidenceText(value) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function taskEvidenceHtml(trace) {
+  const data = trace.task?.data;
+  if (!data || typeof data !== "object") return "";
+  const fields = Object.entries(data)
+    .filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null)
+    .sort(
+      ([a], [b]) =>
+        (TASK_EVIDENCE_FIELD_ORDER.get(a) ?? 2) - (TASK_EVIDENCE_FIELD_ORDER.get(b) ?? 2)
+    );
+  if (!fields.length) return "";
+  const previewKeys = fields.map(([key]) => key).join(" · ");
+  const body = fields
+    .map(
+      ([key, value]) =>
+        `<section class="evidence-field"><header><span>${esc(key)}</span>` +
+        `<button class="icon-btn" data-copy-task="${esc(key)}" title="copy ${esc(key)}">${COPY_SVG}</button></header>` +
+        `<pre>${esc(evidenceText(value))}</pre></section>`
+    )
+    .join("");
+  return (
+    `<details class="task-evidence standalone" open><summary><span class="context-label">Task data</span>` +
+    `<span class="entry-preview">${esc(previewKeys)}</span><span class="entry-chev">›</span></summary>` +
+    `<div class="evidence-fields">${body}</div></details>`
+  );
+}
+
+function judgeEvidenceHtml(trace) {
+  const records = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+  if (!records.length) return "";
+  const calls = records
+    .map((record, index) => {
+      const request = record.request;
+      const response = record.response;
+      const messages = request.messages;
+      const responseText = messageText(response.message);
+      const { input, cached, output } = normalizedCallUsage(response.usage);
+      const chips = [];
+      if (request.model) chips.push(request.model);
+      if (input != null) chips.push(`${fmtCompact(input)} in`);
+      if (cached != null) chips.push(`${fmtCompact(cached)} cache`);
+      if (output != null) chips.push(`${fmtCompact(output)} out`);
+      const prompt = messages
+        .map(
+          (message, messageIndex) =>
+            `<section class="judge-message"><header><span>${String(messageIndex + 1).padStart(2, "0")}</span>` +
+            `<strong>${esc(message.role || "message")}</strong></header>` +
+            `<div>${esc(messageText(message))}</div></section>`
+        )
+        .join("");
+      const parsed = response.parsed == null
+        ? ""
+        : `<section class="judge-result parsed"><header>Parsed verdict</header><pre>${esc(evidenceText(response.parsed))}</pre></section>`;
+      return (
+        `<details class="entry judge-entry" open><summary><span class="entry-num">J${String(index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(record.name)}</span>` +
+        `<span class="entry-preview">${preview(responseText, 180)}</span>` +
+        chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("") +
+        `<button class="icon-btn" data-copy-judge="${index}" title="copy judge call">${COPY_SVG}</button>` +
+        `<span class="entry-chev">›</span></summary>` +
+        `<div class="judge-call-grid"><section class="judge-request"><header>Judge prompt</header>${prompt}</section>` +
+        `<section class="judge-result"><header>Judge response</header><pre>${esc(responseText)}</pre></section>${parsed}</div>` +
+        `</details>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="judging-divider"><span>Judging</span><span>${records.length} call${records.length === 1 ? "" : "s"}</span></div>` +
+    calls
   );
 }
 
@@ -2837,6 +2969,15 @@ function renderMessages(ep, trace, branches) {
   const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
+    return;
+  }
+  if (currentEvidenceView === "task") {
+    container.innerHTML = errorsHtml + (taskEvidenceHtml(trace) || emptyState("no task data", "this trace carries no task-specific evidence"));
+    return;
+  }
+  if (currentEvidenceView === "judge") {
+    const judgesHtml = judgeEvidenceHtml(trace);
+    container.innerHTML = errorsHtml + (judgesHtml ? `<div class="judging-view">${judgesHtml}</div>` : emptyState("no judge calls", "this trace has no recorded judge evidence"));
     return;
   }
   if (state.traces.viewMode === "rendered") {
@@ -3037,6 +3178,8 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
+    if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
 
     const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
     const addUsage = (field, value) => {
@@ -3127,6 +3270,58 @@ function appendTimelineUsage(rows, usage, aggregate = false) {
   if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
 }
 
+function aggregateTimelineUsage(items) {
+  const summedFields = [
+    "model_calls",
+    "input_tokens",
+    "cached_tokens",
+    "total_input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+    "cost",
+  ];
+  const aggregate = {};
+  for (const field of summedFields) {
+    const values = items.map((usage) => usage?.[field]).filter((value) => typeof value === "number");
+    aggregate[field] = values.length ? values.reduce((total, value) => total + value, 0) : null;
+  }
+  const contextLengths = items
+    .map((usage) => usage?.max_context_tokens)
+    .filter((value) => typeof value === "number");
+  const latestContextLengths = items
+    .map((usage) => usage?.latest_context_tokens)
+    .filter((value) => typeof value === "number");
+  aggregate.latest_context_tokens = latestContextLengths.at(-1) ?? null;
+  aggregate.max_context_tokens = contextLengths.length ? Math.max(...contextLengths) : null;
+  return aggregate;
+}
+
+function semanticContextRows(usage, compact = true) {
+  const tokens = (value) => compact ? fmtCompact(value) : Math.round(value).toLocaleString();
+  const rows = [];
+  if (usage?.latest_context_tokens != null) rows.push(["current prompt", tokens(usage.latest_context_tokens)]);
+  if (usage?.max_context_tokens != null) rows.push(["peak prompt", tokens(usage.max_context_tokens)]);
+  return rows;
+}
+
+function semanticCumulativeUsageRows(usage, compact = true) {
+  const tokens = (value) => compact ? fmtCompact(value) : Math.round(value).toLocaleString();
+  const rows = [];
+  if (usage?.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
+  if (usage?.total_tokens != null) rows.push(["cumulative processed", tokens(usage.total_tokens)]);
+  if (usage?.input_tokens != null) rows.push(["uncached input", tokens(usage.input_tokens)]);
+  if (usage?.cached_tokens != null) rows.push(["cached input", tokens(usage.cached_tokens)]);
+  if (usage?.output_tokens != null) rows.push(["output", tokens(usage.output_tokens)]);
+  if (usage?.reasoning_tokens != null) rows.push(["reasoning", tokens(usage.reasoning_tokens)]);
+  if (usage?.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+  return rows;
+}
+
+function semanticUsageRows(usage, compact = true) {
+  return [...semanticContextRows(usage, compact), ...semanticCumulativeUsageRows(usage, compact)];
+}
+
 function timelineSpanHtml(lane, span, start, total) {
   const partial = span.started_at == null || span.ended_at == null;
   const left = span.started_at == null ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
@@ -3183,24 +3378,54 @@ function timelineLaneHtml(lane, start, total) {
     `${model}</span></div>` +
     `<div class="tl-track">${grids}${spans}</div>` +
     `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
-    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
-    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span></div></div>`
+  );
+}
+
+function semanticEdgeKind(type) {
+  if (type === "continuation") return "continuation";
+  if (type === "subagent_call") return "subagent-call";
+  if (type === "subagent_return") return "subagent-return";
+  if (type === "compaction_attempt") return "compaction-attempt";
+  if (type === "compaction") return "compaction";
+  return "custom";
+}
+
+function semanticEdgeLabel(type) {
+  if (type === "continuation") return "context flow";
+  return type.replaceAll("_", " ");
+}
+
+function timelineLegendHtml(edges) {
+  const types = [...new Set((edges || []).map((edge) => edge.type))];
+  if (!types.length) return "";
+  return (
+    `<div class="tl-edge-legend"><span class="tl-edge-legend-title">semantic edges</span>` +
+    types
+      .map(
+        (type) =>
+          `<span class="tl-edge-key"><i class="${semanticEdgeKind(type)}"></i>${esc(semanticEdgeLabel(type))}</span>`
+      )
+      .join("") +
+    `</div>`
   );
 }
 
 function renderTimeline() {
   const target = $("#tm-timeline");
+  target.classList.remove("semantic-canvas");
   const timeline = currentTimeline;
   if (!timeline) {
     target.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
     return;
   }
-  if (!(timeline.lanes || []).length) {
+  const lanes = timeline.lanes;
+  if (!(lanes || []).length) {
     target.innerHTML = emptyState("no timeline", "this episode carries no agent traces");
     return;
   }
-  const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
-  const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
+  const starts = lanes.map((lane) => lane.started_at).filter((value) => value != null);
+  const ends = lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
   const start = starts.length ? Math.min(...starts) : 0;
   const end = ends.length ? Math.max(...ends) : start + 1;
   const total = Math.max(1, end - start);
@@ -3208,15 +3433,955 @@ function renderTimeline() {
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
     .join("");
   target.innerHTML =
-    `<div class="tl-shell"><div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
-    timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
+    `<div class="tl-shell physical">` +
+    `<div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
     `</div>`;
 }
 
-async function setTraceView(view) {
+const semanticNodeDetails = new Map();
+const semanticScopeDetails = new Map();
+
+function semanticNodeKey(traceIndex, nodeIndex) {
+  return `${traceIndex}:${nodeIndex}`;
+}
+
+function semanticNodeTip(event) {
+  const span = event.span;
+  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  const rows = [
+    ["agent", event.agent.label],
+    ["context", String(event.contextIndex)],
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? "unknown" : timelineClock(span.ended_at)],
+    ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+  ];
+  if (event.compactionAttempt) {
+    rows.splice(2, 0,
+      ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
+      ["training branch", event.compactionAttempt.accepted ? "included" : "excluded"]
+    );
+  }
+  appendTimelineUsage(rows, {
+    input_tokens: span.input_tokens,
+    cached_tokens: span.cached_tokens,
+    total_input_tokens: totalInput,
+    output_tokens: span.output_tokens,
+    reasoning_tokens: span.reasoning_tokens,
+    max_context_tokens: totalInput,
+    total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
+    cost: span.cost,
+  });
+  return timelineTipAttr({
+    kind: event.compactionAttempt ? "compaction attempt" : "model call",
+    title: event.compactionAttempt
+      ? `${event.agent.label} — attempt ${event.compactionAttemptIndex}`
+      : `${event.agent.label} — ${span.label}`,
+    snippet: span.snippet || "",
+    rows,
+    hint: "Click to inspect this call. Exact wall-clock placement is available in Timeline.",
+  });
+}
+
+function renderSemanticGraph() {
+  const target = $("#tm-timeline");
+  const wasSemantic = target.classList.contains("semantic-canvas");
+  target.classList.add("semantic-canvas");
+  const episodeKey = String(currentLine);
+  const preserveViewport = wasSemantic && target.dataset.semanticEpisode === episodeKey;
+  const previousScrollLeft = target.scrollLeft;
+  const previousScrollTop = target.scrollTop;
+  const timeline = currentTimeline;
+  const lanes = (timeline?.semantic_lanes || []).filter((lane) => lane.context);
+  const edges = timeline?.semantic_edges || [];
+  semanticNodeDetails.clear();
+  semanticScopeDetails.clear();
+  if (!lanes.length) {
+    target.innerHTML = emptyState(
+      "no semantic graph",
+      "this harness did not attach semantic relationships to the model-call nodes"
+    );
+    return;
+  }
+
+  const agentsByKey = new Map();
+  const segments = [];
+  const events = [];
+  lanes.forEach((lane, laneIndex) => {
+    const agentKey = `${lane.trace_index}:${lane.context.agent}`;
+    let agent = agentsByKey.get(agentKey);
+    if (!agent) {
+      agent = {
+        key: agentKey,
+        label: lane.context.agent,
+        traceIndex: lane.trace_index,
+        depth: lane.depth || 0,
+        startedAt: lane.started_at,
+        segments: [],
+      };
+      agentsByKey.set(agentKey, agent);
+    } else {
+      agent.startedAt = Math.min(agent.startedAt ?? Infinity, lane.started_at ?? Infinity);
+      agent.depth = Math.min(agent.depth, lane.depth || 0);
+    }
+    const segment = {
+      key: `${agentKey}:${lane.context.index}:${laneIndex}`,
+      agent,
+      contextIndex: lane.context.index,
+      unlinked: !!lane.context.unlinked,
+      lane,
+      compactionAttempt: lane.compaction_attempt || null,
+      events: [],
+    };
+    agent.segments.push(segment);
+    segments.push(segment);
+    for (const span of lane.spans || []) {
+      if (span.track !== "activity" || span.node_index == null) continue;
+      const event = {
+        key: semanticNodeKey(lane.trace_index, span.node_index),
+        traceIndex: lane.trace_index,
+        nodeIndex: span.node_index,
+        callIndex: span.call_index,
+        contextIndex: lane.context.index,
+        lane,
+        agent,
+        segment,
+        compactionAttempt: segment.compactionAttempt,
+        span,
+      };
+      segment.events.push(event);
+      events.push(event);
+    }
+  });
+  const agents = [...agentsByKey.values()].sort(
+    (left, right) =>
+      left.depth - right.depth ||
+      (left.startedAt ?? Infinity) - (right.startedAt ?? Infinity) ||
+      left.label.localeCompare(right.label)
+  );
+  for (const agent of agents) {
+    agent.segments.sort((left, right) => left.contextIndex - right.contextIndex);
+    agent.contextSegments = agent.segments.filter((segment) => !segment.compactionAttempt);
+    agent.usage = aggregateTimelineUsage(agent.segments.map((segment) => segment.lane.usage));
+    agent.contextUsage = new Map();
+    const segmentsByContext = new Map();
+    for (const segment of agent.segments) {
+      if (!segmentsByContext.has(segment.contextIndex)) {
+        segmentsByContext.set(segment.contextIndex, []);
+      }
+      segmentsByContext.get(segment.contextIndex).push(segment);
+    }
+    for (const [contextIndex, contextSegments] of segmentsByContext) {
+      agent.contextUsage.set(
+        contextIndex,
+        aggregateTimelineUsage(contextSegments.map((candidate) => candidate.lane.usage))
+      );
+    }
+    for (const segment of agent.contextSegments) {
+      segment.contextUsage = agent.contextUsage.get(segment.contextIndex);
+    }
+    semanticScopeDetails.set(`agent:${agent.key}`, { kind: "agent", agent });
+  }
+  for (const segment of segments) {
+    if (!segment.compactionAttempt) {
+      semanticScopeDetails.set(`context:${segment.key}`, { kind: "context", segment });
+    }
+  }
+  events.sort(
+    (left, right) =>
+      (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+      left.traceIndex - right.traceIndex ||
+      left.nodeIndex - right.nodeIndex
+  );
+  if (!events.length) {
+    target.innerHTML = emptyState("no semantic graph", "this trace has semantic contexts but no model calls");
+    return;
+  }
+
+  // Semantic vertical placement follows causal rank, not wall-clock time. Add
+  // per-agent ordering links as a defensive fallback for harnesses that omit
+  // explicit continuation edges; Timeline remains the wall-clock view.
+  const eventByKey = new Map(events.map((event) => [event.key, event]));
+  const outgoing = new Map(events.map((event) => [event.key, new Set()]));
+  const indegree = new Map(events.map((event) => [event.key, 0]));
+  const addCausalLink = (sourceKey, targetKey) => {
+    if (sourceKey === targetKey || !eventByKey.has(sourceKey) || !eventByKey.has(targetKey)) return;
+    const targets = outgoing.get(sourceKey);
+    if (targets.has(targetKey)) return;
+    targets.add(targetKey);
+    indegree.set(targetKey, indegree.get(targetKey) + 1);
+  };
+  const hasCausalPath = (sourceKey, targetKey) => {
+    const pending = [sourceKey];
+    const visited = new Set();
+    while (pending.length) {
+      const key = pending.pop();
+      if (key === targetKey) return true;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      pending.push(...outgoing.get(key));
+    }
+    return false;
+  };
+  edges.forEach((edge) => {
+    addCausalLink(
+      semanticNodeKey(edge.trace_index, edge.source_node),
+      semanticNodeKey(edge.trace_index, edge.target_node)
+    );
+  });
+  for (const agent of agents) {
+    const agentEvents = events
+      .filter((event) => event.agent === agent && !event.compactionAttempt)
+      .sort(
+        (left, right) =>
+          (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+          left.nodeIndex - right.nodeIndex
+      );
+    for (let index = 1; index < agentEvents.length; index++) {
+      const sourceKey = agentEvents[index - 1].key;
+      const targetKey = agentEvents[index].key;
+      if (!hasCausalPath(sourceKey, targetKey) && !hasCausalPath(targetKey, sourceKey)) {
+        addCausalLink(sourceKey, targetKey);
+      }
+    }
+  }
+  const eventOrder = (leftKey, rightKey) => {
+    const left = eventByKey.get(leftKey);
+    const right = eventByKey.get(rightKey);
+    return (
+      (left.span.started_at ?? Infinity) - (right.span.started_at ?? Infinity) ||
+      left.traceIndex - right.traceIndex ||
+      left.nodeIndex - right.nodeIndex
+    );
+  };
+  const ranks = new Map(events.map((event) => [event.key, 0]));
+  const ready = events
+    .filter((event) => indegree.get(event.key) === 0)
+    .map((event) => event.key)
+    .sort(eventOrder);
+  const ranked = new Set();
+  while (ready.length) {
+    const sourceKey = ready.shift();
+    ranked.add(sourceKey);
+    for (const targetKey of outgoing.get(sourceKey)) {
+      ranks.set(targetKey, Math.max(ranks.get(targetKey), ranks.get(sourceKey) + 1));
+      indegree.set(targetKey, indegree.get(targetKey) - 1);
+      if (indegree.get(targetKey) === 0) {
+        ready.push(targetKey);
+        ready.sort(eventOrder);
+      }
+    }
+  }
+  let fallbackRank = Math.max(0, ...ranks.values()) + 1;
+  for (const event of events) {
+    if (!ranked.has(event.key)) ranks.set(event.key, fallbackRank++);
+  }
+  const rankValues = [...new Set(ranks.values())].sort((left, right) => left - right);
+  const rows = rankValues.map((rank, index) => ({ index, rank, events: [] }));
+  const rowByRank = new Map(rows.map((row) => [row.rank, row]));
+  for (const event of events) {
+    const row = rowByRank.get(ranks.get(event.key));
+    row.events.push(event);
+    event.row = row.index;
+  }
+
+  segments.forEach((segment) => {
+    segment.events.sort((left, right) => left.row - right.row);
+    segment.firstEvent = segment.events[0];
+    segment.lastEvent = segment.events[segment.events.length - 1];
+  });
+  const compactionTargets = new Set(
+    edges
+      .filter((edge) => edge.type === "compaction")
+      .map((edge) => semanticNodeKey(edge.trace_index, edge.target_node))
+  );
+  const inferredContinuationTargets = new Set(
+    edges
+      .filter((edge) => edge.type === "continuation" && edge.inferred)
+      .map((edge) => semanticNodeKey(edge.trace_index, edge.target_node))
+  );
+  for (const event of events) {
+    event.inferredContinuation = inferredContinuationTargets.has(event.key);
+  }
+  for (const segment of segments) {
+    segment.isCompacted = compactionTargets.has(segment.firstEvent?.key);
+  }
+
+  // Fold only long, uninterrupted runs of ordinary model calls. Context
+  // boundaries, semantic-edge endpoints, active calls, and the selected call
+  // stay explicit so folding never removes execution structure.
+  const protectedEventKeys = new Set();
+  for (const segment of segments) {
+    if (segment.firstEvent) protectedEventKeys.add(segment.firstEvent.key);
+    if (segment.lastEvent) protectedEventKeys.add(segment.lastEvent.key);
+  }
+  for (const edge of edges) {
+    if (edge.type === "continuation") continue;
+    protectedEventKeys.add(semanticNodeKey(edge.trace_index, edge.source_node));
+    protectedEventKeys.add(semanticNodeKey(edge.trace_index, edge.target_node));
+  }
+  for (const event of events) {
+    if (event.span.status !== "completed") protectedEventKeys.add(event.key);
+  }
+  if (semanticSelection?.key) protectedEventKeys.add(semanticSelection.key);
+
+  const collapseRuns = [];
+  const foldRun = (segment, ordinaryEvents) => {
+    const contextCalls = 2;
+    const minimumOrdinaryCalls = contextCalls * 2 + 3;
+    if (ordinaryEvents.length < minimumOrdinaryCalls) return;
+    const hiddenEvents = ordinaryEvents.slice(contextCalls, -contextCalls);
+    const first = hiddenEvents[0];
+    const last = hiddenEvents[hiddenEvents.length - 1];
+    const key = `${currentLine}:${segment.key}:${first.key}:${last.key}`;
+    collapseRuns.push({
+      key,
+      segment,
+      events: hiddenEvents,
+      firstEvent: first,
+      expanded: semanticExpandedRuns.has(key),
+    });
+  };
+  for (const segment of segments) {
+    let ordinaryEvents = [];
+    for (const event of segment.events) {
+      if (protectedEventKeys.has(event.key)) {
+        foldRun(segment, ordinaryEvents);
+        ordinaryEvents = [];
+      } else {
+        ordinaryEvents.push(event);
+      }
+    }
+    foldRun(segment, ordinaryEvents);
+  }
+  const collapsedEventKeys = new Set(
+    collapseRuns.filter((run) => !run.expanded).flatMap((run) => run.events.map((event) => event.key))
+  );
+  const collapsedRunRows = new Set(
+    collapseRuns.filter((run) => !run.expanded).map((run) => run.firstEvent.row)
+  );
+  const layoutRows = rows.filter(
+    (row) => row.events.some((event) => !collapsedEventKeys.has(event.key)) || collapsedRunRows.has(row.index)
+  );
+
+  // The earliest, shallowest agent owns the centered execution spine. Other
+  // agents occupy symmetric, reusable fan-out slots around it.
+  for (const agent of agents) {
+    const agentEvents = events.filter((event) => event.agent === agent);
+    agent.firstRow = Math.min(...agentEvents.map((event) => event.row));
+    agent.lastRow = Math.max(...agentEvents.map((event) => event.row));
+  }
+  const rootAgent = agents[0];
+  for (const agent of agents) {
+    agent.displayLabel = agent === rootAgent
+      ? agent.label === "agent" ? "root agent" : `root · ${agent.label}`
+      : agent.label;
+  }
+  rootAgent.offset = 0;
+  const assignedAgents = [];
+  const fanOffset = (slot) => (slot % 2 === 0 ? -(slot / 2 + 1) : (slot + 1) / 2);
+  for (const agent of agents
+    .filter((candidate) => candidate !== rootAgent)
+    .sort((left, right) => left.firstRow - right.firstRow || left.depth - right.depth)) {
+    let slot = 0;
+    let offset = fanOffset(slot);
+    while (
+      assignedAgents.some(
+        (other) =>
+          other.offset === offset &&
+          other.firstRow <= agent.lastRow &&
+          agent.firstRow <= other.lastRow
+      )
+    ) {
+      offset = fanOffset(++slot);
+    }
+    agent.offset = offset;
+    assignedAgents.push(agent);
+  }
+
+  const sidePadding = 44;
+  const laneMinWidth = 340;
+  const laneMaxWidth = 400;
+  const turnMarkWidth = 64;
+  const turnMarkHeight = 10;
+  const turnLabelOffset = turnMarkWidth / 2 + 9;
+  const turnHitWidth = 124;
+  const turnHitHeight = 40;
+  const radius = Math.max(...agents.map((agent) => Math.abs(agent.offset)), 0);
+  const slotCount = radius * 2 + 1;
+  const viewportWidth = Math.max(320, target.clientWidth);
+  const laneWidth = Math.min(
+    laneMaxWidth,
+    Math.max(laneMinWidth, (viewportWidth - sidePadding * 2) / slotCount)
+  );
+  const graphWidth = slotCount * laneWidth;
+  const width = Math.max(viewportWidth, graphWidth + sidePadding * 2);
+  const graphLeft = (width - graphWidth) / 2;
+  const rootX = graphLeft + (radius + 0.5) * laneWidth;
+  const segmentStarts = new Set(segments.map((segment) => segment.firstEvent?.key).filter(Boolean));
+  let rowCursor = 84;
+  layoutRows.forEach((row, index) => {
+    const beginsContext = row.events.some((event) => segmentStarts.has(event.key));
+    const semanticLandmark = row.events.some((event) => protectedEventKeys.has(event.key));
+    const foldedRun = collapsedRunRows.has(row.index);
+    if (index && beginsContext) rowCursor += 28;
+    row.y = rowCursor;
+    rowCursor += semanticLandmark ? 44 : foldedRun ? 30 : 34;
+  });
+  const height = Math.max(260, rowCursor + 42);
+  const positions = new Map();
+  for (const event of events) {
+    if (collapsedEventKeys.has(event.key)) continue;
+    const x = rootX + event.agent.offset * laneWidth;
+    const y = rows[event.row].y;
+    positions.set(event.key, { x, y });
+    semanticNodeDetails.set(event.key, event);
+  }
+
+  const attemptsBySource = new Map();
+  for (const edge of edges) {
+    if (edge.type !== "compaction_attempt") continue;
+    const sourceKey = semanticNodeKey(edge.trace_index, edge.source_node);
+    const targetKey = semanticNodeKey(edge.trace_index, edge.target_node);
+    if (!attemptsBySource.has(sourceKey)) attemptsBySource.set(sourceKey, []);
+    attemptsBySource.get(sourceKey).push(targetKey);
+  }
+  const attemptSpread = Math.min(96, laneWidth * 0.27);
+  for (const [sourceKey, targetKeys] of attemptsBySource) {
+    const source = positions.get(sourceKey);
+    if (!source) continue;
+    targetKeys.sort((leftKey, rightKey) => {
+      const left = eventByKey.get(leftKey);
+      const right = eventByKey.get(rightKey);
+      return eventOrder(left.key, right.key);
+    });
+    const acceptedIndex = targetKeys.findIndex(
+      (key) => eventByKey.get(key)?.compactionAttempt?.accepted
+    );
+    let rejectedSlot = 0;
+    targetKeys.forEach((targetKey, index) => {
+      const event = eventByKey.get(targetKey);
+      const position = positions.get(targetKey);
+      if (!event || !position) return;
+      event.compactionAttemptIndex = index + 1;
+      let offset;
+      if (acceptedIndex >= 0 && index === acceptedIndex) {
+        offset = 0;
+      } else if (acceptedIndex >= 0) {
+        offset = rejectedSlot % 2 === 0
+          ? -(Math.floor(rejectedSlot / 2) + 1)
+          : Math.floor(rejectedSlot / 2) + 1;
+        rejectedSlot += 1;
+      } else {
+        offset = index - (targetKeys.length - 1) / 2;
+      }
+      positions.set(targetKey, { x: source.x + offset * attemptSpread, y: position.y });
+    });
+  }
+
+  const markerColors = {
+    continuation: "#767676",
+    "subagent-call": "#4a9eff",
+    "subagent-return": "#ff6b4a",
+    "compaction-attempt": "#b7a6fa",
+    compaction: "#b7a6fa",
+    custom: "#b6ff3c",
+  };
+  const markerKinds = Object.keys(markerColors);
+  const markers = markerKinds
+    .map(
+      (kind) =>
+        `<marker id="sg-arrow-${kind}" viewBox="0 0 10 10" refX="9" refY="5" ` +
+        `markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto" overflow="visible">` +
+        `<path d="M0.75 0.75L9.5 5L0.75 9.25Z" fill="${markerColors[kind]}"></path></marker>`
+    )
+    .join("");
+  const roundedReturnPath = (source, destination) => {
+    const direction = Math.sign(destination.x - source.x);
+    const portX = turnMarkWidth / 2 + 1;
+    const sourceX = source.x + direction * portX;
+    const sourceY = source.y + turnMarkHeight * 0.35;
+    const targetX = destination.x - direction * portX;
+    const targetY = destination.y - turnMarkHeight * 0.15;
+    const railInset = Math.min(58, laneWidth * 0.17);
+    const railX = targetX - direction * railInset;
+    const bend = Math.min(14, Math.max(6, (targetY - sourceY) / 4));
+    return (
+      `M${sourceX} ${sourceY}` +
+      `H${railX - direction * bend}` +
+      `Q${railX} ${sourceY} ${railX} ${sourceY + bend}` +
+      `V${targetY - bend}` +
+      `Q${railX} ${targetY} ${railX + direction * bend} ${targetY}` +
+      `H${targetX}`
+    );
+  };
+  const paths = edges
+    .map((edge) => {
+      if (edge.type === "continuation") return "";
+      const source = positions.get(semanticNodeKey(edge.trace_index, edge.source_node));
+      const destination = positions.get(semanticNodeKey(edge.trace_index, edge.target_node));
+      if (!source || !destination) return "";
+      const kind = semanticEdgeKind(edge.type);
+      let path;
+      if (source.x === destination.x) {
+        const portY = turnMarkHeight / 2 + 1;
+        path = `M${source.x} ${source.y + portY}L${destination.x} ${destination.y - portY}`;
+      } else if (edge.type === "subagent_return") {
+        path = roundedReturnPath(source, destination);
+      } else {
+        const direction = Math.sign(destination.x - source.x);
+        const portX = turnMarkWidth / 2 + 1;
+        const portY = turnMarkHeight * 0.35;
+        const sourceX = source.x + direction * portX;
+        const sourceY = source.y + portY;
+        const targetX = destination.x - direction * portX;
+        const targetY = destination.y - portY;
+        const handle = Math.min(laneWidth * 0.3, Math.max(70, Math.abs(targetX - sourceX) * 0.35));
+        path = `M${sourceX} ${sourceY}C${sourceX + direction * handle} ${sourceY},${targetX - direction * handle} ${targetY},${targetX} ${targetY}`;
+      }
+      return `<path class="sg-edge ${kind}" d="${path}" marker-end="url(#sg-arrow-${kind})"></path>`;
+    })
+    .join("");
+  const collapsedRunsBySegment = new Map(segments.map((segment) => [segment.key, []]));
+  for (const run of collapseRuns) {
+    if (!run.expanded) collapsedRunsBySegment.get(run.segment.key).push(run);
+  }
+  const lifelines = segments
+    .map((segment) => {
+      if (segment.compactionAttempt || !segment.firstEvent || !segment.lastEvent) return "";
+      const first = positions.get(segment.firstEvent.key);
+      const last = positions.get(segment.lastEvent.key);
+      const color = PALETTE[agents.indexOf(segment.agent) % PALETTE.length];
+      const gaps = collapsedRunsBySegment
+        .get(segment.key)
+        .map((run) => rows[run.firstEvent.row].y)
+        .sort((left, right) => left - right);
+      const startY = first.y - 13;
+      const endY = last.y + 16;
+      const gapHalfHeight = 14;
+      let cursorY = startY;
+      let path = "";
+      for (const gapY of gaps) {
+        const gapStart = Math.max(cursorY, gapY - gapHalfHeight);
+        const gapEnd = Math.min(endY, gapY + gapHalfHeight);
+        if (gapStart > cursorY) path += `M${first.x} ${cursorY}V${gapStart}`;
+        cursorY = gapEnd;
+      }
+      if (cursorY < endY) path += `M${first.x} ${cursorY}V${endY}`;
+      return `<path class="sg-lifeline" d="${path}" style="--lane-color:${color}"></path>`;
+    })
+    .join("");
+  const laneBands = Array.from({ length: slotCount }, (_, index) => {
+    const offset = index - radius;
+    return (
+      `<div class="sg-lane-band ${offset === 0 ? "root" : ""}" ` +
+      `style="left:${graphLeft + index * laneWidth}px;width:${laneWidth}px"></div>`
+    );
+  })
+    .join("");
+  const agentLabels = segments
+    .filter((segment) => !segment.compactionAttempt)
+    .map((segment) => {
+      if (!segment.firstEvent) return "";
+      const position = positions.get(segment.firstEvent.key);
+      const color = PALETTE[agents.indexOf(segment.agent) % PALETTE.length];
+      const successor = segment.unlinked
+        ? "semantic link missing"
+        : segment.isCompacted ? "new compacted context" : `context ${segment.contextIndex}`;
+      const agentLabel = segment.agent.displayLabel;
+      const isRoot = segment.agent === rootAgent;
+      const labelWidth = isRoot ? 220 : 180;
+      const side = Math.sign(segment.agent.offset);
+      const labelDirection = side;
+      const labelLeft = isRoot
+        ? position.x - labelWidth / 2
+        : position.x + labelDirection * 110 - labelWidth / 2;
+      const labelTop = isRoot ? position.y - 56 : position.y - 52;
+      const sideClass = isRoot ? "root" : labelDirection < 0 ? "side-left" : "side-right";
+      const agentTip = timelineTipAttr({
+        kind: "agent",
+        title: agentLabel,
+        snippet: "",
+        rows: [["contexts", fmtNum(segment.agent.contextSegments.length)], ...semanticUsageRows(segment.agent.usage)],
+        hint: "Current prompt is the latest model request. Click for exact usage.",
+      });
+      const contextTip = timelineTipAttr({
+        kind: segment.unlinked ? "unlinked calls" : "context",
+        title: segment.unlinked ? agentLabel : `${agentLabel} — context ${segment.contextIndex}`,
+        snippet: "",
+        rows: semanticUsageRows(segment.contextUsage || segment.lane.usage),
+        hint: segment.unlinked
+          ? "The trace did not provide enough lineage to place these calls."
+          : "Current prompt is the latest model request. Click for exact usage.",
+      });
+      return (
+        `<div class="sg-agent-label ${sideClass} ${segment.isCompacted ? "compacted" : ""} ${segment.unlinked ? "unlinked" : ""}" ` +
+        `style="left:${labelLeft}px;top:${labelTop}px;width:${labelWidth}px">` +
+        `<button class="sg-agent-name" data-sg-scope="agent:${esc(segment.agent.key)}" ` +
+        `aria-label="Inspect ${esc(agentLabel)} usage across all contexts"${agentTip}>` +
+        `<i style="background:${color}"></i>${esc(agentLabel)}</button>` +
+        `<button class="sg-context-name" data-sg-scope="context:${esc(segment.key)}" ` +
+        `aria-label="Inspect ${esc(agentLabel)} context ${segment.contextIndex} usage"${contextTip}>` +
+        `${esc(successor)}</button></div>`
+      );
+    })
+    .join("");
+  const turns = events
+    .filter((event) => !collapsedEventKeys.has(event.key))
+    .map((event) => {
+      const position = positions.get(event.key);
+      const color = PALETTE[agents.indexOf(event.agent) % PALETTE.length];
+      const attemptClass = event.compactionAttempt
+        ? ` compaction-attempt ${event.compactionAttempt.accepted ? "accepted" : "rejected"}`
+        : "";
+      const label = event.compactionAttempt
+        ? `a${event.compactionAttemptIndex}${event.compactionAttempt.accepted ? " ✓" : " ×"}`
+        : event.span.label.replace("turn ", "t");
+      return (
+        `<button class="sg-turn${attemptClass}" style="left:${position.x - turnHitWidth / 2}px;top:${position.y - turnHitHeight / 2}px;` +
+        `width:${turnHitWidth}px;height:${turnHitHeight}px;--turn-color:${color};--turn-mark-width:${turnMarkWidth}px;` +
+        `--turn-mark-height:${turnMarkHeight}px;--turn-label-offset:${turnLabelOffset}px" ` +
+        `data-sg-key="${esc(event.key)}" data-tl-trace="${event.traceIndex}" data-tl-node="${event.nodeIndex}" ` +
+        `data-tl-call="${event.callIndex}"${semanticNodeTip(event)}>` +
+        `<span class="sg-turn-mark"></span><span class="sg-turn-index">${esc(label)}</span></button>`
+      );
+    })
+    .join("");
+  const runControls = collapseRuns
+    .map((run) => {
+      const color = PALETTE[agents.indexOf(run.segment.agent) % PALETTE.length];
+      const position = positions.get(run.firstEvent.key) || {
+        x: rootX + run.segment.agent.offset * laneWidth,
+        y: rows[run.firstEvent.row].y,
+      };
+      const width = 58;
+      const height = 20;
+      const centerX = position.x;
+      const centerY = position.y - (run.expanded ? 17 : 0);
+      const action = run.expanded ? "Collapse" : "Expand";
+      const label = run.expanded ? `− ${run.events.length}` : `⋯ ${run.events.length}`;
+      return (
+        `<button class="sg-turn-run ${run.expanded ? "expanded" : "collapsed"}" ` +
+        `style="left:${centerX - width / 2}px;top:${centerY - height / 2}px;width:${width}px;height:${height}px;` +
+        `--turn-color:${color}" data-sg-collapse-run="${esc(run.key)}" aria-expanded="${run.expanded}" ` +
+        `aria-label="${action} ${run.events.length} ordinary turns for ${esc(run.segment.agent.label)}" ` +
+        `title="${action} ${run.events.length} ordinary turns">${label}</button>`
+      );
+    })
+    .join("");
+
+  target.innerHTML =
+    timelineLegendHtml(edges) +
+    `<div class="sg-shell" style="width:${width}px;height:${height}px">` +
+    laneBands +
+    `<svg class="sg-edge-layer" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true"><defs>${markers}</defs>${lifelines}${paths}</svg>` +
+    agentLabels +
+    turns +
+    runControls +
+    `</div>`;
+  if (preserveViewport) {
+    target.scrollLeft = previousScrollLeft;
+    target.scrollTop = previousScrollTop;
+  } else {
+    target.dataset.semanticEpisode = episodeKey;
+    const visibleCenter = target.clientWidth / 2;
+    target.scrollLeft = Math.max(0, rootX - visibleCenter);
+    target.scrollTop = 0;
+  }
+}
+
+function semanticInspectorRows(rows) {
+  return rows
+    .map(([key, value]) => `<div class="sg-inspector-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`)
+    .join("");
+}
+
+function openSemanticCallInspector(event) {
+  semanticSelection = { ...event, kind: "call" };
+  const span = event.span;
+  const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+  const rows = [
+    ["agent", event.agent.label],
+    ["context", event.contextIndex],
+    ["node", event.nodeIndex],
+    ["call", event.callIndex],
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["duration", span.started_at == null || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+    ["input", totalInput == null ? "n/a" : fmtCompact(totalInput)],
+    ["output", span.output_tokens == null ? "n/a" : fmtCompact(span.output_tokens)],
+    ["cost", span.cost == null ? "n/a" : fmtCost(span.cost)],
+  ];
+  if (event.inferredContinuation) rows.splice(2, 0, ["lineage", "recovered from physical tool flow"]);
+  if (event.compactionAttempt) {
+    rows.splice(2, 0,
+      ["compaction", event.compactionAttempt.accepted ? "accepted" : "rejected"],
+      ["training branch", event.compactionAttempt.accepted ? "included" : "excluded"]
+    );
+  }
+  $("#sg-inspector-title").textContent = event.compactionAttempt
+    ? `${event.agent.label} · compaction attempt ${event.compactionAttemptIndex}`
+    : `${event.agent.label} · ${span.label}`;
+  $("#sg-inspector-body").innerHTML =
+    `<div class="sg-inspector-section">model call</div>` +
+    semanticInspectorRows(rows) +
+    (span.snippet ? `<div class="sg-inspector-section">prompt</div><div class="sg-inspector-snippet">${esc(span.snippet)}</div>` : "");
+  $("#sg-open-transcript").hidden = false;
+  $("#sg-inspector").hidden = false;
+}
+
+function openSemanticScopeInspector(scope) {
+  semanticSelection = scope;
+  $("#sg-open-transcript").hidden = true;
+  if (scope.kind === "agent") {
+    const { agent } = scope;
+    $("#sg-inspector-title").textContent = `${agent.displayLabel} · all contexts`;
+    $("#sg-inspector-body").innerHTML =
+      `<div class="sg-inspector-section">current context</div>` +
+      semanticInspectorRows(semanticContextRows(agent.usage, false)) +
+      `<div class="sg-inspector-section">cumulative usage</div>` +
+      semanticInspectorRows([["contexts", fmtNum(agent.contextSegments.length)], ...semanticCumulativeUsageRows(agent.usage, false)]) +
+      `<div class="sg-inspector-section">contexts</div>` +
+      semanticInspectorRows(
+        agent.contextSegments.map((segment) => [
+          `context ${segment.contextIndex}`,
+          segment.contextUsage?.latest_context_tokens == null
+            ? "n/a"
+            : `${Math.round(segment.contextUsage.latest_context_tokens).toLocaleString()} prompt · ${fmtNum(segment.contextUsage.model_calls || 0)} calls`,
+        ])
+      );
+  } else {
+    const { segment } = scope;
+    $("#sg-inspector-title").textContent = segment.unlinked
+      ? `${segment.agent.displayLabel} · semantic link missing`
+      : `${segment.agent.displayLabel} · context ${segment.contextIndex}`;
+    $("#sg-inspector-body").innerHTML =
+      `<div class="sg-inspector-section">context length</div>` +
+      semanticInspectorRows(semanticContextRows(segment.contextUsage || segment.lane.usage, false)) +
+      `<div class="sg-inspector-section">cumulative usage</div>` +
+      semanticInspectorRows(semanticCumulativeUsageRows(segment.contextUsage || segment.lane.usage, false));
+  }
+  $("#sg-inspector").hidden = false;
+}
+
+function replayClock(seconds) {
+  const safe = Math.max(0, seconds || 0);
+  const minutes = Math.floor(safe / 60);
+  return `${minutes}:${(safe % 60).toFixed(1).padStart(4, "0")}`;
+}
+
+function replayEvents(trace, branches, skipInference = false) {
+  const path = currentPath(trace, branches);
+  const callsByNode = new Map();
+  (trace.calls || []).forEach((call) => {
+    if (Number.isInteger(call.node) && !callsByNode.has(call.node)) callsByNode.set(call.node, call);
+  });
+  const raw = path.map((nodeIndex) => {
+    const node = trace.nodes[nodeIndex];
+    const linked = callsByNode.get(nodeIndex);
+    const callStart = linked?.time?.start;
+    const callEnd = linked?.time?.end;
+    const timestamp = node.timestamp;
+    const start = callStart > 0 ? callStart : timestamp > 0 ? timestamp : null;
+    const end = callEnd > 0 ? callEnd : start;
+    return { node, linked, start, end, timed: start != null };
+  });
+  // Prompt nodes can be committed at response time even though the model saw
+  // them before the request. Place that context no later than its call start.
+  let previousCall = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const callStart = raw[i].linked?.time?.start;
+    if (!(callStart > 0)) continue;
+    for (let j = previousCall + 1; j < i; j++) {
+      if (raw[j].start == null || raw[j].start > callStart) raw[j].start = raw[j].end = callStart;
+    }
+    previousCall = i;
+  }
+  const timestamps = raw.flatMap((event) => [event.start, event.end]).filter((value) => value != null);
+  const origin = timestamps.length ? Math.min(...timestamps) : 0;
+  let cursor = 0;
+  let events = raw.map((event) => {
+    const at = event.start == null ? cursor : Math.max(cursor, event.start - origin);
+    const end = event.end == null ? at : Math.max(at, event.end - origin);
+    cursor = end;
+    return { ...event, at, end };
+  });
+  if (skipInference) {
+    let virtualClock = 0;
+    let previous = null;
+    events = events.map((event) => {
+      const role = event.node.message?.role;
+      if (role === "tool" && previous) virtualClock += Math.max(0, event.at - previous.end);
+      previous = event;
+      return { ...event, at: virtualClock, end: virtualClock };
+    });
+  }
+  return {
+    events,
+    duration: events.reduce((maximum, event) => Math.max(maximum, event.end), 0),
+    hasTiming: events.some((event) => event.timed),
+  };
+}
+
+function replayNodeHtml(event, elapsed, pendingTools) {
+  const message = event.node.message || {};
+  const role = message.role || "unknown";
+  const complete = elapsed >= event.end;
+  const duration = event.end - event.at;
+  const progress = complete || duration <= 0 ? 1 : Math.max(0, Math.min(1, (elapsed - event.at) / duration));
+  const content = messageText(message);
+  const reasoning = replay?.showThinking ? reasoningText(message.reasoning_content ?? message.reasoning) : "";
+  const streamed = reasoning ? `thinking\n${reasoning}\n\n${content}` : content;
+  const visible = event.linked && !complete ? streamed.slice(0, Math.floor(streamed.length * progress)) : streamed;
+  const stamp = event.timed ? `+${replayClock(event.at)}` : "untimed";
+  const callDuration = event.end - event.at;
+  let body = "";
+  if (role === "system") body = `<span class="replay-system"># system\n${esc(visible)}</span>`;
+  else if (role === "user") body = `<span class="replay-user">❯ ${esc(visible)}</span>`;
+  else if (role === "tool") body = `<span class="replay-output">${esc(visible)}</span>`;
+  else body = `<span class="replay-assistant">${esc(visible)}</span>`;
+  if (event.linked && !complete) {
+    const usage = normalizedCallUsage(event.linked.usage);
+    const details = [event.linked.model, usage.output == null ? null : `${fmtCompact(usage.output)} output tok`]
+      .filter(Boolean)
+      .join(" · ");
+    body =
+      `<div class="replay-model-wait"><span>model responding${details ? ` · ${esc(details)}` : ""}</span>` +
+      `<span>${fmtDuration(elapsed - event.at)} / ${fmtDuration(callDuration)}</span>` +
+      `<i><b style="width:${(progress * 100).toFixed(2)}%"></b></i></div>` +
+      body;
+  }
+  if (complete) {
+    for (const call of message.tool_calls || []) {
+      const id = call.id ?? call.tool_call_id;
+      if (id) pendingTools.set(id, toolCallText(call));
+      body += `<span class="replay-command">$ ${esc(toolCallText(call))}</span>`;
+    }
+    const resultId = message.tool_call_id;
+    if (resultId) pendingTools.delete(resultId);
+    else if (role === "tool" && pendingTools.size) pendingTools.delete(pendingTools.keys().next().value);
+  }
+  return `<div class="replay-event ${esc(role)}"><span class="replay-stamp">${stamp}</span><div>${body}</div></div>`;
+}
+
+function paintReplay(force = false) {
+  if (!replay) return;
+  const output = $("#replay-output");
+  if (!output) return;
+  const frame = Math.floor(replay.elapsed * 20);
+  if (!force && frame === replay.lastFrame) return;
+  replay.lastFrame = frame;
+  const previousScrollTop = output.scrollTop;
+  const pendingTools = new Map();
+  let html = "";
+  for (const event of replay.events) {
+    if (event.at > replay.elapsed) break;
+    html += replayNodeHtml(event, replay.elapsed, pendingTools);
+  }
+  if (pendingTools.size)
+    html += [...pendingTools.values()]
+      .map((command) => `<div class="replay-running"><span class="replay-spinner"></span>${esc(command)} running</div>`)
+      .join("");
+  output.innerHTML = html || `<div class="replay-wait">waiting for the first recorded event…</div>`;
+  const progress = $("#replay-progress");
+  if (progress) progress.value = replay.duration ? String((replay.elapsed / replay.duration) * 1000) : "1000";
+  const time = $("#replay-time");
+  if (time) time.textContent = `${replayClock(replay.elapsed)} / ${replayClock(replay.duration)}`;
+  const play = $("#replay-play");
+  if (play) play.textContent = replay.playing ? "pause" : replay.elapsed >= replay.duration ? "replay" : "play";
+  output.scrollTop = replay.followOutput ? output.scrollHeight : previousScrollTop;
+}
+
+function stopReplay() {
+  if (!replay) return;
+  replay.playing = false;
+  if (replay.raf) cancelAnimationFrame(replay.raf);
+  replay.raf = null;
+}
+
+function setReplayThinking(show) {
+  if (!replay) return;
+  replay.showThinking = show;
+  const control = $("#replay-show-thinking");
+  if (control) control.checked = show;
+  replay.lastFrame = -1;
+  paintReplay(true);
+}
+
+function setReplayFollow(follow) {
+  if (!replay) return;
+  replay.followOutput = follow;
+  const output = $("#replay-output");
+  if (output) output.scrollTop = follow ? output.scrollHeight : 0;
+  $("#replay-top")?.classList.toggle("active", !follow);
+  $("#replay-live")?.classList.toggle("active", follow);
+}
+
+function replayTick(now) {
+  if (!replay?.playing) return;
+  replay.elapsed = Math.min(replay.duration, ((now - replay.wallStarted) / 1000) * replay.speed);
+  if (replay.elapsed >= replay.duration) stopReplay();
+  paintReplay();
+  if (replay?.playing) replay.raf = requestAnimationFrame(replayTick);
+}
+
+function playReplay() {
+  if (!replay) return;
+  if (replay.elapsed >= replay.duration) replay.elapsed = 0;
+  replay.playing = true;
+  replay.wallStarted = performance.now() - (replay.elapsed / replay.speed) * 1000;
+  replay.raf = requestAnimationFrame(replayTick);
+  paintReplay(true);
+}
+
+function renderReplay(trace, branches) {
+  const container = $("#tm-messages");
+  entriesObserver?.disconnect();
+  if (!trace) {
+    container.innerHTML = emptyState("no trace to replay", "this episode carries no trace data");
+    return;
+  }
+  stopReplay();
+  const timing = replayEvents(trace, branches);
+  replay = {
+    ...timing,
+    trace,
+    branches,
+    skipInference: false,
+    showThinking: true,
+    followOutput: true,
+    elapsed: 0,
+    speed: 8,
+    playing: false,
+    raf: null,
+    lastFrame: -1,
+    wallStarted: 0,
+  };
+  container.innerHTML =
+    `<div class="replay-shell"><div class="replay-bar"><span class="replay-lights">● ● ●</span>` +
+    `<span class="replay-title">${esc(trace.agent?.name || "agent")} · terminal replay</span>` +
+    `<span id="replay-timing-badge" class="chip">${timing.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace"}</span></div>` +
+    `<div class="replay-controls"><button id="replay-restart" class="btn">↺</button><button id="replay-play" class="btn">play</button>` +
+    `<button id="replay-top" class="btn" title="scroll to the beginning (Home)">↑ top</button>` +
+    `<button id="replay-live" class="btn active" title="follow new output (End)">↓ live</button>` +
+    `<input id="replay-progress" type="range" min="0" max="1000" value="0" aria-label="replay position">` +
+    `<span id="replay-time">${replayClock(0)} / ${replayClock(timing.duration)}</span>` +
+    `<label class="replay-skip"><input id="replay-skip-inference" type="checkbox"> skip inference</label>` +
+    `<label class="replay-skip" title="Press T"><input id="replay-show-thinking" type="checkbox" checked> thinking <kbd>T</kbd></label>` +
+    `<span class="replay-control-label">speed</span>` +
+    `<select id="replay-speed" aria-label="replay speed"><option value="0.5">0.5×</option><option value="1">1×</option>` +
+    `<option value="2">2×</option><option value="4">4×</option><option value="8" selected>8×</option>` +
+    `<option value="16">16×</option><option value="32">32×</option></select></div>` +
+    `<div id="replay-output" class="replay-output-pane"></div></div>`;
+  paintReplay(true);
+  playReplay();
+}
+
+async function setTraceView(view, { persist = true } = {}) {
+  if (persist && view !== "replay") preferredTraceView = view;
+  stopReplay();
   traceView = view;
   setActive("#tm-view", "view", view);
-  if (view === "timeline") await ensureTimeline();
+  if (view === "timeline" || view === "semantic") await ensureTimeline();
   renderEpisode();
   savePrefs();
 }
@@ -3238,26 +4403,59 @@ function renderEpisode() {
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
-  branchTabs.hidden = branches.length <= 1;
+  const taskFields = Object.entries(trace?.task?.data || {}).filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null);
+  const judgeCalls = Array.isArray(trace?.info?.judge_calls) ? trace.info.judge_calls : [];
+  const hasEvidence = taskFields.length > 0 || judgeCalls.length > 0;
+  branchTabs.hidden = branches.length <= 1 && !hasEvidence;
   branchTabs.innerHTML =
-    branches.length > 1
+    !branchTabs.hidden
       ? branches
-          .map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
+          .map((_, i) => `<button data-branch="${i}" class="${currentEvidenceView == null && i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
           .join("") +
-        `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+        (branches.length > 1
+          ? `<button data-branch="-1" class="${currentEvidenceView == null && currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
+          : "")
       : "";
+  const evidenceTabs = $("#tm-evidence-tabs");
+  evidenceTabs.hidden = !hasEvidence;
+  evidenceTabs.innerHTML =
+    (taskFields.length
+      ? `<button data-evidence="task" class="${currentEvidenceView === "task" ? "active" : ""}">task data</button>`
+      : "") +
+    (judgeCalls.length
+      ? `<button data-evidence="judge" class="${currentEvidenceView === "judge" ? "active" : ""}">judging · ${judgeCalls.length}</button>`
+      : "");
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
   const timeline = traceView === "timeline";
-  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
-  $("#tm-messages").hidden = timeline;
-  $("#tm-timeline").hidden = !timeline;
-  $("#token-signal").closest(".dd-select").hidden = timeline;
-  $("#trace-view-mode").hidden = timeline;
-  $("#tm-collapse").hidden = timeline;
-  $("#tm-expand").hidden = timeline;
+  const semantic = traceView === "semantic";
+  const replaying = traceView === "replay";
+  const graph = timeline || semantic;
+  const evidence = currentEvidenceView != null;
+  const semanticAvailable = timelineHasSemantic();
+  const semanticButton = $('#tm-view [data-view="semantic"]');
+  semanticButton.disabled = currentTimeline != null && !semanticAvailable;
+  semanticButton.title = semanticAvailable || currentTimeline == null
+    ? "causal relationships between model calls"
+    : "this episode has no semantic relationships";
+  $("#trace-modal").classList.toggle("semantic-view", semantic);
+  $("#tm-semantic-nav").hidden = !semantic;
+  if (semantic) renderSemanticEpisodeNav();
+  $("#tm-tabs-row").hidden = graph || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
+  $("#tm-messages").hidden = graph;
+  $("#tm-timeline").hidden = !graph;
+  $("#trace-view-mode").hidden = graph || evidence || replaying;
+  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying;
+  $("#tm-collapse").hidden = graph || evidence || replaying;
+  $("#tm-expand").hidden = graph || evidence || replaying;
+  if (!semantic) {
+    semanticSelection = null;
+    $("#sg-inspector").hidden = true;
+  }
   setActive("#tm-view", "view", traceView);
   if (timeline) renderTimeline();
+  else if (semantic) renderSemanticGraph();
+  else if (replaying) renderReplay(trace, branches);
   else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
@@ -4347,6 +5545,29 @@ function shiftStep(delta) {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
+  if (
+    !$("#trace-modal").hidden &&
+    traceView === "replay" &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    e.key.toLowerCase() === "t" &&
+    !e.target.matches("input[type=text], input[type=search], textarea")
+  ) {
+    e.preventDefault();
+    setReplayThinking(!replay?.showThinking);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "Home") {
+    e.preventDefault();
+    setReplayFollow(false);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "End") {
+    e.preventDefault();
+    setReplayFollow(true);
+    return;
+  }
   if (e.target.matches("input, select, textarea")) return;
   if ($("#trace-modal").hidden) {
     // the step bar walks with the arrow keys, like its ‹ › buttons
@@ -4396,30 +5617,30 @@ $("#trace-view-mode").addEventListener("click", async (e) => {
 });
 $("#tm-view").addEventListener("click", (e) => {
   const button = e.target.closest("[data-view]");
-  if (button && button.dataset.view !== traceView) setTraceView(button.dataset.view);
+  if (button && button.dataset.view !== traceView) {
+    setTraceView(button.dataset.view);
+  }
 });
-$("#tm-timeline").addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-tl-trace]");
-  if (!target) return;
-  e.stopPropagation();
-  currentTraceIdx = +target.dataset.tlTrace;
-  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
-  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+
+async function openTimelineNodeInTranscript(traceIndex, node, call) {
+  currentTraceIdx = traceIndex;
   if (node != null) {
     const trace = currentEpisode?.traces?.[currentTraceIdx];
     const branches = trace ? traceBranches(trace) : [];
     const branch = branches.findIndex((path) => path.includes(node));
     currentBranchIdx = branch >= 0 ? branch : -1;
+    currentEvidenceView = null;
     pendingTimelineNode = node;
     pendingTimelineCall = call;
     state.traces.viewMode = "messages";
   } else {
     currentBranchIdx = 0;
+    currentEvidenceView = null;
     pendingTimelineNode = null;
     pendingTimelineCall = call;
     if (call != null) state.traces.viewMode = "messages";
   }
-  await setTraceView("transcript");
+  await setTraceView("transcript", { persist: false });
   requestAnimationFrame(() => {
     const entry =
       pendingTimelineCall == null
@@ -4429,10 +5650,73 @@ $("#tm-timeline").addEventListener("click", async (e) => {
         : $(`#tm-messages [data-call-index="${pendingTimelineCall}"]`);
     entry?.scrollIntoView({ block: "center" });
     const details = entry?.closest("details");
-    if (details) details.open = true;
+    if (details) {
+      details.open = true;
+      clearSemanticTranscriptOrigin();
+      details.classList.add("semantic-origin");
+      semanticTranscriptOrigin = details;
+    }
     pendingTimelineNode = null;
     pendingTimelineCall = null;
   });
+}
+
+document.addEventListener("click", () => clearSemanticTranscriptOrigin());
+
+$("#tm-timeline").addEventListener("click", async (e) => {
+  const runControl = e.target.closest("[data-sg-collapse-run]");
+  if (runControl) {
+    const key = runControl.dataset.sgCollapseRun;
+    if (semanticExpandedRuns.has(key)) semanticExpandedRuns.delete(key);
+    else semanticExpandedRuns.add(key);
+    renderSemanticGraph();
+    return;
+  }
+  const semanticNode = e.target.closest(".sg-turn");
+  if (semanticNode) {
+    timelineTip.hidden = true;
+    const event = semanticNodeDetails.get(semanticNode.dataset.sgKey);
+    if (event) openSemanticCallInspector(event);
+    return;
+  }
+  const semanticScope = e.target.closest("[data-sg-scope]");
+  if (semanticScope) {
+    timelineTip.hidden = true;
+    const scope = semanticScopeDetails.get(semanticScope.dataset.sgScope);
+    if (scope) openSemanticScopeInspector(scope);
+    return;
+  }
+  const target = e.target.closest("[data-tl-trace]");
+  if (!target) return;
+  e.stopPropagation();
+  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+  await openTimelineNodeInTranscript(+target.dataset.tlTrace, node, call);
+});
+let timelineResizeFrame = null;
+window.addEventListener("resize", () => {
+  if (traceView !== "semantic") return;
+  if (timelineResizeFrame != null) cancelAnimationFrame(timelineResizeFrame);
+  timelineResizeFrame = requestAnimationFrame(() => {
+    timelineResizeFrame = null;
+    renderSemanticGraph();
+  });
+});
+$("#tm-episode-prev").addEventListener("click", () => stepRollout(-1));
+$("#tm-episode-next").addEventListener("click", () => stepRollout(1));
+$("#sg-inspector-close").addEventListener("click", () => {
+  const hadSelection = semanticSelection != null;
+  semanticSelection = null;
+  $("#sg-inspector").hidden = true;
+  if (hadSelection && traceView === "semantic") renderSemanticGraph();
+});
+$("#sg-open-transcript").addEventListener("click", () => {
+  if (semanticSelection?.kind !== "call") return;
+  openTimelineNodeInTranscript(
+    semanticSelection.traceIndex,
+    semanticSelection.nodeIndex,
+    semanticSelection.callIndex
+  );
 });
 const timelineTip = document.createElement("div");
 timelineTip.className = "tl-tooltip";
@@ -4465,11 +5749,15 @@ $("#tm-timeline").addEventListener("mouseout", (e) => {
 });
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
-  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
+  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; currentEvidenceView = null; renderEpisode(); }
 });
 $("#tm-branch-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-branch]");
-  if (btn) { currentBranchIdx = +btn.dataset.branch; renderEpisode(); }
+  if (btn) { currentBranchIdx = +btn.dataset.branch; currentEvidenceView = null; renderEpisode(); }
+});
+$("#tm-evidence-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-evidence]");
+  if (btn) { currentEvidenceView = btn.dataset.evidence; renderEpisode(); }
 });
 $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
@@ -4482,7 +5770,30 @@ $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered]");
+  if (e.target.closest("#replay-top")) {
+    setReplayFollow(false);
+    return;
+  }
+  if (e.target.closest("#replay-live")) {
+    setReplayFollow(true);
+    return;
+  }
+  if (e.target.closest("#replay-play")) {
+    replay?.playing ? stopReplay() : playReplay();
+    paintReplay(true);
+    return;
+  }
+  if (e.target.closest("#replay-restart")) {
+    if (!replay) return;
+    stopReplay();
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    playReplay();
+    return;
+  }
+  const btn = e.target.closest(
+    "[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered], [data-copy-task], [data-copy-judge]"
+  );
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
@@ -4491,6 +5802,16 @@ $("#tm-messages").addEventListener("click", (e) => {
   if (btn.dataset.copy != null) {
     const node = trace.nodes?.[+btn.dataset.copy];
     if (node) copyText(messageText(node.message), btn);
+    return;
+  }
+  if (btn.dataset.copyTask != null) {
+    const value = trace.task?.data?.[btn.dataset.copyTask];
+    if (value != null) copyText(evidenceText(value), btn);
+    return;
+  }
+  if (btn.dataset.copyJudge != null) {
+    const record = trace.info?.judge_calls?.[+btn.dataset.copyJudge];
+    if (record) copyText(JSON.stringify(record, null, 2), btn);
     return;
   }
   const tools = normalizedTools(trace.tools);
@@ -4511,6 +5832,54 @@ $("#tm-messages").addEventListener("click", (e) => {
     const ids = path.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
     return copyText(JSON.stringify(ids), btn);
   }
+});
+$("#tm-messages").addEventListener(
+  "scroll",
+  (e) => {
+    if (!e.target.matches?.("#replay-output") || !replay) return;
+    const atBottom = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 24;
+    replay.followOutput = atBottom;
+    $("#replay-top")?.classList.toggle("active", !atBottom);
+    $("#replay-live")?.classList.toggle("active", atBottom);
+  },
+  true,
+);
+$("#tm-messages").addEventListener("input", (e) => {
+  if (!e.target.matches("#replay-progress") || !replay) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.elapsed = replay.duration * (+e.target.value / 1000);
+  replay.lastFrame = -1;
+  paintReplay(true);
+  if (wasPlaying) playReplay();
+});
+$("#tm-messages").addEventListener("change", (e) => {
+  if (!replay) return;
+  if (e.target.matches("#replay-show-thinking")) {
+    setReplayThinking(e.target.checked);
+    return;
+  }
+  if (e.target.matches("#replay-skip-inference")) {
+    const wasPlaying = replay.playing;
+    stopReplay();
+    replay.skipInference = e.target.checked;
+    Object.assign(replay, replayEvents(replay.trace, replay.branches, replay.skipInference));
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    const badge = $("#replay-timing-badge");
+    if (badge)
+      badge.textContent = replay.skipInference
+        ? "tool timing · inference skipped"
+        : replay.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace";
+    paintReplay(true);
+    if (wasPlaying) playReplay();
+    return;
+  }
+  if (!e.target.matches("#replay-speed")) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.speed = +e.target.value;
+  if (wasPlaying) playReplay();
 });
 $("#tm-meta").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copytext]");
@@ -4551,7 +5920,7 @@ function savePrefs() {
       traceSortStream: state.traces.sorts.stream,
       traceSortStep: state.traces.sorts.step,
       traceViewMode: state.traces.viewMode,
-      traceView,
+      traceView: preferredTraceView,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,

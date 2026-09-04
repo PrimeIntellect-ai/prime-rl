@@ -451,6 +451,19 @@ wheels = [
 ]
 
 [[package]]
+name = "backports-zstd"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/f0/9ba1b05811aa5f5434f69768253129460a5744e1814f359efba39a01ce20/backports_zstd-1.7.0.tar.gz", hash = "sha256:1a967189c1822b6e85a2e550fdfc88a3272c17633ea0a4732dac5911a8034f2b", size = 1003722, upload-time = "2026-08-15T17:26:43.96Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/24/5556959c7d03bfee5ff14d7f07dd9bf8de737c69f81d823a32784ab39c34/backports_zstd-1.7.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:bab192b934fdf5a03df4752556d9c8af2d058163fdfbafd4a253cdfe25449a6f", size = 367666, upload-time = "2026-08-15T17:25:39.233Z" },
+    { url = "https://files.pythonhosted.org/packages/40/4b/820acbc2c1d1d945aedca0c0d22546a948630ffb186df523098fbd669a95/backports_zstd-1.7.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1c55e55e1e9dee312bc5e186386e6aa5207482a6d2242bd7c14709ded254f87f", size = 478240, upload-time = "2026-08-15T17:25:41.806Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/40/121917bd2671bc3f1507c25503c0554f0b52483edcca4e6210e6d22228df/backports_zstd-1.7.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:470895d0bcddc850766e593d1b26764fb138c2feed149f515a2627ef9587d54c", size = 496195, upload-time = "2026-08-15T17:25:45.503Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/a4/372c3dd3017c3f93cda0acbc282f8073b70efdc1b56d1fdeebe023660725/backports_zstd-1.7.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:132ba81fad59d44958b7d10da31545e7128c469cfbc2e268d0eaab96daa64175", size = 484276, upload-time = "2026-08-15T17:25:48.129Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/d0/e36c18c87a74421954502d123ff7027e0a63a7624dffa99ec0f7474deff9/backports_zstd-1.7.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:468b636ed365627b364c94be1c35a52858e13b5bc1fa3f068bbc71b1af65f3d7", size = 500735, upload-time = "2026-08-15T17:25:56.064Z" },
+]
+
+[[package]]
 name = "bashlex"
 version = "0.18"
 source = { registry = "https://pypi.org/simple" }
@@ -4957,6 +4970,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pybase64" },
     { name = "pyzmq" },
+    { name = "pyzstd" },
     { name = "renderers", extra = ["multimodal"] },
     { name = "rich" },
     { name = "setproctitle" },
@@ -5120,6 +5134,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
+    { name = "pyzstd", specifier = ">=0.16.2" },
     { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", specifier = ">=0.4.1" },
     { name = "renderers", extras = ["multimodal"], editable = "deps/renderers" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -5879,6 +5894,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/9b/c108cdb55560eaf253f0cbdb61b29971e9fb34d9c3499b0e96e4e60ed8a5/pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43ad9a73e3da1fab5b0e7e13402f0b2fb934ae1c876c51d0afff0e7c052eca31", size = 840995, upload-time = "2025-09-08T23:08:08.396Z" },
     { url = "https://files.pythonhosted.org/packages/c2/bb/b79798ca177b9eb0825b4c9998c6af8cd2a7f15a6a1a4272c1d1a21d382f/pyzmq-27.1.0-cp312-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:0de3028d69d4cdc475bfe47a6128eb38d8bc0e8f4d69646adfbcd840facbac28", size = 1642070, upload-time = "2025-09-08T23:08:09.989Z" },
     { url = "https://files.pythonhosted.org/packages/46/bd/2d45ad24f5f5ae7e8d01525eb76786fa7557136555cac7d929880519e33a/pyzmq-27.1.0-cp312-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:f30f395a9e6fbca195400ce833c731e7b64c3919aa481af4d88c3759e0cb7496", size = 1878550, upload-time = "2025-09-08T23:08:13.513Z" },
+]
+
+[[package]]
+name = "pyzstd"
+version = "0.19.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "backports-zstd" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/66/59fed71d0d2065e02974b40296f836a237c364c8bbe07295f2d0dc33c278/pyzstd-0.19.1.tar.gz", hash = "sha256:36723d3c915b3981de9198d0a2c82b2f5fe3eaa36e4d8d586937830a8afc7d72", size = 69531, upload-time = "2025-12-13T08:15:33.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/62/f55d1363512d1b1cc122af6ca5951008e42605b63675c7d6781affc7c475/pyzstd-0.19.1-py3-none-any.whl", hash = "sha256:267e2eb0de0291dfcb7ccfebc4ffe75b2f9d84e7007ac38844f6ccafc6dce081", size = 23779, upload-time = "2025-12-13T08:15:31.979Z" },
 ]
 
 [[package]]
@@ -7655,16 +7683,16 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "uvicorn"
-version = "0.48.0"
+version = "0.52.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click", version = "8.4.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "click", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/bf/f6544ba992ddb9a6077343a576f9844f7f8f06ab819aefd00206e9255f18/uvicorn-0.48.0.tar.gz", hash = "sha256:a5504207195d08c2511bf9125ede5ac4a4b71725d519e758d01dcf0bc2d31c37", size = 91074, upload-time = "2026-05-24T12:08:41.925Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/0f/3f86e61397dd33bf2ccf28188c40db6a740658aeebbbf6e7dbc101a1f487/uvicorn-0.52.4.tar.gz", hash = "sha256:73acfee47a0b133c5de13d219492d62d8a31e935f4fe6e41a232451a15379f86", size = 100627, upload-time = "2026-08-19T06:27:41.821Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/be/72532be3da7acc5fdfbccdb95215cd04f995a0886532a5b423f929cda4cc/uvicorn-0.48.0-py3-none-any.whl", hash = "sha256:48097851328b87ec36117d3d575234519eb58c2b22d79666e9bbc6c49a761dad", size = 71410, upload-time = "2026-05-24T12:08:40.258Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/79/4a20b54ab0491485ccd8c077db2d39187c7f12b3e15485d38a7be37c81b4/uvicorn-0.52.4-py3-none-any.whl", hash = "sha256:f86e41a149d7d05a9969337e3946a9c171c06a5d42680896daaba624aeac8da1", size = 79871, upload-time = "2026-08-19T06:27:40.36Z" },
 ]
 
 [package.optional-dependencies]
@@ -7712,7 +7740,9 @@ dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
     { name = "gepa" },
+    { name = "h11" },
     { name = "httpx" },
+    { name = "httpx2" },
     { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp" },
@@ -7729,6 +7759,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tomli-w" },
     { name = "typing-extensions" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -7746,8 +7777,10 @@ requires-dist = [
     { name = "anthropic", specifier = ">=1.0.0" },
     { name = "datasets", marker = "extra == 'lean'", specifier = ">=3.3.0,<6.0.0" },
     { name = "gepa", specifier = ">=0.0.6" },
+    { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx2", specifier = ">=2.12.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = "==2.0.0" },
@@ -7768,6 +7801,7 @@ requires-dist = [
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "typing-extensions", specifier = ">=4.12.2" },
+    { name = "uvicorn", specifier = ">=0.52.0" },
 ]
 provides-extras = ["harbor", "lean", "modal", "openenv", "ta"]
 
