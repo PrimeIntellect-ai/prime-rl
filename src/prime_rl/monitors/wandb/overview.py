@@ -19,7 +19,7 @@ from typing import Literal
 import wandb
 import wandb_workspaces.reports.v2 as wr
 import wandb_workspaces.workspaces as ws
-from wandb_gql import gql
+from wandb_workspaces._graphql import execute_graphql
 
 from prime_rl.utils.logger import get_logger
 
@@ -185,16 +185,14 @@ def build_sections(
 
 def list_views(entity: str, project: str) -> list[tuple[str, str]]:
     """``(display_name, internal_name)`` for every saved view in the project."""
-    query = gql(
-        """
+    query = """
         query Views($entity: String!, $project: String!) {
           project(name: $project, entityName: $entity) {
             allViews(viewType: "project-view") { edges { node { name displayName } } }
           }
         }
         """
-    )
-    res = wandb.Api().client.execute(query, variable_values={"entity": entity, "project": project})
+    res = execute_graphql(wandb.Api(), query, {"entity": entity, "project": project})
     edges = ((res.get("project") or {}).get("allViews") or {}).get("edges") or []
     return [(e["node"]["displayName"], e["node"]["name"]) for e in edges if e.get("node")]
 
