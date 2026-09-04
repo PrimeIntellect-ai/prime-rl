@@ -1,7 +1,9 @@
+import ipaddress
 import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
+from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, Field, model_validator
 
@@ -35,6 +37,42 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+def normalize_admin_host_allowlist_entry(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("admin host allowlist entries must not be empty")
+    try:
+        if "/" in value:
+            return str(ipaddress.ip_network(value, strict=False))
+        return str(ipaddress.ip_address(value))
+    except ValueError as error:
+        if "/" in value:
+            raise ValueError(f"invalid admin host CIDR {value!r}") from error
+
+    hostname = value.rstrip(".").lower()
+    if len(hostname) > 253 or not all(
+        label and len(label) <= 63 and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+        for label in hostname.split(".")
+    ):
+        raise ValueError(f"invalid exact admin DNS host {value!r}")
+    return hostname
+
+
+def is_secure_or_loopback_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    if parsed.scheme == "https":
+        return True
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+    if hostname.rstrip(".").lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
@@ -162,6 +200,32 @@ class BaseModelConfig(BaseConfig):
     """VLM configuration. Setting this enables vision-language model support."""
 
 
+class DynamoConfig(BaseConfig):
+    discovery_url: str = Field(min_length=1, max_length=2048)
+    """Trusted Dynamo frontend URL used to discover the inference workers pinned for RL control."""
+
+    expected_namespace: str = Field(min_length=1, max_length=256)
+    """Exact Dynamo namespace expected in both the discovery snapshot and selected workers."""
+
+    admin_host_allowlist: tuple[str, ...] = Field(min_length=1, max_length=128)
+    """Exact DNS/IP hosts and IP CIDRs trusted for all ports unless admin_origin_allowlist is set."""
+
+    admin_origin_allowlist: tuple[str, ...] | None = Field(None, min_length=1, max_length=128)
+    """Recommended for restricting direct admin endpoints to exact scheme, host, and effective port origins."""
+
+    api_key_var: str | None = Field(None, min_length=1, max_length=256)
+    """Environment variable containing a discovery-only bearer token."""
+
+    headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
+    """Discovery header names mapped to environment variables."""
+
+    admin_api_key_var: str | None = Field(None, min_length=1, max_length=256)
+    """Environment variable containing a bearer token used only for discovered admin endpoints."""
+
+    admin_headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
+    """Direct admin header names mapped to environment variables."""
+
+
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready."""
@@ -183,6 +247,9 @@ class ClientConfig(BaseConfig):
 
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):

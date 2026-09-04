@@ -13,6 +13,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
@@ -424,6 +425,106 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.inference.vllm.data_parallel_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_dynamo_discovery_config_is_nested_under_client():
+    config = ClientConfig.model_validate(
+        {
+            "base_url": "http://dynamo-frontend:8000/v1",
+            "dynamo": {
+                "discovery_url": "http://dynamo-frontend:8001",
+                "expected_namespace": "dynamo",
+                "admin_host_allowlist": ["localhost", "10.0.0.7/24"],
+            },
+        }
+    )
+
+    assert config.dynamo is not None
+    assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
+    assert config.dynamo.expected_namespace == "dynamo"
+    assert config.dynamo.admin_host_allowlist == ("localhost", "10.0.0.7/24")
+
+
+@pytest.mark.parametrize(
+    "dynamo",
+    [
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "admin_host_allowlist": ["localhost"],
+        },
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "expected_namespace": "dynamo",
+        },
+        {
+            "discovery_url": "http://dynamo-frontend:8001",
+            "expected_namespace": "dynamo",
+            "admin_host_allowlist": [],
+        },
+    ],
+)
+def test_dynamo_discovery_requires_namespace_and_admin_host_allowlist(dynamo):
+    with pytest.raises(ValidationError):
+        ClientConfig.model_validate({"dynamo": dynamo})
+
+
+@pytest.mark.parametrize("field", ["headers", "admin_headers"])
+def test_dynamo_rejects_static_secret_headers(field):
+    with pytest.raises(ValidationError, match=field):
+        ClientConfig.model_validate(
+            {
+                "dynamo": {
+                    "discovery_url": "http://localhost:8001",
+                    "expected_namespace": "dynamo",
+                    "admin_host_allowlist": ["localhost"],
+                    field: {"Authorization": "Bearer secret"},
+                }
+            }
+        )
+
+
+def test_dynamo_admin_plane_accepts_nccl_weight_broadcast():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "default"},
+            "model": {
+                "client": {
+                    "dynamo": {
+                        "discovery_url": "http://localhost:8001",
+                        "expected_namespace": "dynamo",
+                        "admin_host_allowlist": ["localhost"],
+                    }
+                }
+            },
+            "weight_broadcast": {"type": "nccl", "port": 29501},
+        }
+    )
+
+    assert config.weight_broadcast.type == "nccl"
+    assert config.weight_broadcast.inference_world_size == 1
+
+
+def test_rl_dynamo_external_nccl_uses_single_worker_default():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "dynamo": {
+                            "discovery_url": "http://localhost:8001",
+                            "expected_namespace": "dynamo",
+                            "admin_host_allowlist": ["localhost"],
+                        }
+                    }
+                }
+            },
+            "weight_broadcast": {"type": "nccl", "port": 29501},
+        }
+    )
+
+    assert config.orchestrator.weight_broadcast.inference_world_size == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 1
 
 
 def test_multi_node_auto_inference_parallelism():

@@ -183,6 +183,14 @@ class AdminPlane:
             await client.aclose()
 
 
+def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+    if client_config.dynamo is not None:
+        from prime_rl.inference.dynamo import DynamoAdminPlane
+
+        return DynamoAdminPlane(client_config, model_name)
+    return AdminPlane(client_config)
+
+
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
     """One-shot readiness check of an inference endpoint (health + model
     listing) with transient clients — for frozen endpoints that never need a
@@ -221,7 +229,12 @@ def setup_client(
     )
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def setup_admin_clients(
+    client_config: ClientConfig,
+    *,
+    timeout: float | None = None,
+    trust_env: bool = True,
+) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
@@ -246,7 +259,8 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
+            timeout=timeout,
+            trust_env=trust_env,
         )
 
     return [_setup_admin_client(base_url) for base_url in urls]
