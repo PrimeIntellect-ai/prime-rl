@@ -25,7 +25,6 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import get_args
 
 import torch
 import torch.utils._pytree as pytree
@@ -34,7 +33,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig, DSV4AttnImplementation  # noqa: E402
+from prime_rl.configs.trainer import ActivationCheckpointConfig  # noqa: E402
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext  # noqa: E402
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config  # noqa: E402
@@ -339,6 +338,8 @@ MODULES = [
     "decoder-hca",
 ]
 
+ATTN_IMPLS = ["kernel", "eager"]
+
 
 def _scalar(output):
     """A scalar to call `.backward()` on, in fp32 so the reduction itself cannot overflow."""
@@ -456,7 +457,7 @@ def main() -> int:
     parser.add_argument("--ac", choices=["none", "full"], default="none", help="decoder-layer activation checkpointing")
     parser.add_argument(
         "--attn-impl",
-        choices=list(get_args(DSV4AttnImplementation)),
+        choices=ATTN_IMPLS,
         default="kernel",
         help="CSA attention implementation, set on the config the module is built from",
     )
@@ -518,8 +519,8 @@ def main() -> int:
     else:
         config = build_config()
         assert_real_config(config)
-    # Before `build_point`, since every attention layer resolves this at construction.
-    config.dsv4_attn = args.attn_impl
+    # Before `build_point`, since every attention layer reads this at construction.
+    config._attn_impl = args.attn_impl
 
     seq_lens = document_layout(args.seq_len, args.doc_len)
     record["seq_lens"] = seq_lens

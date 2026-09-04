@@ -139,27 +139,28 @@ def _randomize(module: nn.Module) -> None:
                 buffer.copy_(_tid2eid(buffer.shape[0], router.num_experts, router.top_k))
 
 
-def _prime_config(dsv4_attn: str = "auto") -> DeepseekV4Config:
-    return DeepseekV4Config(**_MODEL, dsv4_attn=dsv4_attn)
+def _prime_config(attn_impl: str = "eager") -> DeepseekV4Config:
+    """The toy config. It defaults to eager because the kernel cannot tile 4 attention heads."""
+    return DeepseekV4Config(**_MODEL, _attn_impl=attn_impl)
 
 
-def get_prime_model(dtype: torch.dtype = torch.bfloat16, dsv4_attn: str = "auto") -> nn.Module:
+def get_prime_model(dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config(dsv4_attn))
+        model = DeepseekV4ForCausalLM._from_config(_prime_config(attn_impl))
     _randomize(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
 
-def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16, dsv4_attn: str = "auto") -> nn.Module:
+def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
     """One attention layer of the same config the whole-model tests use.
 
     `DeepseekV4Attention` reads no MoE or hyper-connection field, so the layer this builds is
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_prime_config(dsv4_attn), layer_idx=layer_idx)
+        module = DeepseekV4Attention(_prime_config(attn_impl), layer_idx=layer_idx)
     _randomize(module)
     return module
 
@@ -198,11 +199,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
 
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
-    # `kernel` is unreachable for the toy `_MODEL`: 4 heads and 32 channels are outside the
-    # shapes the kernel tiles, and it is validated at the real Flash shapes instead. That rules
-    # out only `kernel`, so pin to `gather`, which runs the same `SparseAttnInputs` path the
-    # kernel does and is the sparse path's only end-to-end coverage through an assembled model.
-    prime_model = get_prime_model(dsv4_attn="gather")
+    prime_model = get_prime_model()
     hash_layers = prime_model.model.layers[: _MODEL["num_hash_layers"]]
     assert hash_layers, "config must contain a hash-routed layer"
 
@@ -225,11 +222,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
 
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
-    # `kernel` is unreachable for the toy `_MODEL`: 4 heads and 32 channels are outside the
-    # shapes the kernel tiles, and it is validated at the real Flash shapes instead. That rules
-    # out only `kernel`, so pin to `gather`, which runs the same `SparseAttnInputs` path the
-    # kernel does and is the sparse path's only end-to-end coverage through an assembled model.
-    prime_config = _prime_config(dsv4_attn="gather")
+    prime_config = _prime_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = DeepseekV4ForCausalLM(prime_config)
     _randomize(model)
@@ -705,9 +698,8 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
 
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
 
-    # The dense sliding mask is an eager-path artifact, so this pins the path that owns it rather
-    # than letting `dsv4_attn='auto'` decide; the count below is one call per layer.
-    prime_model = get_prime_model(torch.float32, dsv4_attn="eager")
+    # The dense mask is an eager-path artifact; the count below is one call per layer.
+    prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
@@ -736,10 +728,7 @@ def test_deepseek_v4(_torch_rms_norm):  # noqa: F811
     directory get: with no reference implementation available, packing is the only oracle that
     covers the assembled stack.
     """
-    # Float32, which the kernel cannot run, and the tolerances below were measured on the dense
-    # path, so pin it rather than letting `dsv4_attn='auto'` decide. The sparse path's whole-model
-    # coverage is `test_deepseek_v4_backward` under `gather`.
-    prime_model = get_prime_model(torch.float32, dsv4_attn="eager")
+    prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
 
     packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
@@ -883,10 +872,9 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
     A sliding layer has no compressor and so no entry selection at all; it reads nothing but its
     own clipped window, which makes it the case where the boundary handling stands alone.
     """
-    # Float32, which the kernel cannot run, and the `_PACKED_RTOL` bounds below were measured on
-    # the dense path, so pin it rather than letting `dsv4_attn='auto'` decide. The sparse path's
-    # own packing invariant is asserted at the Flash shapes in `test_deepseek_v4_kernels.py`.
-    module = prime_attention(layer_idx, dtype=torch.float32, dsv4_attn="eager")
+    # The kernel's own packing invariant is asserted at the Flash shapes in
+    # `test_deepseek_v4_kernels.py`.
+    module = prime_attention(layer_idx, dtype=torch.float32)
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)
 

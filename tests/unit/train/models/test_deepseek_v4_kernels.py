@@ -20,11 +20,12 @@ import math
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, sparse_attention_gather
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.utils.utils import default_dtype
 
@@ -249,6 +250,38 @@ _DSINK_RTOL = 1e-2
 _COMPILE_RTOL = 1e-2
 
 
+def _gather_reference(
+    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor, scale: float
+) -> torch.Tensor:
+    """Attention of each query over the KV positions it gathers, in `q.dtype`.
+
+    `q` is `(batch, seq_len, heads, dim)`, `kv` is `(batch, seq_len_kv, 1, dim)`, `indices` is
+    `(batch, seq_len, 1, topk)` int32 addressing `kv`'s position axis, and `sinks` is `(heads,)`.
+    A slot holding `-1` marks an absent key and is masked out.
+
+    Arithmetic follows `q.dtype`, so handing it widened tensors is what makes it the float32
+    oracle for a kernel that accumulates in float32.
+    """
+    slot_idx = indices[:, :, 0, :].to(torch.int64)
+    absent = slot_idx < 0
+    # Torch negative indexing wraps, so a `-1` would silently gather the last KV position. The
+    # kernel needs no such clamp: TileLang guards its gather and zero-fills instead.
+    batch_idx = torch.arange(kv.shape[0], device=kv.device)[:, None, None]
+    keys = kv[batch_idx, slot_idx.clamp(min=0), 0].to(q.dtype)
+
+    logits = torch.einsum("bshd,bskd->bshk", q, keys) * scale
+    logits = logits.masked_fill(absent.unsqueeze(2), float("-inf"))
+
+    # The sink logit is unscaled, as the kernel's is. Subtracting the row max keeps a fully masked
+    # row finite and keeps the exponentials from overflowing.
+    sink_logits = sinks.to(logits.dtype).reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
+    combined_logits = torch.cat([logits, sink_logits], dim=-1)
+    combined_logits = combined_logits - combined_logits.max(dim=-1, keepdim=True).values
+    probs = F.softmax(combined_logits, dim=-1, dtype=combined_logits.dtype)
+
+    return torch.einsum("bshk,bskd->bshd", probs[..., :-1], keys)
+
+
 def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
     """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
     actual, reference = actual.float(), reference.float()
@@ -298,7 +331,7 @@ def _leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
     """The same values as leaves of the float32 oracle, which is what makes the oracle exact.
 
-    `sparse_attention_gather` computes in whatever dtype it is handed, so widening the leaves is
+    `_gather_reference` computes in whatever dtype it is handed, so widening the leaves is
     what puts the oracle in float32 at all. Widening changes none of the values, a bfloat16 number
     being exactly representable in float32, so the oracle answers for exactly the numbers the
     kernel saw. Feeding it the bfloat16 leaves instead would round each of the roughly 164k
@@ -312,7 +345,7 @@ def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 
 
 def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor) -> torch.Tensor:
-    """The base-2, sink-inclusive log-sum-exp of `sparse_attention_gather`'s own softmax.
+    """The base-2, sink-inclusive log-sum-exp of `_gather_reference`'s own softmax.
 
     The oracle returns only the attention output, so its denominator is recomputed here from the
     same gather and the same unscaled sink logit, in float32.
@@ -337,7 +370,7 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
         # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
         # is handed. Widened here rather than inside it, so the exact answer is what the bound is
         # measured against instead of one rounded back to bfloat16.
-        reference_out = sparse_attention_gather(q.float(), kv.float(), indices, sinks, _SM_SCALE)
+        reference_out = _gather_reference(q.float(), kv.float(), indices, sinks, _SM_SCALE)
         reference_lse = _reference_lse(q, kv, indices, sinks)
 
     assert out.shape == q.shape and out.dtype == torch.bfloat16
@@ -439,7 +472,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     weight = torch.randn_like(out)
     (out * weight).sum().backward()
 
-    reference_out = sparse_attention_gather(reference_q, reference_kv, indices, reference_sinks, _SM_SCALE)
+    reference_out = _gather_reference(reference_q, reference_kv, indices, reference_sinks, _SM_SCALE)
     (reference_out * weight).sum().backward()
 
     assert reference_sinks.grad is not None and reference_sinks.grad.norm() > 0, (
@@ -502,22 +535,15 @@ _FLASH_COMPRESS_RATE = _FLASH_MODEL["compress_rates"]["compressed_sparse_attenti
 _FLASH_DOC_LENS = [(517, 1019), (3,), (300,), (3, 129, 1021), (2600,)]
 _FLASH_DOC_IDS = ["two-docs", "no-entries", "one-short-doc", "three-docs", "saturated-topk"]
 
-# The two paths sum their weighted values in a different order (640 gathered slots against
-# `seq_len + n_entries` masked columns) over 512 channels, so they agree only to the float32
-# accumulation floor rather than bit for bit. Measured over the five layouts below, against each
-# tensor's own scale, the worst deviation is 2.5e-7 on the output and 1.8e-6 on a gradient, so
-# `_PACKED_RTOL` still holds here with room to spare and neither number is tuned to fit.
-_GATHER_RTOL, _GATHER_GRAD_RTOL = _PACKED_RTOL, _PACKED_GRAD_RTOL
+
+def _flash_config(attn_impl: str = "kernel") -> DeepseekV4Config:
+    return DeepseekV4Config(**_FLASH_MODEL, _attn_impl=attn_impl)
 
 
-def _flash_config(dsv4_attn: str = "auto") -> DeepseekV4Config:
-    return DeepseekV4Config(**_FLASH_MODEL, dsv4_attn=dsv4_attn)
-
-
-def flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, dsv4_attn: str = "auto") -> nn.Module:
+def flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, attn_impl: str = "kernel") -> nn.Module:
     """One attention layer at the real DeepSeek V4 Flash shapes, 126M parameters of it."""
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_flash_config(dsv4_attn), layer_idx=layer_idx)
+        module = DeepseekV4Attention(_flash_config(attn_impl), layer_idx=layer_idx)
     _randomize(module)
     return module
 
@@ -541,20 +567,20 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
     """
     recorded: dict[str, torch.Tensor] = {}
     real_eager = dsv4_attention.eager_attention_with_sinks
-    real_gather = dsv4_attention.sparse_attention_gather
+    real_kernel = dsv4_attention.dsv4_sparse_attn
 
     def eager(query, key, value, sinks, attention_mask, **kwargs):
         recorded["mask"] = attention_mask
         recorded["eager"] = real_eager(query, key, value, sinks, attention_mask, **kwargs)
         return recorded["eager"]
 
-    def gather(q, kv_buf, indices, sinks, scale):
+    def kernel(q, kv_buf, indices, sinks, scale):
         recorded["kv_buf"], recorded["indices"] = kv_buf, indices
-        recorded["gather"] = real_gather(q, kv_buf, indices, sinks, scale)
-        return recorded["gather"]
+        recorded["kernel"] = real_kernel(q, kv_buf, indices, sinks, scale)
+        return recorded["kernel"]
 
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", eager)
-    monkeypatch.setattr(dsv4_attention, "sparse_attention_gather", gather)
+    monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", kernel)
     return recorded
 
 
@@ -567,23 +593,25 @@ def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor
     return selected.scatter_(1, safe, True)[:, :n_positions]
 
 
+@requires_tilelang
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
 def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens, monkeypatch):
     """A CSA layer's gather slots must reach the keys the dense rules admit, key for key.
 
     One selection rendered two independent ways: the dense rendering concatenates the indexer's
-    picks onto `PackedContext`'s sliding mask, which is built from the document boundaries rather
-    than from `window_indices`; the sparse one writes the window and the picks into a single index
-    tensor over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
+    picks onto a sliding mask built straight from the document boundaries rather than from
+    `window_indices`; the sparse one writes the window and the picks into a single index tensor
+    over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
     the sparse side wrong (a window base off by one, an entry index not offset by the token count,
     a stale index left over from a previous layout) still produces a finite output.
 
-    Pure set equality on integers, so no tolerance enters. Both the index tensor and the picks the
-    dense rendering is built from come from a real forward of the module on the input.
+    Pure set equality on integers, so no tolerance enters; bfloat16 is only what the kernel these
+    indices are recorded from insists on. Both the index tensor and the picks the dense rendering
+    is built from come from a real forward of the module on the input.
     """
-    module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
-    packed = _packed_context(doc_lens, torch.float32, _flash_config())
-    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    packed = _packed_context(doc_lens, torch.bfloat16, _flash_config())
+    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
     real_compressor = module.compressor.forward
@@ -600,8 +628,11 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     n_positions = recorded["kv_buf"].shape[1]
     seq_len, n_entries = sum(doc_lens), n_positions - sum(doc_lens)
     assert n_entries == sum(length // _FLASH_COMPRESS_RATE for length in doc_lens)
-    block_bias = dsv4_attention.block_bias_from_indices(recorded["picks"], n_entries, torch.float32)
-    admitted = torch.cat([packed.attention_mask[0, 0], block_bias[0, 0]], dim=-1) == 0
+    block_bias = eager_reference.block_bias_from_indices(recorded["picks"], n_entries, torch.float32)
+    sliding_mask = eager_reference.build_sliding_window_mask(
+        tok_doc_idx=packed.tok_doc_idx, sliding_window=_FLASH_MODEL["sliding_window"], dtype=torch.float32
+    )
+    admitted = torch.cat([sliding_mask[0, 0], block_bias[0, 0]], dim=-1) == 0
     if n_entries:
         assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
 
@@ -609,6 +640,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     assert torch.equal(selected, admitted), "the sparse and dense paths select different keys"
 
 
+@requires_tilelang
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
 def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatch):
     """Every gather slot addresses a real KV position, and no query counts a key twice.
@@ -619,9 +651,9 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     output. The `-1` padding is exempt from uniqueness, since padding every query out to a fixed
     slot count is exactly what it is for.
     """
-    module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
-    packed = _packed_context(doc_lens, torch.float32, _flash_config())
-    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    packed = _packed_context(doc_lens, torch.bfloat16, _flash_config())
+    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
     with torch.no_grad():
@@ -646,6 +678,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, monkeypatc
     assert (counts[:, :n_positions] <= 1).all(), "a query gathers the same key twice"
 
 
+@requires_tilelang
 @pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
 def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_lens, monkeypatch):
     """An unused gather slot must hold `-1`, never a position that `kv_buf` actually has.
@@ -666,9 +699,9 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     reads as a compressed-entry count that does not match the layout. Neither names the cause, so
     this asserts the contract directly.
     """
-    module = flash_attention(_FLASH_CSA_LAYER, dsv4_attn="gather")
-    packed = _packed_context(doc_lens, torch.float32, _flash_config())
-    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach()
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    packed = _packed_context(doc_lens, torch.bfloat16, _flash_config())
+    hidden_states = _flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
     with torch.no_grad():
@@ -691,52 +724,6 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
         "may read, so absent slots are addressing a KV position instead of holding `-1`"
     )
     assert (first_query[first_query < 0] == -1).all(), "an absent slot is negative but is not the `-1` marker"
-
-
-@pytest.mark.parametrize("doc_lens", _FLASH_DOC_LENS, ids=_FLASH_DOC_IDS)
-def test_sparse_attention_gather_matches_eager(doc_lens, monkeypatch):
-    """The gather reference must reproduce the dense path's attention output and its gradients.
-
-    This is the contract the TileLang kernel will be validated against, so it is asserted on the
-    raw `(batch, seq_len, heads, head_dim)` attention output rather than through `o_a_proj` and
-    `o_b_proj`, which would add projection error without covering anything the kernel does. Both
-    halves run the same weights on the same values, one leaf each, with the implementation pinned
-    explicitly on the built module so neither `dsv4_attn` nor `auto` can collapse them onto one
-    path.
-
-    The backward matters as much as the forward: the sink logit is the one term the gather
-    reference handles differently (unscaled, concatenated, then stripped back off), and a sink
-    that never receives a gradient would leave the softmax denominator untrained.
-    """
-    module = flash_attention(_FLASH_CSA_LAYER)
-    packed = _packed_context(doc_lens, torch.float32, _flash_config())
-    eager_input, gather_input = _flash_hidden_states(sum(doc_lens))
-    recorded = _record_attention(monkeypatch)
-
-    _set_attn_impl(module, "eager")
-    module(eager_input, packed=packed)
-    eager_output = recorded["eager"]
-
-    _set_attn_impl(module, "gather")
-    module(gather_input, packed=packed)
-    gather_output = recorded["gather"]
-
-    assert gather_output.shape == eager_output.shape
-    _assert_relative(gather_output, eager_output, _GATHER_RTOL, "attention output")
-
-    # One weight tensor for both losses, so the two backwards are the same function of the same
-    # numbers and any difference is the attention path's alone.
-    with torch.device("cuda"):
-        weight = torch.randn_like(eager_output)
-    (eager_output * weight).sum().backward()
-    eager_grads = _take_grads(module)
-    assert eager_grads["sinks"] is not None and eager_grads["sinks"].norm() > 0, (
-        "vacuous probe: the sinks received no gradient, so the comparison below cannot fail on them"
-    )
-
-    (gather_output * weight).sum().backward()
-    _compare_accumulated_grads(module, eager_grads, rtol=_GATHER_GRAD_RTOL)
-    _assert_relative(gather_input.grad, eager_input.grad, _GATHER_GRAD_RTOL, "hidden states gradient")
 
 
 # One CSA layer in bfloat16, so `_PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
@@ -763,7 +750,7 @@ _EAGER_KERNEL_DOC_LENS = [(300,), (3,), (517, 1019), (3, 129, 1021)]
 _EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
 
 # A bfloat16 kernel against a float32 dense softmax, so these are three orders of magnitude looser
-# than the float32 `_GATHER_RTOL` next door and looser again than `_KERNEL_RTOL`, which compares
+# than a float32 comparison would be, and looser again than `_KERNEL_RTOL`, which compares
 # two bfloat16 runs of the same path. Each is the tightest round number holding over 30 seeds on
 # all four layouts: the worst observed is 6.1e-3 on the output and 1.6e-2 on a gradient, against
 # 4.9e-3 and 9.8e-3 on the fixed seed the test runs.
@@ -793,7 +780,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     this comparing eager against eager and passing for the wrong reason.
     """
     seq_len = sum(doc_lens)
-    kernel_module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
+    kernel_module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
     eager_module = copy.deepcopy(kernel_module).float()
     _set_attn_impl(eager_module, "eager")
 
@@ -845,7 +832,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     demoting a dtype it cannot run, but without counting the calls a regression that reintroduced
     a fallback would leave this test asserting a property of the gather reference instead.
     """
-    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
     packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(_KERNEL_DOC_LENS), _FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
@@ -893,7 +880,7 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     instead of falling back, but a regression that reintroduced a fallback would leave this
     asserting a property of the gather reference.
     """
-    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
+    module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16)
     packed = _packed_context(_KERNEL_DOC_LENS, torch.bfloat16, _flash_config())
     with torch.device("cuda"):
         hidden_states = torch.randn(1, sum(_KERNEL_DOC_LENS), _FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
@@ -955,7 +942,7 @@ def test_flash_hca_attention_packed_matches_unpacked():
     `test_attention_packed_matches_unpacked[hca]` asserts the same invariant at toy shapes and
     rate 8. This is the only test that instantiates the Flash config's HCA layer at all.
     """
-    module = flash_attention(_FLASH_HCA_LAYER, dtype=torch.float32, dsv4_attn="eager")
+    module = flash_attention(_FLASH_HCA_LAYER, dtype=torch.float32, attn_impl="eager")
     assert module.layer_type == "heavily_compressed_attention", (
         f"expected the Flash config's HCA layer, got {module.layer_type}"
     )

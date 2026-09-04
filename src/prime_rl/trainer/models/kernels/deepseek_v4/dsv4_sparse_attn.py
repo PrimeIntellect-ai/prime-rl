@@ -29,8 +29,8 @@ _LOG2E = 1.44269504
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     """The reason these kernels cannot serve this shape, or ``None`` if they can.
 
-    The forward, the backward and `auto` implementation selection in
-    `deepseek_v4/attention.py` all need the same answer, so the constraints live here only.
+    The forward, the backward and the constructor check in `deepseek_v4/attention.py` all need
+    the same answer, so the constraints live here only.
     """
     # The backward's `preprocess` tiles the channel axis at `block_ND = 32` and reads whole
     # tiles, so a `dim` below that (or not a multiple of it) over-reads into the next head and
