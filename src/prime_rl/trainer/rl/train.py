@@ -69,7 +69,6 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
-from ring_flash_attn import substitute_hf_flash_attn
 
 
 @clean_exit
@@ -194,6 +193,10 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         if config.model.cp_style == "ring":
+            # Delayed import: ring_flash_attn imports flash_attn at module scope, which
+            # only the ring path needs.
+            from ring_flash_attn import substitute_hf_flash_attn
+
             substitute_hf_flash_attn(cp_group, heads_k_stride=1)
             substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
         else:
