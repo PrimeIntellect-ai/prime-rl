@@ -100,12 +100,11 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV4DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention is eager-only, as in HF: FlashAttention caps the head dim at 256 while
-    # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask
-    # cannot grow to cover the compressed entries the block concatenates onto the KV axis.
-    # `DeepseekV4Attention` picks its implementation from `config.dsv4_attn`, not from
-    # `config._attn_implementation`, which is inert here; these flags only keep transformers
-    # from advertising a backend we lack.
+    # None of transformers' backends can serve V4: FlashAttention caps the head dim at 256 while
+    # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask cannot
+    # address the compressed entries a block gathers alongside its local window.
+    # `DeepseekV4Attention` runs its own fused kernel, so `config._attn_implementation` is inert
+    # here; these flags only keep transformers from advertising a backend we lack.
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False
@@ -118,7 +117,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
             frozenset(),
-            "its sliding window is a dense local mask built from post-shard document boundaries, "
+            "its sliding window is built from post-shard document boundaries, "
             "which CP's global (pre-shard) boundaries cannot address",
         )
 
@@ -235,14 +234,14 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Rejected: the
-            window mask is dense and local, so global boundaries cannot address it.
+            sliding window is built from post-shard boundaries, which global ones cannot address.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if seq_lens_are_pre_shard:
             raise NotImplementedError(
                 "DeepSeek V4 does not support context parallelism: pre-shard document boundaries "
-                "do not address the local sliding-window mask."
+                "do not address the post-shard local sliding window."
             )
 
         if inputs_embeds is None:
