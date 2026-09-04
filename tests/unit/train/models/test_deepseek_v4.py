@@ -7,6 +7,7 @@ archetype the other models in this directory use, where a tiny `HF<X>ForCausalLM
 expected logits and gradients.
 """
 
+import copy
 import math
 import re
 from unittest.mock import MagicMock
@@ -1185,6 +1186,81 @@ _KERNEL_RTOL, _KERNEL_GRAD_RTOL = 5e-3, 1e-2
 # saturated layout would let a bfloat16 tie flip a pick and move the output for a reason that has
 # nothing to do with document independence.
 _KERNEL_DOC_LENS = (517, 1019)
+
+
+# Document layouts for the kernel-against-eager comparison: two single-document rows and two
+# packed ones. `(2600,)` is left out on purpose for the reason `_KERNEL_DOC_LENS` gives below, and
+# `(3,)` is kept because it compresses to no entries at all, so almost every gather slot is the
+# `-1` marker and the local window alone has to answer.
+_EAGER_KERNEL_DOC_LENS = [(300,), (3,), (517, 1019), (3, 129, 1021)]
+_EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
+
+# A bfloat16 kernel against a float32 dense softmax, so these are three orders of magnitude looser
+# than the float32 `_GATHER_RTOL` next door and looser again than `_KERNEL_RTOL`, which compares
+# two bfloat16 runs of the same path. Each is the tightest round number holding over 30 seeds on
+# all four layouts: the worst observed is 6.1e-3 on the output and 1.6e-2 on a gradient, against
+# 4.9e-3 and 9.8e-3 on the fixed seed the test runs.
+_EAGER_KERNEL_RTOL, _EAGER_KERNEL_GRAD_RTOL = 8e-3, 2e-2
+
+
+@pytest.mark.parametrize("doc_lens", _EAGER_KERNEL_DOC_LENS, ids=_EAGER_KERNEL_DOC_IDS)
+@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
+    """The fused kernel against the naive dense softmax, single-document and packed.
+
+    Every other kernel test reaches eager only transitively: the kernel is compared to the gather
+    reference on hand-built tensors, and the gather reference is compared to eager on a real
+    module. Nothing joined the two ends on the same input, so a disagreement that the gather
+    reference happened to share with the kernel would go unseen. This closes that loop, and it is
+    the only place the modeling code's own index construction meets the kernel in a numeric
+    comparison rather than a set-equality one.
+
+    Both halves hold the same weights, the bfloat16 module's, one widened to float32 rather than
+    drawn again, and both start from the same bfloat16-representable hidden states, so input
+    rounding is not one of the differences being measured. What is left is the attention path:
+    a dense mask and a full softmax on one side, a 640-slot gather and an online softmax on the
+    other.
+
+    The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today instead
+    of demoting a dtype it cannot run, but a regression that reintroduced a fallback would leave
+    this comparing eager against eager and passing for the wrong reason.
+    """
+    seq_len = sum(doc_lens)
+    kernel_module = flash_attention(_FLASH_CSA_LAYER, dtype=torch.bfloat16, dsv4_attn="kernel")
+    eager_module = copy.deepcopy(kernel_module).float()
+    _set_attn_impl(eager_module, "eager")
+
+    with torch.device("cuda"):
+        base = torch.randn(1, seq_len, _FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
+    kernel_input = base.clone().requires_grad_(True)
+    eager_input = base.float().clone().requires_grad_(True)
+
+    calls = []
+    real_kernel = dsv4_attention.dsv4_sparse_attn
+
+    def counting_kernel(q, kv_buf, indices, sinks, scale):
+        calls.append(q.shape[1])
+        return real_kernel(q, kv_buf, indices, sinks, scale)
+
+    monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
+
+    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, torch.bfloat16, _flash_config()))
+    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, torch.float32, _flash_config()))
+    assert calls == [seq_len], f"the forward never reached the kernel, calls={calls}"
+    _assert_relative(kernel_output, eager_output, _EAGER_KERNEL_RTOL, "attention output")
+
+    # One weight tensor for both losses, so any difference belongs to the attention path alone.
+    with torch.device("cuda"):
+        weight = torch.randn(1, seq_len, _FLASH_MODEL["hidden_size"], dtype=torch.float32)
+    (eager_output * weight).sum().backward()
+    eager_grads = _take_grads(eager_module)
+    assert eager_grads["sinks"] is not None and eager_grads["sinks"].norm() > 0, (
+        "vacuous probe: the sinks received no gradient, so the comparison below cannot fail on them"
+    )
+
+    (kernel_output * weight.bfloat16()).sum().backward()
+    _compare_accumulated_grads(kernel_module, eager_grads, rtol=_EAGER_KERNEL_GRAD_RTOL)
+    _assert_relative(kernel_input.grad, eager_input.grad, _EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
 @pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
