@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from prime_rl.evals.ckpt import CheckpointManager
+from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 
 
@@ -11,12 +12,17 @@ def _task(key: str) -> SimpleNamespace:
     return SimpleNamespace(key=key, hash=key)
 
 
-def _env(name: str, task_keys: list[str], *, interval: int = 1) -> SimpleNamespace:
+def _env(name: str, task_keys: list[str], *, interval: int = 1, group_size: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         name=name,
         examples=[_task(key) for key in task_keys],
-        config=SimpleNamespace(interval=interval),
+        config=SimpleNamespace(interval=interval, group_size=group_size),
     )
+
+
+def _eval_envs(*envs: SimpleNamespace) -> SimpleNamespace:
+    by_name = {env.name: env for env in envs}
+    return SimpleNamespace(get=by_name.__getitem__)
 
 
 def _eval_config() -> SimpleNamespace:
@@ -91,3 +97,11 @@ def test_eval_checkpoint_rejects_step_cursor_mismatch(tmp_path) -> None:
     restored_source = EvalSource([_env("math", ["m0"])], _eval_config())
     with pytest.raises(ValueError, match="contains cursor 1, expected step 2"):
         ckpt.load(2, restored_source, path=ckpt.get_ckpt_path(1))
+
+
+def test_eval_sink_reports_expected_empty_batch_for_progress() -> None:
+    eval_sink = EvalSink(eval_envs=_eval_envs(_env("math", ["m0"], group_size=4)))
+
+    eval_sink.set_batch_size("math", step=0, size=4)
+
+    assert eval_sink.batch_progress() == [("math", 0, 0, 4, 0)]

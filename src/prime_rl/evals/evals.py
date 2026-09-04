@@ -556,7 +556,13 @@ class Evals:
 
         parts = []
         for env_name, _step, arrived, expected, buffered in sorted(self.eval_sink.batch_progress()):
-            part = f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name
+            total = self.eval_sink.batch_size_for(env_name)
+            shown_arrived, shown_expected = total - expected + arrived, total
+            part = (
+                f"{env_name} {shown_arrived}/{shown_expected} ({shown_arrived / shown_expected:.1%})"
+                if shown_expected
+                else env_name
+            )
             if buffered:
                 part += f" (+{buffered} buffered)"
             parts.append(part)

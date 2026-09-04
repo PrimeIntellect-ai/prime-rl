@@ -98,7 +98,12 @@ class EvalSink:
         return len(env.examples) * env.config.group_size
 
     def batch_progress(self) -> list[tuple[str, int, int, int, int]]:
-        keys = set(self.pending_batches) | set(self.pending_batch_failures) | set(self.pending_batch_cancellations)
+        keys = (
+            set(self.pending_batches)
+            | set(self.pending_batch_failures)
+            | set(self.pending_batch_cancellations)
+            | set(self.expected_batch_sizes)
+        )
         batch_counts = {key: self._batch_size(key) for key in keys}
         buffered: dict[tuple[str, int], int] = {}
         group_ids = set(self.pending_groups) | set(self.pending_group_failures) | set(self.pending_group_cancellations)
