@@ -1,4 +1,4 @@
-"""The fused DeepSeek V4 sparse-attention kernel against its float32 gather oracle.
+"""The fused DeepSeek V4 sparse-attention kernel against its float32 dense oracle.
 
 Everything here calls `prime_rl::dsv4_sparse_attn` directly on hand-built tensors, so the kernel
 is exercised without any of the modeling code that normally produces its inputs. The tests that
@@ -14,7 +14,8 @@ import math
 
 import pytest
 import torch
-import torch.nn.functional as F
+
+from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 
 # Guarded so collection survives on an install without tilelang: `pytest -m "not gpu"` imports every
 # module before deselecting by marker, and the kernel pulls in tilelang, which only the `gpu` extra
@@ -41,8 +42,8 @@ _SM_SCALE = _DIM**-0.5
 # carries a batch, which nothing else here does: `Q` and `Indices` are indexed by batch and the
 # `dKV[by, Indices[by, ...]]` atomics scatter per batch entry, so a batch stride dropped anywhere
 # in that chain is invisible at batch 1. Sequence lengths stay modest because the float32 oracle
-# materializes a `(batch, seq_len, topk, head_dim)` gather, roughly 640 KB per token even before
-# its backward.
+# materializes several `(batch, heads, seq_len, seq_len_kv)` score buffers, roughly 256 KB per
+# token apiece even before its backward.
 _SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 _SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
@@ -85,34 +86,27 @@ _DSINK_RTOL = 1e-2
 _COMPILE_RTOL = 1e-2
 
 
-def _gather_reference(
+def _dense_reference(
     q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor, scale: float
 ) -> torch.Tensor:
-    """Attention of each query over the `topk` KV positions it gathers, in `q.dtype`.
+    """Attention of each query over the whole of `kv`, with its gather slots rendered dense.
 
     `q` is `(batch, seq_len, heads, dim)`, `kv` is `(batch, seq_len_kv, 1, dim)`, `indices` is
     `(batch, seq_len, 1, topk)` int32 addressing `kv`'s position axis, and `sinks` is `(heads,)`.
-    A slot holding the sentinel (the trailing zero position of `kv`) is masked out.
+    The output comes back laid out like `q`. The sentinel, the trailing zero position of `kv`, is
+    masked out, as is every position no slot names.
+
+    A mask admits a position once however many of a query's slots name it, so this answers for a
+    gather over those slots only where no query names a real position twice. `_build_indices`
+    draws its picks without replacement, and `test_deepseek_v4.py` asserts the same of the
+    indices the layer itself builds.
 
     Arithmetic follows `q.dtype`, so handing it widened tensors is what makes it the float32
     oracle for a kernel that accumulates in float32.
     """
-    sentinel = kv.shape[1] - 1
-    slot_idx = indices[:, :, 0, :].to(torch.int64)
-    batch_idx = torch.arange(kv.shape[0], device=kv.device)[:, None, None]
-    keys = kv[batch_idx, slot_idx, 0].to(q.dtype)
-
-    logits = torch.einsum("bshd,bskd->bshk", q, keys) * scale
-    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
-
-    # The sink logit is unscaled, as the kernel's is. Subtracting the row max keeps a fully
-    # sentinel row finite and keeps the exponentials from overflowing.
-    sink_logits = sinks.to(logits.dtype).reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
-    combined_logits = torch.cat([logits, sink_logits], dim=-1)
-    combined_logits = combined_logits - combined_logits.max(dim=-1, keepdim=True).values
-    probs = F.softmax(combined_logits, dim=-1, dtype=combined_logits.dtype)
-
-    return torch.einsum("bshk,bskd->bshd", probs[..., :-1], keys)
+    key = kv.transpose(1, 2)
+    mask = dense_mask_from_indices(indices, kv.shape[1], q.dtype)
+    return eager_attention_with_sinks(q.transpose(1, 2), key, key, sinks.to(q.dtype), mask, scale)
 
 
 def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
@@ -168,7 +162,7 @@ def _leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
     """The same values as leaves of the float32 oracle, which is what makes the oracle exact.
 
-    `_gather_reference` computes in whatever dtype it is handed, so widening the leaves is
+    `_dense_reference` computes in whatever dtype it is handed, so widening the leaves is
     what puts the oracle in float32 at all. Widening changes none of the values, a bfloat16 number
     being exactly representable in float32, so the oracle answers for exactly the numbers the
     kernel saw. Feeding it the bfloat16 leaves instead would round each of the roughly 164k
@@ -182,24 +176,21 @@ def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 
 
 def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor) -> torch.Tensor:
-    """The base-2, sink-inclusive log-sum-exp of `_gather_reference`'s own softmax.
+    """The base-2, sink-inclusive log-sum-exp of `_dense_reference`'s own softmax.
 
-    The oracle returns only the attention output, so its denominator is recomputed here from the
-    same gather and the same unscaled sink logit, in float32.
+    The oracle returns only the attention output, so its denominator is rebuilt here over the same
+    dense mask and the same unscaled sink logit, in float32.
     """
-    sentinel = kv.shape[1] - 1
-    slot_idx = indices[:, :, 0, :].to(torch.int64)
-    batch_idx = torch.arange(kv.shape[0], device=kv.device)[:, None, None]
-    keys = kv[batch_idx, slot_idx, 0].float()
-    logits = torch.einsum("bshd,bskd->bshk", q.float(), keys) * _SM_SCALE
-    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
-    sink_logits = sinks.float().reshape(1, 1, -1, 1).expand(*logits.shape[:-1], 1)
-    return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1) * math.log2(math.e)
+    key = kv.float().transpose(1, 2)
+    logits = torch.matmul(q.float().transpose(1, 2), key.transpose(2, 3)) * _SM_SCALE
+    logits = logits + dense_mask_from_indices(indices, kv.shape[1], torch.float32)
+    sink_logits = sinks.float().reshape(1, -1, 1, 1).expand(logits.shape[0], -1, logits.shape[2], 1)
+    return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1).transpose(1, 2) * math.log2(math.e)
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), _SHAPES, ids=_SHAPE_IDS)
-def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv):
-    """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
+def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
+    """Output and log-sum-exp against the float32 dense oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
 
     with torch.no_grad():
@@ -207,7 +198,7 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
         # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
         # is handed. Widened here rather than inside it, so the exact answer is what the bound is
         # measured against instead of one rounded back to bfloat16.
-        reference_out = _gather_reference(q.float(), kv.float(), indices, sinks, _SM_SCALE)
+        reference_out = _dense_reference(q.float(), kv.float(), indices, sinks, _SM_SCALE)
         reference_lse = _reference_lse(q, kv, indices, sinks)
 
     assert out.shape == q.shape and out.dtype == torch.bfloat16
@@ -233,7 +224,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     weight = torch.randn_like(out)
     (out * weight).sum().backward()
 
-    reference_out = _gather_reference(reference_q, reference_kv, indices, reference_sinks, _SM_SCALE)
+    reference_out = _dense_reference(reference_q, reference_kv, indices, reference_sinks, _SM_SCALE)
     (reference_out * weight).sum().backward()
 
     assert reference_sinks.grad is not None and reference_sinks.grad.norm() > 0, (

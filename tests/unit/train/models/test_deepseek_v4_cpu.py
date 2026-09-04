@@ -5,10 +5,29 @@ ever construct a `DeepseekV4Config`. Neither needs CUDA, and a module-level `pyt
 cannot be undone per test, so they live here and run in the CPU job.
 """
 
+import pytest
 import torch
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
+
+# The attention half of the toy config the GPU tests run: 4 heads over 32 channels, which the
+# fused kernel cannot tile. Everything else is shrunk to whatever still builds one layer on a CPU.
+_TOY_ATTENTION = dict(
+    vocab_size=64,
+    hidden_size=128,
+    num_hidden_layers=1,
+    num_hash_layers=0,
+    num_attention_heads=4,
+    head_dim=32,
+    q_lora_rank=64,
+    o_groups=2,
+    o_lora_rank=16,
+    sliding_window=6,
+    layer_types=["sliding_attention"],
+)
 
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():
@@ -60,3 +79,32 @@ def test_dequantize_weight_packed_mxfp4():
     expected = torch.tensor([[1.0, 2.0, -2.0, 8.0], [0.0, 24.0, -0.25, 0.75]], dtype=torch.bfloat16)
     assert result.dtype == torch.bfloat16
     assert torch.equal(result, expected)
+
+
+def test_deepseek_v4_attn_impl_never_serializes():
+    """`_attn_impl` is a test knob, so it must not survive into a checkpoint's `config.json`.
+
+    HF's `to_dict` deep-copies `__dict__` and strips only an explicit list of names, so the
+    underscore prefix buys nothing on its own. A checkpoint that shipped `_attn_impl="eager"` would
+    load and train, silently on the dense reference path at a fraction of the throughput.
+    """
+    config = DeepseekV4Config(**_TOY_ATTENTION, _attn_impl="eager")
+
+    assert config._attn_impl == "eager", "the knob must still be readable in memory"
+    assert "_attn_impl" not in config.to_dict()
+
+
+@pytest.mark.skipif(
+    dsv4_attention.dsv4_sparse_attn is None, reason="without tilelang the gate names the missing import, not the shape"
+)
+def test_deepseek_v4_attention_rejects_a_config_the_kernel_cannot_tile():
+    """Asking for the kernel at a shape it cannot serve has to fail where the config is chosen.
+
+    The kernels tile the head axis up to a power of two of at least 16 and index the attention
+    sinks over that padded block, so 4 heads would read past the end of a one-row tensor. Without
+    the gate the first forward dies inside a tilelang compile, a long way from the config that
+    caused it, and at 16 heads it is the backward that dies, after a step has already run. The
+    message has to name the offending head count, or the reader is sent to the wrong knob.
+    """
+    with pytest.raises(ValueError, match=r"heads per group but this shape has 4\b"):
+        DeepseekV4Attention(DeepseekV4Config(**_TOY_ATTENTION, _attn_impl="kernel"), layer_idx=0)
