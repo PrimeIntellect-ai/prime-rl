@@ -16,7 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from prime_rl.configs.shared import (
     ClientConfig,
+    DynamoConfig,
     canonical_http_origin,
+    is_secure_or_loopback_url,
     normalize_admin_host_allowlist_entry,
     validate_http_url,
 )
@@ -115,6 +117,19 @@ class DynamoSnapshot(BaseModel):
 
 class DynamoDiscoveryPending(RuntimeError):
     """The discovery endpoint is healthy but has not published a complete worker set."""
+
+
+def validate_dynamo_config(config: DynamoConfig) -> None:
+    has_discovery_credentials = bool(config.api_key_var or config.headers_from_env)
+    if has_discovery_credentials and not is_secure_or_loopback_url(config.discovery_url):
+        raise ValueError("dynamo.discovery_url must use HTTPS when discovery credentials are configured")
+    has_admin_credentials = bool(config.admin_api_key_var or config.admin_headers_from_env)
+    if has_admin_credentials and config.admin_origin_allowlist is None:
+        raise ValueError("dynamo.admin_origin_allowlist is required when admin credentials are configured")
+    if has_admin_credentials and any(
+        not is_secure_or_loopback_url(origin) for origin in config.admin_origin_allowlist or ()
+    ):
+        raise ValueError("dynamo.admin_origin_allowlist must use HTTPS or loopback when admin credentials are configured")
 
 
 def _admin_host_allowed(admin_base_url: str, allowlist: tuple[str, ...]) -> bool:
@@ -321,6 +336,7 @@ class DynamoAdminPlane(AdminPlane):
     ) -> None:
         if client_config.dynamo is None:
             raise ValueError("Dynamo discovery configuration is required")
+        validate_dynamo_config(client_config.dynamo)
         self._client_config = client_config
         self._model_name = model_name
         self._poll_interval = poll_interval

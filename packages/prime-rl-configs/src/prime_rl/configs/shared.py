@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, Field, field_validator, model_validator
+from pydantic import AfterValidator, Field, model_validator
+from pydantic import field_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -92,7 +93,7 @@ def normalize_admin_origin_allowlist_entry(value: str) -> str:
     return canonical_http_origin(normalized_url, field_name="dynamo.admin_origin_allowlist")
 
 
-def _is_secure_or_loopback_url(value: str) -> bool:
+def is_secure_or_loopback_url(value: str) -> bool:
     parsed = urlsplit(value)
     if parsed.scheme == "https":
         return True
@@ -296,23 +297,6 @@ class DynamoConfig(BaseConfig):
     @classmethod
     def validate_header_environment_mapping(cls, values: dict[str, str]) -> dict[str, str]:
         return _validate_header_environment_mapping(values)
-
-    @model_validator(mode="after")
-    def require_exact_origins_for_admin_credentials(self):
-        has_discovery_credentials = bool(self.api_key_var or self.headers_from_env)
-        if has_discovery_credentials and not _is_secure_or_loopback_url(self.discovery_url):
-            raise ValueError("dynamo.discovery_url must use HTTPS when discovery credentials are configured")
-        has_admin_credentials = bool(self.admin_api_key_var or self.admin_headers_from_env)
-        if has_admin_credentials and self.admin_origin_allowlist is None:
-            raise ValueError("dynamo.admin_origin_allowlist is required when admin credentials are configured")
-        if has_admin_credentials and any(
-            not _is_secure_or_loopback_url(origin) for origin in self.admin_origin_allowlist or ()
-        ):
-            raise ValueError(
-                "dynamo.admin_origin_allowlist must use HTTPS or loopback when admin credentials are configured"
-            )
-        return self
-
 
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800

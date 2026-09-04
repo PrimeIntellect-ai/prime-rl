@@ -582,12 +582,6 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     @model_validator(mode="after")
-    def validate_dynamo_weight_broadcast(self):
-        if self.model.client.dynamo is not None and self.weight_broadcast.type != "filesystem":
-            raise ValueError("The standalone Dynamo admin plane supports only filesystem weight broadcast")
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
             self.tokenizer.name = self.model.name

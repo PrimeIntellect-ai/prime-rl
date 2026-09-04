@@ -84,6 +84,42 @@ def dynamo_admin(*worker_specs: dict) -> DynamoAdminPlane:
     return admin
 
 
+@pytest.mark.parametrize(
+    "dynamo,match",
+    [
+        (
+            {
+                **dynamo_config(),
+                "api_key_var": "DYNAMO_DISCOVERY_TOKEN",
+            },
+            "use HTTPS",
+        ),
+        (
+            {
+                **dynamo_config(),
+                "discovery_url": "https://dynamo-frontend:8001",
+                "admin_api_key_var": "DYNAMO_ADMIN_TOKEN",
+            },
+            "admin_origin_allowlist",
+        ),
+        (
+            {
+                **dynamo_config(),
+                "discovery_url": "https://dynamo-frontend:8001",
+                "admin_origin_allowlist": ["http://worker:8120"],
+                "admin_api_key_var": "DYNAMO_ADMIN_TOKEN",
+            },
+            "HTTPS or loopback",
+        ),
+    ],
+)
+def test_dynamo_admin_plane_validates_credential_origins(dynamo, match):
+    config = ClientConfig(dynamo=dynamo)
+
+    with pytest.raises(ValueError, match=match):
+        DynamoAdminPlane(config, "Qwen/Qwen3-0.6B")
+
+
 def test_parse_dynamo_workers_validates_and_orders_topology():
     parsed = parse_dynamo_workers(
         snapshot(
