@@ -920,6 +920,34 @@ def test_dynamo_capability_probe_requires_collective_rpc_on_every_worker():
 
 
 @pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("connection reset"),
+        TimeoutError("probe timeout"),
+        httpx.HTTPStatusError(
+            "temporarily unavailable",
+            request=httpx.Request("POST", "http://worker-1:8120/collective_rpc"),
+            response=httpx.Response(
+                503,
+                request=httpx.Request("POST", "http://worker-1:8120/collective_rpc"),
+            ),
+        ),
+    ],
+)
+def test_dynamo_capability_probe_preserves_transient_errors_for_readiness_retry(error):
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+
+    with (
+        patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=error)),
+        pytest.raises(type(error)) as exc_info,
+    ):
+        asyncio.run(admin._check_admin_capabilities([AsyncMock()], admin.workers, timeout=1))
+
+    assert exc_info.value is error
+    asyncio.run(admin.aclose())
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"results": []},
@@ -934,7 +962,7 @@ def test_dynamo_collective_rpc_rejects_invalid_result_contract(payload):
     response.json.return_value = payload
 
     with (
-        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock(return_value=response)),
+        patch("prime_rl.inference.dynamo._bounded_request", new=AsyncMock(return_value=response)),
         pytest.raises(ValueError, match="invalid collective RPC response"),
     ):
         asyncio.run(
@@ -955,7 +983,7 @@ def test_dynamo_collective_rpc_accepts_nonempty_null_results():
     response = successful_response()
     response.json.return_value = {"results": [None]}
 
-    with patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock(return_value=response)):
+    with patch("prime_rl.inference.dynamo._bounded_request", new=AsyncMock(return_value=response)):
         asyncio.run(
             admin._collective_rpc(
                 AsyncMock(),
@@ -1031,18 +1059,184 @@ def test_dynamo_rejects_lora_without_admin_mutation(tmp_path):
     asyncio.run(admin.aclose())
 
 
-def test_dynamo_rejects_in_memory_initialization_without_admin_mutation():
-    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+def test_dynamo_nccl_initialization_assigns_rank_offsets_and_validates_results():
+    admin = dynamo_admin(
+        worker(3, admin_base_url="http://worker-3:8120", world_size=2),
+        worker(9, admin_base_url="http://worker-9:8120", world_size=1),
+    )
+    admin.clients = [AsyncMock(), AsyncMock()]
 
-    with pytest.raises(ValueError, match="does not support NCCL"):
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()) as topology,
+        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
+    ):
         asyncio.run(
             admin.initialize_nccl(
-                host="localhost",
+                host="trainer",
+                port=29501,
+                timeout=10,
+                inference_world_size=3,
+            )
+        )
+
+    topology.assert_awaited_once_with()
+    assert admin.nccl_initialization_state == "ready"
+    assert admin._nccl_initialized_worker_indexes == (0, 1)
+    assert [call.kwargs["args"][2] for call in collective_rpc.await_args_list] == [0, 2]
+    assert [call.kwargs["expected_result_count"] for call in collective_rpc.await_args_list] == [2, 1]
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_initialization_rejects_world_size_mismatch_and_requires_restart():
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=2))
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        pytest.raises(RuntimeError, match="must restart") as exc_info,
+    ):
+        asyncio.run(
+            admin.initialize_nccl(
+                host="trainer",
+                port=29501,
+                timeout=10,
+                inference_world_size=3,
+            )
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert admin.nccl_initialization_state == "terminal"
+    assert admin._control_terminal is True
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_partial_initialization_awaits_all_workers_and_terminalizes():
+    admin = dynamo_admin(
+        worker(1, admin_base_url="http://worker-1:8120", world_size=1),
+        worker(2, admin_base_url="http://worker-2:8120", world_size=1),
+    )
+    admin.clients = [AsyncMock(), AsyncMock()]
+    completed: list[int] = []
+
+    async def initialize(client, **kwargs):
+        index = admin.clients.index(client)
+        if index == 0:
+            raise RuntimeError("worker zero failed")
+        await asyncio.sleep(0.01)
+        completed.append(index)
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch.object(admin, "_collective_rpc", side_effect=initialize) as collective_rpc,
+        pytest.raises(RuntimeError, match=r"successful workers=\(1,\), failed workers=\(0,\)"),
+    ):
+        asyncio.run(
+            admin.initialize_nccl(
+                host="trainer",
+                port=29501,
+                timeout=10,
+                inference_world_size=2,
+            )
+        )
+
+    assert completed == [1]
+    assert collective_rpc.await_count == 2
+    assert admin._nccl_initialized_worker_indexes == (1,)
+    assert admin.nccl_initialization_state == "terminal"
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_initialization_is_one_shot():
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+    admin.clients = [AsyncMock()]
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch.object(admin, "_collective_rpc", new=AsyncMock()),
+    ):
+        asyncio.run(
+            admin.initialize_nccl(
+                host="trainer",
                 port=29501,
                 timeout=10,
                 inference_world_size=1,
             )
         )
+        with pytest.raises(RuntimeError, match="only be initialized once"):
+            asyncio.run(
+                admin.initialize_nccl(
+                    host="trainer",
+                    port=29501,
+                    timeout=10,
+                    inference_world_size=1,
+                )
+            )
+
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_update_requires_initialization(tmp_path):
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+    admin.clients = [AsyncMock()]
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()) as topology,
+        pytest.raises(RuntimeError, match="ready NCCL initialization"),
+    ):
+        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
+
+    topology.assert_not_awaited()
+    admin.clients[0].post.assert_not_awaited()
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_update_uses_collective_rpc_and_returns_to_ready(tmp_path):
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+    admin.clients = [AsyncMock()]
+    admin._nccl_initialization_state = "ready"
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()) as topology,
+        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock(return_value=successful_response())) as post,
+        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
+    ):
+        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
+
+    topology.assert_awaited_once_with()
+    assert [call.args[1] for call in post.await_args_list] == ["/pause", "/resume"]
+    collective_rpc.assert_awaited_once_with(
+        admin.clients[0],
+        method="update_weights_from_path",
+        timeout=720.0,
+        args=[(tmp_path / "step_1").as_posix()],
+        expected_result_count=1,
+    )
+    assert admin.nccl_initialization_state == "ready"
+    assert admin._control_terminal is False
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_update_failure_is_terminal_and_skips_resume(tmp_path):
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+    admin.clients = [AsyncMock()]
+    admin._nccl_initialization_state = "ready"
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock(return_value=successful_response())) as post,
+        patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=RuntimeError("receive failed"))),
+        pytest.raises(RuntimeError, match="engines remain paused"),
+    ):
+        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
+
+    assert [call.args[1] for call in post.await_args_list] == ["/pause"]
+    assert admin.nccl_initialization_state == "terminal"
+    assert admin._control_terminal is True
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_rejects_nixl_initialization_without_admin_mutation():
+    admin = dynamo_admin(worker(1, admin_base_url="http://worker-1:8120", world_size=1))
+
     with pytest.raises(ValueError, match="does not support NIXL"):
         asyncio.run(
             admin.initialize_nixl(
