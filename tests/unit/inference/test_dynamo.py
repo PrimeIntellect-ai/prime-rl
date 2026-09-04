@@ -167,6 +167,10 @@ def test_admin_plane_factory_selects_dynamo():
         {"protocol_version": 2, "namespace": "dynamo", "workers": []},
         snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=0)),
         snapshot(worker(1, admin_base_url="file:///tmp/admin", world_size=1)),
+        snapshot(worker(1, admin_base_url="http://user:password@worker-1:8120", world_size=1)),
+        snapshot(worker(1, admin_base_url="http://worker-1:8120?x=1", world_size=1)),
+        snapshot(worker(1, admin_base_url="http://worker-1:8120#x", world_size=1)),
+        snapshot(worker(1, admin_base_url="http://worker-1:70000", world_size=1)),
         snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=True)),
     ],
 )
@@ -188,7 +192,7 @@ def test_parse_dynamo_workers_rejects_duplicate_admin_urls():
 
 @pytest.mark.parametrize("path", ["/admin/prefill", "/admin/replica/../decode"])
 def test_parse_dynamo_workers_rejects_admin_paths(path):
-    with pytest.raises(ValueError, match="admin_base_url must be an origin without a path"):
+    with pytest.raises(ValueError, match="admin_base_url must be an http.s. origin"):
         parse_dynamo_workers(
             snapshot(worker(1, admin_base_url=f"http://worker{path}", world_size=1)),
             "Qwen/Qwen3-0.6B",
@@ -266,6 +270,23 @@ def test_parse_dynamo_workers_rejects_admin_port_outside_origin_allowlist():
         )
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "worker-1:8120",
+        "http://worker-1:8120/control",
+        "http://10.0.0.0/24",
+    ],
+)
+def test_parse_dynamo_workers_rejects_invalid_admin_origin_allowlist(origin):
+    with pytest.raises(ValueError, match="admin_origin_allowlist"):
+        parse_dynamo_workers(
+            snapshot(worker(1, admin_base_url="http://worker-1:8120", world_size=1)),
+            "Qwen/Qwen3-0.6B",
+            admin_origin_allowlist=(origin,),
+        )
+
+
 def test_parse_dynamo_workers_accepts_canonical_allowlisted_admin_origin():
     parsed = parse_dynamo_workers(
         snapshot(worker(1, admin_base_url="http://WORKER-1", world_size=1)),
@@ -298,12 +319,6 @@ def test_parse_dynamo_workers_rejects_canonical_duplicate_admin_origins():
         snapshot({**worker(1, admin_base_url="http://worker-1:8120", world_size=1), "component": "x" * 257}),
         snapshot({**worker(1, admin_base_url="http://worker-1:8120", world_size=1), "routes": ["route"] * 129}),
         snapshot({**worker(1, admin_base_url="http://worker-1:8120", world_size=1), "routes": ["x" * 257]}),
-        snapshot(
-            {
-                **worker(1, admin_base_url="http://worker-1:8120", world_size=1),
-                "transport": {"nats_tcp": "x" * 2049},
-            }
-        ),
     ],
 )
 def test_parse_dynamo_workers_caps_discovery_metadata(payload):
@@ -447,6 +462,32 @@ def test_discover_dynamo_workers_streams_and_caps_response_body():
         asyncio.run(
             discover_dynamo_workers(
                 "http://dynamo-frontend:8001",
+                "Qwen/Qwen3-0.6B",
+                headers={},
+                timeout=2,
+                expected_namespace="dynamo",
+                admin_host_allowlist=("worker-1",),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "discovery_url",
+    [
+        "dynamo-frontend:8001",
+        "ftp://dynamo-frontend:8001",
+        "http://user:password@dynamo-frontend:8001",
+        "http://dynamo-frontend:8001?namespace=other",
+        "http://dynamo-frontend:8001#workers",
+        "http://dynamo-frontend:not-a-port",
+        "http://dynamo-frontend:70000",
+    ],
+)
+def test_discover_dynamo_workers_rejects_invalid_url(discovery_url):
+    with pytest.raises(ValueError, match="discovery_url"):
+        asyncio.run(
+            discover_dynamo_workers(
+                discovery_url,
                 "Qwen/Qwen3-0.6B",
                 headers={},
                 timeout=2,

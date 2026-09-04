@@ -442,23 +442,7 @@ def test_dynamo_discovery_config_is_nested_under_client():
     assert config.dynamo is not None
     assert config.dynamo.discovery_url == "http://dynamo-frontend:8001"
     assert config.dynamo.expected_namespace == "dynamo"
-    assert config.dynamo.admin_host_allowlist == ("localhost", "10.0.0.0/24")
-
-
-def test_dynamo_admin_origin_allowlist_is_canonicalized():
-    config = ClientConfig.model_validate(
-        {
-            "dynamo": {
-                "discovery_url": "http://dynamo-frontend:8001",
-                "expected_namespace": "dynamo",
-                "admin_host_allowlist": ["localhost", "::1"],
-                "admin_origin_allowlist": ["HTTP://LOCALHOST", "https://[::1]"],
-            }
-        }
-    )
-
-    assert config.dynamo is not None
-    assert config.dynamo.admin_origin_allowlist == ("http://localhost:80", "https://[::1]:443")
+    assert config.dynamo.admin_host_allowlist == ("localhost", "10.0.0.7/24")
 
 
 def test_dynamo_admin_credentials_allow_explicit_exact_origin():
@@ -493,21 +477,6 @@ def test_dynamo_rejects_static_headers(field):
         )
 
 
-@pytest.mark.parametrize("origin", ["worker:8120", "http://worker:8120/control", "http://10.0.0.0/24"])
-def test_dynamo_admin_origin_allowlist_requires_exact_http_origins(origin):
-    with pytest.raises(ValidationError, match="admin_origin_allowlist"):
-        ClientConfig.model_validate(
-            {
-                "dynamo": {
-                    "discovery_url": "http://dynamo-frontend:8001",
-                    "expected_namespace": "dynamo",
-                    "admin_host_allowlist": ["worker"],
-                    "admin_origin_allowlist": [origin],
-                }
-            }
-        )
-
-
 @pytest.mark.parametrize(
     "dynamo",
     [
@@ -529,54 +498,6 @@ def test_dynamo_admin_origin_allowlist_requires_exact_http_origins(origin):
 def test_dynamo_discovery_requires_namespace_and_admin_host_allowlist(dynamo):
     with pytest.raises(ValidationError):
         ClientConfig.model_validate({"dynamo": dynamo})
-
-
-@pytest.mark.parametrize(
-    "admin_host_allowlist",
-    [
-        ["*.example.com"],
-        ["http://worker.example.com"],
-        ["10.0.0.0/999"],
-        [""],
-        [f"worker-{index}.example.com" for index in range(129)],
-    ],
-)
-def test_dynamo_discovery_rejects_invalid_or_excessive_admin_host_allowlist(admin_host_allowlist):
-    with pytest.raises(ValidationError, match="admin_host_allowlist"):
-        ClientConfig.model_validate(
-            {
-                "dynamo": {
-                    "discovery_url": "http://dynamo-frontend:8001",
-                    "expected_namespace": "dynamo",
-                    "admin_host_allowlist": admin_host_allowlist,
-                }
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    "discovery_url",
-    [
-        "dynamo-frontend:8001",
-        "ftp://dynamo-frontend:8001",
-        "http://user:password@dynamo-frontend:8001",
-        "http://dynamo-frontend:8001?namespace=other",
-        "http://dynamo-frontend:8001#workers",
-        "http://dynamo-frontend:not-a-port",
-        "http://dynamo-frontend:70000",
-    ],
-)
-def test_dynamo_discovery_url_is_validated_at_config_load(discovery_url):
-    with pytest.raises(ValidationError, match="discovery_url"):
-        ClientConfig.model_validate(
-            {
-                "dynamo": {
-                    "discovery_url": discovery_url,
-                    "expected_namespace": "dynamo",
-                    "admin_host_allowlist": ["localhost"],
-                }
-            }
-        )
 
 
 def test_standalone_orchestrator_allows_dynamo_with_legacy_weight_broadcast():

@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
-import pydantic
 from pydantic import AfterValidator, Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
@@ -40,21 +39,6 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
-def validate_http_url(value: str, *, field_name: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError(f"{field_name} must be an http(s) URL with a host")
-    try:
-        parsed.port
-    except ValueError as error:
-        raise ValueError(f"{field_name} must contain a valid port") from error
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError(f"{field_name} must not contain credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError(f"{field_name} must not contain a query or fragment")
-    return value.rstrip("/")
-
-
 def normalize_admin_host_allowlist_entry(value: str) -> str:
     value = value.strip()
     if not value:
@@ -76,23 +60,6 @@ def normalize_admin_host_allowlist_entry(value: str) -> str:
     return hostname
 
 
-def canonical_http_origin(value: str, *, field_name: str) -> str:
-    normalized_url = validate_http_url(value, field_name=field_name)
-    parsed = urlsplit(normalized_url)
-    assert parsed.hostname is not None
-    hostname = normalize_admin_host_allowlist_entry(parsed.hostname)
-    formatted_hostname = f"[{hostname}]" if ":" in hostname else hostname
-    default_port = 80 if parsed.scheme == "http" else 443
-    return f"{parsed.scheme}://{formatted_hostname}:{parsed.port or default_port}"
-
-
-def normalize_admin_origin_allowlist_entry(value: str) -> str:
-    normalized_url = validate_http_url(value, field_name="dynamo.admin_origin_allowlist")
-    if urlsplit(normalized_url).path not in ("", "/"):
-        raise ValueError("dynamo.admin_origin_allowlist entries must be origins without paths")
-    return canonical_http_origin(normalized_url, field_name="dynamo.admin_origin_allowlist")
-
-
 def is_secure_or_loopback_url(value: str) -> bool:
     parsed = urlsplit(value)
     if parsed.scheme == "https":
@@ -106,24 +73,6 @@ def is_secure_or_loopback_url(value: str) -> bool:
         return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
         return False
-
-
-def _validate_header_environment_mapping(values: dict[str, str]) -> dict[str, str]:
-    if len(values) > 128:
-        raise ValueError("header environment mappings must not contain more than 128 entries")
-    for header_name, environment_name in values.items():
-        if not header_name or len(header_name) > 256 or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", header_name):
-            raise ValueError(f"invalid HTTP header name {header_name!r}")
-        if (
-            not environment_name
-            or len(environment_name) > 256
-            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment_name)
-        ):
-            raise ValueError(f"invalid environment variable name {environment_name!r}")
-    normalized_names = [name.lower() for name in values]
-    if len(normalized_names) != len(set(normalized_names)):
-        raise ValueError("header environment mappings must not contain case-insensitive duplicate names")
-    return dict(values)
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
@@ -275,28 +224,6 @@ class DynamoConfig(BaseConfig):
 
     admin_headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
     """Direct admin header names mapped to environment variables."""
-
-    @pydantic.field_validator("discovery_url")
-    @classmethod
-    def validate_discovery_url(cls, value: str) -> str:
-        return validate_http_url(value, field_name="dynamo.discovery_url")
-
-    @pydantic.field_validator("admin_host_allowlist")
-    @classmethod
-    def validate_admin_host_allowlist(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(normalize_admin_host_allowlist_entry(value) for value in values))
-
-    @pydantic.field_validator("admin_origin_allowlist")
-    @classmethod
-    def validate_admin_origin_allowlist(cls, values: tuple[str, ...] | None) -> tuple[str, ...] | None:
-        if values is None:
-            return None
-        return tuple(dict.fromkeys(normalize_admin_origin_allowlist_entry(value) for value in values))
-
-    @pydantic.field_validator("headers_from_env", "admin_headers_from_env")
-    @classmethod
-    def validate_header_environment_mapping(cls, values: dict[str, str]) -> dict[str, str]:
-        return _validate_header_environment_mapping(values)
 
 
 class ClientConfig(BaseConfig):

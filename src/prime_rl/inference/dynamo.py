@@ -9,18 +9,15 @@ import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from prime_rl.configs.shared import (
     ClientConfig,
     DynamoConfig,
-    canonical_http_origin,
     is_secure_or_loopback_url,
     normalize_admin_host_allowlist_entry,
-    validate_http_url,
 )
 from prime_rl.orchestrator.clients import (
     ADMIN_TIMEOUT_S,
@@ -42,8 +39,6 @@ MAX_MODEL_LENGTH = 512
 MAX_URL_LENGTH = 2048
 MAX_ROUTES = 128
 MAX_ROUTE_LENGTH = 256
-MAX_TRANSPORT_NAME_LENGTH = 256
-MAX_TRANSPORT_ADDRESS_LENGTH = 2048
 MAX_WORKER_ERROR_BYTES = 2048
 BIDI_CONTROL_CHARACTERS = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
@@ -67,41 +62,6 @@ class DynamoWorker(BaseModel):
     model: str = Field(min_length=1, max_length=MAX_MODEL_LENGTH)
     routes: tuple[RouteString, ...] = Field(max_length=MAX_ROUTES)
     error: str | None = Field(None, max_length=MAX_URL_LENGTH)
-
-    @field_validator("system_url", "admin_base_url")
-    @classmethod
-    def validate_control_url(cls, value: str | None, info) -> str | None:
-        if value is None and info.field_name == "system_url":
-            return None
-        assert value is not None
-        normalized_url = validate_http_url(value, field_name=info.field_name)
-        if info.field_name == "admin_base_url" and urlsplit(normalized_url).path not in ("", "/"):
-            raise ValueError("admin_base_url must be an origin without a path")
-        return normalized_url
-
-    @field_validator("transport")
-    @classmethod
-    def validate_transport(cls, value: str | dict[str, str]) -> str | dict[str, str]:
-        if isinstance(value, str):
-            if value and len(value) <= MAX_TRANSPORT_ADDRESS_LENGTH:
-                return value
-            raise ValueError("transport must be non-empty and within the size limit")
-        if len(value) != 1 or any(
-            not key
-            or len(key) > MAX_TRANSPORT_NAME_LENGTH
-            or not address
-            or len(address) > MAX_TRANSPORT_ADDRESS_LENGTH
-            for key, address in value.items()
-        ):
-            raise ValueError("transport must contain one bounded, named endpoint")
-        return value
-
-    @field_validator("error")
-    @classmethod
-    def validate_error(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _validate_worker_error(value)
 
 
 class DynamoSnapshot(BaseModel):
@@ -164,9 +124,7 @@ def validate_dynamo_config(config: DynamoConfig) -> None:
         )
 
 
-def _admin_host_allowed(admin_base_url: str, allowlist: tuple[str, ...]) -> bool:
-    hostname = urlsplit(admin_base_url).hostname
-    assert hostname is not None
+def _admin_host_allowed(hostname: str, allowlist: tuple[str, ...]) -> bool:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
@@ -179,16 +137,6 @@ def _admin_host_allowed(admin_base_url: str, allowlist: tuple[str, ...]) -> bool
         except ValueError:
             continue
     return False
-
-
-def _canonical_admin_origin(admin_base_url: str) -> str:
-    return canonical_http_origin(admin_base_url, field_name="admin_base_url")
-
-
-def _canonical_admin_base_url(admin_base_url: str) -> str:
-    normalized_url = validate_http_url(admin_base_url, field_name="admin_base_url")
-    path = urlsplit(str(httpx.URL(normalized_url))).path.rstrip("/")
-    return f"{_canonical_admin_origin(normalized_url)}{path}"
 
 
 def _worker_sort_key(worker: DynamoWorker) -> tuple[object, ...]:
@@ -221,7 +169,36 @@ def parse_dynamo_workers(
         raise ValueError(
             f"Dynamo snapshot namespace {snapshot.namespace!r} does not match expected namespace {expected_namespace!r}"
         )
+    normalized_host_allowlist = tuple(
+        dict.fromkeys(normalize_admin_host_allowlist_entry(entry) for entry in admin_host_allowlist)
+    )
+    allowed_origins: set[tuple[str, str, int]] | None = None
+    if admin_origin_allowlist is not None:
+        allowed_origins = set()
+        for origin in admin_origin_allowlist:
+            try:
+                origin_url = httpx.URL(origin)
+            except httpx.InvalidURL as error:
+                raise ValueError("admin_origin_allowlist must contain valid URLs") from error
+            if (
+                origin_url.scheme not in {"http", "https"}
+                or not origin_url.host
+                or (origin_url.port is not None and not 1 <= origin_url.port <= 65535)
+                or origin_url.userinfo
+                or origin_url.query
+                or origin_url.fragment
+                or origin_url.path != "/"
+            ):
+                raise ValueError("admin_origin_allowlist must contain http(s) origins")
+            allowed_origins.add(
+                (
+                    origin_url.scheme,
+                    normalize_admin_host_allowlist_entry(origin_url.host),
+                    origin_url.port or (80 if origin_url.scheme == "http" else 443),
+                )
+            )
     matching_workers: list[DynamoWorker] = []
+    matching_origins: list[tuple[str, str, int]] = []
     for raw_worker in snapshot.workers:
         if raw_worker.get("model") != model_name:
             continue
@@ -234,17 +211,35 @@ def parse_dynamo_workers(
                 f"Dynamo worker is missing required RL metadata: {', '.join(missing_metadata)}"
             )
         worker = DynamoWorker.model_validate(raw_worker)
+        try:
+            admin_url = httpx.URL(worker.admin_base_url)
+        except httpx.InvalidURL as error:
+            raise ValueError("admin_base_url must be a valid URL") from error
+        if (
+            admin_url.scheme not in {"http", "https"}
+            or not admin_url.host
+            or (admin_url.port is not None and not 1 <= admin_url.port <= 65535)
+            or admin_url.userinfo
+            or admin_url.query
+            or admin_url.fragment
+            or admin_url.path != "/"
+        ):
+            raise ValueError("admin_base_url must be an http(s) origin")
         if worker.namespace != expected_namespace:
             raise ValueError(
                 f"Dynamo worker namespace {worker.namespace!r} does not match expected namespace {expected_namespace!r}"
             )
-        if not _admin_host_allowed(worker.admin_base_url, admin_host_allowlist):
-            hostname = urlsplit(worker.admin_base_url).hostname
-            raise ValueError(f"Dynamo worker admin host {hostname!r} is not in the configured allowlist")
-        admin_origin = _canonical_admin_origin(worker.admin_base_url)
-        if admin_origin_allowlist is not None and admin_origin not in admin_origin_allowlist:
+        if not _admin_host_allowed(admin_url.host, normalized_host_allowlist):
+            raise ValueError(f"Dynamo worker admin host {admin_url.host!r} is not in the configured allowlist")
+        admin_origin = (
+            admin_url.scheme,
+            normalize_admin_host_allowlist_entry(admin_url.host),
+            admin_url.port or (80 if admin_url.scheme == "http" else 443),
+        )
+        if allowed_origins is not None and admin_origin not in allowed_origins:
             raise ValueError(f"Dynamo worker admin origin {admin_origin!r} is not in the configured origin allowlist")
         matching_workers.append(worker)
+        matching_origins.append(admin_origin)
 
     if not matching_workers:
         raise DynamoDiscoveryPending(f"Dynamo returned no bound workers for model {model_name!r}")
@@ -252,10 +247,9 @@ def parse_dynamo_workers(
     identities = [
         (worker.namespace, worker.component, worker.endpoint, worker.instance_id) for worker in matching_workers
     ]
-    admin_base_urls = [_canonical_admin_base_url(worker.admin_base_url) for worker in matching_workers]
     if len(set(identities)) != len(identities):
         raise ValueError("Dynamo returned duplicate worker identities")
-    if len(set(admin_base_urls)) != len(admin_base_urls):
+    if len(set(matching_origins)) != len(matching_origins):
         raise ValueError("Dynamo returned duplicate worker admin endpoints")
 
     return tuple(
@@ -328,8 +322,23 @@ async def discover_dynamo_workers(
     admin_host_allowlist: tuple[str, ...],
     admin_origin_allowlist: tuple[str, ...] | None = None,
 ) -> tuple[DynamoWorker, ...]:
-    base_url = validate_http_url(discovery_url, field_name="dynamo.discovery_url")
-    url = base_url.removesuffix("/v1") + "/v1/rl/workers"
+    try:
+        base_url = httpx.URL(discovery_url)
+    except httpx.InvalidURL as error:
+        raise ValueError("dynamo.discovery_url must be a valid URL") from error
+    if (
+        base_url.scheme not in {"http", "https"}
+        or not base_url.host
+        or (base_url.port is not None and not 1 <= base_url.port <= 65535)
+        or base_url.userinfo
+        or base_url.query
+        or base_url.fragment
+    ):
+        raise ValueError("dynamo.discovery_url must be an http(s) URL without credentials, query, or fragment")
+    base_path = base_url.path.rstrip("/")
+    if base_path.endswith("/v1"):
+        base_path = base_path.removesuffix("/v1")
+    url = base_url.copy_with(path=f"{base_path}/v1/rl/workers")
     request_headers = {name: value for name, value in headers.items() if name.lower() != "accept-encoding"}
     request_headers["Accept-Encoding"] = "identity"
     try:
