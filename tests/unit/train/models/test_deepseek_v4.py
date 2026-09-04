@@ -76,7 +76,7 @@ _MODEL = dict(
 _MODEL_BATCH, _MODEL_SEQ = 2, 32
 _MODULE_BATCH = 2
 
-_CSA_LAYER, _HCA_LAYER = 1, 2
+_SLIDING_LAYER, _CSA_LAYER, _HCA_LAYER = 0, 1, 2
 _COMPRESS_RATE = _MODEL["compress_rates"]["compressed_sparse_attention"]
 _HCA_COMPRESS_RATE = _MODEL["compress_rates"]["heavily_compressed_attention"]
 
@@ -873,8 +873,12 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 
 @pytest.mark.parametrize(
     ("layer_idx", "doc_lens", "selection"),
-    [(_CSA_LAYER, _MID_WINDOW_DOCS, "indices"), (_HCA_LAYER, _EXACT_MULTIPLE_DOCS, "block_bias")],
-    ids=["csa", "hca"],
+    [
+        (_CSA_LAYER, _MID_WINDOW_DOCS, "indices"),
+        (_HCA_LAYER, _EXACT_MULTIPLE_DOCS, "block_bias"),
+        (_SLIDING_LAYER, _MID_WINDOW_DOCS, None),
+    ],
+    ids=["csa", "hca", "sliding"],
 )
 def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torch_rms_norm):  # noqa: F811
     """The same invariant, one whole attention layer at a time rather than one compressor.
@@ -887,8 +891,10 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     Sharper than `test_deepseek_v4`, which asserts the same property through the logits at a bf16
     floor: this runs in float32 and compares the layer's own output, forward and backward.
 
-    The two layer types return their entry selection in different forms, `selection` says which,
-    since a CSA compressor hands back the indexer's picks and an HCA one an additive bias.
+    The layer types return their entry selection in different forms, `selection` says which,
+    since a CSA compressor hands back the indexer's picks and an HCA one an additive bias. A
+    sliding layer has no compressor and so no selection at all; it reads nothing but its own
+    clipped window, which makes it the case where the boundary handling stands alone.
     """
     # Float32, which the kernel cannot run, and the `_PACKED_RTOL` bounds below were measured on
     # the dense path, so pin it rather than letting `dsv4_attn='auto'` decide. The sparse path's
@@ -897,18 +903,27 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)
 
-    q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-    _, selected = module.compressor(packed_input.detach(), q_residual, packed)
-    if selection == "indices":
-        # (batch, seq_len, top_k), with `-1` where the query had no entry left to pick.
-        assert (selected[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
-            "vacuous probe: no query of the second document picks a compressed entry"
+    if selection is None:
+        assert module.compressor is None, "a sliding layer reads nothing past its own window"
+        # The second document opens inside a window, so an unclipped one would reach back into
+        # the first. Without that the comparison below would hold under no clipping at all.
+        readable = packed.attention_mask[0, 0, doc_lens[0]] == 0
+        assert readable.sum() < module.config.sliding_window, (
+            "vacuous probe: the second document's first query is not window-clipped at the boundary"
         )
     else:
-        # (batch, 1, seq_len, n_entries) additive, `0` where the query may read the entry.
-        assert (selected[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
-            "vacuous probe: no query of the second document reads a compressed entry"
-        )
+        q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
+        _, selected = module.compressor(packed_input.detach(), q_residual, packed)
+        if selection == "indices":
+            # (batch, seq_len, top_k), with `-1` where the query had no entry left to pick.
+            assert (selected[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
+                "vacuous probe: no query of the second document picks a compressed entry"
+            )
+        else:
+            # (batch, 1, seq_len, n_entries) additive, `0` where the query may read the entry.
+            assert (selected[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
+                "vacuous probe: no query of the second document reads a compressed entry"
+            )
 
     packed_output, _ = module(packed_input, packed=packed)
     with torch.device("cuda"):
@@ -1364,3 +1379,57 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     assert hidden_states.grad is not None and hidden_states.grad.norm() > 0, (
         "the hidden states received no gradient, so nothing reached the layer's inputs"
     )
+
+
+# The HCA layer of the Flash config, which nothing else here builds: every other test at these
+# shapes takes `_FLASH_CSA_LAYER`. Documents are exact multiples of the HCA compress rate of 128,
+# so both own whole entries and only the numbering, and with it the RoPE position, moves. Measured
+# over 20 seeds the worst deviation is 3.0e-6 on the output and 4.6e-6 on a gradient, so
+# `_PACKED_RTOL` holds here with room to spare, as it does for the gather test above.
+_FLASH_HCA_LAYER = 1
+_FLASH_HCA_DOCS = (256, 512)
+
+
+def test_flash_hca_attention_packed_matches_unpacked():
+    """An HCA layer at production shapes must answer each document as if it stood alone.
+
+    HCA has no indexer and no sparse path: `DeepseekV4Attention` sends any layer that is not
+    `compressed_sparse_attention` to the dense `_eager_with_entries` regardless of `attn_impl`,
+    so there is no second implementation to compare against and this asserts self-consistency
+    rather than equivalence. What it covers is the part the toy `_MODEL` cannot reach: a compress
+    rate of 128 over 512 channels, where an entry pools 128 tokens and a document boundary that
+    the compressor failed to respect would pull a whole other document into one entry.
+
+    `test_attention_packed_matches_unpacked[hca]` asserts the same invariant at toy shapes and
+    rate 8. This is the only test that instantiates the Flash config's HCA layer at all.
+    """
+    module = flash_attention(_FLASH_HCA_LAYER, dtype=torch.float32, dsv4_attn="eager")
+    assert module.layer_type == "heavily_compressed_attention", (
+        f"expected the Flash config's HCA layer, got {module.layer_type}"
+    )
+    seq_len = sum(_FLASH_HCA_DOCS)
+    packed_input, alone_input = _flash_hidden_states(seq_len)
+    packed = _packed_context(_FLASH_HCA_DOCS, torch.float32, _flash_config())
+
+    q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
+    _, block_bias = module.compressor(packed_input.detach(), q_residual, packed)
+    assert (block_bias[:, :, _doc_slice(_FLASH_HCA_DOCS, 1)] == 0).any(), (
+        "vacuous probe: no query of the second document reads a compressed entry"
+    )
+
+    packed_output, _ = module(packed_input, packed=packed)
+    with torch.device("cuda"):
+        weight = torch.randn_like(packed_output)
+    (packed_output * weight).sum().backward()
+    packed_grads = _take_grads(module)
+
+    for index, length in enumerate(_FLASH_HCA_DOCS):
+        span = _doc_slice(_FLASH_HCA_DOCS, index)
+        alone_output, _ = module(
+            alone_input[:, span], packed=_packed_context((length,), torch.float32, _flash_config())
+        )
+        _assert_relative(packed_output[:, span], alone_output, _PACKED_RTOL, f"document {index}")
+        (alone_output * weight[:, span]).sum().backward()
+
+    _compare_accumulated_grads(module, packed_grads, rtol=_PACKED_GRAD_RTOL)
+    _assert_relative(alone_input.grad, packed_input.grad, _PACKED_GRAD_RTOL, "hidden states gradient")
