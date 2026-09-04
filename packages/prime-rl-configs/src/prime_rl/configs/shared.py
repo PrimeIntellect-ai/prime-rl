@@ -1,9 +1,11 @@
+import ipaddress
 import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
+from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -35,6 +37,92 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+def validate_http_url(value: str, *, field_name: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{field_name} must be an http(s) URL with a host")
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ValueError(f"{field_name} must contain a valid port") from error
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{field_name} must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{field_name} must not contain a query or fragment")
+    return value.rstrip("/")
+
+
+def normalize_admin_host_allowlist_entry(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("admin host allowlist entries must not be empty")
+    try:
+        if "/" in value:
+            return str(ipaddress.ip_network(value, strict=False))
+        return str(ipaddress.ip_address(value))
+    except ValueError as error:
+        if "/" in value:
+            raise ValueError(f"invalid admin host CIDR {value!r}") from error
+
+    hostname = value.rstrip(".").lower()
+    if len(hostname) > 253 or not all(
+        label and len(label) <= 63 and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+        for label in hostname.split(".")
+    ):
+        raise ValueError(f"invalid exact admin DNS host {value!r}")
+    return hostname
+
+
+def canonical_http_origin(value: str, *, field_name: str) -> str:
+    normalized_url = validate_http_url(value, field_name=field_name)
+    parsed = urlsplit(normalized_url)
+    assert parsed.hostname is not None
+    hostname = normalize_admin_host_allowlist_entry(parsed.hostname)
+    formatted_hostname = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 80 if parsed.scheme == "http" else 443
+    return f"{parsed.scheme}://{formatted_hostname}:{parsed.port or default_port}"
+
+
+def normalize_admin_origin_allowlist_entry(value: str) -> str:
+    normalized_url = validate_http_url(value, field_name="dynamo.admin_origin_allowlist")
+    if urlsplit(normalized_url).path not in ("", "/"):
+        raise ValueError("dynamo.admin_origin_allowlist entries must be origins without paths")
+    return canonical_http_origin(normalized_url, field_name="dynamo.admin_origin_allowlist")
+
+
+def _is_secure_or_loopback_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    if parsed.scheme == "https":
+        return True
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+    if hostname.rstrip(".").lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_header_environment_mapping(values: dict[str, str]) -> dict[str, str]:
+    if len(values) > 128:
+        raise ValueError("header environment mappings must not contain more than 128 entries")
+    for header_name, environment_name in values.items():
+        if not header_name or len(header_name) > 256 or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", header_name):
+            raise ValueError(f"invalid HTTP header name {header_name!r}")
+        if (
+            not environment_name
+            or len(environment_name) > 256
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment_name)
+        ):
+            raise ValueError(f"invalid environment variable name {environment_name!r}")
+    normalized_names = [name.lower() for name in values]
+    if len(normalized_names) != len(set(normalized_names)):
+        raise ValueError("header environment mappings must not contain case-insensitive duplicate names")
+    return dict(values)
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
@@ -162,6 +250,70 @@ class BaseModelConfig(BaseConfig):
     """VLM configuration. Setting this enables vision-language model support."""
 
 
+class DynamoConfig(BaseConfig):
+    discovery_url: str = Field(min_length=1, max_length=2048)
+    """Trusted Dynamo frontend URL used to discover the inference workers pinned for RL control."""
+
+    expected_namespace: str = Field(min_length=1, max_length=256)
+    """Exact Dynamo namespace expected in both the discovery snapshot and selected workers."""
+
+    admin_host_allowlist: tuple[str, ...] = Field(min_length=1, max_length=128)
+    """Exact DNS/IP hosts and IP CIDRs permitted for discovered direct admin endpoints."""
+
+    admin_origin_allowlist: tuple[str, ...] | None = Field(None, min_length=1, max_length=128)
+    """Optional exact scheme, host, and effective port origins permitted for direct admin endpoints."""
+
+    api_key_var: str | None = Field(None, min_length=1, max_length=256)
+    """Environment variable containing a discovery-only bearer token."""
+
+    headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
+    """Discovery header names mapped to environment variables."""
+
+    admin_api_key_var: str | None = Field(None, min_length=1, max_length=256)
+    """Environment variable containing a bearer token used only for discovered admin endpoints."""
+
+    admin_headers_from_env: dict[str, str] = Field(default_factory=dict, max_length=128)
+    """Direct admin header names mapped to environment variables."""
+
+    @field_validator("discovery_url")
+    @classmethod
+    def validate_discovery_url(cls, value: str) -> str:
+        return validate_http_url(value, field_name="dynamo.discovery_url")
+
+    @field_validator("admin_host_allowlist")
+    @classmethod
+    def validate_admin_host_allowlist(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(normalize_admin_host_allowlist_entry(value) for value in values))
+
+    @field_validator("admin_origin_allowlist")
+    @classmethod
+    def validate_admin_origin_allowlist(cls, values: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if values is None:
+            return None
+        return tuple(dict.fromkeys(normalize_admin_origin_allowlist_entry(value) for value in values))
+
+    @field_validator("headers_from_env", "admin_headers_from_env")
+    @classmethod
+    def validate_header_environment_mapping(cls, values: dict[str, str]) -> dict[str, str]:
+        return _validate_header_environment_mapping(values)
+
+    @model_validator(mode="after")
+    def require_exact_origins_for_admin_credentials(self):
+        has_discovery_credentials = bool(self.api_key_var or self.headers_from_env)
+        if has_discovery_credentials and not _is_secure_or_loopback_url(self.discovery_url):
+            raise ValueError("dynamo.discovery_url must use HTTPS when discovery credentials are configured")
+        has_admin_credentials = bool(self.admin_api_key_var or self.admin_headers_from_env)
+        if has_admin_credentials and self.admin_origin_allowlist is None:
+            raise ValueError("dynamo.admin_origin_allowlist is required when admin credentials are configured")
+        if has_admin_credentials and any(
+            not _is_secure_or_loopback_url(origin) for origin in self.admin_origin_allowlist or ()
+        ):
+            raise ValueError(
+                "dynamo.admin_origin_allowlist must use HTTPS or loopback when admin credentials are configured"
+            )
+        return self
+
+
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready."""
@@ -183,6 +335,9 @@ class ClientConfig(BaseConfig):
 
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):

@@ -513,6 +513,12 @@ class RLConfig(BaseConfig):
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
+        if self.orchestrator.model.client.dynamo is not None:
+            if self.weight_broadcast.type != "filesystem":
+                raise ValueError("The standalone Dynamo admin plane supports only filesystem weight broadcast")
+            if self.trainer.model.lora is not None:
+                raise ValueError("The standalone Dynamo admin plane does not support LoRA weight updates")
+
         return self
 
     @model_validator(mode="after")

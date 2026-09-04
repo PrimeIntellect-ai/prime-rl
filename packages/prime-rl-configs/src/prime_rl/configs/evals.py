@@ -120,6 +120,17 @@ class EvalsConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_dynamo_weight_broadcast(self):
+        if (
+            self.online is not None
+            and self.eval.client.dynamo is not None
+            and self.weight_broadcast is not None
+            and self.weight_broadcast.type != "filesystem"
+        ):
+            raise ValueError("The standalone Dynamo admin plane supports only filesystem weight broadcast")
+        return self
+
+    @model_validator(mode="after")
     def validate_skip_first_step_is_online_only(self):
         """``skip_first_step`` gates the base-model eval between checkpoints; a
         standalone run has only that one epoch, so skipping it would exit
