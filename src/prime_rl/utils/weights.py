@@ -153,14 +153,7 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
 def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
     """The dtype a tensor must travel to the inference engine in.
 
-    ``keep_in_fp32_for_weight_transfer`` names the tensors the inference engine's kernels require in
-    fp32, and which the trainer also holds in fp32 under the default ``optimization_dtype``. vLLM's
-    loader does not raise on a dtype mismatch: it checks only the shape and then calls
-    ``Tensor.copy_``, so a wrong wire dtype is silently converted at the receiver instead of
-    failing. The filesystem and NCCL transports share this so they cannot drift apart.
-
-    TODO: NIXL keeps its own inline copy of this rule
-    (``transports/weights/nixl/nixl.py``); fold it in once that transport settles.
+    TODO: NIXL keeps its own inline copy of this rule; unify the handling.
     """
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
