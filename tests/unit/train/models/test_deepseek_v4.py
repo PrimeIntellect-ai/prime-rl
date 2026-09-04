@@ -861,15 +861,15 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 
 
 @pytest.mark.parametrize(
-    ("layer_idx", "doc_lens", "selection"),
+    ("layer_idx", "doc_lens"),
     [
-        (_CSA_LAYER, _MID_WINDOW_DOCS, "indices"),
-        (_HCA_LAYER, _EXACT_MULTIPLE_DOCS, "block_bias"),
-        (_SLIDING_LAYER, _MID_WINDOW_DOCS, None),
+        (_CSA_LAYER, _MID_WINDOW_DOCS),
+        (_HCA_LAYER, _EXACT_MULTIPLE_DOCS),
+        (_SLIDING_LAYER, _MID_WINDOW_DOCS),
     ],
     ids=["csa", "hca", "sliding"],
 )
-def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torch_rms_norm):  # noqa: F811
+def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm):  # noqa: F811
     """The same invariant, one whole attention layer at a time rather than one compressor.
 
     Everything the layer reads past its local window comes through the compressor, so a leaking
@@ -880,10 +880,8 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     Sharper than `test_deepseek_v4`, which asserts the same property through the logits at a bf16
     floor: this runs in float32 and compares the layer's own output, forward and backward.
 
-    The layer types return their entry selection in different forms, `selection` says which,
-    since a CSA compressor hands back the indexer's picks and an HCA one an additive bias. A
-    sliding layer has no compressor and so no selection at all; it reads nothing but its own
-    clipped window, which makes it the case where the boundary handling stands alone.
+    A sliding layer has no compressor and so no entry selection at all; it reads nothing but its
+    own clipped window, which makes it the case where the boundary handling stands alone.
     """
     # Float32, which the kernel cannot run, and the `_PACKED_RTOL` bounds below were measured on
     # the dense path, so pin it rather than letting `dsv4_attn='auto'` decide. The sparse path's
@@ -892,8 +890,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
     packed = _packed_context(doc_lens, torch.float32)
 
-    if selection is None:
-        assert module.compressor is None, "a sliding layer reads nothing past its own window"
+    if module.compressor is None:
         # The second document opens inside a window, so an unclipped one would reach back into
         # the first. Without that the comparison below would hold under no clipping at all.
         readable = packed.attention_mask[0, 0, doc_lens[0]] == 0
@@ -902,17 +899,11 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, selection, _torc
         )
     else:
         q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-        _, selected = module.compressor(packed_input.detach(), q_residual, packed)
-        if selection == "indices":
-            # (batch, seq_len, top_k), with `-1` where the query had no entry left to pick.
-            assert (selected[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
-                "vacuous probe: no query of the second document picks a compressed entry"
-            )
-        else:
-            # (batch, 1, seq_len, n_entries) additive, `0` where the query may read the entry.
-            assert (selected[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
-                "vacuous probe: no query of the second document reads a compressed entry"
-            )
+        _, picks = module.compressor(packed_input.detach(), q_residual, packed)
+        # (batch, seq_len, n_picks), with `-1` where the query had no entry left to pick.
+        assert (picks[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
+            "vacuous probe: no query of the second document picks a compressed entry"
+        )
 
     packed_output, _ = module(packed_input, packed=packed)
     with torch.device("cuda"):
