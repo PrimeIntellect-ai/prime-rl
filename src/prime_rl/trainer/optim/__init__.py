@@ -4,7 +4,7 @@ from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
-from prime_rl.trainer.models.fusions import packed_parameters
+from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -195,10 +195,10 @@ def _create_muon_optimizer(
     matrix_partitions = {}
     if model is not None:
         muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for info in packed_parameters(model):
-            partitions = info.packed.matrix_partitions(info.parameter)
-            if partitions is not None and info.parameter in muon_params:
-                matrix_partitions[info.parameter] = partitions
+        for packed_info in get_model_packed_parameters(model):
+            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+            if partitions is not None and packed_info.parameter in muon_params:
+                matrix_partitions[packed_info.parameter] = partitions
 
     optimizer = Muon(
         params=param_groups,

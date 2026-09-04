@@ -20,9 +20,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.models.fusions import (
-    load_packed_optimizer_state,
-    optimizer_state_dict_for_checkpoint,
-    optimizer_state_dict_for_runtime,
+    join_loaded_optimizer_state_for_runtime,
+    split_packed_optimizer_state_for_checkpoint,
+    write_back_loaded_packed_optimizer_state,
 )
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.world import get_world
@@ -89,7 +89,7 @@ class AppState(Stateful):
         # into, and load_state_dict packs the loaded entries back into the runtime state.
         state_dict = {
             "model": model_state_dict,
-            "optimizers": optimizer_state_dict_for_checkpoint(self.model, optimizer_state_dict),
+            "optimizers": split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict),
         }
         if self.scheduler is not None:
             scheduler_state_dict = self.scheduler.state_dict()
@@ -128,7 +128,7 @@ class AppState(Stateful):
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
-            load_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
+            write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
@@ -140,7 +140,7 @@ class AppState(Stateful):
                 self.model,
                 checkpoint_optimizers,
                 model_state_dict=state_dict["model"],
-                optim_state_dict=optimizer_state_dict_for_runtime(
+                optim_state_dict=join_loaded_optimizer_state_for_runtime(
                     self.model, state_dict["optimizers"], runtime_optimizer_state_dict
                 ),
             )

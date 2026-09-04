@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.fusions import apply_model_fusions, packed_parameters
+from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packed_parameters
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
@@ -49,41 +49,41 @@ def assert_state_dict_stays_canonical(unfused, fusion):
     reloaded = copy.deepcopy(unfused)
     apply_model_fusions(reloaded, [fusion])
     reloaded.load_state_dict(expected)
-    for info, reloaded_info in zip(packed_parameters(fused), packed_parameters(reloaded)):
-        assert torch.equal(reloaded_info.parameter, info.parameter), info.name
+    for packed_info, reloaded_info in zip(get_model_packed_parameters(fused), get_model_packed_parameters(reloaded)):
+        assert torch.equal(reloaded_info.parameter, packed_info.parameter), packed_info.fqn
     return fused
 
 
 def test_gate_up_packs_the_output_dimension():
     fused = assert_state_dict_stays_canonical(build_experts(), "gate_up")
 
-    (info,) = packed_parameters(fused)
-    assert info.name == "gate_up_proj"
-    assert info.logical_names == ("gate_proj", "up_proj")
-    assert info.parameter.shape == (NUM_EXPERTS, 2 * HIDDEN, DIM)
-    assert info.packed.matrix_partitions(info.parameter) == (HIDDEN, HIDDEN)
+    (packed_info,) = get_model_packed_parameters(fused)
+    assert packed_info.fqn == "gate_up_proj"
+    assert packed_info.logical_fqns == ("gate_proj", "up_proj")
+    assert packed_info.parameter.shape == (NUM_EXPERTS, 2 * HIDDEN, DIM)
+    assert packed_info.spec.muon_matrix_partitions(packed_info.parameter) == (HIDDEN, HIDDEN)
     assert fused.gate_proj is None and fused.up_proj is None
 
 
 def test_qkv_packs_weights_and_biases():
     fused = assert_state_dict_stays_canonical(build_attention(), "qkv")
 
-    weight, bias = packed_parameters(fused)
+    weight, bias = get_model_packed_parameters(fused)
     query_size, key_size = NUM_HEADS * HEAD_DIM, NUM_KV_HEADS * HEAD_DIM
-    assert weight.name == "qkv_proj.weight"
-    assert weight.logical_names == ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    assert weight.fqn == "qkv_proj.weight"
+    assert weight.logical_fqns == ("q_proj.weight", "k_proj.weight", "v_proj.weight")
     assert weight.parameter.shape == (query_size + 2 * key_size, DIM)
-    assert weight.packed.matrix_partitions(weight.parameter) == (query_size, key_size, key_size)
+    assert weight.spec.muon_matrix_partitions(weight.parameter) == (query_size, key_size, key_size)
 
-    assert bias.name == "qkv_proj.bias"
-    assert bias.logical_names == ("q_proj.bias", "k_proj.bias", "v_proj.bias")
+    assert bias.fqn == "qkv_proj.bias"
+    assert bias.logical_fqns == ("q_proj.bias", "k_proj.bias", "v_proj.bias")
     # A one-dimensional parameter has no output dimension to partition
-    assert bias.packed.matrix_partitions(bias.parameter) is None
+    assert bias.spec.muon_matrix_partitions(bias.parameter) is None
 
 
 def test_qkv_without_bias_packs_only_weights():
     fused = assert_state_dict_stays_canonical(build_attention(attention_bias=False), "qkv")
-    assert [info.name for info in packed_parameters(fused)] == ["qkv_proj.weight"]
+    assert [packed_info.fqn for packed_info in get_model_packed_parameters(fused)] == ["qkv_proj.weight"]
 
 
 def test_qkv_projections_match_the_unpacked_ones():
@@ -92,8 +92,10 @@ def test_qkv_projections_match_the_unpacked_ones():
     apply_model_fusions(fused, ["qkv"])
 
     hidden_states = torch.randn(1, 8, DIM)
-    for packed, expected in zip(fused.project_qkv(hidden_states), unfused.project_qkv(hidden_states)):
-        assert torch.equal(packed, expected)
+    for fused_projection, unfused_projection in zip(
+        fused.project_qkv(hidden_states), unfused.project_qkv(hidden_states)
+    ):
+        assert torch.equal(fused_projection, unfused_projection)
 
 
 def test_unsupported_fusion_fails_loudly():

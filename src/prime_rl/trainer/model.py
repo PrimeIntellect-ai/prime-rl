@@ -42,7 +42,11 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
-from prime_rl.trainer.models.fusions import apply_model_fusions, fsdp_shard_placement, load_packed_parameters
+from prime_rl.trainer.models.fusions import (
+    apply_model_fusions,
+    get_fsdp_shard_placement_fn,
+    write_back_loaded_packed_parameters,
+)
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -775,7 +779,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
-    shard_placement_fn = fsdp_shard_placement(model) if config.fusions.shard_fused_on_dim1 else None
+    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
@@ -1012,7 +1016,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
-    load_packed_parameters(model, state_dict)
+    write_back_loaded_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
