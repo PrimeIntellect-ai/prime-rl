@@ -258,8 +258,8 @@ def _dense_reference(
 
     `q` is `(batch, seq_len, heads, dim)`, `kv` is `(batch, seq_len_kv, 1, dim)`, `indices` is
     `(batch, seq_len, 1, topk)` int32 addressing `kv`'s position axis, and `sinks` is `(heads,)`.
-    The output comes back laid out like `q`. The sentinel, the trailing zero position of `kv`, is
-    masked out, as is every position no slot names.
+    The output comes back laid out like `q`. A slot holding `-1` marks an absent key and names no
+    position, so it is masked out, as is every position no slot names.
 
     A mask admits a position once however many of a query's slots name it, so this answers for a
     gather over those slots only where no query names a real position twice. `_build_indices`
@@ -653,7 +653,8 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     than from `window_indices`; the sparse one writes the window and the picks into a single index
     tensor over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
     the sparse side wrong (a window base off by one, an entry index not offset by the token count,
-    a `-1` pick surviving, a stale sentinel) still produces a finite output.
+    a `-1` pick surviving, a stale index left over from a previous layout) still produces a finite
+    output.
 
     All three layer types share the index tensor, so all three can be wrong in those ways. A
     sliding layer must name its window and nothing else, and HCA must name the contiguous run of
@@ -682,7 +683,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
         module(hidden_states, packed=packed)
 
     n_positions = recorded["kv_buf"].shape[1]
-    seq_len, n_entries = sum(doc_lens), n_positions - 1 - sum(doc_lens)
+    seq_len, n_entries = sum(doc_lens), n_positions - sum(doc_lens)
     rate = _FLASH_MODEL["compress_rates"].get(layer_type)
     assert n_entries == (0 if rate is None else sum(_entry_counts(doc_lens, rate)))
     sliding_mask = eager_reference.build_sliding_window_mask(
@@ -694,10 +695,8 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     if n_entries:
         assert admitted[:, seq_len:].any(), "vacuous probe: no query reads a compressed entry"
 
-    # The trailing position is the sentinel, which is "no key" on the sparse side and has no
-    # column at all on the dense one.
     selected = _selected_positions(recorded["indices"], n_positions)
-    assert torch.equal(selected[:, :-1], admitted), "the sparse and dense paths select different keys"
+    assert torch.equal(selected, admitted), "the sparse and dense paths select different keys"
 
 
 @requires_tilelang
@@ -710,8 +709,8 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     indices with an unguarded `atomic_add`, so an out-of-range slot corrupts whatever lies next to
     the buffer instead of raising, on every layer type that feeds it. A repeat is quieter but no
     better: the duplicated key takes twice its share of the softmax, silently reweighting the
-    output. The sentinel is exempt from uniqueness, since padding every query out to a fixed slot
-    count is exactly what it is for.
+    output. The `-1` padding is exempt from uniqueness, since padding every query out to a fixed
+    slot count is exactly what it is for.
     """
     module = flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = _FLASH_MODEL["layer_types"][layer_idx]
@@ -725,18 +724,20 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     indices, n_positions = recorded["indices"], recorded["kv_buf"].shape[1]
     # The minimum width: the window plus the picks the row actually affords, tile-aligned. A row
     # with fewer entries than the layer type's pick count gets a narrower slot count, not a
-    # sentinel-padded one.
+    # `-1`-padded one.
     tile = dsv4_attention._SLOT_TILE
     n_picks = _expected_picks(layer_type, doc_lens)
     n_slots = indices.shape[-1]
     assert n_slots == ((_FLASH_MODEL["sliding_window"] + n_picks + tile - 1) // tile) * tile
-    assert (indices >= 0).all(), "a gather slot addresses a negative KV position"
+    assert (indices >= -1).all(), "a gather slot addresses a KV position below the `-1` marker"
     assert (indices <= n_positions - 1).all(), "a gather slot addresses past the end of the KV buffer"
 
     slot_idx = indices[0, :, 0, :].long()
-    counts = torch.zeros((slot_idx.shape[0], n_positions), dtype=torch.int32, device="cuda")
-    counts.scatter_add_(1, slot_idx, torch.ones_like(slot_idx, dtype=torch.int32))
-    assert (counts[:, :-1] <= 1).all(), "a query gathers the same key twice"
+    # `-1` is counted in a throwaway column, since padding repeats it by design.
+    safe = torch.where(slot_idx >= 0, slot_idx, n_positions)
+    counts = torch.zeros((slot_idx.shape[0], n_positions + 1), dtype=torch.int32, device="cuda")
+    counts.scatter_add_(1, safe, torch.ones_like(safe, dtype=torch.int32))
+    assert (counts[:, :n_positions] <= 1).all(), "a query gathers the same key twice"
 
 
 @requires_tilelang

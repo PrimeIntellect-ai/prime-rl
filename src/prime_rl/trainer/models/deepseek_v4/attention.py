@@ -109,13 +109,13 @@ constructed. It runs once per model forward.
 
 All three layer types reach their keys the same way. `SparseAttnInputs` lays out one KV buffer,
 
-    kv_buf[b, n, 0, d]:  the packed token stream, then this layer's compressed entries, then one
-                         trailing zero position, whose index is the sentinel
+    kv_buf[b, n, 0, d]:  the packed token stream, then this layer's compressed entries, and
+                         nothing else: an absent key needs no position of its own
 
 and one int32 index tensor addressing that position axis, `n_slots = roundup(sliding_window +
 picks, 64)` slots per query: the local window first, the picks after. `picks` is the indexer's
 `min(index_topk, entries)` for CSA, `max_entries_per_doc` for HCA, and zero for a sliding layer,
-which reads its window alone. A slot with nothing to read holds the -1 sentinel, whose key is masked,
+which reads its window alone. A slot with nothing to read holds `-1`, which the kernel masks on,
 so a short window and a surplus pick cost only their loads.
 """
 
