@@ -136,12 +136,6 @@ _ATTN_IMPLS = frozenset({"eager", "gather", "kernel"})
 # does not, and pads with sentinel slots, which are masked and therefore semantically free.
 _SLOT_TILE = 64
 
-# Number of trailing zero rows in the CSA kernel's KV buffer reserved for padded slots. Widening
-# this from 1 spreads the backward's dKV atomic scatter across more rows instead of colliding
-# every padded slot from every query onto a single one; measured up to 3.5x faster at production
-# shapes. All n_sentinel rows are zero and masked, so the choice of value is otherwise inert.
-_N_SENTINEL = 64
-
 
 def _kernel_blocker(num_heads: int, head_dim: int, dtype: torch.dtype) -> str | None:
     """Why the fused kernel cannot run at this shape and dtype, or ``None`` if it can."""
@@ -233,9 +227,7 @@ def eager_attention_with_sinks(
     return attn_output.transpose(1, 2).contiguous()
 
 
-def sparse_attention_gather(
-    q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: Tensor, scale: float, n_sentinel: int = 1
-) -> Tensor:
+def sparse_attention_gather(q: Tensor, kv_buf: Tensor, indices: Tensor, sinks: Tensor, scale: float) -> Tensor:
     """Attention of each query over the `n_slots` KV positions it gathers, in `q.dtype`.
 
     `q` is `(batch, seq_len, heads, head_dim)`, `kv_buf` is `(batch, n_positions, 1, head_dim)`,
@@ -243,9 +235,8 @@ def sparse_attention_gather(
     `sinks` is `(heads,)`. The output is `(batch, seq_len, heads, head_dim)` in `q.dtype`, the
     layout `eager_attention_with_sinks` returns.
 
-    A slot holding a sentinel (one of the trailing `n_sentinel` zero positions of `kv_buf`) is
-    masked out, so a query with a short window or fewer picks than slots costs nothing but the
-    loads.
+    A slot holding the sentinel (the trailing zero position of `kv_buf`) is masked out, so a
+    query with a short window or fewer picks than slots costs nothing but the loads.
 
     This materializes the `(batch, seq_len, n_slots, head_dim)` gather: at production shapes
     (640 slots, 512 channels) in bfloat16 that is 0.66 MB per token, about 43 GB at
@@ -257,13 +248,13 @@ def sparse_attention_gather(
     differ in which keys they read and not in precision. Handed float32 tensors it is still the
     float32 oracle for a kernel accumulating in fp32.
     """
-    sent0 = kv_buf.shape[1] - n_sentinel
+    sentinel = kv_buf.shape[1] - 1
     slot_idx = indices[:, :, 0, :].to(torch.int64)  # (b, s, k)
     batch_idx = torch.arange(kv_buf.shape[0], device=kv_buf.device)[:, None, None]
     keys = kv_buf[batch_idx, slot_idx, 0].to(q.dtype)  # (b, s, k, d)
 
     logits = torch.einsum("bshd,bskd->bshk", q, keys) * scale
-    logits = logits.masked_fill((slot_idx >= sent0).unsqueeze(2), float("-inf"))
+    logits = logits.masked_fill((slot_idx == sentinel).unsqueeze(2), float("-inf"))
 
     # The sink logit is unscaled, as in `eager_attention_with_sinks`, which adds it after the
     # dot products are scaled. Subtracting the row max keeps a fully sentinel row finite, and in
@@ -495,22 +486,17 @@ class SparseAttnInputs:
 
     With `S` tokens in the packed row and `E` compressed entries for this layer's rate:
 
-        kv_buf[b, n, 0, d]:  n in [0, S)               -> local token stream
-                             n in [S, S + E)            -> compressed entry (n - S)
-                             n in [S + E, S + E + n_sentinel) -> zeros; the sentinel region
+        kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
+                             n in [S, S + E) -> compressed entry (n - S)
+                             n = S + E       -> zeros; this position is also the sentinel index
 
-    A padded slot for query `s` points at row `sent0 + (s % n_sentinel)` rather than always the
-    same row, so the backward's `dKV` atomic scatter spreads its padded-slot collisions across
-    `n_sentinel` rows instead of piling every one onto a single row.
-
-    Every index must be a real key in `[0, sent0)` or a sentinel row, which `build` guarantees.
-    Nothing validates that at runtime: the kernel would need a clamp in its inner gather loop and
-    `sparse_attention_gather` a device sync, so a bad index corrupts silently.
+    Every index must be a real key in `[0, n_positions - 1)` or the sentinel, which `build`
+    guarantees. Nothing validates that at runtime: the kernel would need a clamp in its inner
+    gather loop and `sparse_attention_gather` a device sync, so a bad index corrupts silently.
     """
 
-    kv_buf: Tensor  # (batch, n_positions, 1, head_dim), trailing n_sentinel positions are zero pad
+    kv_buf: Tensor  # (batch, n_positions, 1, head_dim), trailing position is the zero pad slot
     indices: Tensor  # (batch, seq_len, 1, n_slots) int32 into kv_buf's position axis
-    n_sentinel: int = 1  # number of trailing zero rows in kv_buf reserved for padded slots
 
     def __post_init__(self) -> None:
         # Shape invariants only. Asserting on index values would read the device, and this runs
@@ -523,13 +509,11 @@ class SparseAttnInputs:
             raise ValueError(f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}")
         if self.indices.shape[-1] % _SLOT_TILE != 0:
             raise ValueError(f"n_slots must be a multiple of {_SLOT_TILE}, got {self.indices.shape[-1]}")
-        if self.n_sentinel < 1:
-            raise ValueError(f"n_sentinel must be at least 1, got {self.n_sentinel}")
 
     @property
-    def sent0(self) -> int:
-        """The first row of the sentinel region, read off the buffer so the two cannot disagree."""
-        return self.kv_buf.shape[1] - self.n_sentinel
+    def sentinel(self) -> int:
+        """The pad position, read off the buffer so the two cannot disagree."""
+        return self.kv_buf.shape[1] - 1
 
     @classmethod
     def build(
@@ -541,34 +525,28 @@ class SparseAttnInputs:
         window_indices: Tensor,  # (seq_len, sliding_window) int32, -1 marks an invalid slot
         sliding_window: int,
         index_topk: int,
-        n_sentinel: int = 1,
     ) -> "SparseAttnInputs":
         """Lay out one CSA layer's gather slots: the local window first, then the indexer's picks."""
         batch, _, seq_len, head_dim = kv.shape
         positions = torch.cat([kv, compressed_kv], dim=2).transpose(1, 2)  # (b, S + E, 1, d)
-        # The pad rows are appended here, so the sentinel region cannot disagree with the buffer.
-        kv_buf = torch.cat([positions, positions.new_zeros(batch, n_sentinel, 1, head_dim)], dim=1).contiguous()
-        sent0 = kv_buf.shape[1] - n_sentinel
-        # Each query gets its own sentinel row, `sent0 + (s % n_sentinel)`, so padded slots from
-        # different queries scatter into different rows in the backward instead of colliding.
-        sent_row = sent0 + torch.arange(seq_len, dtype=torch.int32, device=kv.device) % n_sentinel
+        # The pad slot is appended here, so the sentinel index cannot disagree with the buffer.
+        kv_buf = torch.cat([positions, positions.new_zeros(batch, 1, 1, head_dim)], dim=1).contiguous()
+        sentinel = kv_buf.shape[1] - 1
 
         # The slot count comes from the config and never from `top_k_indices.shape[-1]`: the
         # indexer returns only `min(index_topk, n_entries)` picks, so a shape-derived width would
         # vary with sequence length and force the kernel to recompile per shape.
         n_slots = ((sliding_window + index_topk + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
-        # Allocated at full width and prefilled with each query's sentinel row, so the indices
-        # cannot be too narrow and everything the two writes below leave untouched is masked.
-        # That is what makes `n_entries < index_topk` safe.
-        indices = sent_row.view(1, seq_len, 1, 1).expand(batch, seq_len, 1, n_slots).contiguous()
+        # Allocated at full width and prefilled with the sentinel, so the indices cannot be too
+        # narrow and everything the two writes below leave untouched is masked. That is what
+        # makes `n_entries < index_topk` safe.
+        indices = torch.full((batch, seq_len, 1, n_slots), sentinel, dtype=torch.int32, device=kv.device)
         # `-1` is consumed here and never escapes into the buffer's index space.
-        indices[..., :sliding_window] = torch.where(
-            window_indices >= 0, window_indices, sent_row.view(seq_len, 1)
-        ).unsqueeze(1)
+        indices[..., :sliding_window] = torch.where(window_indices >= 0, window_indices, sentinel).unsqueeze(1)
         n_picks = top_k_indices.shape[-1]
-        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, sent_row.view(1, seq_len, 1))
+        entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, sentinel)
         indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
-        return cls(kv_buf=kv_buf, indices=indices, n_sentinel=n_sentinel)
+        return cls(kv_buf=kv_buf, indices=indices)
 
 
 class DeepseekV4Compressor(nn.Module):
@@ -926,17 +904,12 @@ class DeepseekV4Attention(nn.Module):
             window_indices=packed.window_indices,
             sliding_window=self.config.sliding_window,
             index_topk=self.config.index_topk,
-            n_sentinel=_N_SENTINEL,
         )
         q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
         if self.attn_impl == "kernel":
-            out, _lse = dsv4_sparse_attn(
-                q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling, n_sentinel=inputs.n_sentinel
-            )
+            out, _lse = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
             return out
-        return sparse_attention_gather(
-            q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling, n_sentinel=inputs.n_sentinel
-        )
+        return sparse_attention_gather(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""

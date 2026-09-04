@@ -70,7 +70,6 @@ def dsv4_sparse_attn(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    n_sentinel: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert q.is_contiguous(), "q must be contiguous"
     assert kv.is_contiguous(), "kv must be contiguous"
@@ -99,7 +98,6 @@ def dsv4_sparse_attn(
         block_I=block_I,
         num_stages=num_stages,
         threads=threads,
-        n_sentinel=n_sentinel,
     )
     out, lse = kernel(q, kv, indices, sinks.float().contiguous())
     return out, lse
@@ -117,7 +115,6 @@ def _dsv4_sparse_attn_fake(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    n_sentinel: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
@@ -131,7 +128,6 @@ def dsv4_sparse_attn_backward(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
-    n_sentinel: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     assert q.is_contiguous(), "q must be contiguous"
     assert kv.is_contiguous(), "kv must be contiguous"
@@ -150,7 +146,7 @@ def dsv4_sparse_attn_backward(
     assert lse.shape == (batch, seq_len, heads)
 
     preprocess_kernel = preprocess(heads, dim)
-    bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True, n_sentinel=n_sentinel)
+    bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True)
     postprocess_kernel = postprocess(dim, kv_group)
 
     delta = preprocess_kernel(out, grad_out)
@@ -171,17 +167,15 @@ def _dsv4_sparse_attn_backward_fake(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
-    n_sentinel: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv), torch.empty_like(lse)
 
 
 def _dsv4_sparse_attn_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, n_sentinel = inputs
+    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse, sinks)
     ctx.sm_scale = sm_scale
-    ctx.n_sentinel = n_sentinel
     ctx.mark_non_differentiable(lse)
 
 
@@ -195,13 +189,12 @@ def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: 
         indices,
         lse.detach(),
         ctx.sm_scale,
-        n_sentinel=ctx.n_sentinel,
     )
     # dp_k/dsink = -p_k * p_sink, so do[d]/dsink = -p_sink * o[d] and the head's sink gradient
     # contracts to -p_sink * Delta. The sink logit is unscaled, hence no sm_scale factor.
     p_sink = torch.exp2(sinks.float().view(1, 1, -1) * _LOG2E - lse)
     dsink = -(p_sink * delta).sum(dim=(0, 1)).to(sinks.dtype)
-    return dq, dkv, None, dsink, None, None, None, None, None
+    return dq, dkv, None, dsink, None, None, None, None
 
 
 dsv4_sparse_attn.register_autograd(_dsv4_sparse_attn_autograd_backward, setup_context=_dsv4_sparse_attn_setup_context)

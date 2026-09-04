@@ -110,10 +110,7 @@ def bwd(
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
-    n_sentinel=1,
-    predicate=False,
 ):
-    assert predicate in (False, "shared", "index"), f"unknown dKV store predicate {predicate!r}"
     assert is_causal is True, "non-casual is not supported now"
     assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     assert dtype == T.bfloat16
@@ -175,13 +172,6 @@ def bwd(
             KV_shared = T.alloc_shared([BS, D], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
-            # `predicate` picks how the dKV store below skips masked slots, whose atomics add
-            # exact zeros. Reading `mask` directly in that loop also compiles, but LayoutInference
-            # then pins the loop to the four threads owning those fragment elements instead of
-            # spreading it over all `threads`. Both live modes dodge that: "shared" restages the
-            # mask in shared memory, "index" re-reads from global the index the store address
-            # already needs. Neither constrains the store loop's thread mapping.
-            mask_shared = T.alloc_shared([BS], "bool") if predicate == "shared" else None
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
@@ -193,10 +183,10 @@ def bwd(
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
 
-            # See dsv4_sparse_attn_fwd: the last n_sentinel rows are zero KV, valid indices
-            # live in [0, S_kv - n_sentinel). Using this single bound makes the kernel work for
+            # See dsv4_sparse_attn_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
+            # live in [0, S_kv - 1). Using this single bound makes the kernel work for
             # both full and CP-sharded Q without needing a global Q offset.
-            max_kv_i = S_kv - 1 - n_sentinel
+            max_kv_i = S_kv - 2
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :], Q_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :], dO_shared)
@@ -206,8 +196,6 @@ def bwd(
             for i_i in T.Pipelined(NS, num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
                     mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] <= max_kv_i
-                    if predicate == "shared":
-                        mask_shared[bi_i] = mask[bi_i]
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
@@ -253,13 +241,13 @@ def bwd(
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
                         slot_i = i_i * BS + bi_i + s * (BS // split_store)
-                        if predicate == "shared":
-                            store = mask_shared[bi_i + s * (BS // split_store)]
-                        elif predicate == "index":
-                            store = Indices[by, s_i, bz // NH, slot_i] <= max_kv_i
-                        else:
-                            store = True
-                        if store:
+                        # A masked slot accumulates exactly zero and its atomic targets the
+                        # sentinel row, so issuing it only serializes the scatter. Skipping it
+                        # keys off a fresh global read of the index rather than the `mask`
+                        # fragment: reading that fragment here also compiles, but LayoutInference
+                        # then pins this loop to the four threads owning those fragment elements.
+                        # ptxas folds this load into the one the store address already needs.
+                        if Indices[by, s_i, bz // NH, slot_i] <= max_kv_i:
                             T.atomic_addx4(
                                 dKV[by, Indices[by, s_i, bz // NH, slot_i], bz // NH, d_i * 4],
                                 acc_dkv_shared[bi_i, d_i * 4],
