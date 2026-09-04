@@ -22,6 +22,9 @@ from prime_rl.trainer.models.deepseek_v4.attention import sparse_attention_gathe
 # provides and only on linux. The CPU CI job does install it (`uv sync --all-extras`, and tilelang
 # imports without a GPU), but a non-linux or extras-free checkout genuinely lacks it.
 try:
+    import tilelang
+    from tilelang import language as T
+
     from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
@@ -185,12 +188,14 @@ def test_kernel_forward_matches_the_gather_reference(batch, seq_len, seq_len_kv)
 def test_fully_masked_query_reads_as_zero_keys():
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
-    The kernel never clamps its gather: it relies on TileLang lowering the indirect load under
-    `0 <= idx < seq_len_kv` and zero-filling the shared tile when that fails. Nothing else pins
-    that behavior, and if a TileLang upgrade left the tile undefined instead, `p = 0` would
-    multiply against garbage and this row would go NaN rather than zero. The sink also has to
-    carry the softmax denominator by itself here, which is what keeps `lse` finite instead of
-    dividing by a zero-seeded `sumexp`.
+    The sink carries the softmax denominator by itself here, which is what keeps `lse` finite
+    instead of dividing by a zero-seeded `sumexp`.
+
+    This does not pin TileLang's out-of-range guard, although a fully masked query is where that
+    guard does the most work: a masked slot is seeded to `-inf` before the gather is ever read, so
+    its probability is zero and finite garbage would multiply out unnoticed. Only an `inf` or a
+    `NaN` in an unguarded read would reach these assertions.
+    `test_tilelang_zero_fills_an_out_of_range_gather` covers the guard itself.
     """
     batch, seq_len, seq_len_kv = 1, 256, 1024
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
@@ -203,6 +208,54 @@ def test_fully_masked_query_reads_as_zero_keys():
     expected_lse = sinks.float() * math.log2(math.e)
     assert torch.allclose(lse[:, 0], expected_lse.expand_as(lse[:, 0])), "lse must fall back to the sink term"
     assert torch.isfinite(out).all() and torch.isfinite(lse).all()
+
+
+def test_tilelang_zero_fills_an_out_of_range_gather():
+    """An index outside `[0, n_positions)` must read as zeros, not as whatever it points at.
+
+    Both kernels index `KV` and `dKV` by a value read from `Indices` and never clamp it, so a `-1`
+    slot is safe only because TileLang's `LegalizeSafeMemoryAccess` pass wraps every global access
+    it cannot prove in range with `0 <= idx < extent`. That pass is on by default and has a single
+    off switch, but nothing in TileLang documents it as a contract, and this project pins
+    `tilelang>=0.1.8` with no upper bound, so an ordinary dependency bump could take it away.
+
+    The probe is a standalone gather rather than the real kernels, which cannot observe this: they
+    seed a masked slot's logit to `-inf` before the gather is read, so its probability is zero and
+    any finite garbage multiplies out. With nothing masking the result, a lost guard shows up
+    immediately as a non-zero row.
+    """
+
+    @tilelang.jit(out_idx=[-1])
+    def gather(n_positions: int, dim: int):
+        n_slots = T.dynamic("n_slots")
+
+        @T.prim_func
+        def main(
+            Src: T.Tensor([n_positions, dim], "float32"),
+            Idx: T.Tensor([n_slots], "int32"),
+            Out: T.Tensor([n_slots, dim], "float32"),
+        ):
+            with T.Kernel(n_slots, threads=dim) as slot:
+                tile = T.alloc_shared([dim], "float32")
+                for d in T.Parallel(dim):
+                    tile[d] = Src[Idx[slot], d]
+                for d in T.Parallel(dim):
+                    Out[slot, d] = tile[d]
+
+        return main
+
+    n_positions, dim = 8, 32
+    src = (torch.arange(n_positions * dim, device="cuda", dtype=torch.float32) + 1).view(n_positions, dim)
+    # Two in range, then the four ways out: the `-1` this project marks an absent key with, a far
+    # negative, one past the end, and far past it.
+    slots = torch.tensor([0, 3, -1, -1000, n_positions, n_positions + 5], dtype=torch.int32, device="cuda")
+
+    out = gather(n_positions, dim)(src, slots)
+
+    assert torch.equal(out[0], src[0]) and torch.equal(out[1], src[3]), "an in-range index must gather its row"
+    assert torch.equal(out[2:], torch.zeros_like(out[2:])), (
+        "TileLang no longer zero-fills an out-of-range gather, so the kernels' unclamped `Indices` reads are unsafe"
+    )
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), _SHAPES, ids=_SHAPE_IDS)
