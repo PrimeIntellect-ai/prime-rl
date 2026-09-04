@@ -23,7 +23,7 @@ indexer, which needs no gradient.
 | 6 | Indexer top-k | `torch.topk` (ATen) | none usable | n/a | **have** |
 | 7 | Sliding attention | eager dense scores | none | n/a | build, reuse row 8 |
 | 8 | CSA attention | in-repo (TileLang) | Megatron (FlashMLA + cuDNN) | fwd+bwd | **have** |
-| 9 | HCA attention | eager dense scores | none | n/a | build, reuse row 8 |
+| 9 | HCA attention | eager dense scores | Megatron (FlashMLA + cuDNN) | fwd+bwd | build, reuse row 8 |
 | 10 | mHC norm + project | eager fp32 linear | deep_gemm (CUDA), vLLM (TileLang) | **fwd only** | build bwd |
 | 11 | mHC Sinkhorn | eager, 19-trip loop | Megatron (Triton) | **fwd+bwd** | **vendor** |
 | 12 | mHC stream collapse | eager broadcast + sum | Megatron (Triton fwd) | fwd+bwd (bwd unfused) | skip |
@@ -99,9 +99,10 @@ tile-ai/tilelang fork is the one exception, which is why it's what's vendored.
 **Row 1.** No fused kernel builds the band, but Megatron has the index construction:
 `csa.py:59-70` `_get_window_topk_idxs_cached` and `csa.py:225-259` `get_window_topk_idxs_thd`, free
 functions with no config dependency, returning int32 window indices with `-1` for invalid. Reusable
-for rows 7 and 9. Megatron's own attention delegates the band to the backend; its one dense builder
-is a bool mask in the eager softmax fallback. We cannot delegate, since no flash kernel takes
-`head_dim 512` on sm90.
+for rows 7 and 9. Megatron's own attention delegates the band to the backend, its `csa_sparse_attn`
+(FlashMLA fwd + cuDNN bwd), which does take `head_dim 512` on sm90 (see rows 8, 9). We cannot delegate
+to it, since that pairing is two git-branch-only dependencies with no PyPI wheel (see the "Attention"
+section above).
 
 **Row 2.** `megatron-survey.md` calls this an "interleaving mismatch". Wrong, and never true at any
 commit. Megatron's `fused_mla_yarn_rope_apply` rotates trailing channels by default (`rope_first=False`) and
@@ -128,12 +129,18 @@ same value: it quantizes q and k to UE8M0 fp8 and drops both constant scales, ig
 an argmax, so the top-k ordering is unaffected. Numerically untested, so adoption is gated on
 measuring top-k set agreement against the fp32 scorer.
 
-**Rows 7, 9.** No flash kernel takes `head_dim 512` on sm90, so there is nothing to adopt. The
-in-repo CSA kernel does not care how indices were chosen, so both are index
-construction rather than kernel work. Two constraints, though: the slot count must be a multiple of
-64 (the forward tiles at `block_I = 64`, the backward at 32), and it is a kernel-compilation key.
-That matters for HCA, where the readable entry set grows as `S / compress_rate` instead of being
-capped at `index_topk`, so the slot count varies with sequence length and recompiles.
+**Rows 7, 9.** Megatron's `csa_sparse_attn` (FlashMLA fwd + cuDNN bwd, `fused_sparse_attention.py:758`)
+serves both rows already: CSA calls it with learned top-k indices
+(`_forward_fused_indexer_training`/`_forward_fused_indexer_inference`), HCA calls the exact same
+function with deterministic "all closed compressed entries" indices
+(`_forward_fused_no_indexer`, `csa.py:1936-1961`, since HCA needs no indexer at all). Not adoptable
+regardless, since `flash_mla` and `cudnn-frontend` are git-branch-only with no PyPI wheel (see the
+"Attention" section above) — so both rows are index construction for our own in-repo kernel, not
+kernel work. The in-repo CSA kernel does not care how indices were chosen. Two constraints, though:
+the slot count must be a multiple of 64 (the forward tiles at `block_I = 64`, the backward at 32), and
+it is a kernel-compilation key. That matters for HCA, where the readable entry set grows as
+`S / compress_rate` instead of being capped at `index_topk`, so the slot count varies with sequence
+length and recompiles.
 
 **Rows 11 to 13.** The Megatron symbols are `fused_sinkhorn`, `fused_h_aggregate` (Triton forward,
 torch backward) and `fused_h_post_bda`. Row 12 stays **skip** because `torch.compile` already fuses
@@ -157,6 +164,23 @@ unweighted RMSNorm is a per-token scalar and the projection is linear.
 
 **Row 17.** quack's op is `chunked_linear_cross_entropy`. The `== (9, 0)` gate is quack's, not ours: `FusedOutputLinear` has no capability check.
 Off Hopper the call falls back to another chunked fused kernel, not to eager.
+
+## Portable From Megatron
+
+Enumerating the set of kernels we can easily import from Megatron. Requirements:
+* Available on both sm90/100 for H200/B{2,3}00 gpus
+* Only requires PyPI-avaialable deps
+
+1. `fused_mla_yarn_rope_apply.py` — partial RoPE — Triton.
+2. `fused_h_post_bda` — mHC scatter + mix — Triton.
+3. `fused_sinkhorn` — mHC Sinkhorn — Triton.
+4. `fused_h_aggregate` — mHC stream collapse — Triton forward, plain-torch backward.
+
+Excluded, arch-gated or non-PyPI:
+
+- `fused_compressor.py` — compressor pooling — equality-gates to sm100 and shims `cudnn.csa.compressor` (GitHub-only Frontend build).
+- `fused_sparse_attention.py` — CSA and HCA attention (same `csa_sparse_attn` call, different index sets) — needs `flash_mla` (`nv_dev` branch, GitHub) and `nvidia-cudnn-frontend` (GitHub, unreleased commit), neither on PyPI.
+- `fused_proj_rms_compute_h` — mHC norm + project — needs the `tileiras` cuTile compiler, not a PyPI package.
 
 ## Licensing
 
