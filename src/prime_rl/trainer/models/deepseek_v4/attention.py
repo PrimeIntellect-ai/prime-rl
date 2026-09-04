@@ -510,9 +510,8 @@ class DeepseekV4Compressor(nn.Module):
     source tokens of entry `e`'s pooling window, and `d` runs over `head_dim`. Each entry is
     RMSNormed and rotated with the `compress` RoPE at its window's first source position, which
     is what makes it comparable with the attention block's locally rotated KV stream. `forward`
-    returns the entries alongside this layer's entry selection, in whatever form the layer's
-    attention path consumes: an additive `block_bias` to concatenate onto the local sliding
-    window for the dense path, the indexer's picks for the sparse one.
+    returns the entries alongside this layer's entry selection: the per-query entry indices the
+    attention block gathers, with `-1` marking a slot the query has nothing to read into.
 
     `n_series` sets the slots `s` the gate ranges over. With `1` a token joins only its own
     window, so windows are disjoint. With `2` the projections emit two `head_dim`-wide series
@@ -699,8 +698,11 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
     """Heavily Compressed Attention compressor: the dense long-range half of an HCA layer.
 
     One series at a coarse compress rate, with disjoint windows. There is no indexer: a query
-    reads every entry whose source tokens all lie at or before it, and the returned
-    `block_bias` carries that rule.
+    reads every entry whose source tokens all lie at or before it. A document's entries are
+    numbered consecutively, so that set is the contiguous range starting at the document's first
+    entry, and the picks the layer gathers are arithmetic rather than learned. Every document is
+    afforded `max_entries_per_doc` picks; a query that has completed fewer entries than that pads
+    the rest with `-1`, as the indexer's surplus picks do.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -710,14 +712,17 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
         self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
-        batch, seq_len, _ = hidden_states.shape
+        batch = hidden_states.shape[0]
         compressed_kv = self.compress(hidden_states, packed).unsqueeze(1)
-        compressed_len = compressed_kv.shape[2]
 
-        threshold = self.causal_threshold(packed.position_ids)
-        readable = packed.token_entry_causal_mask(self.compress_rate, threshold).unsqueeze(1)
-        block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
-        return compressed_kv, block_bias.masked_fill_(~readable, float("-inf"))
+        layout = packed.compression_layouts[self.compress_rate]
+        # `threshold` counts entries within the query's own document, so it selects how far into
+        # that document's range to read, and the document's own base turns that into an entry index.
+        threshold = self.causal_threshold(packed.position_ids).unsqueeze(-1)  # (1, seq_len, 1)
+        base = layout.first_entry_of_doc[packed.tok_doc_idx][None, :, None]  # (1, seq_len, 1)
+        offsets = torch.arange(layout.max_entries_per_doc, device=hidden_states.device)
+        picks = torch.where(offsets < threshold, base + offsets, -1)
+        return compressed_kv, picks.expand(batch, -1, -1)
 
 
 COMPRESSOR_CLASSES = {
@@ -810,18 +815,12 @@ class DeepseekV4Attention(nn.Module):
 
         Returns (b, t, h, d). A sliding layer sees only its window and passes `compressed` as
         `None`; a compressed layer reaches further through its compressor's output, the entries
-        paired with this layer's entry selection in whatever form its attention path consumes:
-        an additive `block_bias` to concatenate onto the dense mask for HCA, the indexer's picks
-        to gather per query for CSA.
+        paired with the per-query indices selecting among them.
 
-        Every layer but HCA lays its slots out once, in `SparseAttnInputs`, and then differs only
-        in the attention core it hands them to, so the eager consumer is an oracle for the kernel
-        rather than a second answer to which keys a query reads.
+        Every layer lays its slots out once, in `SparseAttnInputs`, and then differs only in the
+        attention core it hands them to, so the eager consumer is an oracle for the kernel rather
+        than a second answer to which keys a query reads.
         """
-        if self.layer_type == "heavily_compressed_attention":
-            compressed_kv, block_bias = compressed
-            return self._eager_with_entries(q, kv, compressed_kv, block_bias, packed)
-
         # An unrecognized implementation raises instead of picking a path, so a mistyped
         # selection can never be measured as if it were the ask.
         if self.attn_impl not in _ATTN_IMPLS:
