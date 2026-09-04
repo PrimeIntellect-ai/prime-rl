@@ -78,14 +78,17 @@ def dense_mask_from_indices(indices: Tensor, n_positions: int, dtype: torch.dtyp
 
     `indices` is the `(batch, seq_len, 1, n_slots)` int32 tensor addressing the position axis of a
     `kv_buf` with `n_positions` positions. The mask is `0` on every position at least one of a
-    query's slots names and `-inf` everywhere else, with the sentinel position `n_positions - 1`
-    always `-inf`: it is `kv_buf`'s zero pad, not a real key.
+    query's slots names and `-inf` everywhere else. A slot holding `-1` marks an absent key and
+    names no position, so it admits nothing.
 
     This is the fused kernel's oracle. Rendering the index tensor dense and running naive eager
     attention over the whole `kv_buf` exercises the index contract and the attention math together.
     """
     batch, seq_len, _, _ = indices.shape
-    mask = torch.full((batch, 1, seq_len, n_positions), float("-inf"), dtype=dtype, device=indices.device)
-    mask.scatter_(-1, indices[:, :, 0, :].to(torch.int64).unsqueeze(1), 0.0)
-    mask[..., n_positions - 1] = float("-inf")
-    return mask
+    slots = indices[:, :, 0, :].to(torch.int64).unsqueeze(1)
+    # `scatter_` has no negative indexing, so `-1` goes into one throwaway column that is sliced
+    # back off. Clamping it to a real position instead would admit a key the query cannot read.
+    safe = torch.where(slots >= 0, slots, n_positions)
+    mask = torch.full((batch, 1, seq_len, n_positions + 1), float("-inf"), dtype=dtype, device=indices.device)
+    mask.scatter_(-1, safe, 0.0)
+    return mask[..., :n_positions].contiguous()
