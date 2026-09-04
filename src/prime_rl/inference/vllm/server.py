@@ -20,6 +20,7 @@ from prime_rl.utils.logger import get_logger
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_dp_coordinator_startup_timeout,
+    monkey_patch_engine_handshake_timeout,
     monkey_patch_nano_v3_reasoning_parser,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
@@ -41,6 +42,9 @@ monkey_patch_strip_routed_experts_from_chat()
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
 monkey_patch_dp_coordinator_startup_timeout()
+# vLLM 0.28 hard-codes the engine/front-end handshake to five minutes. Apply
+# prime-rl's configured timeout in the API process before it spawns engine cores.
+monkey_patch_engine_handshake_timeout()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
