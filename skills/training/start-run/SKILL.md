@@ -27,21 +27,6 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`.
-- Runtime fusions default to `model.fusions.enabled = ["gate_up", "qkv"]` and are
-  skipped for LoRA. To run an unfused comparison, explicitly pass
-  `--model.fusions.enabled '[]'` (prefix with `trainer.` for `rl`). Checkpoints use
-  canonical projection names, so a resume can change this list. Muon requires the
-  pinned Dion revision's `matrix_partitions` support; after changing the pin, sync
-  before submitting GPU jobs and use `uv run --no-sync` inside verification jobs
-  to keep their environment fixed.
-  For BF16 gradient comparisons, repeat the unfused calculation too: expert bias
-  broadcasts use CUDA reductions that can differ between identical runs. Record
-  this noise separately from matrix-weight gradients and optimizer equivalence.
-  Check optimizer resumes with identical supplied gradients when asserting exact
-  next updates. Dion calls both Muon and AdamW's first moment `momentum`; their
-  decay coefficients are `mu` and `beta1`, respectively.
-  Distributed offload diagnostics need both Gloo (CPU) and NCCL (CUDA) backends
-  to gather CPU-resident DTensor state, as the trainer's process group provides.
 - For gradients, FP32 masters, optimizer state, and optimizer-in-backward CPU execution, set
   `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
   CPU optimizer kernel, only supports AdamW and SignSGD (SignSGD is stateless and
@@ -59,8 +44,6 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
-- Fake-data runs generate random inference logprobs, so their mismatch KL does
-  not measure trainer/inference agreement. Use a live inference run for that check.
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
 - NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
