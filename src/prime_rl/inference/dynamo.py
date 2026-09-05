@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field
@@ -23,11 +22,6 @@ from prime_rl.orchestrator.clients import (
 )
 from prime_rl.utils.logger import get_logger
 
-DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
-MAX_DISCOVERY_BODY_BYTES = 1024 * 1024
-MAX_ADMIN_RESPONSE_BYTES = 1024 * 1024
-MAX_DISCOVERY_WORKERS = 128
-
 
 class DynamoWorker(BaseModel):
     admin_base_url: str
@@ -35,48 +29,20 @@ class DynamoWorker(BaseModel):
 
 
 class DynamoSnapshot(BaseModel):
-    protocol_version: int = Field(
-        strict=True,
-        ge=DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION,
-        le=DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION,
-    )
-    workers: tuple[dict[str, Any], ...] = Field(max_length=MAX_DISCOVERY_WORKERS)
+    protocol_version: Literal[1]
+    workers: tuple[dict[str, object], ...]
 
 
 class DynamoDiscoveryPending(RuntimeError):
     """The discovery endpoint is healthy but has not published a complete worker set."""
 
 
-async def _bounded_json_request(
-    client: httpx.AsyncClient,
-    method: str,
-    path: str,
-    *,
-    max_response_bytes: int = MAX_ADMIN_RESPONSE_BYTES,
-    **kwargs,
-) -> object:
-    request_headers = kwargs.pop("headers", {})
-    request_headers = {name: value for name, value in request_headers.items() if name.lower() != "accept-encoding"}
-    request_headers["Accept-Encoding"] = "identity"
-    async with client.stream(method, path, headers=request_headers, **kwargs) as response:
-        response.raise_for_status()
-        content_encoding = response.headers.get("Content-Encoding")
-        if content_encoding and content_encoding.strip().lower() != "identity":
-            raise ValueError(f"Dynamo endpoint returned unsupported Content-Encoding {content_encoding!r}")
-        body = bytearray()
-        async for chunk in response.aiter_raw():
-            if len(body) + len(chunk) > max_response_bytes:
-                raise ValueError(f"Dynamo response body exceeds {max_response_bytes} bytes")
-            body.extend(chunk)
-    return json.loads(body)
-
-
-def parse_dynamo_workers(
+def parse_dynamo_worker(
     payload: object,
     model_name: str,
     *,
     expected_admin_host: str | None = None,
-) -> tuple[DynamoWorker, ...]:
+) -> DynamoWorker:
     snapshot = DynamoSnapshot.model_validate(payload)
     matching_workers: list[DynamoWorker] = []
     for raw_worker in snapshot.workers:
@@ -84,12 +50,9 @@ def parse_dynamo_workers(
             continue
         if raw_worker.get("error") is not None:
             raise DynamoDiscoveryPending("Dynamo worker is not ready")
-        missing_metadata = [name for name in ("admin_base_url", "world_size") if raw_worker.get(name) is None]
-        if missing_metadata:
-            raise DynamoDiscoveryPending(
-                f"Dynamo worker is missing required RL metadata: {', '.join(missing_metadata)}"
-            )
-        if type(raw_worker["world_size"]) is not int or raw_worker["world_size"] != 1:
+        if raw_worker.get("admin_base_url") is None:
+            raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url")
+        if type(raw_worker.get("world_size")) is not int or raw_worker["world_size"] != 1:
             raise ValueError("Dynamo RL currently supports exactly one inference rank")
         worker = DynamoWorker.model_validate(raw_worker)
         try:
@@ -116,11 +79,11 @@ def parse_dynamo_workers(
         raise DynamoDiscoveryPending(f"Dynamo returned no bound workers for model {model_name!r}")
     if len(matching_workers) != 1:
         raise ValueError("Dynamo RL currently supports exactly one inference worker")
-    return tuple(matching_workers)
+    return matching_workers[0]
 
 
-def topology_fingerprint(workers: tuple[DynamoWorker, ...]) -> tuple[tuple[int, str], ...]:
-    return tuple((worker.instance_id, worker.admin_base_url) for worker in workers)
+def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str]:
+    return worker.instance_id, str(httpx.URL(worker.admin_base_url))
 
 
 def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
@@ -129,26 +92,21 @@ def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
         for name, env_name in client_config.headers_from_env.items()
         if (value := os.getenv(env_name)) is not None
     }
-    headers = {
-        name: value
-        for name, value in {**client_config.headers, **env_headers}.items()
-        if name.lower() != "accept-encoding"
-    }
+    headers = {**client_config.headers, **env_headers}
     api_key = os.getenv(client_config.api_key_var)
     if api_key:
         headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
         headers["Authorization"] = f"Bearer {api_key}"
-    headers["Accept-Encoding"] = "identity"
     return headers
 
 
-async def discover_dynamo_workers(
+async def discover_dynamo_worker(
     discovery_url: str,
     model_name: str,
     *,
     headers: dict[str, str],
     timeout: float,
-) -> tuple[DynamoWorker, ...]:
+) -> DynamoWorker:
     try:
         base_url = httpx.URL(discovery_url)
     except httpx.InvalidURL as error:
@@ -166,20 +124,15 @@ async def discover_dynamo_workers(
     if base_path.endswith("/v1"):
         base_path = base_path.removesuffix("/v1")
     url = base_url.copy_with(path=f"{base_path}/v1/rl/workers")
-    request_headers = {name: value for name, value in headers.items() if name.lower() != "accept-encoding"}
-    request_headers["Accept-Encoding"] = "identity"
     try:
         async with asyncio.timeout(timeout):
-            async with httpx.AsyncClient(headers=request_headers, timeout=timeout, trust_env=False) as client:
-                payload = await _bounded_json_request(
-                    client,
-                    "GET",
-                    url,
-                    max_response_bytes=MAX_DISCOVERY_BODY_BYTES,
-                )
+            async with httpx.AsyncClient(headers=headers, timeout=timeout, trust_env=False) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                payload = response.json()
     except TimeoutError as error:
         raise TimeoutError(f"Dynamo discovery request exceeded {timeout} seconds") from error
-    return parse_dynamo_workers(payload, model_name, expected_admin_host=base_url.host)
+    return parse_dynamo_worker(payload, model_name, expected_admin_host=base_url.host)
 
 
 class DynamoAdminPlane(AdminPlane):
@@ -201,7 +154,7 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
-        self._fingerprint: tuple[tuple[object, ...], ...] | None = None
+        self._fingerprint: tuple[int, str] | None = None
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()
 
@@ -218,10 +171,10 @@ class DynamoAdminPlane(AdminPlane):
     def _terminalize_nccl(self) -> None:
         self._nccl_initialization_state = "terminal"
 
-    async def _discover(self) -> tuple[DynamoWorker, ...]:
+    async def _discover(self) -> DynamoWorker:
         dynamo = self._client_config.dynamo
         assert dynamo is not None
-        return await discover_dynamo_workers(
+        return await discover_dynamo_worker(
             dynamo.discovery_url,
             self._model_name,
             headers=self._headers,
@@ -243,23 +196,23 @@ class DynamoAdminPlane(AdminPlane):
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
-        previous_fingerprint: tuple[tuple[object, ...], ...] | None = None
+        previous_fingerprint: tuple[int, str] | None = None
         last_error: Exception | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             try:
                 async with asyncio.timeout(remaining):
-                    workers = await self._discover()
-                fingerprint = topology_fingerprint(workers)
+                    worker = await self._discover()
+                fingerprint = topology_fingerprint(worker)
                 if fingerprint == previous_fingerprint:
-                    candidate_clients = self._make_worker_clients(workers)
+                    candidate_client = self._make_worker_client(worker)
                     try:
                         remaining = self._remaining(deadline)
                         async with asyncio.timeout(remaining):
-                            await check_health(candidate_clients, timeout=remaining, quiet=True)
+                            await check_health([candidate_client], timeout=remaining, quiet=True)
                     except BaseException:
-                        await asyncio.gather(*(client.aclose() for client in candidate_clients))
+                        await candidate_client.aclose()
                         raise
-                    self._bind(workers, fingerprint, candidate_clients)
+                    self._bind(worker, fingerprint, candidate_client)
                     return
                 previous_fingerprint = fingerprint
             except httpx.HTTPStatusError as error:
@@ -282,34 +235,30 @@ class DynamoAdminPlane(AdminPlane):
             raise TimeoutError("Dynamo readiness deadline expired")
         return remaining
 
-    def _make_worker_clients(self, workers: tuple[DynamoWorker, ...]) -> list[httpx.AsyncClient]:
+    def _make_worker_client(self, worker: DynamoWorker) -> httpx.AsyncClient:
         worker_timeout = min(30.0, max(1.0, float(self._timeout)))
-        return [
-            httpx.AsyncClient(
-                base_url=worker.admin_base_url,
-                headers={"Accept-Encoding": "identity"},
-                limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-                timeout=httpx.Timeout(worker_timeout),
-                trust_env=False,
-            )
-            for worker in workers
-        ]
+        return httpx.AsyncClient(
+            base_url=worker.admin_base_url,
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            timeout=httpx.Timeout(worker_timeout),
+            trust_env=False,
+        )
 
     def _bind(
         self,
-        workers: tuple[DynamoWorker, ...],
-        fingerprint: tuple[tuple[object, ...], ...],
-        clients: list[httpx.AsyncClient] | None = None,
+        worker: DynamoWorker,
+        fingerprint: tuple[int, str],
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self._fingerprint = fingerprint
-        self.clients = clients if clients is not None else self._make_worker_clients(workers)
+        self.clients = [client if client is not None else self._make_worker_client(worker)]
 
     async def ensure_topology_current(self) -> None:
         if self._nccl_initialization_state == "terminal":
             raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        previous_changed_fingerprint: tuple[tuple[object, ...], ...] | None = None
+        previous_changed_fingerprint: tuple[int, str] | None = None
         last_error: Exception | None = None
         deadline = time.monotonic() + self._timeout
         for attempt in range(3):
@@ -318,8 +267,8 @@ class DynamoAdminPlane(AdminPlane):
                 break
             try:
                 async with asyncio.timeout(remaining):
-                    workers = await self._discover()
-                fingerprint = topology_fingerprint(workers)
+                    worker = await self._discover()
+                fingerprint = topology_fingerprint(worker)
                 if fingerprint == self._fingerprint:
                     return
                 if fingerprint == previous_changed_fingerprint:
@@ -351,13 +300,13 @@ class DynamoAdminPlane(AdminPlane):
     ) -> None:
         operation_timeout = max(1.0, float(timeout))
         async with asyncio.timeout(operation_timeout + 15.0):
-            payload = await _bounded_json_request(
-                client,
-                "POST",
+            response = await client.post(
                 "/collective_rpc",
                 timeout=httpx.Timeout(connect=10.0, read=operation_timeout, write=10.0, pool=10.0),
                 json={"method": method, "timeout": operation_timeout, "args": args, "kwargs": {}},
             )
+            response.raise_for_status()
+            payload = response.json()
         if payload != {"results": [None]}:
             raise ValueError("Dynamo worker returned an invalid collective RPC response")
 

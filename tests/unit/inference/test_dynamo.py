@@ -7,7 +7,7 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
-    parse_dynamo_workers,
+    parse_dynamo_worker,
     topology_fingerprint,
 )
 from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
@@ -38,7 +38,7 @@ def snapshot(*workers: dict) -> dict:
 
 
 def parsed(*workers: dict):
-    return parse_dynamo_workers(snapshot(*workers), MODEL, expected_admin_host="worker")
+    return parse_dynamo_worker(snapshot(*workers), MODEL, expected_admin_host="worker")
 
 
 def admin_for(*workers: dict) -> DynamoAdminPlane:
@@ -54,8 +54,8 @@ def admin_for(*workers: dict) -> DynamoAdminPlane:
     return admin
 
 
-def test_parse_dynamo_workers_filters_model_and_checks_admin_host():
-    workers = parse_dynamo_workers(
+def test_parse_dynamo_worker_filters_model_and_checks_admin_host():
+    discovered_worker = parse_dynamo_worker(
         snapshot(
             worker(3),
             worker(1, model="other"),
@@ -64,36 +64,37 @@ def test_parse_dynamo_workers_filters_model_and_checks_admin_host():
         expected_admin_host="worker",
     )
 
-    assert [item.admin_base_url for item in workers] == ["http://worker:8203"]
+    assert discovered_worker.admin_base_url == "http://worker:8203"
 
     with pytest.raises(ValueError, match="does not match discovery host"):
-        parse_dynamo_workers(
+        parse_dynamo_worker(
             snapshot(worker(1, admin_base_url="http://other-worker:8201")),
             MODEL,
             expected_admin_host="worker",
         )
 
 
+def test_parse_dynamo_worker_rejects_multiple_matching_workers():
+    with pytest.raises(ValueError, match="exactly one inference worker"):
+        parse_dynamo_worker(snapshot(worker(1), worker(2)), MODEL, expected_admin_host="worker")
+
+
 @pytest.mark.parametrize(
-    ("payload", "error", "match"),
+    ("worker_update", "error", "match"),
     [
-        (snapshot({**worker(1), "admin_base_url": None}), DynamoDiscoveryPending, "admin_base_url"),
-        (snapshot({**worker(1), "world_size": 2}), ValueError, "exactly one inference rank"),
-        (
-            snapshot(worker(1), worker(2)),
-            ValueError,
-            "exactly one inference worker",
-        ),
+        ({"admin_base_url": None}, DynamoDiscoveryPending, "admin_base_url"),
+        ({"world_size": 2}, ValueError, "exactly one inference rank"),
     ],
 )
-def test_parse_dynamo_workers_rejects_invalid_discovery(payload, error, match):
+def test_parse_dynamo_worker_validates_required_singleton_metadata(worker_update, error, match):
+    payload = {**worker(1), **worker_update}
     with pytest.raises(error, match=match):
-        parse_dynamo_workers(payload, MODEL, expected_admin_host="worker")
+        parse_dynamo_worker(snapshot(payload), MODEL, expected_admin_host="worker")
 
 
 def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
-    workers = parsed(worker(1))
-    discover = AsyncMock(side_effect=[workers, workers])
+    discovered_worker = parsed(worker(1))
+    discover = AsyncMock(side_effect=[discovered_worker, discovered_worker])
     admin = setup_admin_plane(
         ClientConfig(
             base_url="http://worker:8000/v1",
@@ -158,17 +159,17 @@ def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
     asyncio.run(admin.aclose())
 
 
-def test_dynamo_delegates_non_nccl_weight_updates():
+def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
     admin = admin_for(worker(1))
 
     with (
         patch.object(admin, "ensure_topology_current", new=AsyncMock()) as ensure_topology,
         patch.object(AdminPlane, "update_weights", new=AsyncMock()) as update_weights,
     ):
-        asyncio.run(admin.update_weights(None, transport="nixl", step=1))
+        asyncio.run(admin.update_weights(tmp_path, transport="filesystem", step=1))
 
     ensure_topology.assert_awaited_once_with()
-    update_weights.assert_awaited_once_with(None, transport="nixl", step=1, on_paused=None)
+    update_weights.assert_awaited_once_with(tmp_path, transport="filesystem", step=1, on_paused=None)
     asyncio.run(admin.aclose())
 
 
@@ -177,10 +178,7 @@ def test_dynamo_nccl_initialization_failure_is_terminal():
 
     with (
         patch.object(admin, "ensure_topology_current", new=AsyncMock()),
-        patch(
-            "prime_rl.inference.dynamo._bounded_json_request",
-            new=AsyncMock(return_value={"results": ["unexpected"]}),
-        ),
+        patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=ValueError("unexpected"))),
         pytest.raises(RuntimeError, match="must restart"),
     ):
         asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
