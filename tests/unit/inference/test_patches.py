@@ -64,7 +64,10 @@ def test_fp32_lm_head_patch_delegates_across_vllm_signatures(monkeypatch, suppor
     lm_head = object()
     embedding_bias = object()
 
-    result = processor._get_logits(hidden_states, lm_head, embedding_bias, skip_gather=True)
+    if supports_skip_gather:
+        result = processor._get_logits(hidden_states, lm_head, embedding_bias, skip_gather=True)
+    else:
+        result = processor._get_logits(hidden_states, lm_head, embedding_bias)
 
     assert result == "original"
     expected = (
