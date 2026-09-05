@@ -792,9 +792,9 @@ def monkey_patch_fp32_lm_head():
         if self._fp32_lm_head_enabled:
             logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
 
-    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias, skip_gather=False):
         if not getattr(self, "_fp32_lm_head_enabled", False):
-            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
+            return _original_get_logits(self, hidden_states, lm_head, embedding_bias, skip_gather)
 
         # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
         # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
@@ -806,6 +806,8 @@ def monkey_patch_fp32_lm_head():
         if hidden_states.dim() > 2:
             logits = logits.reshape(*hidden_states.shape[:-1], -1)
 
+        if skip_gather:
+            return logits
         logits = self._gather_logits(logits)
         if logits is not None:
             logits = logits[..., : self.org_vocab_size]
