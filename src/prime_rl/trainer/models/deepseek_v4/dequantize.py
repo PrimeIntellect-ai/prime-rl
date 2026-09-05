@@ -20,7 +20,7 @@ from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import StateDict
 
-_FP4_E2M1_LUT = torch.tensor(
+FP4_E2M1_LUT = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
     dtype=torch.float32,
 )
@@ -28,7 +28,7 @@ _FP4_E2M1_LUT = torch.tensor(
 
 def _unpack_mxfp4(packed: Tensor) -> Tensor:
     """Two packed e2m1 nibbles per `int8` byte -> `float32`, doubling the last dim."""
-    lut = _FP4_E2M1_LUT.to(packed.device)
+    lut = FP4_E2M1_LUT.to(packed.device)
     u8 = packed.contiguous().view(torch.uint8)
     low_nibble = (u8 & 0xF).long()
     high_nibble = ((u8 >> 4) & 0xF).long()

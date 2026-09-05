@@ -109,7 +109,7 @@ except Exception:
 import tilelang
 from tilelang import language as T
 
-_LOG2E = 1.44269504
+LOG2E = 1.44269504
 
 
 @tilelang.jit(
@@ -137,7 +137,7 @@ def dsv4_sparse_attn_fwd(
         sm_scale = (1.0 / dim) ** 0.5
     # Both names are kept: the sink logit enters the softmax unscaled, so seeding the running max
     # with it means dividing by the raw scale that every `exp2` site below multiplies back in.
-    sm_scale_mul_reciprocal_log2 = sm_scale * _LOG2E
+    sm_scale_mul_reciprocal_log2 = sm_scale * LOG2E
 
     batch = T.dynamic("batch")
     seq_len = T.dynamic("seq_len")

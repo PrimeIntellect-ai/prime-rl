@@ -112,8 +112,8 @@ All three layer types reach their keys the same way. `SparseAttnInputs` lays out
     kv_buf[b, n, 0, d]:  the packed token stream, then this layer's compressed entries, and
                          nothing else: an absent key needs no position of its own
 
-and one int32 index tensor addressing that position axis, `n_slots = roundup(sliding_window +
-picks, 64)` slots per query: the local window first, the picks after. `picks` is the indexer's
+and one int32 index tensor addressing that position axis, `sliding_window + picks` slots per
+query: the local window first, the picks after. `picks` is the indexer's
 `min(index_topk, entries)` for CSA, `max_entries_per_doc` for HCA, and zero for a sliding layer,
 which reads its window alone. A slot with nothing to read holds `-1`, which the kernel masks on,
 so a short window and a surplus pick cost only their loads.
@@ -138,12 +138,6 @@ try:
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
-
-# The forward kernel tiles the gather-slot axis at `block_I = 64` and the backward at
-# `block_size = 32`, so the slot count must be a multiple of `lcm(64, 32) = 64`. The production
-# config's `sliding_window + index_topk = 128 + 512 = 640` satisfies it for free; a toy config
-# does not, and pads with `-1` slots, which are masked and therefore semantically free.
-_SLOT_TILE = 64
 
 
 def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
@@ -292,11 +286,11 @@ class PackedContext:
             if layer_type in config.compress_rates
         }
 
-        # `s` reads `n` in its own document with `0 <= s - n < W`; since `n <= s` only the lower bound binds.
+        # A token attends the last `sliding_window` positions (itself included), clipped to its own
+        # document.
         window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
         window_indices = torch.where(slots <= tok_idx[:, None], slots, -1).to(torch.int32)
-        # TODO: slab is `window_base[s] + arange(W)`; passing both separately saves 4*W bytes/token if W % block_I == 0.
 
         return cls(
             position_ids=position_ids,
@@ -363,10 +357,8 @@ class SparseAttnInputs:
         kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
                              n in [S, S + E) -> compressed entry (n - S)
 
-    Every index must be a real key in `[0, n_positions)` or `-1`, which marks an absent key. This
-    is the same marker `window_indices` and the indexer's picks already use, so nothing has to be
-    translated on the way in. Nothing validates it at runtime either, since checking would cost a
-    device sync per layer per step, so an out-of-range index corrupts silently.
+    Every index must be a real key in `[0, n_positions)` or `-1`, which marks an absent key, which
+    `build` enforces.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
@@ -381,8 +373,6 @@ class SparseAttnInputs:
             raise ValueError(f"indices must be (batch, seq_len, 1, n_slots), got {tuple(self.indices.shape)}")
         if self.indices.shape[0] != self.kv_buf.shape[0]:
             raise ValueError(f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}")
-        if self.indices.shape[-1] % _SLOT_TILE != 0:
-            raise ValueError(f"n_slots must be a multiple of {_SLOT_TILE}, got {self.indices.shape[-1]}")
 
     @classmethod
     def build(
@@ -393,32 +383,28 @@ class SparseAttnInputs:
         top_k_indices: Tensor | None = None,  # (batch, seq_len, n_picks) int64, -1 marks a surplus pick
         window_indices: Tensor,  # (seq_len, sliding_window) int32, -1 marks an invalid slot
     ) -> "SparseAttnInputs":
-        """Lay out one layer's gather slots: the local window first, then any compressed picks."""
+        """Lay out one layer's gather slots: the local window first, then any compressed picks.
+
+        A layer with no entries passes neither `compressed_kv` nor `top_k_indices`, receiving only
+        the local sliding window.
+        """
         if (compressed_kv is None) != (top_k_indices is None):
             raise ValueError("compressed_kv and top_k_indices describe the same entries: pass both or neither")
         batch, _, seq_len, _ = kv.shape
+
         positions = kv if compressed_kv is None else torch.cat([kv, compressed_kv], dim=2)
         kv_buf = positions.transpose(1, 2).contiguous()  # (b, S + E, 1, d)
 
-        sliding_window = window_indices.shape[-1]
-        n_picks = 0 if top_k_indices is None else top_k_indices.shape[-1]
-        # TODO: taking the width from the picks tensor cannot under-allocate, but it does vary, and
-        # `n_slots` is part of the kernel's tilelang specialization key, so each distinct width
-        # costs one compile (disk-cached, so once ever). CSA saturates at `sliding_window +
-        # index_topk` once a row carries `index_topk` entries; HCA's width tracks the longest
-        # document in the batch and keeps varying. Widths read from config would pin one kernel per
-        # layer type, at the cost of masking slots short documents never use and of a declared
-        # budget that can disagree with the picks it is meant to hold.
-        n_slots = ((sliding_window + n_picks + _SLOT_TILE - 1) // _SLOT_TILE) * _SLOT_TILE
-        # Prefilled with `-1`, so every slot the writes below leave untouched is masked.
-        indices = torch.full((batch, seq_len, 1, n_slots), -1, dtype=torch.int32, device=kv.device)
-        # `window_indices` already marks an unused slot with `-1`, the same marker the kernel masks
-        # on, so it goes in unchanged.
-        indices[..., :sliding_window] = window_indices.unsqueeze(1)
-        if top_k_indices is not None:
-            # A surplus pick is `-1` and stays `-1`; a real pick shifts past the local token stream.
-            entry_slots = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
-            indices[..., sliding_window : sliding_window + n_picks] = entry_slots.unsqueeze(2).to(torch.int32)
+        window = window_indices[None, :, None, :].expand(batch, seq_len, 1, -1)
+        if top_k_indices is None:
+            return cls(kv_buf=kv_buf, indices=window.contiguous())
+
+        # A surplus pick is `-1` and stays `-1`; a real one names an entry, which sits past the
+        # token stream in `kv_buf`, hence the shift by `seq_len`.
+        # NOTE: the attention kernel recompiles for every unique `indices.shape[-1]` value. If
+        # recompilation becomes a bottleneck, consider padding to fixed length with -1 values.
+        picks = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
+        indices = torch.cat([window, picks[:, :, None, :].to(torch.int32)], dim=-1)
         return cls(kv_buf=kv_buf, indices=indices)
 
 
@@ -748,7 +734,7 @@ class DeepseekV4Attention(nn.Module):
         # two only agree at zero. The default is 0.0 but a config may set it.
         assert self.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
-        out, _lse = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
+        out, _ = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
         return out
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:

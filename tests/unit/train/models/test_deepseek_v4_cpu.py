@@ -16,7 +16,7 @@ from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_
 
 # The attention half of the toy config the GPU tests run: 4 heads over 32 channels, which the
 # fused kernel cannot tile. Everything else is shrunk to whatever still builds one layer on a CPU.
-_TOY_ATTENTION = dict(
+TOY_ATTENTION = dict(
     vocab_size=64,
     hidden_size=128,
     num_hidden_layers=1,
@@ -89,7 +89,7 @@ def test_deepseek_v4_attn_impl_never_serializes():
     underscore prefix buys nothing on its own. A checkpoint that shipped `_attn_impl="eager"` would
     load and train, silently on the dense reference path at a fraction of the throughput.
     """
-    config = DeepseekV4Config(**_TOY_ATTENTION, _attn_impl="eager")
+    config = DeepseekV4Config(**TOY_ATTENTION, _attn_impl="eager")
 
     assert config._attn_impl == "eager", "the knob must still be readable in memory"
     assert "_attn_impl" not in config.to_dict()
@@ -108,7 +108,7 @@ def test_deepseek_v4_attention_rejects_a_config_the_kernel_cannot_tile():
     message has to name the offending head count, or the reader is sent to the wrong knob.
     """
     with pytest.raises(ValueError, match=r"heads per group but this shape has 4\b"):
-        DeepseekV4Attention(DeepseekV4Config(**_TOY_ATTENTION, _attn_impl="kernel"), layer_idx=0)
+        DeepseekV4Attention(DeepseekV4Config(**TOY_ATTENTION, _attn_impl="kernel"), layer_idx=0)
 
 
 def test_dense_mask_admits_the_final_kv_position():

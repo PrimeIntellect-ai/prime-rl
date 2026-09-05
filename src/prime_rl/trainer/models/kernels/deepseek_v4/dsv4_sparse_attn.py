@@ -19,11 +19,30 @@ except Exception:
 
 import tilelang
 import torch
+import torch.nn.functional as F
 
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_bwd import bwd, postprocess, preprocess
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd import dsv4_sparse_attn_fwd
 
-_LOG2E = 1.44269504
+LOG2E = 1.44269504
+
+# The forward tiles the gather-slot axis at `block_I = 64` and the backward at `block_size = 32`,
+# so the slot count must be a multiple of `lcm(64, 32) = 64`.
+SLOT_TILE = 64
+
+
+def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
+    """Widen the gather-slot axis to a multiple of the tile, marking the slots that adds absent.
+
+    Callers state the slots they mean and this covers the difference, so the tile stays a fact
+    about these kernels rather than something the modeling code has to lay out for them. A `-1`
+    slot is masked, so the padding changes no output. Production widths are usually aligned
+    already (`sliding_window + index_topk = 128 + 512 = 640`), and then this returns its argument.
+    """
+    remainder = indices.shape[-1] % SLOT_TILE
+    if remainder == 0:
+        return indices
+    return F.pad(indices, (0, SLOT_TILE - remainder), value=-1).contiguous()
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
@@ -84,9 +103,10 @@ def dsv4_sparse_attn(
     )
     shape_error = sparse_attn_shape_error(heads, kv_group, dim)
     assert shape_error is None, shape_error
-    topk = indices.shape[-1]
-    assert indices.shape == (batch, seq_len, kv_group, topk)
+    assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
+    indices = _pad_slots_to_tile(indices)
+    topk = indices.shape[-1]
 
     kernel = dsv4_sparse_attn_fwd(
         heads,
@@ -141,9 +161,10 @@ def dsv4_sparse_attn_backward(
     # This op is public, so it repeats the forward's shape checks rather than trusting autograd.
     shape_error = sparse_attn_shape_error(heads, kv_group, dim)
     assert shape_error is None, shape_error
-    topk = indices.shape[-1]
-    assert indices.shape == (batch, seq_len, kv_group, topk)
+    assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
+    indices = _pad_slots_to_tile(indices)
+    topk = indices.shape[-1]
 
     preprocess_kernel = preprocess(heads, dim)
     bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True)
@@ -192,7 +213,7 @@ def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: 
     )
     # dp_k/dsink = -p_k * p_sink, so do[d]/dsink = -p_sink * o[d] and the head's sink gradient
     # contracts to -p_sink * Delta. The sink logit is unscaled, hence no sm_scale factor.
-    p_sink = torch.exp2(sinks.float().view(1, 1, -1) * _LOG2E - lse)
+    p_sink = torch.exp2(sinks.float().view(1, 1, -1) * LOG2E - lse)
     dsink = -(p_sink * delta).sum(dim=(0, 1)).to(sinks.dtype)
     return dq, dkv, None, dsink, None, None, None, None
 

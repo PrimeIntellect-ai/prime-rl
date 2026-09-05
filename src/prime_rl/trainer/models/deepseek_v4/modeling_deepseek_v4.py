@@ -78,7 +78,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
 # the `selection_bias` prime-rl's router keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
-_KEEP_IN_FP32_MODULES = (
+KEEP_IN_FP32_MODULES = (
     "attn_hc",
     "ffn_hc",
     "hc_head",
@@ -133,7 +133,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return any(module_name in name for module_name in _KEEP_IN_FP32_MODULES)
+        return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
