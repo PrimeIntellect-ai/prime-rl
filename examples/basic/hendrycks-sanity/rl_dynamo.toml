@@ -4,6 +4,9 @@ seq_len = 2048
 [model]
 name = "Qwen/Qwen3-0.6B"
 
+[weight_broadcast]
+type = "nccl"
+
 [deployment]
 num_train_gpus = 1
 num_infer_gpus = 1
@@ -26,7 +29,11 @@ env.agent.runtime.type = "subprocess"
 [trainer.optim]
 lr = 3e-6
 
-[inference]
+[orchestrator.model.client]
+base_url = "http://localhost:8000/v1"
+
+[orchestrator.model.client.dynamo]
+discovery_url = "http://localhost:8001"
 
 [orchestrator.renderer]
 name = "qwen3"
