@@ -98,15 +98,6 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_muon_all_to_all_warmup_config(enabled):
-    from prime_rl.configs.trainer import MuonConfig
-
-    assert MuonConfig().warmup_all_to_all is False
-    config = cli(SFTConfig, args=["--optim.type", "muon", "--optim.warmup-all-to-all", str(enabled).lower()])
-    assert config.optim.warmup_all_to_all is enabled
-
-
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})

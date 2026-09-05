@@ -15,7 +15,7 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.trainer.optim import setup_optimizer, warmup_muon_process_groups
+from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -143,7 +143,6 @@ def train(config: TrainerConfig):
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
-    warmup_muon_process_groups(config.optim, parallel_dims)
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None

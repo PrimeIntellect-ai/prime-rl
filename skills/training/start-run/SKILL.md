@@ -27,14 +27,6 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`.
-- For multi-node Muon first-update all-to-all hangs, opt into
-  `optim.warmup_all_to_all = true` (RL: `trainer.optim.warmup_all_to_all`). This
-  warms the main and expert-shard Muon process groups before model loading with
-  a BF16 list all-to-all. It temporarily uses 12 MiB per group peer for send and
-  receive buffers, released after each group. It does not change allocator,
-  precision, or NCCL environment settings. Check for the `Finished warming Muon`
-  logs and completed optimizer steps; successful warm-up alone is not training
-  validation. This is an opt-in workaround, not a general NCCL hang fix.
 - For gradients, FP32 masters, optimizer state, and optimizer-in-backward CPU execution, set
   `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
   CPU optimizer kernel, only supports AdamW and SignSGD (SignSGD is stateless and

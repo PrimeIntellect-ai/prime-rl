@@ -479,9 +479,6 @@ class AdamWConfig(BaseOptimizerConfig):
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
 
-    warmup_all_to_all: bool = False
-    """Warm Muon process-group peer connections before model loading to work around first-update NCCL hangs."""
-
     mu: float = Field(0.95, ge=0)
     """Momentum factor for the Muon algorithm."""
 
