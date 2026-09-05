@@ -85,6 +85,17 @@ class CompileConfig(BaseConfig):
     """Compile transformer blocks with ``fullgraph=True``."""
 
 
+class FusionsConfig(BaseConfig):
+    enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
+    """Runtime parameter fusions. ``gate_up`` runs each MoE expert's gate and up projections as one grouped GEMM; ``qkv`` runs attention's q, k and v projections as one GEMM. Only modules that support a fusion are packed, checkpoints keep the canonical parameter names and shapes, and fusions are skipped when LoRA is enabled. Set to ``[]`` to disable."""
+
+    raise_on_fail: bool = False
+    """Fail at startup when no module supports a requested fusion, instead of logging a warning and continuing without it."""
+
+    shard_fused_on_dim1: bool = False
+    """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
+
+
 class IndexCacheConfig(BaseConfig):
     topk_freq: int = Field(1, ge=1)
     """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
@@ -239,6 +250,9 @@ class ModelConfig(BaseModelConfig):
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
+
+    fusions: FusionsConfig = FusionsConfig()
+    """Runtime parameter fusions, on by default."""
 
     ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()
     """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
