@@ -100,6 +100,22 @@ def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
     return headers
 
 
+def resolve_dynamo_discovery_url(client_config: ClientConfig) -> str:
+    dynamo = client_config.dynamo
+    if dynamo is None or not dynamo.enabled:
+        raise ValueError("Dynamo discovery is not enabled")
+    if dynamo.discovery_url is not None:
+        return dynamo.discovery_url
+
+    try:
+        base_url = httpx.URL(client_config.base_url)
+    except httpx.InvalidURL as error:
+        raise ValueError("Set dynamo.discovery_url when client.base_url is not a valid URL") from error
+    if base_url.port is None or base_url.port == 65535:
+        raise ValueError("Set dynamo.discovery_url when client.base_url has no incrementable port")
+    return str(base_url.copy_with(port=base_url.port + 1, path="", query=None, fragment=None, userinfo=b""))
+
+
 async def discover_dynamo_worker(
     discovery_url: str,
     model_name: str,
@@ -145,8 +161,9 @@ class DynamoAdminPlane(AdminPlane):
         *,
         poll_interval: float = 1.0,
     ) -> None:
-        if client_config.dynamo is None:
+        if client_config.dynamo is None or not client_config.dynamo.enabled:
             raise ValueError("Dynamo discovery configuration is required")
+        self._discovery_url = resolve_dynamo_discovery_url(client_config)
         self._client_config = client_config
         self._model_name = model_name
         self._poll_interval = poll_interval
@@ -172,10 +189,8 @@ class DynamoAdminPlane(AdminPlane):
         self._nccl_initialization_state = "terminal"
 
     async def _discover(self) -> DynamoWorker:
-        dynamo = self._client_config.dynamo
-        assert dynamo is not None
         return await discover_dynamo_worker(
-            dynamo.discovery_url,
+            self._discovery_url,
             self._model_name,
             headers=self._headers,
             timeout=min(30.0, max(1.0, float(self._timeout))),

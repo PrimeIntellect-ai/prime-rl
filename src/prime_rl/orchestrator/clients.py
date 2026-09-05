@@ -184,7 +184,8 @@ class AdminPlane:
 
 
 def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
-    if client_config.dynamo is not None:
+    dynamo = client_config.dynamo
+    if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)

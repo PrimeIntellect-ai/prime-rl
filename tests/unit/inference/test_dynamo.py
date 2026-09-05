@@ -105,6 +105,7 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
         MODEL,
     )
     assert isinstance(admin, DynamoAdminPlane)
+    assert admin._discovery_url == "http://worker:8001"
     admin._poll_interval = 0
 
     with (
@@ -117,6 +118,44 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
     assert discover.await_count == 2
     assert str(admin.clients[0].base_url) == "http://worker:8201"
     asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_plane_derives_discovery_url_from_client_port():
+    admin = setup_admin_plane(
+        ClientConfig(
+            base_url="http://worker:8000/v1",
+            dynamo={"enabled": True},
+        ),
+        MODEL,
+    )
+
+    assert isinstance(admin, DynamoAdminPlane)
+    assert admin._discovery_url == "http://worker:8001"
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_plane_can_be_disabled():
+    admin = setup_admin_plane(
+        ClientConfig(
+            base_url="http://worker:8000/v1",
+            dynamo={"enabled": False},
+        ),
+        MODEL,
+    )
+
+    assert type(admin) is AdminPlane
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_discovery_url_derivation_requires_an_explicit_port():
+    with pytest.raises(ValueError, match="Set dynamo.discovery_url"):
+        setup_admin_plane(
+            ClientConfig(
+                base_url="http://worker/v1",
+                dynamo={"enabled": True},
+            ),
+            MODEL,
+        )
 
 
 def test_dynamo_admin_plane_rejects_confirmed_topology_drift():

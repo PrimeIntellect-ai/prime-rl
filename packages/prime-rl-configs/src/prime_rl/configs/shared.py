@@ -163,7 +163,10 @@ class BaseModelConfig(BaseConfig):
 
 
 class DynamoConfig(BaseConfig):
-    discovery_url: str = Field(min_length=1, max_length=2048)
+    enabled: bool = True
+    """Enable Dynamo worker discovery for the inference admin plane."""
+
+    discovery_url: str | None = Field(default=None, min_length=1, max_length=2048)
     """Dynamo frontend URL used to discover inference workers for RL control."""
 
 

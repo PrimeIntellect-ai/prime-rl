@@ -30,10 +30,10 @@ env.agent.runtime.type = "subprocess"
 lr = 3e-6
 
 [orchestrator.model.client]
-base_url = "http://localhost:8000/v1"
+base_url = "http://127.0.0.1:8000/v1"
 
 [orchestrator.model.client.dynamo]
-discovery_url = "http://localhost:8001"
+enabled = true
 
 [orchestrator.renderer]
 name = "qwen3"
