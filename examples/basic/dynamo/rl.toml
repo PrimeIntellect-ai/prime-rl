@@ -1,0 +1,41 @@
+max_steps = 5
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[orchestrator]
+batch_size = 32
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.train.source]]
+name = "hendrycks-math"
+env.taskset.id = "math-env"
+env.taskset.dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
+env.taskset.dataset_subset = "default"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator.model.client]
+base_url = "http://127.0.0.1:8000/v1"
+
+[orchestrator.model.client.dynamo]
+enabled = true
+
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = false
+
