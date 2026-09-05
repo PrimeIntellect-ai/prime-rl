@@ -601,8 +601,27 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
 
 
+class MXRefitWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    run_uid: str
+    """Per-run token shared with the orchestrator; see the shared mx_refit config.
+
+    Required rather than defaulted on purpose. Both sides derive version uids from
+    it, so two independently generated values would leave the orchestrator polling
+    a uid the trainer never created -- a startup hang rather than an error. Failing
+    at config parse is the cheaper failure.
+    """
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | MXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 

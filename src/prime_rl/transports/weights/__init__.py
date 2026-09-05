@@ -7,6 +7,7 @@ from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune_broadcasts_beyond
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
+from prime_rl.transports.weights.mx_refit import MXRefitWeightReceiver, MXRefitWeightSender
 from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
 from prime_rl.transports.weights.nixl import NIXLWeightReceiver, NIXLWeightSender
 
@@ -24,6 +25,7 @@ def setup_weight_sender(
     config: WeightBroadcastConfig,
     parallel_dims: ParallelDims,
     lora_config: LoRAConfig | None = None,
+    model_name: str | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
@@ -31,6 +33,10 @@ def setup_weight_sender(
         return FileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "nixl":
         return NIXLWeightSender(output_dir, config, parallel_dims)
+    elif config.type == "mx_refit":
+        if model_name is None:
+            raise ValueError("mx_refit weight broadcast requires model_name")
+        return MXRefitWeightSender(output_dir, config, parallel_dims, model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
 
@@ -47,5 +53,7 @@ def setup_weight_receiver(
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "nixl":
         return NIXLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+    elif config.type == "mx_refit":
+        return MXRefitWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
