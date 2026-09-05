@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
@@ -15,6 +16,23 @@ from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
+
+
+def _warmup_muon_process_group(group: dist.ProcessGroup) -> None:
+    """Establish NCCL peer connections before Muon's first optimizer step."""
+    size = dist.get_world_size(group)
+    if size <= 1 or dist.get_backend(group) != "nccl":
+        return
+
+    get_logger().info(f"Warming Muon all-to-all connections on group {group.group_name} ({size} ranks)")
+    device = torch.device("cuda", torch.cuda.current_device())
+    # Use a bulk list all-to-all, matching Dion's path rather than a scalar
+    # collective that may leave bulk-transfer peer channels uninitialized.
+    inputs = [torch.zeros(3 * 1024 * 1024, dtype=torch.bfloat16, device=device) for _ in range(size)]
+    outputs = [torch.empty_like(tensor) for tensor in inputs]
+    dist.all_to_all(outputs, inputs, group=group, async_op=True).wait()
+    torch.cuda.synchronize()
+    get_logger().info(f"Finished warming Muon all-to-all connections on group {group.group_name}")
 
 
 def setup_optimizer(
@@ -196,4 +214,7 @@ def _create_muon_optimizer(
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
     )
+    _warmup_muon_process_group(distributed_mesh.get_group())
+    if expert_params and parallel_dims.ep_enabled:
+        _warmup_muon_process_group(parallel_dims.get_mesh("dp_shard_mod_ep").get_group())
     return optimizer
