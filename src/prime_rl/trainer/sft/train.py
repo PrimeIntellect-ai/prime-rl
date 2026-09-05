@@ -26,7 +26,7 @@ from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer, warmup_muon_process_groups
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -157,6 +157,7 @@ def train(config: SFTConfig):
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
+    warmup_muon_process_groups(config.optim, parallel_dims)
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
