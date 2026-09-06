@@ -149,6 +149,38 @@ class AdminPlane:
             )
         )
 
+    async def initialize_nixl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+        workers_per_server = inference_world_size // len(self.clients)
+
+        async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
+            await _admin_post(
+                admin_client,
+                "/init_broadcaster",
+                timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+                json={
+                    "host": host,
+                    "port": port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": timeout,
+                    "quantize_in_weight_transfer": False,
+                    "session_id": session_id,
+                },
+            )
+
+        await asyncio.gather(
+            *(initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(self.clients))
+        )
+
     async def update_weights(
         self,
         weight_dir: Path | None,
@@ -443,28 +475,12 @@ async def init_nixl_broadcast(
     inference_world_size: int,
     session_id: str,
 ) -> None:
-    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    admin_clients = admin_plane.clients
-    workers_per_server = inference_world_size // len(admin_clients)
-
-    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json={
-                "host": host,
-                "port": port,
-                "rank_offset": rank_offset,
-                "inference_world_size": inference_world_size,
-                "timeout": timeout,
-                "quantize_in_weight_transfer": False,
-                "session_id": session_id,
-            },
-        )
-
-    await asyncio.gather(
-        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
+    await admin_plane.initialize_nixl(
+        host=host,
+        port=port,
+        timeout=timeout,
+        inference_world_size=inference_world_size,
+        session_id=session_id,
     )
 
 

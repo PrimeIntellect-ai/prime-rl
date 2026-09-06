@@ -22,10 +22,20 @@ from prime_rl.orchestrator.clients import (
 )
 from prime_rl.utils.logger import get_logger
 
+_REQUIRED_ENGINE_ROUTES = {
+    "init_weights_update_group",
+    "pause_generation",
+    "resume_generation",
+    "update_weights_from_distributed",
+}
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
 
 class DynamoWorker(BaseModel):
     admin_base_url: str
     instance_id: int = Field(ge=0, strict=True)
+    admin_protocol: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
 
 
 class DynamoSnapshot(BaseModel):
@@ -50,11 +60,23 @@ def parse_dynamo_worker(
             continue
         if raw_worker.get("error") is not None:
             raise DynamoDiscoveryPending("Dynamo worker is not ready")
-        if raw_worker.get("admin_base_url") is None:
-            raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url")
-        if type(raw_worker.get("world_size")) is not int or raw_worker["world_size"] != 1:
+        admin_base_url = raw_worker.get("admin_base_url")
+        admin_protocol = "collective_rpc"
+        if admin_base_url is None:
+            admin_base_url = raw_worker.get("system_url")
+            if admin_base_url is not None:
+                routes = raw_worker.get("routes")
+                if not isinstance(routes, list) or not _REQUIRED_ENGINE_ROUTES.issubset(routes):
+                    raise DynamoDiscoveryPending("Dynamo worker has not advertised the required admin routes")
+                admin_protocol = "engine_routes"
+        if admin_base_url is None:
+            raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url or system_url")
+        world_size = raw_worker.get("world_size", 1)
+        if type(world_size) is not int or world_size != 1:
             raise ValueError("Dynamo RL currently supports exactly one inference rank")
-        worker = DynamoWorker.model_validate(raw_worker)
+        worker = DynamoWorker.model_validate(
+            {**raw_worker, "admin_base_url": admin_base_url, "admin_protocol": admin_protocol}
+        )
         try:
             admin_url = httpx.URL(worker.admin_base_url)
         except httpx.InvalidURL as error:
@@ -69,7 +91,10 @@ def parse_dynamo_worker(
             or admin_url.path != "/"
         ):
             raise ValueError("admin_base_url must be an http(s) origin")
-        if expected_admin_host is not None and admin_url.host != expected_admin_host:
+        matching_host = admin_url.host == expected_admin_host or (
+            admin_url.host in _LOOPBACK_HOSTS and expected_admin_host in _LOOPBACK_HOSTS
+        )
+        if expected_admin_host is not None and not matching_host:
             raise ValueError(
                 f"Dynamo worker admin host {admin_url.host!r} does not match discovery host {expected_admin_host!r}"
             )
@@ -82,8 +107,8 @@ def parse_dynamo_worker(
     return matching_workers[0]
 
 
-def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str]:
-    return worker.instance_id, str(httpx.URL(worker.admin_base_url))
+def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str, str]:
+    return worker.instance_id, str(httpx.URL(worker.admin_base_url)), worker.admin_protocol
 
 
 def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
@@ -171,9 +196,11 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
-        self._fingerprint: tuple[int, str] | None = None
+        self._fingerprint: tuple[int, str, str] | None = None
+        self._admin_protocol: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()
+        self._terminal = False
 
     def _require_uninitialized_nccl(self) -> None:
         if self._nccl_initialization_state != "uninitialized":
@@ -187,6 +214,7 @@ class DynamoAdminPlane(AdminPlane):
 
     def _terminalize_nccl(self) -> None:
         self._nccl_initialization_state = "terminal"
+        self._terminal = True
 
     async def _discover(self) -> DynamoWorker:
         return await discover_dynamo_worker(
@@ -211,7 +239,7 @@ class DynamoAdminPlane(AdminPlane):
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
-        previous_fingerprint: tuple[int, str] | None = None
+        previous_fingerprint: tuple[int, str, str] | None = None
         last_error: Exception | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             try:
@@ -262,18 +290,19 @@ class DynamoAdminPlane(AdminPlane):
     def _bind(
         self,
         worker: DynamoWorker,
-        fingerprint: tuple[int, str],
+        fingerprint: tuple[int, str, str],
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._fingerprint = fingerprint
+        self._admin_protocol = worker.admin_protocol
         self.clients = [client if client is not None else self._make_worker_client(worker)]
 
     async def ensure_topology_current(self) -> None:
-        if self._nccl_initialization_state == "terminal":
+        if self._terminal:
             raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        previous_changed_fingerprint: tuple[int, str] | None = None
+        previous_changed_fingerprint: tuple[int, str, str] | None = None
         last_error: Exception | None = None
         deadline = time.monotonic() + self._timeout
         for attempt in range(3):
@@ -314,16 +343,58 @@ class DynamoAdminPlane(AdminPlane):
         args: list[object],
     ) -> None:
         operation_timeout = max(1.0, float(timeout))
+        if self._admin_protocol == "collective_rpc":
+            path = "/collective_rpc"
+            body = {"method": method, "timeout": operation_timeout, "args": args, "kwargs": {}}
+        elif method == "init_broadcaster":
+            path = "/engine/init_weights_update_group"
+            names = (
+                "host",
+                "port",
+                "rank_offset",
+                "inference_world_size",
+                "timeout",
+                "quantize_in_weight_transfer",
+                "session_id",
+            )
+            body = {"engine_rpc": method, **dict(zip(names, args, strict=True))}
+        else:
+            path = "/engine/update_weights_from_distributed"
+            body = {"engine_rpc": method, "weight_dir": args[0]}
+
         async with asyncio.timeout(operation_timeout + 15.0):
             response = await client.post(
-                "/collective_rpc",
+                path,
                 timeout=httpx.Timeout(connect=10.0, read=operation_timeout, write=10.0, pool=10.0),
-                json={"method": method, "timeout": operation_timeout, "args": args, "kwargs": {}},
+                json=body,
             )
             response.raise_for_status()
             payload = response.json()
-        if payload != {"results": [None]}:
-            raise ValueError("Dynamo worker returned an invalid collective RPC response")
+        if self._admin_protocol == "collective_rpc":
+            if payload != {"results": [None]}:
+                raise ValueError("Dynamo worker returned an invalid collective RPC response")
+        elif not isinstance(payload, dict) or payload.get("status") != "ok":
+            raise ValueError("Dynamo worker returned an invalid engine-route response")
+
+    async def _set_generation_paused(self, paused: bool) -> None:
+        if self._admin_protocol == "collective_rpc":
+            if paused:
+                await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
+            else:
+                await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
+            return
+
+        operation = "pause_generation" if paused else "resume_generation"
+        body = {"mode": "keep", "clear_cache": False} if paused else {}
+        response = await self.clients[0].post(
+            f"/engine/{operation}",
+            timeout=httpx.Timeout(connect=10.0, read=ADMIN_TIMEOUT_S, write=10.0, pool=10.0),
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            raise ValueError(f"Dynamo worker {operation} failed")
 
     async def update_weights(
         self,
@@ -333,7 +404,7 @@ class DynamoAdminPlane(AdminPlane):
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        if transport != "nccl":
+        if transport == "filesystem":
             async with self._mutation_lock:
                 await self.ensure_topology_current()
                 await super().update_weights(
@@ -343,22 +414,26 @@ class DynamoAdminPlane(AdminPlane):
                     on_paused=on_paused,
                 )
             return
-        if weight_dir is None:
+        if transport == "nccl" and weight_dir is None:
             raise ValueError(f"{transport.upper()} weight updates require a broadcast directory")
-        self._require_ready_nccl()
+        if transport == "nccl":
+            self._require_ready_nccl()
         async with self._mutation_lock:
             await self.ensure_topology_current()
-            self._nccl_initialization_state = "terminal"
+            if transport == "nccl":
+                self._nccl_initialization_state = "terminal"
 
             try:
-                await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
+                await self._set_generation_paused(True)
             except BaseException as failure:
+                self._terminal = True
                 raise RuntimeError("Dynamo pause failed; worker state is unknown and restart is required") from failure
 
             if on_paused is not None:
                 try:
                     on_paused()
                 except BaseException as error:
+                    self._terminal = True
                     raise RuntimeError(
                         "Dynamo pause callback failed; engines remain paused and restart is required"
                     ) from error
@@ -367,21 +442,26 @@ class DynamoAdminPlane(AdminPlane):
                     self.clients[0],
                     method="update_weights_from_path",
                     timeout=UPDATE_WEIGHTS_TIMEOUT_S,
-                    args=[weight_dir.as_posix()],
+                    args=[weight_dir.as_posix() if weight_dir is not None else None],
                 )
             except BaseException as failure:
-                self._terminalize_nccl()
+                self._terminal = True
+                if transport == "nccl":
+                    self._terminalize_nccl()
                 raise RuntimeError(
                     f"Dynamo {transport} update failed; engines remain paused and restart is required"
                 ) from failure
 
             try:
-                await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
+                await self._set_generation_paused(False)
             except BaseException as failure:
-                self._terminalize_nccl()
+                self._terminal = True
+                if transport == "nccl":
+                    self._terminalize_nccl()
                 raise RuntimeError("Dynamo resume failed; worker state is unknown and restart is required") from failure
-            self._nccl_initialization_state = "ready"
-            get_logger().info(f"Applied NCCL weights for policy v{step} to the Dynamo worker")
+            if transport == "nccl":
+                self._nccl_initialization_state = "ready"
+            get_logger().info(f"Applied {transport.upper()} weights for policy v{step} to the Dynamo worker")
 
     async def initialize_nccl(
         self,
@@ -424,6 +504,32 @@ class DynamoAdminPlane(AdminPlane):
                 ) from error
 
             self._nccl_initialization_state = "ready"
+
+    async def initialize_nixl(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        async with self._mutation_lock:
+            if inference_world_size != 1:
+                raise ValueError("Dynamo RL currently supports exactly one inference rank")
+            try:
+                await self.ensure_topology_current()
+                await self._collective_rpc(
+                    self.clients[0],
+                    method="init_broadcaster",
+                    timeout=timeout,
+                    args=[host, port, 0, 1, timeout, False, session_id],
+                )
+            except BaseException as error:
+                self._terminal = True
+                raise RuntimeError(
+                    "Dynamo NIXL initialization failed; inference workers must restart before retrying"
+                ) from error
 
     async def aclose(self) -> None:
         unique_clients = {id(client): client for client in [*self._frontend_clients, *self.clients]}
