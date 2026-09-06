@@ -25,11 +25,12 @@ group_size = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 1024
 
+[orchestrator.train.sampling.extra_body]
+top_k = 0
+
 [[orchestrator.train.source]]
-name = "hendrycks-math"
-env.taskset.id = "math-env"
-env.taskset.dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
-env.taskset.dataset_subset = "default"
+name = "gsm8k"
+env.taskset.id = "gsm8k"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
