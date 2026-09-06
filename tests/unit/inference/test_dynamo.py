@@ -294,19 +294,22 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
 
 def test_parse_dynamo_python_worker_uses_system_admin_routes():
     discovered_worker = parse_dynamo_worker(
-        snapshot(
-            {
-                "instance_id": 3,
-                "system_url": "http://worker:8081",
-                "routes": [
-                    "pause_generation",
-                    "resume_generation",
-                    "init_weights_update_group",
-                    "update_weights_from_distributed",
-                ],
-                "model": MODEL,
-            }
-        ),
+        {
+            "namespace": "prime-rl-test",
+            "workers": [
+                {
+                    "instance_id": 3,
+                    "system_url": "http://worker:8081",
+                    "routes": [
+                        "pause_generation",
+                        "resume_generation",
+                        "init_weights_update_group",
+                        "update_weights_from_distributed",
+                    ],
+                    "model": MODEL,
+                }
+            ],
+        },
         MODEL,
         expected_admin_host="worker",
     )
