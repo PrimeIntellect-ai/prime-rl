@@ -48,6 +48,14 @@ def propagate_shared_fields(data: Any) -> Any:
 
     conflicts: list[tuple[str, str]] = []
 
+    if get("inference.backend") == "dynamo":
+        client = get("orchestrator.model.client")
+        if isinstance(client, dict) and client.get("dynamo") is None:
+            client["dynamo"] = {}
+        if get("orchestrator.model.client.dynamo.enabled") is False:
+            raise ValueError("Managed Dynamo inference cannot use orchestrator.model.client.dynamo.enabled = false.")
+        fill("orchestrator.model.client.dynamo.enabled", True)
+
     def propagate(shared_path: str, *targets: str) -> None:
         """Verbatim shared → targets. Records *disagreeing* overlap into
         ``conflicts`` and fills each target if the shared value is set. Matching

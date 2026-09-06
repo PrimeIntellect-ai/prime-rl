@@ -196,6 +196,11 @@ def inference_local(config: InferenceConfig):
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     if config.dry_run:
+        if config.backend == "dynamo":
+            from prime_rl.inference.dynamo_launcher import build_dynamo_process_specs
+
+            for spec in build_dynamo_process_specs(config):
+                logger.info(f"Dynamo {spec.name}: {' '.join(spec.command)}")
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
@@ -208,6 +213,13 @@ def inference_local(config: InferenceConfig):
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
+
+    if config.backend == "dynamo":
+        from prime_rl.inference.dynamo_launcher import run_dynamo_local
+
+        logger.info(f"Starting managed Dynamo inference on http://{host}:{port}/v1\n")
+        run_dynamo_local(config)
+        return
 
     router_process: subprocess.Popen | None = None
     router_stopping = Event()

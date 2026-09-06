@@ -858,6 +858,35 @@ def test_shared_model_name_resolves_inference_parsers():
     assert config.inference.vllm.tool_call_parser == "qwen3_coder"
 
 
+def test_managed_dynamo_inference_enables_dynamo_admin_discovery():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "qwen3"}},
+            "inference": {"backend": "dynamo"},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.backend == "dynamo"
+    assert config.orchestrator.model.client.dynamo is not None
+    assert config.orchestrator.model.client.dynamo.enabled is True
+    materialized = config.model_dump()
+    materialized = {
+        **materialized,
+        "orchestrator": {
+            **materialized["orchestrator"],
+            "model": {
+                **materialized["orchestrator"]["model"],
+                "client": {**materialized["orchestrator"]["model"]["client"], "dynamo": None},
+            },
+        },
+    }
+    round_tripped = RLConfig.model_validate(materialized)
+    assert round_tripped.orchestrator.model.client.dynamo.enabled is True
+
+
 def test_explicit_inference_parser_wins_over_auto():
     """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""
