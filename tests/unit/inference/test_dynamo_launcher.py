@@ -153,6 +153,26 @@ def test_terminate_signals_process_group_after_leader_exit(monkeypatch):
     assert signals == [(1234, signal.SIGTERM), (1234, 0)]
 
 
+def test_terminate_ignores_process_group_exit_before_kill(monkeypatch):
+    signals = []
+
+    class ExitedProcess:
+        pid = 1234
+
+        def wait(self, timeout=None):
+            assert timeout == 15
+
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if sig == signal.SIGKILL:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(dynamo_launcher.os, "killpg", killpg)
+    dynamo_launcher._terminate(ExitedProcess())
+
+    assert signals == [(1234, signal.SIGTERM), (1234, 0), (1234, signal.SIGKILL)]
+
+
 def test_managed_dynamo_worker_omits_none_vllm_values():
     _, worker = build_dynamo_process_specs(
         managed_config(enable_prefix_caching=None, quantization=None),

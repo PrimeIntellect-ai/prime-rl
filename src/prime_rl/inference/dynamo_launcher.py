@@ -169,22 +169,25 @@ def build_dynamo_process_specs(
     return frontend, worker
 
 
-def _terminate(process: subprocess.Popen) -> None:
+def _signal_process_group(pid: int, requested_signal: int) -> bool:
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(pid, requested_signal)
     except ProcessLookupError:
+        return False
+    return True
+
+
+def _terminate(process: subprocess.Popen) -> None:
+    if not _signal_process_group(process.pid, signal.SIGTERM):
         return
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        _signal_process_group(process.pid, signal.SIGKILL)
         process.wait()
     else:
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return
-        os.killpg(process.pid, signal.SIGKILL)
+        if _signal_process_group(process.pid, 0):
+            _signal_process_group(process.pid, signal.SIGKILL)
 
 
 def run_dynamo_local(config: InferenceConfig) -> None:
