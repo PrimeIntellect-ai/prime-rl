@@ -903,6 +903,28 @@ def test_managed_dynamo_propagates_explicit_discovery_port():
     assert config.inference.env_vars["DYN_RL_PORT"] == "9000"
 
 
+@pytest.mark.parametrize(
+    "discovery_url, message",
+    [
+        ("https://localhost:9000", "must use http"),
+        ("http://localhost:9000/admin", "cannot include a path"),
+        ("http://remote.example:9000", "must use a loopback host"),
+    ],
+)
+def test_managed_dynamo_rejects_unmanaged_discovery_url(discovery_url, message):
+    with pytest.raises(ValueError, match=message):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"dynamo": {"discovery_url": discovery_url}}},
+                },
+                "inference": {"backend": "dynamo"},
+            }
+        )
+
+
 def test_managed_dynamo_rejects_conflicting_discovery_port():
     with pytest.raises(ValueError, match="discovery_url conflicts"):
         RLConfig.model_validate(

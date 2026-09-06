@@ -60,9 +60,16 @@ def propagate_shared_fields(data: Any) -> Any:
         discovery_url = get("orchestrator.model.client.dynamo.discovery_url")
         if discovery_url is not None:
             try:
-                discovery_port = urlsplit(discovery_url).port
+                parsed_discovery_url = urlsplit(discovery_url)
+                discovery_port = parsed_discovery_url.port
             except ValueError as error:
                 raise ValueError("Managed Dynamo discovery_url must contain a valid port.") from error
+            if parsed_discovery_url.scheme != "http":
+                raise ValueError("Managed Dynamo discovery_url must use http.")
+            if parsed_discovery_url.hostname not in ("127.0.0.1", "::1", "localhost"):
+                raise ValueError("Managed Dynamo discovery_url must use a loopback host.")
+            if parsed_discovery_url.path not in ("", "/"):
+                raise ValueError("Managed Dynamo discovery_url cannot include a path.")
             if discovery_port is None:
                 raise ValueError("Managed Dynamo discovery_url must include an explicit port.")
             configured_port = get("inference.env_vars.DYN_RL_PORT")
