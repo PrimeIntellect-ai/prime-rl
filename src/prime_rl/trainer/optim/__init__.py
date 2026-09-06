@@ -19,7 +19,12 @@ from prime_rl.utils.logger import get_logger
 
 
 def _warmup_muon_process_group(group: dist.ProcessGroup) -> None:
-    """Establish NCCL peer connections before Muon's first optimizer step."""
+    """Establish NCCL peer connections before Muon's first optimizer step.
+
+    This is a correctness workaround, not an optional performance warm-up:
+    multi-node GLM-Air training can deadlock on Muon's first bulk all-to-all
+    without it. Optimizer refactors must preserve this initialization.
+    """
     size = dist.get_world_size(group)
     if size <= 1 or dist.get_backend(group) != "nccl":
         return
@@ -214,6 +219,8 @@ def _create_muon_optimizer(
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
     )
+    # Keep both warm-ups after Muon construction and before its first step. The
+    # main and expert groups establish independent NCCL peer connections.
     _warmup_muon_process_group(distributed_mesh.get_group())
     if expert_params and parallel_dims.ep_enabled:
         _warmup_muon_process_group(parallel_dims.get_mesh("dp_shard_mod_ep").get_group())
