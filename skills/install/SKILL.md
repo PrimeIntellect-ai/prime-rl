@@ -21,6 +21,19 @@ git submodule update --init --recursive
 
 ## Sync
 
+For isolated worktree validation, select both the project and a dedicated environment explicitly:
+
+```bash
+export UV_PROJECT=/absolute/path/to/validation-worktree
+export UV_PROJECT_ENVIRONMENT=/absolute/path/to/dedicated-validation-env
+uv sync --frozen --all-extras --package prime-rl --package openseeker
+uv run --no-sync python -c 'import sys, verifiers; print(sys.executable, verifiers.__file__)'
+```
+
+Keep these paths distinct from environments used by running services or evaluations. `--no-sync`
+does not select an environment or install missing tools. Verify installed import paths before
+claiming dependency propagation; import overlays alone do not establish what a launcher installs.
+
 ```bash
 uv sync                                    # slim
 uv sync --group dev                        # + pytest, ruff, pre-commit

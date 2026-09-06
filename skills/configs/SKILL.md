@@ -63,9 +63,13 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.
+For per-run source edits, modify the TOML or generate a per-run JSON config and invoke
+`uv run rl @ path/to/config.json`. Numeric dotted CLI overrides inside lists (for example
+`--orchestrator.train.source.0.env.agent.runtime.labels`) turn `source` into an object and
+fail list validation. Preserve every other source field when generating a config.
 
-The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server), e.g. `--eval.source.0.env.taskset.id reverse-text`.
+The `sft` entrypoint takes the same eval shape at the top level for online evals:
+`[eval]` + `[[eval.source]]` (with `[inference]` for the server).
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 
