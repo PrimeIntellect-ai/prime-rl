@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 from dion import Muon
 from torch import nn
+from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
@@ -18,13 +19,18 @@ from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
-def _warmup_muon_process_group(group: dist.ProcessGroup) -> None:
+def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
     """Establish NCCL peer connections before Muon's first optimizer step.
 
     This is a correctness workaround, not an optional performance warm-up:
     multi-node GLM-Air training can deadlock on Muon's first bulk all-to-all
     without it. Optimizer refactors must preserve this initialization.
     """
+    # get_group() without a mesh dim is only valid for 1-D meshes; the
+    # replicate-only world mesh is 2-D and has no single group to warm.
+    if mesh.ndim != 1:
+        return
+    group = mesh.get_group()
     size = dist.get_world_size(group)
     if size <= 1 or dist.get_backend(group) != "nccl":
         return
@@ -221,7 +227,7 @@ def _create_muon_optimizer(
     )
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.
-    _warmup_muon_process_group(distributed_mesh.get_group())
+    _warmup_muon_mesh(distributed_mesh)
     if expert_params and parallel_dims.ep_enabled:
-        _warmup_muon_process_group(parallel_dims.get_mesh("dp_shard_mod_ep").get_group())
+        _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer
