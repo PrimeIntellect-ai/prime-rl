@@ -71,7 +71,10 @@ dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
-dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
+dynamo = [
+    "ai-dynamo==1.5.0 ; sys_platform == 'linux'",
+    "ai-dynamo-runtime==1.5.0 ; sys_platform == 'linux'",
+]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
@@ -193,15 +196,6 @@ requires-dist = [
     "torch>=2.6.0",
 ]
 
-# Mirror the upstream Pydantic compatibility correction until the next release.
-[[tool.uv.dependency-metadata]]
-name = "ai-dynamo-runtime"
-version = "1.4.2"
-requires-dist = [
-    "pydantic>=2.10.6,<=2.13.5",
-    "uvloop>=0.21.0",
-]
-
 # NIXL publishes its CUDA 12 package as a base dependency even when the
 # caller requests its CUDA 13 extra. Use the requested CUDA 13 package only.
 [[tool.uv.dependency-metadata]]
@@ -249,6 +243,8 @@ deep-gemm = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
+ai-dynamo = false
+ai-dynamo-runtime = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -257,6 +253,8 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
+ai-dynamo = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "abd90f2e7cd0877f1940e30aa206361bbf61630f" }
+ai-dynamo-runtime = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "abd90f2e7cd0877f1940e30aa206361bbf61630f", subdirectory = "lib/bindings/python" }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
