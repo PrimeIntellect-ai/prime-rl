@@ -1,73 +1,53 @@
 # Dynamo RL
 
-This example runs five steps of GRPO training on the Hendrycks math environment with `Qwen/Qwen3-0.6B`, one trainer GPU, one external Dynamo inference worker, and NCCL weight transfer.
+This example runs five steps of GRPO training on the Hendrycks math environment with `Qwen/Qwen3-0.6B`, one inference GPU, one trainer GPU, and NCCL weight transfer.
 
-Prime-RL does not launch Dynamo from this configuration. Run the frontend, worker, and trainer as separate processes. This example requires two GPUs: GPU 0 for Prime-RL training and GPU 1 for Dynamo inference.
+Prime-RL owns the full local process tree. The existing `rl` launcher starts the math environment server, orchestrator, trainer, and one `inference` service. With `backend = "dynamo"`, that inference service supervises:
 
-## Start Dynamo
+- `python -m dynamo.frontend` on port 8000.
+- `python -m dynamo.vllm --enable-rl` on the inference GPU.
 
-Install Dynamo with its vLLM backend and activate its environment. Then start the RL-enabled frontend in the first terminal:
+The integrated Dynamo vLLM worker exposes the discovery and administration routes, so this example does not require a separately built `dynamo-vllm-sidecar`.
+Managed Dynamo currently supports NCCL and NIXL weight transfer with one inference rank. Filesystem transfer, LoRA updates, sampling-mask capture, routed-expert capture, KV-cache offload, and multi-node workers are outside this first increment and fail with explicit configuration errors.
+
+
+## Install
+
+Initialize the repository and install the GPU, Dynamo, and environment dependencies:
 
 ```bash
-DYN_HTTP_HOST=127.0.0.1 DYN_ENABLE_RL=true DYN_RL_PORT=8001 python -m dynamo.frontend
+git submodule update --init --recursive
+uv sync --all-extras --all-packages
 ```
 
-Start the RL-enabled vLLM worker on GPU 1 in a second terminal:
+## Run locally
+
+From the repository root, make two GPUs visible and run the example:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 DYN_SYSTEM_HOST=127.0.0.1 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm \
-  --model Qwen/Qwen3-0.6B \
-  --enable-rl
+CUDA_VISIBLE_DEVICES=0,1 uv run rl @ examples/basic/dynamo/rl.toml
 ```
 
-The `--enable-rl` flag enables worker discovery and the administration routes used for NCCL weight updates. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` for this process so it remains available to the Prime-RL trainer.
+The launcher assigns visible GPU 0 to Dynamo inference and visible GPU 1 to the trainer. It starts every required process, waits for the Dynamo frontend and worker through the orchestrator's normal readiness path, runs exactly five optimizer steps, and cleans up the managed processes when training finishes or a child fails.
 
-These commands bind the HTTP, discovery, and worker administration endpoints to loopback. If Prime-RL and Dynamo run on different hosts, expose these endpoints only on a trusted control network; configured client headers are also sent to the discovery endpoint.
+The resolved configuration and logs are written under `outputs/<run-name>/`. Dynamo frontend and worker output is captured in the launcher's `inference.log`.
 
 ## Endpoint contract
 
-The default configuration expects:
+The example uses:
 
-- The Dynamo OpenAI-compatible frontend at `http://127.0.0.1:8000/v1`.
-- The Dynamo RL discovery endpoint at `http://127.0.0.1:8001/v1/rl/workers`.
-- Exactly one discovered worker for `Qwen/Qwen3-0.6B` with an admin URL and `world_size = 1`.
-- A vLLM worker with the Prime-RL NCCL weight-update extension enabled.
+- OpenAI-compatible inference at `http://127.0.0.1:8000/v1`.
+- Dynamo worker discovery at `http://127.0.0.1:8001/v1/rl/workers`.
+- The worker system server at `http://127.0.0.1:8081`.
 
-Verify both endpoints before starting training:
+Prime-RL derives the discovery URL from the model client URL by incrementing the explicit port and defaults the worker system port to 81 ports above the frontend, producing 8001 and 8081 for this example. Override `orchestrator.model.client.dynamo.discovery_url` when the discovery ports are not adjacent. Override the worker system port with `inference.env_vars.DYN_SYSTEM_PORT`; all three ports must be distinct.
 
-```bash
-curl --fail http://127.0.0.1:8000/v1/models
-curl --fail http://127.0.0.1:8001/v1/rl/workers
-```
+## Run with Slurm
 
-## Discovery URL
-
-The example enables Dynamo with:
-
-```toml
-[orchestrator.model.client]
-base_url = "http://127.0.0.1:8000/v1"
-
-[orchestrator.model.client.dynamo]
-enabled = true
-```
-
-When `discovery_url` is omitted, Prime-RL removes the path from `base_url` and increments its explicit non-default port by one. Here, `http://127.0.0.1:8000/v1` becomes `http://127.0.0.1:8001`.
-
-If your Dynamo frontend and discovery service do not use adjacent ports, configure the discovery endpoint explicitly:
-
-```toml
-[orchestrator.model.client.dynamo]
-enabled = true
-discovery_url = "http://dynamo.example:9000"
-```
-
-## Run training
-
-After both endpoint checks pass, run Prime-RL from the repository in a third terminal. With no managed `[inference]` section, Prime-RL assigns GPU 0 to its single trainer process and leaves the external Dynamo worker on GPU 1:
+The same managed process topology works with Prime-RL's existing single-node Slurm launcher. Apply the included overlay after the base configuration:
 
 ```bash
-uv run rl @ examples/basic/dynamo/rl.toml
+uv run rl @ examples/basic/dynamo/rl.toml @ examples/basic/dynamo/slurm.toml
 ```
 
-The example stops after five optimizer steps. Outputs are written under `outputs/` unless `output_dir` is overridden.
+Set the partition, account, or project directory in `slurm.toml` for the target cluster. The example requests two GPUs on one node. Multi-node Dynamo workers are intentionally outside this first managed-worker increment.

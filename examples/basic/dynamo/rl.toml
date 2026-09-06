@@ -10,6 +10,13 @@ type = "nccl"
 [deployment]
 num_train_gpus = 1
 num_infer_gpus = 1
+gpus_per_node = 2
+
+[inference]
+backend = "dynamo"
+
+[inference.vllm]
+max_model_len = 2048
 
 [orchestrator]
 batch_size = 32
@@ -31,9 +38,6 @@ lr = 3e-6
 
 [orchestrator.model.client]
 base_url = "http://127.0.0.1:8000/v1"
-
-[orchestrator.model.client.dynamo]
-enabled = true
 
 [orchestrator.renderer]
 name = "qwen3"

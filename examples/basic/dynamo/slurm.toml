@@ -1,0 +1,2 @@
+[slurm]
+job_name = "dynamo-qwen3-math"

@@ -71,6 +71,8 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 **vLLM pass-through** — `[inference.vllm]` uses vLLM's own argument names (`model`, `tensor_parallel_size`, `data_parallel_size`, `max_model_len`, ...) and forwards *any* key to the vLLM server, typed by prime-rl or not: `[inference.vllm] max_num_seqs = 256`, or `--inference.vllm.max-num-seqs 256` on the CLI. CLI values are JSON-coerced, so dict-valued vLLM args work as `--inference.vllm.compilation-config '{"cudagraph_mode": "NONE"}'`. Non-vLLM knobs (router, deployment, weight broadcast, kv-cache offload, env vars) stay on `[inference]` itself.
 
+**Managed inference backend** — `[inference] backend = "vllm" | "dynamo"` selects which service the existing `inference` entrypoint owns. `vllm` is the backward-compatible default. `dynamo` starts a Dynamo frontend and one RL-enabled Dynamo vLLM worker and automatically enables the orchestrator Dynamo admin plane.
+
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
 **RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.1`, `adv_tau = 1.0`, and `kl_tau = 1e-3`. Omit the section to use these defaults. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
