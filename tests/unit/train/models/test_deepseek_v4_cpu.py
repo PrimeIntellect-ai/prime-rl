@@ -13,6 +13,7 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 
 # The attention half of the toy config the GPU tests run: 4 heads over 32 channels, which the
 # fused kernel cannot tile. Everything else is shrunk to whatever still builds one layer on a CPU.
@@ -112,9 +113,9 @@ def test_deepseek_v4_attention_rejects_a_config_the_kernel_cannot_tile():
 
 
 def test_dense_mask_admits_the_final_kv_position():
-    """A slot naming the last KV position must be admitted, and a `-1` slot must name nothing.
+    """A slot naming the last KV position must be admitted, and an `IGNORE_SLOT` (-1) slot must name nothing.
 
-    The `-1` marker replaced a convention that appended a zero pad row to `kv_buf` and pointed
+    The `IGNORE_SLOT` marker replaced a convention that appended a zero pad row to `kv_buf` and pointed
     unused slots at it, which made the last position unreadable by construction. A renderer still
     blanking that column would drop a real key from the oracle the kernel is measured against,
     while the kernel, which masks on the index sign alone, would read it. The two would then
@@ -122,12 +123,12 @@ def test_dense_mask_admits_the_final_kv_position():
     """
     n_positions = 4
     # Two queries: the first names only the last position, the second names the first two.
-    indices = torch.tensor([[[[3, -1]], [[0, 1]]]], dtype=torch.int32)
+    indices = torch.tensor([[[[3, IGNORE_SLOT]], [[0, 1]]]], dtype=torch.int32)
 
     mask = dense_mask_from_indices(indices, n_positions, torch.float32)
 
     assert mask.shape == (1, 1, 2, n_positions)
     admitted = mask[0, 0] == 0
     assert admitted[0, 3], "the last KV position is masked out even though a slot names it"
-    assert admitted[0].sum() == 1, "the `-1` slot admitted a position of its own"
+    assert admitted[0].sum() == 1, "the `IGNORE_SLOT` slot admitted a position of its own"
     assert torch.equal(admitted[1], torch.tensor([True, True, False, False]))

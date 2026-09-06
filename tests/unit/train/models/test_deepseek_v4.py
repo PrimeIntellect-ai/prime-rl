@@ -874,7 +874,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
     else:
         q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
         _, picks = module.compressor(packed_input.detach(), q_residual, packed)
-        # (batch, seq_len, n_picks), with `-1` where the query had no entry left to pick.
+        # (batch, seq_len, n_picks), with `IGNORE_SLOT` (-1) where the query had no entry left to pick.
         assert (picks[:, _doc_slice(doc_lens, 1)] >= 0).any(), (
             "vacuous probe: no query of the second document picks a compressed entry"
         )

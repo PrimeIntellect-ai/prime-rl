@@ -53,7 +53,7 @@ layers), built from one `seq_lens` and carrying:
   - `tok_doc_idx`: which document each token belongs to.
   - `position_embeddings`: the RoPE tables, one per rope type, evaluated at `position_ids`.
   - `window_indices`: for each query, the indices of the tokens its local window covers, causal
-    and clipped at document boundaries, with `-1` marking invalid/masked entries.
+    and clipped at document boundaries, with `IGNORE_SLOT` (-1) marking invalid/masked entries.
   - `compression_layouts`: one `CompressionLayout` per compress rate in the architecture.
 
 The last of those characterizes the token-compression mechanism of DeepSeek V4. We start with it
@@ -115,8 +115,8 @@ All three layer types reach their keys the same way. `SparseAttnInputs` lays out
 and one int32 index tensor addressing that position axis, `sliding_window + picks` slots per
 query: the local window first, the picks after. `picks` is the indexer's
 `min(index_topk, entries)` for CSA, `max_entries_per_doc` for HCA, and zero for a sliding layer,
-which reads its window alone. A slot with nothing to read holds `-1`, which the kernel masks on,
-so a short window and a surplus pick cost only their loads.
+which reads its window alone. A slot with nothing to read holds `IGNORE_SLOT` (-1), which the
+kernel masks on, so a short window and a surplus pick cost only their loads.
 """
 
 from dataclasses import dataclass
@@ -129,6 +129,7 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -239,7 +240,7 @@ class PackedContext:
     position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
     tok_doc_idx: Tensor  # (seq_len,) int64 - which document each packed token belongs to
     position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type
-    window_indices: Tensor  # (seq_len, sliding_window) int32 - packed token per window slot, -1 where unused
+    window_indices: Tensor  # (seq_len, sliding_window) int32 - packed token per window slot, IGNORE_SLOT where unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
     def __post_init__(self) -> None:
@@ -290,7 +291,7 @@ class PackedContext:
         # document.
         window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
-        window_indices = torch.where(slots <= tok_idx[:, None], slots, -1).to(torch.int32)
+        window_indices = torch.where(slots <= tok_idx[:, None], slots, IGNORE_SLOT).to(torch.int32)
 
         return cls(
             position_ids=position_ids,
@@ -357,8 +358,8 @@ class SparseAttnInputs:
         kv_buf[b, n, 0, d]:  n in [0, S)     -> local token stream
                              n in [S, S + E) -> compressed entry (n - S)
 
-    Every index must be a real key in `[0, n_positions)` or `-1`, which marks an absent key, which
-    `build` enforces.
+    Every index must be a real key in `[0, n_positions)` or `IGNORE_SLOT` (-1), which marks an absent
+    key, which `build` enforces.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
@@ -380,8 +381,8 @@ class SparseAttnInputs:
         *,
         kv: Tensor,  # (batch, 1, seq_len, head_dim), the rotated local token stream
         compressed_kv: Tensor | None = None,  # (batch, 1, n_entries, head_dim)
-        top_k_indices: Tensor | None = None,  # (batch, seq_len, n_picks) int64, -1 marks a surplus pick
-        window_indices: Tensor,  # (seq_len, sliding_window) int32, -1 marks an invalid slot
+        top_k_indices: Tensor | None = None,  # (batch, seq_len, n_picks) int64, IGNORE_SLOT (-1) marks a surplus pick
+        window_indices: Tensor,  # (seq_len, sliding_window) int32, IGNORE_SLOT marks an invalid slot
     ) -> "SparseAttnInputs":
         """Lay out one layer's gather slots: the local window first, then any compressed picks.
 
@@ -399,11 +400,11 @@ class SparseAttnInputs:
         if top_k_indices is None:
             return cls(kv_buf=kv_buf, indices=window.contiguous())
 
-        # A surplus pick is `-1` and stays `-1`; a real one names an entry, which sits past the
-        # token stream in `kv_buf`, hence the shift by `seq_len`.
+        # A surplus pick is `IGNORE_SLOT` (-1) and stays `IGNORE_SLOT`; a real one names an entry,
+        # which sits past the token stream in `kv_buf`, hence the shift by `seq_len`.
         # NOTE: the attention kernel recompiles for every unique `indices.shape[-1]` value. If
-        # recompilation becomes a bottleneck, consider padding to fixed length with -1 values.
-        picks = torch.where(top_k_indices >= 0, top_k_indices + seq_len, -1)
+        # recompilation becomes a bottleneck, consider padding to fixed length with `IGNORE_SLOT` values.
+        picks = torch.where(top_k_indices >= 0, top_k_indices + seq_len, IGNORE_SLOT)
         indices = torch.cat([window, picks[:, :, None, :].to(torch.int32)], dim=-1)
         return cls(kv_buf=kv_buf, indices=indices)
 
@@ -419,7 +420,7 @@ class DeepseekV4Compressor(nn.Module):
     RMSNormed and rotated with the `compress` RoPE at its window's first source position, which
     is what makes it comparable with the attention block's locally rotated KV stream. `forward`
     returns the entries alongside this layer's entry selection: the per-query entry indices the
-    attention block gathers, with `-1` marking a slot the query has nothing to read into.
+    attention block gathers, with `IGNORE_SLOT` (-1) marking a slot the query has nothing to read into.
 
     `n_series` sets the slots `s` the gate ranges over. With `1` a token joins only its own
     window, so windows are disjoint. With `2` the projections emit two `head_dim`-wide series
@@ -534,7 +535,7 @@ class DeepseekV4Indexer(nn.Module):
     distance.
 
     Each query gets `min(index_topk, entries)` picks. An early query has fewer entries whose
-    source tokens all lie at or before it, and its surplus picks come back as `-1`.
+    source tokens all lie at or before it, and its surplus picks come back as `IGNORE_SLOT` (-1).
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -569,8 +570,10 @@ class DeepseekV4Indexer(nn.Module):
         scores = scores.masked_fill(~readable, float("-inf"))
         top_k_indices = scores.topk(top_k, dim=-1).indices
         # An early query has fewer than `top_k` readable entries, so top-k still hands back
-        # masked-out ones. Mark those `-1` rather than letting them leak into attention.
-        return torch.where(readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, -1))
+        # masked-out ones. Mark those `IGNORE_SLOT` (-1) rather than letting them leak into attention.
+        return torch.where(
+            readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, IGNORE_SLOT)
+        )
 
     def init_weights(self, init_std: float) -> None:
         self.compressor.init_weights(init_std)
@@ -581,8 +584,8 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
 
     Two series at a fine compress rate, with overlapping windows. A Lightning Indexer scores
     the entries and keeps the `index_topk` best per query, and the returned `top_k_indices` is
-    that selection, with `-1` marking a surplus pick. It needs no separate causal term, because
-    the indexer only selects entries whose source tokens all lie at or before the query.
+    that selection, with `IGNORE_SLOT` (-1) marking a surplus pick. It needs no separate causal term,
+    because the indexer only selects entries whose source tokens all lie at or before the query.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -610,7 +613,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
     numbered consecutively, so that set is the contiguous range starting at the document's first
     entry, and the picks the layer gathers are arithmetic rather than learned. Every document is
     afforded `max_entries_per_doc` picks; a query that has completed fewer entries than that pads
-    the rest with `-1`, as the indexer's surplus picks do.
+    the rest with `IGNORE_SLOT` (-1), as the indexer's surplus picks do.
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -629,7 +632,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
         threshold = self.causal_threshold(packed.position_ids).unsqueeze(-1)  # (1, seq_len, 1)
         base = layout.first_entry_of_doc[packed.tok_doc_idx][None, :, None]  # (1, seq_len, 1)
         offsets = torch.arange(layout.max_entries_per_doc, device=hidden_states.device)
-        picks = torch.where(offsets < threshold, base + offsets, -1)
+        picks = torch.where(offsets < threshold, base + offsets, IGNORE_SLOT)
         return compressed_kv, picks.expand(batch, -1, -1)
 
 

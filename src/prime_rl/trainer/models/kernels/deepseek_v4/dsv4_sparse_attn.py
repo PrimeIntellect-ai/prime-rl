@@ -21,6 +21,7 @@ import tilelang
 import torch
 import torch.nn.functional as F
 
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_bwd import bwd, postprocess, preprocess
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd import dsv4_sparse_attn_fwd
 
@@ -35,14 +36,15 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     """Widen the gather-slot axis to a multiple of the tile, marking the slots that adds absent.
 
     Callers state the slots they mean and this covers the difference, so the tile stays a fact
-    about these kernels rather than something the modeling code has to lay out for them. A `-1`
-    slot is masked, so the padding changes no output. Production widths are usually aligned
-    already (`sliding_window + index_topk = 128 + 512 = 640`), and then this returns its argument.
+    about these kernels rather than something the modeling code has to lay out for them. An
+    `IGNORE_SLOT` (-1) slot is masked, so the padding changes no output. Production widths are
+    usually aligned already (`sliding_window + index_topk = 128 + 512 = 640`), and then this
+    returns its argument.
     """
     remainder = indices.shape[-1] % SLOT_TILE
     if remainder == 0:
         return indices
-    return F.pad(indices, (0, SLOT_TILE - remainder), value=-1).contiguous()
+    return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:

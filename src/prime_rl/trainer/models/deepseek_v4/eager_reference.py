@@ -66,7 +66,7 @@ def block_bias_from_indices(top_k_indices: Tensor, n_entries: int, dtype: torch.
     reads.
     """
     batch, seq_len, _ = top_k_indices.shape
-    # The `-1` sentinels are scattered into one throwaway column that is sliced back off.
+    # The `IGNORE_SLOT` (-1) sentinels are scattered into one throwaway column that is sliced back off.
     safe_indices = torch.where(top_k_indices >= 0, top_k_indices, torch.full_like(top_k_indices, n_entries))
     block_bias = torch.full((batch, 1, seq_len, n_entries + 1), float("-inf"), dtype=dtype, device=top_k_indices.device)
     block_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)
@@ -78,16 +78,16 @@ def dense_mask_from_indices(indices: Tensor, n_positions: int, dtype: torch.dtyp
 
     `indices` is the `(batch, seq_len, 1, n_slots)` int32 tensor addressing the position axis of a
     `kv_buf` with `n_positions` positions. The mask is `0` on every position at least one of a
-    query's slots names and `-inf` everywhere else. A slot holding `-1` marks an absent key and
-    names no position, so it admits nothing.
+    query's slots names and `-inf` everywhere else. A slot holding `IGNORE_SLOT` (-1) marks an absent
+    key and names no position, so it admits nothing.
 
     This is the fused kernel's oracle. Rendering the index tensor dense and running naive eager
     attention over the whole `kv_buf` exercises the index contract and the attention math together.
     """
     batch, seq_len, _, _ = indices.shape
     slots = indices[:, :, 0, :].to(torch.int64).unsqueeze(1)
-    # `scatter_` has no negative indexing, so `-1` goes into one throwaway column that is sliced
-    # back off. Clamping it to a real position instead would admit a key the query cannot read.
+    # `scatter_` has no negative indexing, so `IGNORE_SLOT` (-1) goes into one throwaway column that
+    # is sliced back off. Clamping it to a real position instead would admit a key the query cannot read.
     safe = torch.where(slots >= 0, slots, n_positions)
     mask = torch.full((batch, 1, seq_len, n_positions + 1), float("-inf"), dtype=dtype, device=indices.device)
     mask.scatter_(-1, safe, 0.0)

@@ -29,6 +29,7 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.utils.utils import default_dtype
 
 # Guarded so collection survives on an install without tilelang: `pytest -m "not gpu"` imports every
@@ -259,8 +260,8 @@ def _dense_reference(
 
     `q` is `(batch, seq_len, heads, dim)`, `kv` is `(batch, seq_len_kv, 1, dim)`, `indices` is
     `(batch, seq_len, 1, topk)` int32 addressing `kv`'s position axis, and `sinks` is `(heads,)`.
-    The output comes back laid out like `q`. A slot holding `-1` marks an absent key and names no
-    position, so it is masked out, as is every position no slot names.
+    The output comes back laid out like `q`. A slot holding `IGNORE_SLOT` (-1) marks an absent key
+    and names no position, so it is masked out, as is every position no slot names.
 
     A mask admits a position once however many of a query's slots name it, so this answers for a
     gather over those slots only where no query names a real position twice. `_build_indices`
@@ -284,16 +285,16 @@ def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float,
 
 
 def _build_indices(batch: int, seq_len: int, seq_len_kv: int, masked_fraction: float, topk: int = TOPK) -> torch.Tensor:
-    """`(batch, seq_len, kv_group, topk)` int32 gather slots, a mix of valid picks and `-1`.
+    """`(batch, seq_len, kv_group, topk)` int32 gather slots, a mix of valid picks and `IGNORE_SLOT` (-1).
 
-    Valid KV positions are `[0, seq_len_kv)`; `-1` marks an absent key. The picks are drawn
+    Valid KV positions are `[0, seq_len_kv)`; `IGNORE_SLOT` marks an absent key. The picks are drawn
     without replacement, since a real query never gathers the same key twice and a duplicate
     would take twice its share of the softmax on both sides of the comparison.
     """
     assert seq_len_kv >= topk, "not enough valid KV positions to fill the gather slots without repeats"
     picks = torch.rand(batch, seq_len, seq_len_kv, device="cuda").argsort(dim=-1)[..., :topk]
     masked = torch.rand(batch, seq_len, topk, device="cuda") < masked_fraction
-    picks = torch.where(masked, torch.full_like(picks, -1), picks)
+    picks = torch.where(masked, torch.full_like(picks, IGNORE_SLOT), picks)
     return picks.to(torch.int32).unsqueeze(2).contiguous()
 
 
@@ -411,7 +412,7 @@ def test_fully_masked_query_reads_as_zero_keys():
     """
     batch, seq_len, seq_len_kv = 1, 256, 1024
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
-    indices[:, 0] = -1  # the first query gathers nothing
+    indices[:, 0] = IGNORE_SLOT  # the first query gathers nothing
 
     with torch.no_grad():
         out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
@@ -426,11 +427,12 @@ def test_fully_masked_query_reads_as_zero_keys():
 def test_tilelang_zero_fills_an_out_of_range_gather():
     """An index outside `[0, n_positions)` must read as zeros, not as whatever it points at.
 
-    Both kernels index `KV` and `dKV` by a value read from `Indices` and never clamp it, so a `-1`
-    slot is safe only because TileLang's `LegalizeSafeMemoryAccess` pass wraps every global access
-    it cannot prove in range with `0 <= idx < extent`. That pass is on by default and has a single
-    off switch, but nothing in TileLang documents it as a contract, and this project pins
-    `tilelang>=0.1.8` with no upper bound, so an ordinary dependency bump could take it away.
+    Both kernels index `KV` and `dKV` by a value read from `Indices` and never clamp it, so an
+    `IGNORE_SLOT` (-1) slot is safe only because TileLang's `LegalizeSafeMemoryAccess` pass wraps
+    every global access it cannot prove in range with `0 <= idx < extent`. That pass is on by
+    default and has a single off switch, but nothing in TileLang documents it as a contract, and
+    this project pins `tilelang>=0.1.8` with no upper bound, so an ordinary dependency bump could
+    take it away.
 
     The probe is a standalone gather rather than the real kernels, which cannot observe this: they
     seed a masked slot's logit to `-inf` before the gather is read, so its probability is zero and
@@ -459,9 +461,9 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
 
     n_positions, dim = 8, 32
     src = (torch.arange(n_positions * dim, device="cuda", dtype=torch.float32) + 1).view(n_positions, dim)
-    # Two in range, then the four ways out: the `-1` this project marks an absent key with, a far
-    # negative, one past the end, and far past it.
-    slots = torch.tensor([0, 3, -1, -1000, n_positions, n_positions + 5], dtype=torch.int32, device="cuda")
+    # Two in range, then the four ways out: `IGNORE_SLOT` (-1), the value this project marks an
+    # absent key with, a far negative, one past the end, and far past it.
+    slots = torch.tensor([0, 3, IGNORE_SLOT, -1000, n_positions, n_positions + 5], dtype=torch.int32, device="cuda")
 
     out = gather(n_positions, dim)(src, slots)
 
@@ -549,7 +551,7 @@ V4FLASH_COMPRESS_RATE = V4FLASH_MODEL["compress_rates"]["compressed_sparse_atten
 V4FLASH_HCA_COMPRESS_RATE = V4FLASH_MODEL["compress_rates"]["heavily_compressed_attention"]
 
 # Document layouts for the sparse path, at `compress_rate = 4`. The first four leave every query
-# short of `index_topk = 512` readable entries, so the `-1` padding of the pick slots carries
+# short of `index_topk = 512` readable entries, so the `IGNORE_SLOT` (-1) padding of the pick slots carries
 # the difference; `(2600,)` saturates the picks instead, which the toy shapes cannot express at
 # all. `(3,)` compresses to no entries whatsoever, leaving the local window alone to answer.
 V4FLASH_DOC_LENS = [(517, 1019), (3,), (300,), (3, 129, 1021), (2600,)]
@@ -661,7 +663,7 @@ def _entries_admitted(layer_type: str, doc_lens: tuple[int, ...], picks: torch.T
 def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor:
     """`(seq_len, n_positions)` bool: which KV positions each query's gather slots address."""
     slots = indices[0, :, 0, :].long()
-    # `-1` marks an absent key; it goes into one throwaway column that is sliced back off.
+    # `IGNORE_SLOT` (-1) marks an absent key; it goes into one throwaway column that is sliced back off.
     safe = torch.where(slots >= 0, slots, n_positions)
     selected = torch.zeros((indices.shape[1], n_positions + 1), dtype=torch.bool, device=indices.device)
     return selected.scatter_(1, safe, True)[:, :n_positions]
@@ -678,7 +680,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     than from `window_indices`; the sparse one writes the window and the picks into a single index
     tensor over a gathered KV buffer. Nothing in the layer compares them, and every way of getting
     the sparse side wrong (a window base off by one, an entry index not offset by the token count,
-    a `-1` pick surviving, a stale index left over from a previous layout) still produces a finite
+    an `IGNORE_SLOT` (-1) pick surviving, a stale index left over from a previous layout) still produces a finite
     output.
 
     All three layer types share the index tensor, so all three can be wrong in those ways. A
@@ -734,7 +736,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     indices with an unguarded `atomic_add`, so an out-of-range slot corrupts whatever lies next to
     the buffer instead of raising, on every layer type that feeds it. A repeat is quieter but no
     better: the duplicated key takes twice its share of the softmax, silently reweighting the
-    output. The `-1` padding is exempt from uniqueness, since padding every query out to a fixed
+    output. The `IGNORE_SLOT` (-1) padding is exempt from uniqueness, since padding every query out to a fixed
     slot count is exactly what it is for.
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
@@ -748,16 +750,16 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
 
     indices, n_positions = recorded["indices"], recorded["kv_buf"].shape[1]
     # The exact width: the window plus the picks the row actually affords, and nothing else. A row
-    # with fewer entries than the layer type's pick count gets a narrower slot count, not a
-    # `-1`-padded one; the kernel pads to its own tile downstream of this.
+    # with fewer entries than the layer type's pick count gets a narrower slot count, not one padded
+    # with `IGNORE_SLOT` (-1); the kernel pads to its own tile downstream of this.
     n_picks = _expected_picks(layer_type, doc_lens)
     n_slots = indices.shape[-1]
     assert n_slots == V4FLASH_MODEL["sliding_window"] + n_picks
-    assert (indices >= -1).all(), "a gather slot addresses a KV position below the `-1` marker"
+    assert (indices >= IGNORE_SLOT).all(), "a gather slot addresses a KV position below the `IGNORE_SLOT` marker"
     assert (indices <= n_positions - 1).all(), "a gather slot addresses past the end of the KV buffer"
 
     slot_idx = indices[0, :, 0, :].long()
-    # `-1` is counted in a throwaway column, since padding repeats it by design.
+    # `IGNORE_SLOT` (-1) is counted in a throwaway column, since padding repeats it by design.
     safe = torch.where(slot_idx >= 0, slot_idx, n_positions)
     counts = torch.zeros((slot_idx.shape[0], n_positions + 1), dtype=torch.int32, device="cuda")
     counts.scatter_add_(1, safe, torch.ones_like(safe, dtype=torch.int32))
@@ -767,7 +769,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
 @requires_tilelang
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_lens, monkeypatch):
-    """An unused gather slot must hold `-1`, never a position that `kv_buf` actually has.
+    """An unused gather slot must hold `IGNORE_SLOT` (-1), never a position that `kv_buf` actually has.
 
     This is the whole of the contract between `SparseAttnInputs.build` and the kernel, which masks
     on `Indices[...] < 0` and on nothing else. The design it replaced appended a zero row to
@@ -797,7 +799,7 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     n_entries = sum(length // V4FLASH_COMPRESS_RATE for length in doc_lens)
     assert kv_buf.shape[1] == sum(doc_lens) + n_entries, (
         "kv_buf holds more than the token stream and its compressed entries, so `build` is padding "
-        "it with rows that the `-1` marker makes unnecessary"
+        "it with rows that the `IGNORE_SLOT` (-1) marker makes unnecessary"
     )
     assert kv_buf[:, -1].abs().max() > 0, "the last row of kv_buf is zero, which is what a pad row looks like"
 
@@ -807,9 +809,11 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     first_query = indices[0, 0, 0]
     assert (first_query >= 0).sum() == 1, (
         f"the first query holds {(first_query >= 0).sum().item()} non-negative slots against the 1 key it "
-        "may read, so absent slots are addressing a KV position instead of holding `-1`"
+        "may read, so absent slots are addressing a KV position instead of holding `IGNORE_SLOT` (-1)"
     )
-    assert (first_query[first_query < 0] == -1).all(), "an absent slot is negative but is not the `-1` marker"
+    assert (first_query[first_query < 0] == IGNORE_SLOT).all(), (
+        "an absent slot is negative but is not the `IGNORE_SLOT` marker"
+    )
 
 
 # One CSA layer in bfloat16, so `PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
@@ -831,7 +835,7 @@ KERNEL_DOC_LENS = (517, 1019)
 # Document layouts for the kernel-against-eager comparison: two single-document rows and two
 # packed ones. `(2600,)` is left out on purpose for the reason `KERNEL_DOC_LENS` gives below, and
 # `(3,)` is kept because it compresses to no entries at all, so almost every gather slot is the
-# `-1` marker and the local window alone has to answer.
+# `IGNORE_SLOT` (-1) marker and the local window alone has to answer.
 EAGER_KERNEL_DOC_LENS = [(300,), (3,), (517, 1019), (3, 129, 1021)]
 EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
 
@@ -1037,7 +1041,7 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
 
     q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
     _, picks = module.compressor(packed_input.detach(), q_residual, packed)
-    # (batch, seq_len, n_picks), with `-1` where the query had no entry left to pick.
+    # (batch, seq_len, n_picks), with `IGNORE_SLOT` (-1) where the query had no entry left to pick.
     assert (picks[:, _doc_slice(V4FLASH_HCA_DOCS, 1)] >= 0).any(), (
         "vacuous probe: no query of the second document reads a compressed entry"
     )
