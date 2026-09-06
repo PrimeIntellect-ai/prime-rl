@@ -19,6 +19,28 @@ _WORKER_EXTENSION_CLS = {
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
 
+_FRONTEND_INHERITED_ENV = frozenset(
+    {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LD_LIBRARY_PATH",
+        "PATH",
+        "PYTHONPATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "VIRTUAL_ENV",
+    }
+)
+_FRONTEND_SHARED_DYNAMO_ENV = frozenset(
+    {"DYN_DISCOVERY_BACKEND", "DYN_EVENT_PLANE", "DYN_FILE_KV", "DYN_NAMESPACE", "DYN_REQUEST_PLANE"}
+)
+_SECRET_ARGUMENT_SUFFIXES = ("api_key", "credentials", "password", "secret", "token")
+
 _WORKER_ARGUMENTS_TO_SKIP = {
     "api_server_count",
     "chat_template",
@@ -40,6 +62,17 @@ class DynamoProcessSpec:
 
 def _environment_items(environment: dict[str, str]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(environment.items()))
+
+
+def _frontend_environment(
+    base_environment: Mapping[str, str],
+    explicit_environment: Mapping[str, str],
+) -> dict[str, str]:
+    inherited = _FRONTEND_INHERITED_ENV | _FRONTEND_SHARED_DYNAMO_ENV
+    return {
+        **{name: value for name, value in base_environment.items() if name in inherited},
+        **explicit_environment,
+    }
 
 
 def _vllm_argument(name: str, value: Any) -> tuple[str, ...]:
@@ -73,15 +106,18 @@ def build_dynamo_process_specs(
         raise ValueError("Managed Dynamo inference does not yet support a custom chat template.")
 
     host = config.server.host or "0.0.0.0"
-    discovery_port = config.server.port + 1
     try:
+        discovery_port = int(config.env_vars.get("DYN_RL_PORT", config.server.port + 1))
         system_port = int(config.env_vars.get("DYN_SYSTEM_PORT", config.server.port + 81))
     except ValueError as error:
-        raise ValueError("DYN_SYSTEM_PORT must be an integer.") from error
-    if not 1 <= discovery_port <= 65535 or not 1 <= system_port <= 65535:
+        raise ValueError("DYN_RL_PORT and DYN_SYSTEM_PORT must be integers.") from error
+    if any(not 1 <= port <= 65535 for port in (config.server.port, discovery_port, system_port)):
         raise ValueError("Managed Dynamo ports must be between 1 and 65535.")
     if len({config.server.port, discovery_port, system_port}) != 3:
         raise ValueError("Managed Dynamo frontend, discovery, and worker system ports must be distinct.")
+
+    configured_plugins = (name.strip() for name in config.env_vars.get("VLLM_PLUGINS", "").split(","))
+    plugins = ",".join(dict.fromkeys([name for name in configured_plugins if name] + ["prime_rl"]))
 
     worker_arguments = [executable, "-m", "dynamo.vllm", "--enable-rl", "--model", config.vllm.model]
     namespace = vars(config.to_namespace())
@@ -89,6 +125,8 @@ def build_dynamo_process_specs(
     argument_names = (config.vllm.model_fields_set | set(config.vllm.model_extra or {})) - _WORKER_ARGUMENTS_TO_SKIP
     argument_names.update({"additional_config", "hf_overrides"})
     for name in sorted(argument_names):
+        if name.lower().endswith(_SECRET_ARGUMENT_SUFFIXES):
+            raise ValueError(f"Managed Dynamo credential option {name!r} must be provided through the environment.")
         value = namespace.get(name)
         if value is None or value == {}:
             continue
@@ -124,7 +162,7 @@ def build_dynamo_process_specs(
                 "DYN_SYSTEM_HOST": "127.0.0.1",
                 "DYN_SYSTEM_PORT": str(system_port),
                 "DYN_RL_INIT_WEIGHTS_TIMEOUT_S": config.env_vars.get("DYN_RL_INIT_WEIGHTS_TIMEOUT_S", "1200"),
-                "VLLM_PLUGINS": "prime_rl",
+                "VLLM_PLUGINS": plugins,
             }
         ),
     )
@@ -132,8 +170,6 @@ def build_dynamo_process_specs(
 
 
 def _terminate(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -143,6 +179,12 @@ def _terminate(process: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+    else:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        os.killpg(process.pid, signal.SIGKILL)
 
 
 def run_dynamo_local(config: InferenceConfig) -> None:
@@ -162,7 +204,11 @@ def run_dynamo_local(config: InferenceConfig) -> None:
             base_environment["DYN_FILE_KV"] = temporary_dir
             specs = build_dynamo_process_specs(config)
             for spec in specs:
-                environment = {**base_environment, **spec.environment}
+                environment = (
+                    _frontend_environment(base_environment, spec.environment)
+                    if spec.name == "frontend"
+                    else {**base_environment, **spec.environment}
+                )
                 processes.append(
                     subprocess.Popen(
                         list(spec.command),
@@ -174,7 +220,7 @@ def run_dynamo_local(config: InferenceConfig) -> None:
             while True:
                 for spec, process in zip(specs, processes):
                     if (returncode := process.poll()) is not None:
-                        raise subprocess.CalledProcessError(returncode or 1, spec.command)
+                        raise RuntimeError(f"Dynamo {spec.name} exited with code {returncode or 1}")
                 time.sleep(0.2)
     except KeyboardInterrupt:
         return

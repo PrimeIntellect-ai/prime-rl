@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -55,6 +56,19 @@ def propagate_shared_fields(data: Any) -> Any:
         if get("orchestrator.model.client.dynamo.enabled") is False:
             raise ValueError("Managed Dynamo inference cannot use orchestrator.model.client.dynamo.enabled = false.")
         fill("orchestrator.model.client.dynamo.enabled", True)
+
+        discovery_url = get("orchestrator.model.client.dynamo.discovery_url")
+        if discovery_url is not None:
+            try:
+                discovery_port = urlsplit(discovery_url).port
+            except ValueError as error:
+                raise ValueError("Managed Dynamo discovery_url must contain a valid port.") from error
+            if discovery_port is None:
+                raise ValueError("Managed Dynamo discovery_url must include an explicit port.")
+            configured_port = get("inference.env_vars.DYN_RL_PORT")
+            if configured_port is not None and str(configured_port) != str(discovery_port):
+                raise ValueError("Managed Dynamo discovery_url conflicts with inference.env_vars.DYN_RL_PORT.")
+            fill("inference.env_vars.DYN_RL_PORT", str(discovery_port))
 
     def propagate(shared_path: str, *targets: str) -> None:
         """Verbatim shared → targets. Records *disagreeing* overlap into
