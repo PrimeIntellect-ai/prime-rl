@@ -68,8 +68,12 @@ def propagate_shared_fields(data: Any) -> Any:
                 raise ValueError("Managed Dynamo discovery_url must use http.")
             if parsed_discovery_url.hostname not in ("127.0.0.1", "::1", "localhost"):
                 raise ValueError("Managed Dynamo discovery_url must use a loopback host.")
-            if parsed_discovery_url.path not in ("", "/"):
-                raise ValueError("Managed Dynamo discovery_url cannot include a path.")
+            if parsed_discovery_url.username is not None or parsed_discovery_url.password is not None:
+                raise ValueError("Managed Dynamo discovery_url cannot include credentials.")
+            if parsed_discovery_url.query or parsed_discovery_url.fragment:
+                raise ValueError("Managed Dynamo discovery_url cannot include a query or fragment.")
+            if parsed_discovery_url.path not in ("", "/", "/v1", "/v1/"):
+                raise ValueError("Managed Dynamo discovery_url cannot include a path other than /v1.")
             if discovery_port is None:
                 raise ValueError("Managed Dynamo discovery_url must include an explicit port.")
             configured_port = get("inference.env_vars.DYN_RL_PORT")
