@@ -231,11 +231,6 @@ class DynamoAdminPlane(AdminPlane):
         try:
             async with asyncio.timeout(self._remaining(deadline)):
                 await check_health(self._frontend_clients, timeout=self._remaining(deadline))
-                await maybe_check_has_model(
-                    self._frontend_clients,
-                    model_name,
-                    skip_model_check=self._client_config.skip_model_check,
-                )
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
@@ -252,6 +247,14 @@ class DynamoAdminPlane(AdminPlane):
                         remaining = self._remaining(deadline)
                         async with asyncio.timeout(remaining):
                             await check_health([candidate_client], timeout=remaining, quiet=True)
+                            try:
+                                await maybe_check_has_model(
+                                    self._frontend_clients,
+                                    model_name,
+                                    skip_model_check=self._client_config.skip_model_check,
+                                )
+                            except ValueError as error:
+                                raise DynamoDiscoveryPending(str(error)) from error
                     except BaseException:
                         await candidate_client.aclose()
                         raise

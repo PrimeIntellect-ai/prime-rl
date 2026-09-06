@@ -142,6 +142,33 @@ def test_dynamo_worker_client_propagates_admin_headers(monkeypatch, api_key, aut
     asyncio.run(admin.aclose())
 
 
+def test_dynamo_admin_plane_waits_for_frontend_model_after_worker_discovery():
+    discovered_worker = parsed(worker(1))
+    discover = AsyncMock(side_effect=[discovered_worker] * 4)
+    model_check = AsyncMock(side_effect=[ValueError("model is still loading"), None])
+    admin = setup_admin_plane(
+        ClientConfig(
+            base_url="http://worker:8000/v1",
+            wait_for_ready_timeout=2,
+            dynamo=dynamo_config(),
+        ),
+        MODEL,
+    )
+    assert isinstance(admin, DynamoAdminPlane)
+    admin._poll_interval = 0
+
+    with (
+        patch.object(admin, "_discover", discover),
+        patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=model_check),
+    ):
+        asyncio.run(admin.wait_for_ready(MODEL))
+
+    assert discover.await_count == 4
+    assert model_check.await_count == 2
+    asyncio.run(admin.aclose())
+
+
 def test_dynamo_admin_plane_derives_discovery_url_from_client_port():
     admin = setup_admin_plane(
         ClientConfig(
