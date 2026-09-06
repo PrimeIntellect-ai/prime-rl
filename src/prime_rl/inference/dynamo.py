@@ -39,7 +39,7 @@ class DynamoWorker(BaseModel):
 
 
 class DynamoSnapshot(BaseModel):
-    protocol_version: Literal[1]
+    protocol_version: Literal[1] | None = None
     workers: tuple[dict[str, object], ...]
 
 
