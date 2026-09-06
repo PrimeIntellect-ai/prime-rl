@@ -893,7 +893,7 @@ def test_managed_dynamo_propagates_explicit_discovery_port():
             "trainer": {},
             "orchestrator": {
                 "renderer": {"name": "qwen3"},
-                "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000"}}},
+                "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000/v1"}}},
             },
             "inference": {"backend": "dynamo"},
         }
@@ -908,6 +908,9 @@ def test_managed_dynamo_propagates_explicit_discovery_port():
     [
         ("https://localhost:9000", "must use http"),
         ("http://localhost:9000/admin", "cannot include a path"),
+        ("http://user:pass@localhost:9000", "cannot include credentials"),
+        ("http://localhost:9000?x=1", "cannot include a query"),
+        ("http://localhost:9000#fragment", "cannot include a query"),
         ("http://remote.example:9000", "must use a loopback host"),
     ],
 )

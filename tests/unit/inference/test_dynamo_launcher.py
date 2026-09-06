@@ -108,7 +108,7 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
     monkeypatch.setattr(dynamo_launcher, "_terminate", terminated.append)
 
     with pytest.raises(RuntimeError, match="Dynamo worker exited with code 7"):
-        dynamo_launcher.run_dynamo_local(managed_config())
+        dynamo_launcher.run_dynamo_local(managed_config(env_vars={"DYN_METRICS_PREFIX": "managed"}))
     assert len(processes) == 2
     assert terminated == list(reversed(processes))
 
@@ -118,6 +118,7 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
     assert {environment["DYN_FILE_KV"] for environment in environments} != {"/shared"}
     assert len({environment["DYN_FILE_KV"] for environment in environments}) == 1
     assert {environment["DYN_REQUEST_PLANE"] for environment in environments} == {"tcp"}
+    assert environments[0]["DYN_METRICS_PREFIX"] == "managed"
     assert "HF_TOKEN" not in environments[0]
     assert "KUBECONFIG" not in environments[0]
     assert environments[1]["HF_TOKEN"] == "not-for-frontend"

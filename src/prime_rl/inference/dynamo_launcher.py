@@ -191,7 +191,8 @@ def _terminate(process: subprocess.Popen) -> None:
 
 
 def run_dynamo_local(config: InferenceConfig) -> None:
-    base_environment = {**os.environ, **config.env_vars}
+    inherited_environment = dict(os.environ)
+    base_environment = {**inherited_environment, **config.env_vars}
     base_environment["DYN_DISCOVERY_BACKEND"] = "file"
     base_environment["DYN_REQUEST_PLANE"] = "tcp"
     base_environment["DYN_EVENT_PLANE"] = "zmq"
@@ -207,11 +208,16 @@ def run_dynamo_local(config: InferenceConfig) -> None:
             base_environment["DYN_FILE_KV"] = temporary_dir
             specs = build_dynamo_process_specs(config)
             for spec in specs:
-                environment = (
-                    _frontend_environment(base_environment, spec.environment)
-                    if spec.name == "frontend"
-                    else {**base_environment, **spec.environment}
-                )
+                if spec.name == "frontend":
+                    shared_environment = {name: base_environment[name] for name in _FRONTEND_SHARED_DYNAMO_ENV}
+                    explicit_environment = {
+                        **{name: value for name, value in config.env_vars.items() if name.startswith("DYN_")},
+                        **shared_environment,
+                        **spec.environment,
+                    }
+                    environment = _frontend_environment(inherited_environment, explicit_environment)
+                else:
+                    environment = {**base_environment, **spec.environment}
                 processes.append(
                     subprocess.Popen(
                         list(spec.command),
