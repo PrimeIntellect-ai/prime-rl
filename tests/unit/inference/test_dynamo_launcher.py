@@ -1,4 +1,4 @@
-import subprocess
+import signal
 
 import pytest
 
@@ -65,6 +65,11 @@ def test_managed_dynamo_worker_serializes_explicit_vllm_values():
     assert worker.command[index : index + 2] == ("--max-num-seqs", "16")
 
 
+def test_managed_dynamo_rejects_credential_worker_arguments():
+    with pytest.raises(ValueError, match="must be provided through the environment"):
+        build_dynamo_process_specs(managed_config(hf_token="test-value"))
+
+
 def test_managed_dynamo_rejects_unsupported_transport_and_port_collision():
     with pytest.raises(ValueError, match="NCCL and NIXL"):
         build_dynamo_process_specs(managed_config(transport="filesystem"))
@@ -98,12 +103,12 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
     monkeypatch.setenv("DYN_FILE_KV", "/shared")
     monkeypatch.setattr(dynamo_launcher.subprocess, "Popen", popen)
     monkeypatch.setenv("DYN_REQUEST_PLANE", "nats")
+    monkeypatch.setenv("HF_TOKEN", "not-for-frontend")
+    monkeypatch.setenv("KUBECONFIG", "not-for-frontend")
     monkeypatch.setattr(dynamo_launcher, "_terminate", terminated.append)
 
-    with pytest.raises(subprocess.CalledProcessError) as error:
+    with pytest.raises(RuntimeError, match="Dynamo worker exited with code 7"):
         dynamo_launcher.run_dynamo_local(managed_config())
-
-    assert error.value.returncode == 7
     assert len(processes) == 2
     assert terminated == list(reversed(processes))
 
@@ -113,6 +118,39 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
     assert {environment["DYN_FILE_KV"] for environment in environments} != {"/shared"}
     assert len({environment["DYN_FILE_KV"] for environment in environments}) == 1
     assert {environment["DYN_REQUEST_PLANE"] for environment in environments} == {"tcp"}
+    assert "HF_TOKEN" not in environments[0]
+    assert "KUBECONFIG" not in environments[0]
+    assert environments[1]["HF_TOKEN"] == "not-for-frontend"
+    assert environments[1]["KUBECONFIG"] == "not-for-frontend"
+
+
+def test_managed_dynamo_uses_explicit_discovery_port_and_composes_plugins():
+    frontend, worker = build_dynamo_process_specs(
+        managed_config(env_vars={"DYN_RL_PORT": "9000", "VLLM_PLUGINS": "custom,prime_rl"})
+    )
+
+    assert frontend.environment["DYN_RL_PORT"] == "9000"
+    assert worker.environment["VLLM_PLUGINS"] == "custom,prime_rl"
+
+
+def test_terminate_signals_process_group_after_leader_exit(monkeypatch):
+    signals = []
+
+    class ExitedProcess:
+        pid = 1234
+
+        def wait(self, timeout=None):
+            assert timeout == 15
+
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(dynamo_launcher.os, "killpg", killpg)
+    dynamo_launcher._terminate(ExitedProcess())
+
+    assert signals == [(1234, signal.SIGTERM), (1234, 0)]
 
 
 def test_managed_dynamo_worker_omits_none_vllm_values():

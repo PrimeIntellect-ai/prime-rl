@@ -887,6 +887,36 @@ def test_managed_dynamo_inference_enables_dynamo_admin_discovery():
     assert round_tripped.orchestrator.model.client.dynamo.enabled is True
 
 
+def test_managed_dynamo_propagates_explicit_discovery_port():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "qwen3"},
+                "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000"}}},
+            },
+            "inference": {"backend": "dynamo"},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.env_vars["DYN_RL_PORT"] == "9000"
+
+
+def test_managed_dynamo_rejects_conflicting_discovery_port():
+    with pytest.raises(ValueError, match="discovery_url conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000"}}},
+                },
+                "inference": {"backend": "dynamo", "env_vars": {"DYN_RL_PORT": "9001"}},
+            }
+        )
+
+
 def test_explicit_inference_parser_wins_over_auto():
     """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""

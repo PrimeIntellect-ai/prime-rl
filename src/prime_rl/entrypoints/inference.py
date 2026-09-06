@@ -200,7 +200,7 @@ def inference_local(config: InferenceConfig):
             from prime_rl.inference.dynamo_launcher import build_dynamo_process_specs
 
             for spec in build_dynamo_process_specs(config):
-                logger.info(f"Dynamo {spec.name}: {' '.join(spec.command)}")
+                logger.info(f"Dynamo {spec.name} command validated")
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
@@ -250,6 +250,10 @@ def inference_local(config: InferenceConfig):
 
 
 def inference(config: InferenceConfig):
+    if config.backend == "dynamo":
+        from prime_rl.inference.dynamo_launcher import build_dynamo_process_specs
+
+        build_dynamo_process_specs(config)
     if config.slurm is not None:
         inference_slurm(config)
     else:
