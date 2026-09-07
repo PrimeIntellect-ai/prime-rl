@@ -20,6 +20,21 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_engine_handshake_timeout()
+
+
+def monkey_patch_engine_handshake_timeout():
+    """Honor prime-rl's engine-ready timeout in vLLM's spawned processes."""
+    import math
+    import os
+
+    timeout = os.environ.get("VLLM_ENGINE_READY_TIMEOUT_S")
+    if timeout is None:
+        return
+
+    from vllm.v1.engine import core
+
+    core.HANDSHAKE_TIMEOUT_MINS = max(1, math.ceil(float(timeout) / 60))
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
