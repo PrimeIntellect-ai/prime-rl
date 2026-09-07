@@ -48,7 +48,7 @@ def main():
     intermediate = 768
     block_m = 128
     n_blocks = 132
-    n_chunks = int(os.environ.get("COMET_N_CHUNKS", "4"))
+    n_chunks = int(os.environ.get("COMET_N_CHUNKS", "1"))
 
     torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)

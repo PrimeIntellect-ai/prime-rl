@@ -38,7 +38,7 @@ def main():
     n_blocks = 16
     n_chunks = 4
 
-    torch.manual_seed(7)  # same weights on every rank
+    torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
     up_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
     down_proj_data = (torch.randn(num_local_experts, hidden_dim, intermediate, device=device) * 0.02).to(torch.bfloat16)

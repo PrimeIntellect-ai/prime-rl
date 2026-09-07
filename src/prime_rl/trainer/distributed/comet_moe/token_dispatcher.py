@@ -21,7 +21,7 @@ class CometMoETokenDispatcher:
         block_m: int = 128,
         n_blocks: int = 132,
         capacity_multiplier: int = 4,
-        n_chunks: int = 4,
+        n_chunks: int = 1,
     ) -> None:
         self.num_experts = num_experts
         self.top_k = top_k
@@ -37,12 +37,7 @@ class CometMoETokenDispatcher:
     def _ensure_buffers(self, n_local_tokens: int, dim: int, device: torch.device) -> None:
         if self._bufs is not None:
             return
-        # Sized once, from *this* (the first) call's local token count -- see
-        # `CometMoEDispatchConfig.capacity_multiplier`'s docstring for the tradeoff. `+
-        # num_experts * block_m` covers the fixed per-rank alignment-padding overhead
-        # (`metadata.py`'s `max_dispatch_tiles`), which a plain token-count multiplier alone
-        # under-covers once `num_experts` is large relative to `n_local_tokens` (see the
-        # `RuntimeError` this under-covering caused during this integration's own testing).
+
         capacity = self.capacity_multiplier * n_local_tokens * self.top_k + self.num_experts * self.block_m
         capacity = ((capacity + self.block_m - 1) // self.block_m) * self.block_m
         self._bufs = init_comet_moe_buffers(

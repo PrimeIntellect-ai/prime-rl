@@ -108,7 +108,7 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
-`type = "comet"` dispatches and combines through symmetric-memory CUDA kernels instead of an NCCL all-to-all, with its own always-bf16 fused expert FFN (`[trainer.model.moe.compute]` is ignored for this dispatch type). Experimental: only `score_before_experts = false` and no per-expert bias are supported (both fail loudly, not silently, if misconfigured), and it needs `prime_kernels.comet_scatter` built. See `CometMoEDispatchConfig`'s docstring for the full scope and its `block_m`/`n_blocks`/`capacity_multiplier` tuning knobs.
+`type = "comet"` dispatches and combines through symmetric-memory CUDA kernels instead of an NCCL all-to-all, with its own always-bf16 fused expert FFN (`[trainer.model.moe.compute]` is ignored for this dispatch type). Experimental: only `score_before_experts = false` and no per-expert bias are supported (both fail loudly, not silently, if misconfigured), and it needs `prime_kernels.comet_scatter` built. See `CometMoEDispatchConfig`'s docstring for the full scope and its `block_m`/`n_blocks`/`capacity_multiplier`/`n_chunks` tuning knobs (`n_chunks` controls chunked compute/communication overlap; it defaults to `1`/off because chunking measured as a net wallclock regression at real scale — see its docstring before raising it).
 
 ### Context Parallelism
 

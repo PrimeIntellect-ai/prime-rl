@@ -237,15 +237,7 @@ class CometMoEDispatchConfig(BaseConfig):
     documented buffer-sizing contract), so size this for the worst per-rank routing imbalance you
     expect, not just the average case."""
 
-    n_chunks: int = Field(4, ge=1)
-    """Number of row-range chunks the dispatch-receive buffer is split into for compute/comm
-    overlap: a dedicated CUDA stream waits for each chunk's arrival flags in order while the main
-    stream runs each chunk's expert FFN as soon as (and only as soon as) that chunk's own wait
-    resolves, so a later chunk's flag-polling can run concurrently with an earlier chunk's GEMMs --
-    see `comet_moe.autograd._run_chunked_dispatch_wait_and_ffn`. 1 disables overlap (one chunk,
-    fully sequential dispatch -> wait -> FFN). Too many chunks adds per-chunk kernel-launch and
-    grouped-GEMM overhead without more overlap to gain; 4 was a reasonable starting point, not
-    tuned against a real profile yet."""
+    n_chunks: int = Field(1, ge=1)
 
 
 MoEDispatchConfig: TypeAlias = Annotated[
