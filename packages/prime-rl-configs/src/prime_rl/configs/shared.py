@@ -115,6 +115,9 @@ class SlurmConfig(BaseConfig):
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
+    infrastructure_nodes: int = Field(0, ge=0, le=1)
+    """Extra node reserved by the inference launcher for the router. It does not run model engines."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -129,6 +132,7 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "infrastructure_nodes": self.infrastructure_nodes,
         }
 
     @model_validator(mode="after")

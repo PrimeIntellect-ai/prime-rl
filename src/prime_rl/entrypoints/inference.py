@@ -3,6 +3,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -26,6 +27,41 @@ from prime_rl.utils.process import (
 
 INFERENCE_CONFIG = "inference.json"
 INFERENCE_SBATCH = "inference.sbatch"
+
+
+def wait_for_distributed_startup_barrier(config: InferenceConfig) -> None:
+    """Hold external-LB front ends until every DP rank has imported vLLM.
+
+    vLLM engine cores have a hard-coded five-minute front-end handshake. On a
+    large distributed launch, early ranks can spawn their cores while the
+    last ranks are still importing vLLM, causing otherwise healthy groups to
+    time out. The Slurm launcher opts into this file barrier and gives every
+    replica a separate group name.
+    """
+    barrier_root = os.environ.get("PRIME_INFERENCE_STARTUP_BARRIER_DIR")
+    barrier_group = os.environ.get("PRIME_INFERENCE_STARTUP_GROUP")
+    if not barrier_root or not barrier_group or config.vllm.data_parallel_size <= 1:
+        return
+
+    barrier_dir = Path(barrier_root) / barrier_group
+    barrier_dir.mkdir(parents=True, exist_ok=True)
+    rank = config.vllm.data_parallel_rank
+    (barrier_dir / f"rank-{rank}").touch()
+
+    expected = config.vllm.data_parallel_size
+    timeout = float(os.environ.get("PRIME_INFERENCE_STARTUP_BARRIER_TIMEOUT", "1800"))
+    deadline = time.monotonic() + timeout
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
+    while True:
+        arrived = sum(1 for path in barrier_dir.iterdir() if path.name.startswith("rank-"))
+        if arrived >= expected:
+            logger.info(f"Startup barrier {barrier_group}: {arrived}/{expected} ranks ready")
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Startup barrier {barrier_group} timed out after {timeout}s with {arrived}/{expected} ranks ready."
+            )
+        time.sleep(1)
 
 
 def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
@@ -69,6 +105,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
+    num_engine_nodes = getattr(config.deployment, "num_nodes", 1)
+    infrastructure_nodes = config.slurm.infrastructure_nodes
 
     offload = config.kv_cache_offload
     is_mooncake = offload is not None and offload.type == "mooncake"
@@ -82,7 +120,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,
-        num_nodes=getattr(config.deployment, "num_nodes", 1),
+        num_nodes=num_engine_nodes,
+        num_slurm_nodes=num_engine_nodes + infrastructure_nodes,
         port=config.server.port,
         router=config.router,
         router_port=config.server.port,
@@ -119,7 +158,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             backend_port=config.backend_port,
             data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             enable_expert_parallel=config.vllm.enable_expert_parallel,
-            infer_nodes_per_replica=config.deployment.num_nodes,
+            infer_nodes_per_replica=config.deployment.nodes_per_replica,
+            num_infer_replicas=config.deployment.num_replicas,
         )
 
     script = template.render(**template_vars)
@@ -228,6 +268,8 @@ def inference_local(config: InferenceConfig):
         logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
+
+    wait_for_distributed_startup_barrier(config)
 
     try:
         server(config)

@@ -65,6 +65,7 @@ LLMD_EOF
     epp --pool-name prime-rl --pool-namespace slurm \
         --config-file "$LLMD_DIR/epp.yaml" \
         --grpc-port 9002 --grpc-health-port 9013 --metrics-port 9090 \
+        --refresh-metrics-interval 2s --metrics-staleness-threshold 10s \
         --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
         >> "$log" 2>&1 &
     envoy -c "$LLMD_DIR/envoy.yaml" >> "$log" 2>&1 &

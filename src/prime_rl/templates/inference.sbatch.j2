@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_nodes }}
+#SBATCH --nodes={{ num_slurm_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
@@ -27,6 +27,8 @@ set -e
 
 # Configs
 export NUM_NODES={{ num_nodes }}
+export NUM_SLURM_NODES={{ num_slurm_nodes }}
+export INFRA_NODES={{ infrastructure_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
@@ -47,6 +49,8 @@ export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
 export ROUTER_PORT={{ router_port }}
 export BACKEND_PORT={{ backend_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
+export NODES_PER_INFER_REPLICA={{ infer_nodes_per_replica }}
+export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 {%- endif %}
 
 # Paths
@@ -57,6 +61,10 @@ export OUTPUT_DIR={{ output_dir }}
 export LOG_DIR={{ log_dir }}
 export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
 export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
+# Keep vLLM's hard-coded five-minute engine/front-end handshake from expiring
+# while distributed API processes import. The Slurm restart count
+# prevents stale markers from an automatic requeue from opening the barrier.
+export PRIME_INFERENCE_STARTUP_BARRIER_DIR="$LOG_DIR/inference/startup-barrier-${SLURM_JOB_ID}-${SLURM_RESTART_COUNT:-0}"
 mkdir -p $LOG_DIR/inference
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
@@ -74,16 +82,19 @@ srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
 SYNC_SH
 {% else %}
-# Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-uv sync --all-extras --all-packages
+# Shared venv: validate that the already-installed environment is importable.
+# Launchers use uv --no-sync so allocated nodes never mutate the environment.
+python -c 'import prime_rl'
 {% endif %}
 
 # Print inference URLs
-export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+export ALL_HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+export INFRA_HOST="${ALL_HOSTNAMES[0]}"
+export HOSTNAMES=( "${ALL_HOSTNAMES[@]:$INFRA_NODES}" )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 {% if is_disaggregated -%}
 # Single global router on node 0 fronts every per-rank endpoint.
-INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+INFER_URLS="http://${INFRA_HOST}:${ROUTER_PORT}/v1"
 ROUTER_ARGS=""
 # External-LB: one --prefill/--decode endpoint per DP rank (PORT + k) on each node.
 for ((p=0; p<NUM_PREFILL_NODES; p++)); do
@@ -102,7 +113,7 @@ export INFER_URLS
 export ROUTER_ARGS
 {%- elif num_nodes > 1 %}
 # External LB: one router on node 0; one endpoint per DP rank (BACKEND_PORT + dp_local) on every node.
-INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+INFER_URLS="http://${INFRA_HOST}:${ROUTER_PORT}/v1"
 DP_PER_NODE={{ dp_per_node }}
 ROUTER_ARGS=""
 for host in ${HOSTNAMES[@]}; do
@@ -115,6 +126,7 @@ export ROUTER_ARGS
 {%- else %}
 INFER_URLS="http://${HOSTNAMES[0]}:{{ port }}/v1"
 {%- endif %}
+echo "INFRA_HOST=${INFRA_HOST}"
 echo "HOSTNAMES=${HOSTNAMES[@]}"
 echo "INFER_URLS=${INFER_URLS}"
 
@@ -180,7 +192,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
     [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
-    INFER_NODE_RANK=$SLURM_PROCID
+    TASK_RANK=$SLURM_PROCID
+    INFER_NODE_RANK=$((TASK_RANK - INFRA_NODES))
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
     # Inference env vars: launcher defaults + [inference.env_vars]
 {%- for key, value in inference_env_vars.items() %}
@@ -192,6 +205,15 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
+    if [ "$TASK_RANK" -lt "$INFRA_NODES" ]; then
+        launch_router {{ "pd" if is_disaggregated else "regular" }} "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+        echo "[infrastructure] $(hostname) serving router"
+        wait -n
+        EXIT_CODE=$?
+        echo "[$(hostname)] infrastructure component exited with code $EXIT_CODE"
+        for pid in $(jobs -p); do kill -TERM $pid 2>/dev/null || true; done
+        exit $EXIT_CODE
+    fi
 {%- if kv_offload_mooncake %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
@@ -275,9 +297,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+    export PRIME_INFERENCE_STARTUP_GROUP="${ROLE}-${SUB_REPLICA}"
 
-    # Start the single global router on node 0 (external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    # Without a dedicated infrastructure node, model node 0 also hosts the router.
+    if [ "$INFRA_NODES" -eq 0 ] && [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
@@ -313,27 +336,40 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- elif num_nodes > 1 %}
-    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
+    ROLE_RANK=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
+    REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
+    HEAD_HOST="${HOSTNAMES[$REPLICA_BASE]}"
+
+    GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
+    if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
+
+    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, REPLICA=${REPLICA_IDX}, ROLE_RANK=${ROLE_RANK}, LOCAL_IP=${LOCAL_IP}" \
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     DP_PER_NODE={{ dp_per_node }}
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
     EP={{ "1" if enable_expert_parallel else "0" }}
+    DP=$((NODES_PER_INFER_REPLICA * DP_PER_NODE))
+    export PRIME_INFERENCE_STARTUP_GROUP="aggregate-${REPLICA_IDX}"
 
     # Start the single global router on node 0 (balances across per-rank endpoints — no intra-node DP header)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    if [ "$INFRA_NODES" -eq 0 ] && [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 
-    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
-    # each pinned to its TP slice of GPUs. Each node is an independent replica, so any MoE EP
-    # group is node-local (rendezvous on LOCAL_IP); dense models run independent engines.
+    # External-LB: one vLLM API server per DP rank, pinned to its TP slice of GPUs.
+    # Expert-parallel ranks rendezvous within each aggregate replica; dense models
+    # continue to run independent engines.
     for ((d=0; d<DP_PER_NODE; d++)); do
         RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
-            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        if [ "$EP" -eq 1 ] && [ "$DP" -gt 1 ]; then
+            GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + d))
+            if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
             # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
             # independent single-engine servers. vLLM rejects the external-LB DP
@@ -345,7 +381,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- else %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log &
 {%- endif %}

@@ -33,7 +33,7 @@ Most of the features are supported for all deployment shapes, with few exception
 
 Every deployment shape has the same client-facing layout: a single global router listens on `inference.server.port` and fronts all vLLM engines, which listen on `inference.backend_port` (+ rank offset). Clients always talk to one URL, regardless of how many engines run behind it.
 
-You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape and topology knobs such as `num_nodes` and `num_replicas`.
+You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape and topology knobs such as `num_nodes`, `nodes_per_replica`, and the P/D replica counts.
 
 ```toml
 [inference.deployment]
@@ -96,6 +96,7 @@ Parallelism configuration is the same as the single-node deployment. The shape i
 [inference.deployment]
 type = "multi_node"
 num_nodes = 2
+nodes_per_replica = 1
 
 [inference.vllm]
 model = "PrimeIntellect/INTELLECT-3"
@@ -103,7 +104,7 @@ tensor_parallel_size = 2
 data_parallel_size = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tensor_parallel_size=2` and `data_parallel_size=4`. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tensor_parallel_size=2` and `data_parallel_size=4`. `nodes_per_replica = 1` is the default. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -113,6 +114,7 @@ For huge, 200B+ scale models, you might want to use multi-node expert parallelis
 [inference.deployment]
 type = "multi_node"
 num_nodes = 2
+nodes_per_replica = 2
 
 [inference.vllm]
 model = "PrimeIntellect/INTELLECT-3"
@@ -121,7 +123,12 @@ tensor_parallel_size = 2
 data_parallel_size = 8
 ```
 
-This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tensor_parallel_size = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
+This configuration runs one wide vLLM replica with `data_parallel_size_local = 4` per node, `tensor_parallel_size = 2`, and expert parallelism spanning both nodes. The requests are again routed to these processes via the `vllm-router`.
+
+`num_nodes` must be divisible by `nodes_per_replica`. For example,
+`num_nodes = 8` and `nodes_per_replica = 2` form four independent 2-node
+expert-parallel replicas; `nodes_per_replica = 4` forms two 4-node replicas.
+Cross-node grouping requires `enable_expert_parallel = true`.
 
 ## P/D Disaggregation
 

@@ -71,6 +71,8 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 **vLLM pass-through** — `[inference.vllm]` uses vLLM's own argument names (`model`, `tensor_parallel_size`, `data_parallel_size`, `max_model_len`, ...) and forwards *any* key to the vLLM server, typed by prime-rl or not: `[inference.vllm] max_num_seqs = 256`, or `--inference.vllm.max-num-seqs 256` on the CLI. CLI values are JSON-coerced, so dict-valued vLLM args work as `--inference.vllm.compilation-config '{"cudagraph_mode": "NONE"}'`. Non-vLLM knobs (router, deployment, weight broadcast, kv-cache offload, env vars) stay on `[inference]` itself.
 
+**Grouped multi-node inference** — for `deployment.type = "multi_node"`, `num_nodes` is the total model-node count and `nodes_per_replica` is the width of each independent replica (default `1`). The total must divide evenly by the width. A width greater than one requires `vllm.enable_expert_parallel = true`; for example, eight nodes with width two launch four EP replicas.
+
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
 **RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.1`, `adv_tau = 1.0`, and `kl_tau = 1e-3`. Omit the section to use these defaults. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
@@ -87,6 +89,8 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## Key files
+
+For external clients assigning whole inference replicas to workload pools, use the actual `HOSTNAMES=` order written to the inference batch log. Slurm display nodelists may be sorted differently from the launcher's rank order; grouping the displayed order can split EP replicas between pools. Monitoring must use the same ordering.
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
 - `configs/debug/` — minimal debug configs
