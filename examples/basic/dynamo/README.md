@@ -8,7 +8,7 @@ Prime-RL owns the full local process tree. The existing `rl` launcher starts the
 - `python -m dynamo.vllm --enable-rl` on the inference GPU.
 
 The integrated Dynamo vLLM worker exposes the discovery and administration routes, so this example does not require a separately built `dynamo-vllm-sidecar`.
-Managed Dynamo currently supports NCCL and NIXL weight transfer with one inference rank. Filesystem transfer, LoRA updates, sampling-mask capture, routed-expert capture, KV-cache offload, and multi-node workers are outside this first increment and fail with explicit configuration errors.
+Managed Dynamo currently supports filesystem, NCCL, and NIXL weight transfer with one inference rank. LoRA updates, sampling-mask capture, routed-expert capture, KV-cache offload, and multi-node workers remain outside this increment and fail with explicit configuration errors.
 
 The sampling override sets `top_k = 0`, Dynamo's unsigned representation for disabled top-k sampling. Verifiers otherwise sends the equivalent vLLM sentinel `-1`, which the Dynamo frontend cannot deserialize as an unsigned integer.
 

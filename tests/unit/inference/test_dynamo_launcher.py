@@ -70,9 +70,9 @@ def test_managed_dynamo_rejects_credential_worker_arguments():
         build_dynamo_process_specs(managed_config(hf_token="test-value"))
 
 
-def test_managed_dynamo_rejects_unsupported_transport_and_port_collision():
-    with pytest.raises(ValueError, match="NCCL and NIXL"):
-        build_dynamo_process_specs(managed_config(transport="filesystem"))
+def test_managed_dynamo_uses_filesystem_worker_and_rejects_port_collision():
+    _, worker = build_dynamo_process_specs(managed_config(transport="filesystem"))
+    assert worker.command[-1] == "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker"
 
     with pytest.raises(ValueError, match="distinct"):
         build_dynamo_process_specs(managed_config(server_port=8080, env_vars={"DYN_SYSTEM_PORT": "8081"}))

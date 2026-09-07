@@ -15,6 +15,7 @@ from typing import Any
 from prime_rl.configs.inference import InferenceConfig
 
 _WORKER_EXTENSION_CLS = {
+    "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
@@ -94,8 +95,6 @@ def build_dynamo_process_specs(
     if config.vllm.tensor_parallel_size != 1 or config.vllm.data_parallel_size != 1:
         raise ValueError("Managed Dynamo inference currently supports exactly one inference rank.")
 
-    if config.weight_broadcast.type == "filesystem":
-        raise ValueError("Managed Dynamo inference currently supports NCCL and NIXL weight transfer.")
     if config.vllm.enable_lora:
         raise ValueError("Managed Dynamo inference does not yet support LoRA weight updates.")
     if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:
