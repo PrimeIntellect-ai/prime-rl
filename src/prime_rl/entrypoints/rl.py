@@ -639,6 +639,10 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
+    if config.inference is not None and config.inference.backend == "dynamo":
+        from prime_rl.inference.dynamo_launcher import build_dynamo_process_specs
+
+        build_dynamo_process_specs(config.inference)
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
     # the vehicle for runtime info between processes, and every spawned process inherits
     # them. Components launched standalone have no run identity. TODO: fetch the id from
