@@ -150,6 +150,9 @@ class VLMConfig(BaseConfig):
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
+    pack_samples: bool = True
+    """Pack multiple multimodal samples into one sequence. Disable for generic Hugging Face VLMs that do not accept Prime's packed-document boundaries."""
+
 
 class BaseModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
@@ -160,6 +163,14 @@ class BaseModelConfig(BaseConfig):
 
     vlm: "VLMConfig | None" = None
     """VLM configuration. Setting this enables vision-language model support."""
+
+
+class DynamoConfig(BaseConfig):
+    enabled: bool = True
+    """Enable Dynamo worker discovery for the inference admin plane."""
+
+    discovery_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    """Dynamo frontend URL used to discover inference workers for RL control."""
 
 
 class ClientConfig(BaseConfig):
@@ -183,6 +194,9 @@ class ClientConfig(BaseConfig):
 
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):

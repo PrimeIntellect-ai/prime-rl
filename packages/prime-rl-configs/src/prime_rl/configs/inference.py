@@ -430,6 +430,9 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 
 class InferenceConfig(BaseConfig):
+    backend: Literal["vllm", "dynamo"] = "vllm"
+    """Managed inference backend. Existing configurations continue to use Prime's vLLM launcher."""
+
     server: ServerConfig = ServerConfig()
 
     router: RouterConfig | None = Field(default_factory=VllmRouterConfig)

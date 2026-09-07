@@ -536,8 +536,36 @@ def get_load_balance_stats(
     }
 
 
+def _validate_vlm_implementation(
+    config: ModelConfig,
+    *,
+    model_type: str,
+    is_vlm_arch: bool,
+    custom_vlm_available: bool,
+    impl_to_use: str,
+    world_size: int,
+) -> None:
+    if config.vlm is None:
+        return
+    if impl_to_use == "hf":
+        if not is_vlm_arch or config.vlm.pack_samples or world_size != 1:
+            raise ValueError(
+                f"Generic Hugging Face VLM training is not supported for {model_type!r} with this configuration; "
+                "it requires model.impl='hf', model.vlm.pack_samples=false, and one trainer process."
+            )
+        return
+    if not (is_vlm_arch and custom_vlm_available):
+        raise ValueError(
+            f"VLM training requires a registered custom PrimeRL VLM implementation; {model_type!r} has none."
+        )
+
+
 def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
+    config: ModelConfig,
+    device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.bfloat16,
+    *,
+    world_size: int = 1,
 ) -> nn.Module:
     logger = get_logger()
     logger.debug(
@@ -693,11 +721,14 @@ def get_model(
                 f"({support.reason}); {supported}."
             )
 
-    if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
-        raise ValueError(
-            "VLM training requires a registered custom PrimeRL VLM implementation; "
-            f"{getattr(model_config, 'model_type', config.name)!r} has none."
-        )
+    _validate_vlm_implementation(
+        config,
+        model_type=getattr(model_config, "model_type", config.name),
+        is_vlm_arch=is_vlm_arch,
+        custom_vlm_available=custom_vlm_cls is not None,
+        impl_to_use=impl_to_use,
+        world_size=world_size,
+    )
 
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
@@ -1243,7 +1274,12 @@ def setup_model(
     logger = get_logger()
 
     # 1. We load to meta device by default
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(
+        config,
+        device=torch.device("meta"),
+        dtype=DTYPE_MAP[config.optimization_dtype],
+        world_size=parallel_dims.world_size,
+    )
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
@@ -1255,7 +1291,12 @@ def setup_model(
     # 1a. We load to CPU if we cannot reinit empty buffers
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
-        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+        model = get_model(
+            config,
+            device=torch.device("cpu"),
+            dtype=DTYPE_MAP[config.optimization_dtype],
+            world_size=parallel_dims.world_size,
+        )
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):

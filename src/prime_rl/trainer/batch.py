@@ -523,7 +523,7 @@ class _MicroBatchBin:
                 return sample
         return None
 
-    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
+    def can_add(self, sample: MicroBatch, max_seq_len: int, pack_samples: bool) -> bool:
         # Loss routing is per token (component weight streams), so samples of
         # different loss types pack together freely. Multimodal packing is still
         # constrained by modality sidecars, length, and routed experts.
@@ -533,6 +533,8 @@ class _MicroBatchBin:
         if (first_sample.routed_experts is None) != (sample.routed_experts is None):
             return False
 
+        if not pack_samples:
+            return False
         sample_is_mm = _is_multimodal_sample(sample)
         existing_mm_sample = self.first_multimodal_sample
         if existing_mm_sample is not None and sample_is_mm:
@@ -694,6 +696,7 @@ def packed_samples_into_micro_bs(
     max_seq_len: int,
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
+    pack_samples: bool = True,
 ) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
@@ -713,7 +716,7 @@ def packed_samples_into_micro_bs(
         # Try to find a bin that can fit this sequence. Multimodal samples only
         # pack when their sidecar tensors are compatible.
         for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len):
+            if bin_content.can_add(sample, max_seq_len, pack_samples):
                 bin_content.add(sample)
                 break
         else:
@@ -877,6 +880,7 @@ def prepare_batch(
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    pack_samples: bool = True,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -889,7 +893,13 @@ def prepare_batch(
     """
     all_samples = [prepare_sample(rollout, seq_len) for rollout in rollouts]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_train_workers, bin_cost)
+    micro_batches = packed_samples_into_micro_bs(
+        all_samples,
+        seq_len,
+        num_train_workers,
+        bin_cost,
+        pack_samples=pack_samples,
+    )
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks
