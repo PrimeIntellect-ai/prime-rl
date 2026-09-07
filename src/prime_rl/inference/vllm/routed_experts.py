@@ -1,11 +1,76 @@
 from __future__ import annotations
 
+import base64
+import io
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pybase64
-from vllm.outputs import RequestOutput
+
+if TYPE_CHECKING:
+    from vllm.outputs import RequestOutput
+
+
+def _decode_native_routed_experts(raw: bytes) -> np.ndarray:
+    buffer = io.BytesIO(raw)
+    version = np.lib.format.read_magic(buffer)
+    if version == (1, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(buffer)
+    elif version == (2, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(buffer)
+    else:
+        raise ValueError(f"unsupported native routed_experts .npy version: {version}")
+
+    dtype = np.dtype(dtype)
+    if len(shape) != 3 or dtype.kind not in ("i", "u") or dtype.hasobject or fortran_order:
+        raise ValueError("native routed_experts must be a C-contiguous rank-3 integer array")
+
+    element_count = int(np.prod(shape, dtype=object))
+    payload_bytes = element_count * dtype.itemsize
+    offset = buffer.tell()
+    if len(raw) - offset != payload_bytes:
+        raise ValueError("native routed_experts payload size does not match its .npy header")
+
+    return np.frombuffer(raw, dtype=dtype, count=element_count, offset=offset).reshape(shape)
+
+
+def normalize_native_routed_experts(result: dict[str, Any], start: int = 0) -> None:
+    encoded = result.get("routed_experts")
+    if encoded is None or isinstance(encoded, dict):
+        return
+    if not isinstance(encoded, str):
+        raise TypeError(f"unsupported routed_experts payload: {type(encoded).__name__}")
+    raw = base64.b64decode(encoded, validate=True)
+    array = _decode_native_routed_experts(raw)
+    if array.size and (array.min() < 0 or array.max() > np.iinfo(np.uint16).max):
+        raise ValueError("native routed_experts indices must be between 0 and 65535")
+    target_dtype = np.uint8 if not array.size or array.max() <= np.iinfo(np.uint8).max else np.uint16
+    array = np.ascontiguousarray(array, dtype=target_dtype)
+    result["routed_experts"] = {
+        "data": base64.b64encode(memoryview(array)).decode("ascii"),
+        "shape": list(array.shape),
+        "start": start,
+        "dtype": array.dtype.name,
+    }
+
+
+def install_native_routed_experts_normalizer() -> None:
+    import renderers.client as renderer_client
+
+    original = renderer_client.generate
+    if getattr(original, "_prime_rl_normalizes_native_routed_experts", False):
+        return
+
+    async def generate(**kwargs):
+        result = await original(**kwargs)
+        sampling_params = kwargs.get("sampling_params") or {}
+        start = int(sampling_params.get("routed_experts_prompt_start", 0) or 0)
+        normalize_native_routed_experts(result, start=start)
+        return result
+
+    generate._prime_rl_normalizes_native_routed_experts = True  # type: ignore[attr-defined]
+    renderer_client.generate = generate
 
 
 def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, Any] | None:
