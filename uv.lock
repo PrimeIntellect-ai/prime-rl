@@ -183,7 +183,7 @@ wheels = [
 [[package]]
 name = "ai-dynamo"
 version = "1.5.0"
-source = { git = "https://github.com/ai-dynamo/dynamo.git?rev=664a75ba4895c53e61a16c57ee83149297279468#664a75ba4895c53e61a16c57ee83149297279468" }
+source = { git = "https://github.com/ai-dynamo/dynamo.git?rev=d65e80c08dd189ec3bb5f629d91ac8c3658ce80d#d65e80c08dd189ec3bb5f629d91ac8c3658ce80d" }
 dependencies = [
     { name = "ai-dynamo-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -201,7 +201,7 @@ dependencies = [
 [[package]]
 name = "ai-dynamo-runtime"
 version = "1.5.0"
-source = { git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=664a75ba4895c53e61a16c57ee83149297279468#664a75ba4895c53e61a16c57ee83149297279468" }
+source = { git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=d65e80c08dd189ec3bb5f629d91ac8c3658ce80d#d65e80c08dd189ec3bb5f629d91ac8c3658ce80d" }
 dependencies = [
     { name = "pydantic", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5552,8 +5552,8 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?rev=664a75ba4895c53e61a16c57ee83149297279468" },
-    { name = "ai-dynamo-runtime", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=664a75ba4895c53e61a16c57ee83149297279468" },
+    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?rev=d65e80c08dd189ec3bb5f629d91ac8c3658ce80d" },
+    { name = "ai-dynamo-runtime", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=d65e80c08dd189ec3bb5f629d91ac8c3658ce80d" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },

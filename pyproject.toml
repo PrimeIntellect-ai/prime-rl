@@ -250,8 +250,8 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-ai-dynamo = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "664a75ba4895c53e61a16c57ee83149297279468" }
-ai-dynamo-runtime = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "664a75ba4895c53e61a16c57ee83149297279468", subdirectory = "lib/bindings/python" }
+ai-dynamo = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "d65e80c08dd189ec3bb5f629d91ac8c3658ce80d" }
+ai-dynamo-runtime = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "d65e80c08dd189ec3bb5f629d91ac8c3658ce80d", subdirectory = "lib/bindings/python" }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
