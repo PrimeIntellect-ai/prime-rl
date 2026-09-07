@@ -737,7 +737,10 @@ function buildChartLayout(entry, timeAxis) {
         spanGaps: true,
         points: singletonPoints(strand.main, color),
       });
-      const m = { label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color, dataIdx: cols.length };
+      const m = {
+        label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color,
+        dataIdx: cols.length, rawDataIdx: cols.length - 1,
+      };
       meta.push(m);
       mainIdx++;
       const aux = [strand.lo, strand.hi, ...strand.overlays].filter(Boolean);
@@ -916,19 +919,23 @@ function tooltipPlugin(meta, timeAxis) {
           any = true;
           const lo = m.lo ? u.data[m.lo.dataIdx][idx] : null;
           const hi = m.hi ? u.data[m.hi.dataIdx][idx] : null;
-          const row = (swatch, label, value) =>
+          const raw = u.data[m.rawDataIdx][idx];
+          const label = meta.length > 1 ? m.label : lo != null && hi != null ? m.stat : "";
+          const mainLabel = raw != null ? `${label ? `${label} · ` : ""}smoothed` : label;
+          const row = (swatch, label, value, color = m.color) =>
             `<div class="u-tip-row"><span class="sw${swatch ? "" : " sw-band"}" style="${
-              swatch ? `background:${m.color}` : `border-color:${m.color}`
+              swatch ? `background:${color}` : `border-color:${color}`
             }"></span>` +
             `${label ? `<span class="u-tip-l">${esc(label)}</span>` : ""}<span class="u-tip-v">${fmtNum(value)}</span></div>`;
           if (lo != null && hi != null) {
             // banded: three lines, hi over mean over lo
             rows += row(false, m.hi.stat, hi);
-            rows += row(true, meta.length > 1 ? m.label : m.stat, v);
+            rows += row(true, mainLabel, v);
             rows += row(false, m.lo.stat, lo);
           } else {
-            rows += row(true, meta.length > 1 ? m.label : "", v);
+            rows += row(true, mainLabel, v);
           }
+          if (raw != null) rows += row(true, `${label ? `${label} · ` : ""}raw`, raw, hexToRgba(m.color, 0.25));
         });
         if (!any) {
           tip.style.display = "none";
