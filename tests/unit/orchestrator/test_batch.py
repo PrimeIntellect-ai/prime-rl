@@ -513,6 +513,51 @@ def test_prepare_batch_packs_multimodal_with_text():
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
 
 
+def test_prepare_batch_keeps_multimodal_samples_separate_when_packing_disabled():
+    samples = [
+        TrainingSample(
+            token_ids=[10 + offset, 11 + offset, 12 + offset],
+            mask=[False, True, True],
+            logprobs=[0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0],
+            advantages=[0.0, 1.0, 1.0],
+            env_name=f"mm-env-{offset}",
+            mm_token_type_ids=[0, 1, 0],
+            mm_kwargs={
+                "pixel_values": _encoded(np.array([[1.0 + offset, 2.0 + offset]], dtype=np.float32)),
+                "image_grid_thw": _encoded(np.array([[1, 2, 2]], dtype=np.int64)),
+            },
+        )
+        for offset in range(2)
+    ]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=samples,
+        seq_len=8,
+        num_train_workers=1,
+        bin_cost=build_bin_cost(None),
+        pack_samples=False,
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 2
+    assert [batch.seq_lens for batch in real_batches] == [[3], [3]]
+
+
+def test_prepare_batch_keeps_text_samples_separate_when_packing_disabled(make_training_example):
+    batches_per_gpu = prepare_batch(
+        rollouts=[make_training_example(), make_training_example()],
+        seq_len=8,
+        num_train_workers=1,
+        bin_cost=build_bin_cost(None),
+        pack_samples=False,
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 2
+    assert [batch.seq_lens for batch in real_batches] == [[4], [4]]
+
+
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""
     sample = TrainingSample(

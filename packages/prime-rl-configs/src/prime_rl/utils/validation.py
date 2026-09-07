@@ -76,6 +76,14 @@ def propagate_shared_fields(data: Any) -> Any:
         "trainer.model.vlm",
         "orchestrator.model.vlm",
     )
+    trainer_vlm = get("trainer.model.vlm")
+    orchestrator_vlm = get("orchestrator.model.vlm")
+    if trainer_vlm is not None and orchestrator_vlm is not None and trainer_vlm != orchestrator_vlm:
+        conflicts.append(("trainer.model.vlm", "orchestrator.model.vlm"))
+    elif trainer_vlm is not None:
+        fill("orchestrator.model.vlm", trainer_vlm)
+    elif orchestrator_vlm is not None:
+        fill("trainer.model.vlm", orchestrator_vlm)
 
     # [log]
     propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
