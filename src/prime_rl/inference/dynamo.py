@@ -26,6 +26,7 @@ _REQUIRED_ENGINE_ROUTES = {
     "init_weights_update_group",
     "pause_generation",
     "resume_generation",
+    "update_weights_from_disk",
     "update_weights_from_distributed",
 }
 
@@ -345,6 +346,7 @@ class DynamoAdminPlane(AdminPlane):
         method: Literal["init_broadcaster", "update_weights_from_path"],
         timeout: int | float,
         args: list[object],
+        from_disk: bool = False,
     ) -> None:
         operation_timeout = max(1.0, float(timeout))
         if self._admin_protocol == "collective_rpc":
@@ -362,6 +364,9 @@ class DynamoAdminPlane(AdminPlane):
                 "session_id",
             )
             body = {"engine_rpc": method, **dict(zip(names, args, strict=True))}
+        elif from_disk:
+            path = "/engine/update_weights_from_disk"
+            body = {"engine_rpc": method, "model_path": args[0]}
         else:
             path = "/engine/update_weights_from_distributed"
             body = {"engine_rpc": method, "weight_dir": args[0]}
@@ -408,17 +413,7 @@ class DynamoAdminPlane(AdminPlane):
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        if transport == "filesystem":
-            async with self._mutation_lock:
-                await self.ensure_topology_current()
-                await super().update_weights(
-                    weight_dir,
-                    transport=transport,
-                    step=step,
-                    on_paused=on_paused,
-                )
-            return
-        if transport == "nccl" and weight_dir is None:
+        if transport in {"filesystem", "nccl"} and weight_dir is None:
             raise ValueError(f"{transport.upper()} weight updates require a broadcast directory")
         if transport == "nccl":
             self._require_ready_nccl()
@@ -447,6 +442,7 @@ class DynamoAdminPlane(AdminPlane):
                     method="update_weights_from_path",
                     timeout=UPDATE_WEIGHTS_TIMEOUT_S,
                     args=[weight_dir.as_posix() if weight_dir is not None else None],
+                    from_disk=transport == "filesystem",
                 )
             except BaseException as failure:
                 self._terminal = True

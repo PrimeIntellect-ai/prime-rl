@@ -247,17 +247,23 @@ def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
     asyncio.run(admin.aclose())
 
 
-def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
+def test_dynamo_filesystem_update_uses_engine_lifecycle(tmp_path):
     admin = admin_for(worker(1))
+
+    with pytest.raises(ValueError, match="require a broadcast directory"):
+        asyncio.run(admin.update_weights(None, transport="filesystem", step=1))
 
     with (
         patch.object(admin, "ensure_topology_current", new=AsyncMock()) as ensure_topology,
-        patch.object(AdminPlane, "update_weights", new=AsyncMock()) as update_weights,
+        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
+        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
     ):
         asyncio.run(admin.update_weights(tmp_path, transport="filesystem", step=1))
 
     ensure_topology.assert_awaited_once_with()
-    update_weights.assert_awaited_once_with(tmp_path, transport="filesystem", step=1, on_paused=None)
+    assert collective_rpc.await_args.kwargs["args"] == [tmp_path.as_posix()]
+    assert collective_rpc.await_args.kwargs["from_disk"] is True
+    assert [call.args[1] for call in post.await_args_list] == ["/pause", "/resume"]
     asyncio.run(admin.aclose())
 
 
@@ -304,6 +310,7 @@ def test_parse_dynamo_python_worker_uses_system_admin_routes():
                         "pause_generation",
                         "resume_generation",
                         "init_weights_update_group",
+                        "update_weights_from_disk",
                         "update_weights_from_distributed",
                     ],
                     "model": MODEL,
@@ -333,6 +340,7 @@ def test_parse_dynamo_python_worker_uses_system_admin_routes():
                     "pause_generation",
                     "resume_generation",
                     "init_weights_update_group",
+                    "update_weights_from_disk",
                     "update_weights_from_distributed",
                 ],
                 "model": MODEL,
@@ -395,6 +403,23 @@ def test_dynamo_python_worker_translates_collective_rpc_to_engine_route():
         "timeout": 10,
         "quantize_in_weight_transfer": False,
         "session_id": "default",
+    }
+
+    client.reset_mock()
+    asyncio.run(
+        admin._collective_rpc(
+            client,
+            method="update_weights_from_path",
+            timeout=10,
+            args=["/shared/step_1"],
+            from_disk=True,
+        )
+    )
+    client.post.assert_awaited_once()
+    assert client.post.await_args.args[0] == "/engine/update_weights_from_disk"
+    assert client.post.await_args.kwargs["json"] == {
+        "engine_rpc": "update_weights_from_path",
+        "model_path": "/shared/step_1",
     }
 
 
