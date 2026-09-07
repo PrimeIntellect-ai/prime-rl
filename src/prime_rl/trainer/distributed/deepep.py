@@ -318,10 +318,9 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         num_sms: int,
         token_chunk_size: int | None,
     ) -> None:
-        super().__init__(num_experts, token_group_alignment)
+        super().__init__(num_experts, token_group_alignment, token_chunk_size)
         self.num_local_experts = num_experts // group.size()
         self.group = group
-        self.token_chunk_size = token_chunk_size
         self._pending_combine_events: list[EventOverlap] = []
         self._dispatcher_id = id(self)
         _combine_dispatchers[self._dispatcher_id] = self

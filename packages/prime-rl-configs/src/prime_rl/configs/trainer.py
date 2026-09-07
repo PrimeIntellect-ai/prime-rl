@@ -202,6 +202,11 @@ class TorchMoEDispatchConfig(BaseConfig):
     transport: Literal["bf16", "mxfp8"] = "bf16"
     """Wire format for routed activations and their reverse-path gradients."""
 
+    token_chunk_size: int | None = Field(None, ge=1)
+    """Optional chunk size used to pipeline dispatch with local expert compute. With the ``bf16``
+    transport, the all-to-all for chunk i+1 is issued without waiting for it, so it overlaps with
+    chunk i's expert compute and combine on the GPU."""
+
 
 class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
@@ -214,8 +219,37 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class CometMoEDispatchConfig(BaseConfig):
+    type: Literal["comet"] = "comet"
+    block_m: int = Field(128, ge=1)
+    """Row-tile size for comet_moe's dispatch/combine alignment and its expert FFN's grouped GEMM
+    boundaries. 128 was the value validated against a real training-step profile
+    (`prime-rl-bench`'s `SYNC_PROFILE_2026-08-17.md`, num_experts=128, top_k=8, ep=8)."""
+
+    n_blocks: int = Field(132, ge=1)
+    """CUDA grid size for the `comet_scatter` kernels -- roughly the SM count is a reasonable
+    starting point (132 matches a B200's SM count)."""
+
+    capacity_multiplier: int = Field(4, ge=1)
+    """Buffers are sized once, from the *first* call's local token count, as
+    `capacity_multiplier * num_local_tokens * top_k + num_experts * block_m` and reused after --
+    a later call needing more raises `RuntimeError` rather than silently truncating (comet_moe's
+    documented buffer-sizing contract), so size this for the worst per-rank routing imbalance you
+    expect, not just the average case."""
+
+    n_chunks: int = Field(4, ge=1)
+    """Number of row-range chunks the dispatch-receive buffer is split into for compute/comm
+    overlap: a dedicated CUDA stream waits for each chunk's arrival flags in order while the main
+    stream runs each chunk's expert FFN as soon as (and only as soon as) that chunk's own wait
+    resolves, so a later chunk's flag-polling can run concurrently with an earlier chunk's GEMMs --
+    see `comet_moe.autograd._run_chunked_dispatch_wait_and_ffn`. 1 disables overlap (one chunk,
+    fully sequential dispatch -> wait -> FFN). Too many chunks adds per-chunk kernel-launch and
+    grouped-GEMM overhead without more overlap to gain; 4 was a reasonable starting point, not
+    tuned against a real profile yet."""
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | CometMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 

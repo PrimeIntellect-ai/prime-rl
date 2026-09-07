@@ -6,6 +6,7 @@ from torch.distributed.tensor.parallel import parallelize_module
 
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
+    CometMoEDispatchConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
     ModelConfig,
@@ -85,6 +86,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     top_k=moe.router.top_k,
                     token_group_alignment=grouped_gemm.token_group_alignment,
                     group=ep_mesh.get_group(),
+                    token_chunk_size=dispatch.token_chunk_size,
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(
@@ -92,6 +94,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     top_k=moe.router.top_k,
                     token_group_alignment=grouped_gemm.token_group_alignment,
                     group=ep_mesh.get_group(),
+                    token_chunk_size=dispatch.token_chunk_size,
                 )
         elif isinstance(dispatch, DeepEPMoEDispatchConfig):
             from prime_rl.trainer.distributed.deepep import DeepEPTokenDispatcher
@@ -102,6 +105,24 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
+            )
+        elif isinstance(dispatch, CometMoEDispatchConfig):
+            from prime_rl.trainer.distributed.comet_moe.token_dispatcher import CometMoETokenDispatcher
+
+            if not isinstance(config.moe.compute, BF16MoEComputeConfig):
+                get_logger().warning(
+                    f"model.moe.dispatch=comet ignores model.moe.compute (configured as "
+                    f"{config.moe.compute.type}): comet_moe always runs its own torch._grouped_mm "
+                    f"bf16 expert FFN, fused with dispatch/combine -- see CometMoEDispatchConfig's docstring."
+                )
+            token_dispatcher = CometMoETokenDispatcher(
+                num_experts=moe.experts.num_experts,
+                top_k=moe.router.top_k,
+                group=ep_mesh.get_group(),
+                block_m=dispatch.block_m,
+                n_blocks=dispatch.n_blocks,
+                capacity_multiplier=dispatch.capacity_multiplier,
+                n_chunks=dispatch.n_chunks,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
