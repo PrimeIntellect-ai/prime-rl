@@ -20,6 +20,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_deepep_v2_empty_decode_metadata()
     monkey_patch_engine_handshake_timeout()
 
 
@@ -35,6 +36,86 @@ def monkey_patch_engine_handshake_timeout():
     from vllm.v1.engine import core
 
     core.HANDSHAKE_TIMEOUT_MINS = max(1, math.ceil(float(timeout) / 60))
+
+
+def monkey_patch_deepep_v2_empty_decode_metadata():
+    """Fix DeepEP v2 decode profiling with vLLM 0.28's DeepGEMM backend.
+
+    DeepEP v2 skips the CPU count sync on its cudagraph/decode path, so
+    ``num_recv_tokens_per_expert_list`` is empty. vLLM 0.28 turns that empty
+    list into a zero-length ``ExpertTokensMetadata`` tensor. DeepGEMM then
+    compares those zero global counts with the rank's local expert workspace
+    and aborts while profiling the KV cache (0 entries versus 16 for GLM-5.3).
+
+    Upstream vLLM treats the empty list as absent metadata so the expert kernel
+    derives local counts from ``topk_ids``. Keep this compatibility patch
+    limited to the affected 0.28 release; later versions carry the upstream
+    implementation and may attach additional decode metadata here.
+    """
+    from importlib.metadata import version
+    from importlib.util import find_spec
+
+    if version("vllm") != "0.28.0" or find_spec("deep_ep") is None:
+        return
+
+    # Older DeepEP builds do not provide the v2 API. Importing vLLM's v2
+    # prepare/finalize module against one of those builds fails while resolving
+    # its ``deep_ep.ElasticBuffer`` annotation, even for deployments using the
+    # v1 high-throughput/low-latency backends.
+    try:
+        import deep_ep
+    except (ImportError, OSError):
+        return
+
+    if not hasattr(deep_ep, "ElasticBuffer"):
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_v2 import (
+        DeepEPV2PrepareAndFinalize,
+    )
+
+    original_receiver = DeepEPV2PrepareAndFinalize._receiver
+    if getattr(original_receiver, "_prime_rl_handles_empty_decode_metadata", False):
+        return
+
+    def _receiver(
+        self,
+        event,
+        has_scales,
+        recv_x,
+        recv_topk_idx,
+        num_experts,
+        recv_expert_num_tokens,
+        recv_topk_weights,
+        psum_recv_per_rank,
+        a1_scale,
+        quant_config,
+        defer_input_quant,
+    ):
+        result = original_receiver(
+            self,
+            event,
+            has_scales,
+            recv_x,
+            recv_topk_idx,
+            num_experts,
+            recv_expert_num_tokens,
+            recv_topk_weights,
+            psum_recv_per_rank,
+            a1_scale,
+            quant_config,
+            defer_input_quant,
+        )
+        if not recv_expert_num_tokens:
+            result = (result[0], result[1], None, result[3], result[4])
+        return result
+
+    _receiver._prime_rl_handles_empty_decode_metadata = True
+    DeepEPV2PrepareAndFinalize._receiver = _receiver
+    init_logger(__name__).warning(
+        "Patched vLLM 0.28 DeepEP v2 empty decode expert metadata."
+    )
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
