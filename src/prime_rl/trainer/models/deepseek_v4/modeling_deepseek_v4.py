@@ -100,11 +100,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV4DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    # None of transformers' backends can serve V4: FlashAttention caps the head dim at 256 while
-    # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask cannot
-    # address the compressed entries a block gathers alongside its local window.
-    # `DeepseekV4Attention` runs its own fused kernel, so `config._attn_implementation` is inert
-    # here; these flags only keep transformers from advertising a backend we lack.
+    # V4 attention runs its own fused kernel; no transformers backend can serve it.
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False
