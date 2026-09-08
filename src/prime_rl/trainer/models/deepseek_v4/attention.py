@@ -113,16 +113,15 @@ All three layer types reach their keys the same way. `SparseAttnInputs` lays out
                          nothing else: an absent key needs no position of its own
 
 and one int32 index tensor addressing that position axis, `sliding_window + picks` slots per
-query: the local window first, the picks after. `picks` is the indexer's
-`min(index_topk, entries)` for CSA, `max_entries_per_doc` for HCA, and zero for a sliding layer,
-which reads its window alone. A slot with nothing to read holds `IGNORE_SLOT` (-1), which the
-kernel masks on, so a short window and a surplus pick cost only their loads.
+query: the local window first, the picks after. `picks` is the indexer's `index_topk` for CSA,
+`max_entries_per_doc` for HCA, and zero for a sliding layer, which reads its window alone. A slot
+with nothing to read holds `IGNORE_SLOT` (-1), which the kernel masks on, so a short window and a
+surplus pick cost only their loads.
 """
 
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -130,6 +129,7 @@ from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -501,49 +501,20 @@ class DeepseekV4Compressor(nn.Module):
         nn.init.zeros_(self.position_bias)
 
 
-class DeepseekV4IndexerScorer(nn.Module):
-    """Lightning-Indexer score `score[t,e] = sum_h w[t,h] * ReLU(q[t,h,d] * k[e,d])`.
-
-    Query token `t` against compressed entry `e`, over indexer heads `h` and `index_head_dim`
-    channels `d`. The per-head weights `w[t,h]` come off the hidden state directly rather than
-    from a query-key interaction, which keeps the scorer one matmul deep. It runs in fp32: the
-    scores only feed a top-k, so the width costs little and near-ties are not decided by bf16
-    rounding.
-    """
-
-    def __init__(self, config: DeepseekV4Config):
-        super().__init__()
-        self.softmax_scale = config.index_head_dim**-0.5
-        self.weights_scaling = config.index_n_heads**-0.5
-        self.weights_proj = nn.Linear(config.hidden_size, config.index_n_heads, bias=False)
-
-    def forward(self, q: torch.Tensor, compressed_kv: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Score `q` `(batch, seq, heads, dim)` against `compressed_kv` `(batch, entries, dim)`.
-
-        The `(batch, seq, heads, entries)` intermediate is 4 GB at 8192 tokens, so it is mutated in
-        place instead of copied. That is only correct with grad disabled, which the caller
-        `DeepseekV4Indexer.forward` guarantees.
-        """
-        scores = torch.matmul(q.float(), compressed_kv.transpose(-1, -2).float().unsqueeze(1))
-        F.relu_(scores)
-        # Both scales are positive constants and cannot change the selection, so they ride along on
-        # the per-head weights rather than costing a second pass over the intermediate.
-        weights = self.weights_proj(hidden_states).float() * (self.weights_scaling * self.softmax_scale)
-        scores *= weights.unsqueeze(-1)
-        return scores.sum(dim=2)
-
-
 class DeepseekV4Indexer(nn.Module):
     """Lightning Indexer: picks the `index_topk` compressed entries each query may read.
 
-    It owns a compressor at the narrow `index_head_dim` and scores each query against its
-    entries. The indices it returns address the entries of the compressor that owns it: both
-    share `compress_rate` and the `compress` RoPE base, so entry `e` in one covers the same
-    source tokens as entry `e` in the other, and the scores depend only on the query-key
-    distance.
+    It owns a compressor at the narrow `index_head_dim` and scores each query against its entries
+    with `fp8_indexer`, a fused Triton kernel that quantizes queries and keys to FP8 (UE8M0) and
+    never materializes a `(seq, heads, entries)` score tensor. GLM DSA runs the same kernel as its
+    only indexer path, unconditional and ungated, and this mirrors that. The indices this returns
+    address the entries of the compressor that owns it: both share `compress_rate` and the
+    `compress` RoPE base, so entry `e` in one covers the same source tokens as entry `e` in the
+    other, and the scores depend only on the query-key distance.
 
-    Each query gets `min(index_topk, entries)` picks. An early query has fewer entries whose
-    source tokens all lie at or before it, and its surplus picks come back as `IGNORE_SLOT` (-1).
+    Every query gets `index_topk` picks, the width the kernel pads to. An early query has fewer
+    entries whose source tokens all lie at or before it, and its surplus picks come back as
+    `IGNORE_SLOT` (-1).
     """
 
     def __init__(self, config: DeepseekV4Config):
@@ -555,34 +526,39 @@ class DeepseekV4Indexer(nn.Module):
             config, self.head_dim, config.compress_rates["compressed_sparse_attention"], n_series=2
         )
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
-        self.scorer = DeepseekV4IndexerScorer(config)
+        self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
 
-    @torch.no_grad() # Returns non-differentiable integer indices.
+    @torch.no_grad()  # Returns non-differentiable integer indices.
     def forward(self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         compressed_kv = self.compressor.compress(hidden_states, packed)
-        compressed_len = compressed_kv.shape[1]
-        top_k = min(self.index_topk, compressed_len)
+        n_entries = compressed_kv.shape[1]
 
         # The token-position table for this rope type is already on `packed`; the compressor's own
         # rotary is only ever evaluated at entry positions.
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
         q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
+        w = self.weights_proj(hidden_states)
 
-        scores = self.scorer(q, compressed_kv, hidden_states)
-        if compressed_len == 0:
-            return scores.topk(top_k, dim=-1).indices
+        # The kernel wants a per-query contiguous readable range in the entry axis, `[ks, ke)`:
+        # `first_entry_of_doc` locates where the query's own document starts, and the number of
+        # entries closed so far advances that into the document.
+        layout = packed.compression_layouts[self.compressor.compress_rate]
+        ks = layout.first_entry_of_doc[packed.tok_doc_idx].int()
+        ke = (ks + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
-        threshold = self.compressor.causal_threshold(packed.position_ids)
-        readable = packed.token_entry_causal_mask(self.compressor.compress_rate, threshold).expand_as(scores)
-        scores = scores.masked_fill(~readable, float("-inf"))
-        top_k_indices = scores.topk(top_k, dim=-1).indices
-        # An early query has fewer than `top_k` readable entries, so top-k still hands back
-        # masked-out ones. Mark those `IGNORE_SLOT` (-1) rather than letting them leak into attention.
-        return torch.where(
-            readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, IGNORE_SLOT)
+        # The kernel has no batch axis, and `ks`/`ke` come from the row's shared `PackedContext`,
+        # so every batch entry indexes the same ranges.
+        top_k_indices = torch.stack(
+            [fp8_indexer(q[b], compressed_kv[b], w[b], ks, ke, self.index_topk) for b in range(batch)]
         )
+        # The kernel's sentinel for "no valid pick" is `n_entries`; DS V4's own is `IGNORE_SLOT`.
+        # This also covers `n_entries == 0` for free: every query's range is empty, so the kernel's
+        # own out-of-range cleanup already maps every pick to its sentinel.
+        in_range = top_k_indices < n_entries
+        top_k_indices = torch.where(in_range, top_k_indices, torch.full_like(top_k_indices, IGNORE_SLOT))
+        return top_k_indices.long()
 
     def init_weights(self, init_std: float) -> None:
         self.compressor.init_weights(init_std)
@@ -801,7 +777,6 @@ __all__ = [
     "DeepseekV4GroupedLinear",
     "DeepseekV4HCACompressor",
     "DeepseekV4Indexer",
-    "DeepseekV4IndexerScorer",
     "PackedContext",
     "SparseAttnInputs",
     "dense_mask_from_indices",
