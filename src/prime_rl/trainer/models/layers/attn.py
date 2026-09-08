@@ -5,6 +5,8 @@ from typing import Literal
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.fusions import fuse_qkv_projections
+
 from .norms import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
 
@@ -48,6 +50,8 @@ class AttentionConfig:
 class FlashAttention(nn.Module):
     """Flash Attention"""
 
+    supported_fusions = {"qkv": fuse_qkv_projections}
+
     _funcs = {
         2: flash_attn_varlen_func,
         3: flash_attn_3_varlen_func,
@@ -61,15 +65,15 @@ class FlashAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.is_causal = config.is_causal
 
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        self.qkv_sizes = (
+            config.num_attention_heads * self.head_dim,
+            config.num_key_value_heads * self.head_dim,
+            config.num_key_value_heads * self.head_dim,
         )
-        self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
+        self.q_proj = nn.Linear(config.hidden_size, self.qkv_sizes[0], bias=config.attention_bias)
+        self.k_proj = nn.Linear(config.hidden_size, self.qkv_sizes[1], bias=config.attention_bias)
+        self.v_proj = nn.Linear(config.hidden_size, self.qkv_sizes[2], bias=config.attention_bias)
+        self.register_module("qkv_proj", None)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias)
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
@@ -90,6 +94,12 @@ class FlashAttention(nn.Module):
         self._flash_attn_call = self.func
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
+
+    def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Query, key and value projections, from one packed GEMM when qkv is fused."""
+        if self.qkv_proj is None:
+            return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
+        return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
@@ -119,9 +129,7 @@ class FlashAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        query_states, key_states, value_states = self.project_qkv(hidden_states)
 
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states)

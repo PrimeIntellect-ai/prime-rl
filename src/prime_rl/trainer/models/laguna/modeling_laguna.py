@@ -130,9 +130,7 @@ class LagunaFlashAttention(FlashAttention):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        query_states, key_states, value_states = self.project_qkv(hidden_states)
 
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states)

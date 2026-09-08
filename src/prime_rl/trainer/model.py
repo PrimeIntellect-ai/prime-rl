@@ -42,6 +42,11 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.fusions import (
+    apply_model_fusions,
+    get_fsdp_shard_placement_fn,
+    write_back_loaded_packed_parameters,
+)
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -774,10 +779,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
+    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
+        "shard_placement_fn": shard_placement_fn,
     }
 
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -819,6 +826,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
                 offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
+                shard_placement_fn=shard_placement_fn,
             )
 
         fully_shard(
@@ -844,6 +852,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mp_policy=mp_policy,
             offload_policy=offload_policy,
             reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
         )
     else:
         get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
@@ -854,6 +863,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        shard_placement_fn=shard_placement_fn,
     )
 
     if not parallel_dims.ep_enabled:
@@ -1006,6 +1016,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    write_back_loaded_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
@@ -1256,6 +1267,12 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    if config.fusions.enabled and config.lora is not None:
+        logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
+    elif config.fusions.enabled:
+        applied = apply_model_fusions(model, config.fusions.enabled, raise_on_fail=config.fusions.raise_on_fail)
+        logger.info(f"Applied runtime model fusions: {applied}")
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
