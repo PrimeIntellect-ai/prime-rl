@@ -105,11 +105,15 @@ def _dequant_mxfp4_kernel(
     low_val = _e2m1_lookup(low_nibble)
     high_val = _e2m1_lookup(high_nibble)
 
-    scale_val = tl.load(
+    # `float8_e8m0fnu` stores its value as a biased power-of-2 exponent, byte == value's
+    # exponent + 127 (PyTorch's `.float()` on this dtype decodes the same way) -- the raw byte
+    # itself is not the scale, `2 ** (byte - 127)` is.
+    scale_byte = tl.load(
         scale_ptr + pid_b * stride_sb + pid_r * stride_sr + pid_g * stride_sc,
         mask=pid_g < scale_cols,
-        other=0.0,
+        other=127,
     ).to(tl.float32)
+    scale_val = tl.exp2(scale_byte - 127.0)
 
     low_out = (low_val * scale_val).to(tl.bfloat16)
     high_out = (high_val * scale_val).to(tl.bfloat16)
@@ -172,11 +176,13 @@ def _dequant_fp8_kernel(
     scale_row = row_offsets // block_rows
     scale_col = col_offsets // block_cols
     s_base = scale_ptr + pid_b * stride_sb
-    s = tl.load(
+    # Same `float8_e8m0fnu` decode as the MXFP4 kernel: raw byte -> `2 ** (byte - 127)`.
+    s_byte = tl.load(
         s_base + scale_row[:, None] * stride_sr + scale_col[None, :] * stride_sc,
         mask=mask,
-        other=0.0,
+        other=127,
     ).to(tl.float32)
+    s = tl.exp2(s_byte - 127.0)
 
     out = (w * s).to(tl.bfloat16)
     out_base = out_ptr + pid_b * stride_ob
