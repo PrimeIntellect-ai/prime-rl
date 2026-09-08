@@ -94,7 +94,7 @@ def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
     }
     headers = {**client_config.headers, **env_headers}
     api_key = os.getenv(client_config.api_key_var)
-    if api_key:
+    if api_key and api_key != "EMPTY":
         headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
@@ -254,6 +254,7 @@ class DynamoAdminPlane(AdminPlane):
         worker_timeout = min(30.0, max(1.0, float(self._timeout)))
         return httpx.AsyncClient(
             base_url=worker.admin_base_url,
+            headers=self._headers,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(worker_timeout),
             trust_env=False,

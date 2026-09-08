@@ -120,6 +120,28 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
     asyncio.run(admin.aclose())
 
 
+@pytest.mark.parametrize(("api_key", "authorization"), [("secret", "Bearer secret"), ("EMPTY", None)])
+def test_dynamo_worker_client_propagates_admin_headers(monkeypatch, api_key, authorization):
+    monkeypatch.setenv("DYNAMO_HEADER", "from-env")
+    monkeypatch.setenv("DYNAMO_API_KEY", api_key)
+    config = ClientConfig(
+        base_url="http://worker:8000/v1",
+        headers={"X-Static": "static"},
+        headers_from_env={"X-Environment": "DYNAMO_HEADER"},
+        api_key_var="DYNAMO_API_KEY",
+        dynamo=dynamo_config(),
+    )
+    admin = DynamoAdminPlane(config, MODEL)
+    client = admin._make_worker_client(parsed(worker(1)))
+
+    assert client.headers["X-Static"] == "static"
+    assert client.headers["X-Environment"] == "from-env"
+    assert client.headers.get("Authorization") == authorization
+
+    asyncio.run(client.aclose())
+    asyncio.run(admin.aclose())
+
+
 def test_dynamo_admin_plane_derives_discovery_url_from_client_port():
     admin = setup_admin_plane(
         ClientConfig(
