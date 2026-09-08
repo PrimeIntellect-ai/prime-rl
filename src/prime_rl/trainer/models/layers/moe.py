@@ -13,6 +13,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
@@ -82,6 +83,8 @@ def broadcast_expert_bias(
 
 
 class GroupedExperts(nn.Module):
+    supported_fusions = {"gate_up": fuse_gate_up_projections}
+
     def __init__(
         self,
         dim: int,
@@ -98,6 +101,7 @@ class GroupedExperts(nn.Module):
         self.hidden_dim = hidden_dim
         self.gate_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim)) if expert_type == "gated" else None
         self.up_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
+        self.register_parameter("gate_up_proj", None)
         self.down_proj = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.gate_proj_bias = (
             nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias and self.gate_proj is not None else None
@@ -107,6 +111,8 @@ class GroupedExperts(nn.Module):
 
         self.grouped_gemm = grouped_gemm or BF16GroupedGemm()
         self.activation = ActivationDispatch[activation]
+        if expert_type == "non_gated":
+            self.supported_fusions = {}
 
     @property
     def token_group_alignment(self) -> int:
@@ -128,19 +134,26 @@ class GroupedExperts(nn.Module):
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         x_bf16 = x.bfloat16()
 
-        up_proj = to_local(self.up_proj).transpose(-2, -1)
-        up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
+        if self.gate_up_proj is None:
+            up_proj = to_local(self.up_proj).transpose(-2, -1)
+            up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
+
+            gate = None
+            if self.gate_proj is not None:
+                gate_proj = to_local(self.gate_proj).transpose(-2, -1)
+                gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
+        else:
+            gate_up_proj = to_local(self.gate_up_proj).transpose(-2, -1)
+            gate_up = self.grouped_gemm(x_bf16, gate_up_proj.bfloat16(), offs=offsets)
+            gate, up = gate_up.chunk(2, dim=-1)
+
         if self.up_proj_bias is not None:
             up_proj_bias = to_local(self.up_proj_bias)
             up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
 
-        gate = None
-        if self.gate_proj is not None:
-            gate_proj = to_local(self.gate_proj).transpose(-2, -1)
-            gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
-            if self.gate_proj_bias is not None:
-                gate_proj_bias = to_local(self.gate_proj_bias)
-                gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
+        if gate is not None and self.gate_proj_bias is not None:
+            gate_proj_bias = to_local(self.gate_proj_bias)
+            gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
 
         hidden = self.activation.apply(gate, up)
         down_proj = to_local(self.down_proj).transpose(-2, -1)
@@ -151,9 +164,14 @@ class GroupedExperts(nn.Module):
         return output.type_as(x)
 
     def init_weights(self, init_std: float):
-        first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
-        nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
-        remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
+        if self.gate_up_proj is None:
+            first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
+            nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
+            remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
+        else:
+            gate_proj, up_proj = self.gate_up_proj.chunk(2, dim=1)
+            nn.init.trunc_normal_(gate_proj, mean=0.0, std=0.02)
+            remaining = (up_proj, self.down_proj)
         for weight in remaining:
             nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
         for bias in (self.gate_proj_bias, self.up_proj_bias, self.down_proj_bias):

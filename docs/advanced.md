@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
+  - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
@@ -81,6 +82,24 @@ token_chunk_size = 4096
 ```
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
+
+### Runtime Fusions
+
+`model.fusions` packs parameters that are always computed together into one tensor, turning several GEMMs into one. Both fusions are on by default:
+
+- `gate_up` — each gated MoE expert's `gate_proj` and `up_proj` become one `[num_experts, 2 * intermediate_size, hidden_size]` weight, halving the routed-expert grouped GEMMs.
+- `qkv` — an attention layer's `q_proj`, `k_proj` and `v_proj` (and their biases) become one linear layer.
+
+```toml
+[trainer.model.fusions]
+enabled = ["gate_up", "qkv"]   # [] disables
+```
+
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning, or fails at startup with `raise_on_fail = true`. Fusions are skipped when LoRA is enabled.
+
+Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
+
+The experimental `shard_fused_on_dim1 = true` shards fused 2-D weights along dim 1 under FSDP, which makes weight loading and checkpointing zero-copy: fused weights and their optimizer state are read and written in place rather than assembled into a full copy on each rank first. It requires `hidden_size` to be divisible by the FSDP shard mesh size.
 
 ## Multimodal Training
 
