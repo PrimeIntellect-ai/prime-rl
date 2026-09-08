@@ -72,10 +72,24 @@ def dequantize_state_dict_(state_dict: StateDict) -> None:
     `layers.0.ffn.experts.0.w1.weight`), before any renaming. Keys with no `.scale` sibling
     (plain `bfloat16`/`float32` params, the `int64` `tid2eid` routing table) have no sibling
     to pop and are left untouched.
+
+    Dispatches per tensor to the fused Triton kernel (`dequantize_triton`) when the weight is
+    already on a CUDA device, falling back to the plain-PyTorch path otherwise -- Triton has
+    nothing to run on CPU, so imports it lazily rather than at module load, keeping this module
+    importable in the CPU-only test job (`tests/unit/train/models/test_deepseek_v4_cpu.py`).
     """
+    triton_dequantize_weight = None
     for key in [k for k in state_dict if k.endswith(".weight")]:
         scale_key = key.removesuffix(".weight") + ".scale"
         scale = state_dict.pop(scale_key, None)
         if scale is None:
             continue
-        state_dict[key] = dequantize_weight(state_dict[key], scale)
+        weight = state_dict[key]
+        if not weight.is_cuda:
+            state_dict[key] = dequantize_weight(weight, scale)
+            continue
+        if triton_dequantize_weight is None:
+            from prime_rl.trainer.models.deepseek_v4.dequantize_triton import dequantize_weight_triton
+
+            triton_dequantize_weight = dequantize_weight_triton
+        state_dict[key] = triton_dequantize_weight(weight, scale)
