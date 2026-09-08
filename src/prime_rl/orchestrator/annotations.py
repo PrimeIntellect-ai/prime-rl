@@ -43,7 +43,7 @@ def stamp_batch(episodes: list[vf.Episode], step: int) -> list[dict[str, Any]]:
             branches = {
                 branch.index: {"advantages": advantages}
                 for branch in trace.branches
-                if (advantages := branch.advantages) is not None
+                if branch.trainable and (advantages := branch.advantages) is not None
             }
             updates.append(make_update(trace.id, info=info, branches=branches))
     return updates
