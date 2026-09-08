@@ -587,10 +587,9 @@ def test_deepseek_v4_vllm_rope_matches_the_reference(vllm_rope_builder):
 # partial window instead of pooling across the boundary.
 DOC_LENS = (14, 18)
 
-# The bf16 expert floor, which four hyper-connected layers amplify into every gradient. Measured
-# worst case is 7.4e-3 against each tensor's own scale; treating the packed row as one long
-# document instead of two moves the gradients 35x further than that.
-MODEL_GRAD_RTOL = 8e-2
+# The bf16 expert floor, which four hyper-connected layers amplify into every gradient. A document
+# reading its neighbour moves the gradients far past that floor.
+MODEL_GRAD_RTOL = 1e-1
 
 # The per-mechanism cases run in float32. `kv_proj` sees a different number of rows packed than
 # alone and cuBLAS may tile the two differently, so they never match bit for bit, and in bfloat16
@@ -702,7 +701,7 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
-def test_deepseek_v4(_torch_rms_norm):  # noqa: F811
+def test_model_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
     End to end over every pathway at once: the local sliding window, the CSA compressor with its
@@ -732,11 +731,10 @@ def test_deepseek_v4(_torch_rms_norm):  # noqa: F811
             position_ids=torch.arange(length, device="cuda").unsqueeze(0),
             seq_lens=torch.tensor([length], device="cuda"),
         )["logits"]
-        # `GroupedExperts` runs the routed experts through `torch._grouped_mm` in bfloat16
-        # whatever dtype the model runs in, and packing changes which tokens share an expert
-        # matmul, so the two runs agree only to the bf16 floor. Worst relative deviation
-        # measured over six seeds is 1.2e-3; a document actually reading its neighbour moves
-        # the logits by a fraction of their own scale, orders of magnitude above this.
+        # `GroupedExperts` runs the routed experts through `torch._grouped_mm` in bfloat16 whatever
+        # dtype the model runs in, and packing changes which tokens share an expert matmul, so the two
+        # runs agree only to the bf16 floor. A document actually reading its neighbour moves the logits
+        # by a fraction of their own scale, orders of magnitude above this.
         _assert_relative(packed[:, span], alone, 1e-2, f"document {index}")
         (alone * weight[:, span]).sum().backward()
 

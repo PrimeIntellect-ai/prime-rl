@@ -3,22 +3,6 @@ import torch
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
 
-# The attention half of the toy config the GPU tests run: 4 heads over 32 channels, which the
-# fused kernel cannot tile. Everything else is shrunk to whatever still builds one layer on a CPU.
-TOY_ATTENTION = dict(
-    vocab_size=64,
-    hidden_size=128,
-    num_hidden_layers=1,
-    num_hash_layers=0,
-    num_attention_heads=4,
-    head_dim=32,
-    q_lora_rank=64,
-    o_groups=2,
-    o_lora_rank=16,
-    sliding_window=6,
-    layer_types=["sliding_attention"],
-)
-
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():
     """Real checkpoints ship the V3-flavoured legacy `compress_ratios`/`num_hash_layers` schema

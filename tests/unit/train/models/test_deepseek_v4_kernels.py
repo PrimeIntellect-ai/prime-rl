@@ -24,11 +24,11 @@ except ImportError:
 
 pytestmark = [pytest.mark.gpu]
 
-# The fused kernel needs tilelang, which only the `gpu` extra provides and only on linux. Several
-# tests below reach the modeling code without ever compiling a kernel, so this is a per-test skip
-# rather than part of `pytestmark`.
-requires_tilelang = pytest.mark.skipif(
-    dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang"
+# Several tests below reach the modeling code without ever compiling a kernel, so this is a
+# per-test skip rather than part of `pytestmark`.
+requires_sparse_attn_kernel = pytest.mark.skipif(
+    dsv4_attention.dsv4_sparse_attn is None,
+    reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
 )
 
 
@@ -127,7 +127,7 @@ def _set_attn_impl(module: nn.Module, impl: str) -> None:
 
 
 # The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
-# cache. Both sections of this file run them and nothing else: the kernel does not tile smaller ones, and the
+# cache. This file runs these shapes and no others: the kernel does not tile smaller ones, and the
 # sparse path it serves only exists at this size. The MoE fields are shrunk to nothing, since
 # `DeepseekV4Attention` reads none of them.
 V4FLASH_MODEL = dict(
@@ -199,35 +199,25 @@ MASKED_FRACTION = 0.25
 # Bounds on the largest absolute deviation against each tensor's own scale, not element-wise:
 # every entry is a sum over hundreds of terms, so the near-zero entries are the ones whose
 # summands cancelled, and an element-wise relative bound would read out that cancellation noise.
-#
-# Each bound is the tightest round number holding over the three shapes above at 60
-# incoming-gradient draws each, against the float32 oracle of `_float32_leaves`. Measured worst
-# case over those 180 draws, with the value the fixed-seed draws these tests actually run reach
-# in parentheses:
-#   out    3.4e-3 (2.4e-3), under one bfloat16 ulp at full scale (2**-8 = 3.9e-3)
-#   lse    2.8e-7 (1.9e-7), float32 throughout on both sides
-#   dq     5.2e-3 (3.1e-3)
-#   dkv    4.1e-3 (3.1e-3)
-#   dsink  8.1e-3 (5.0e-3)
+# The kernel returns bfloat16, so its output cannot agree with a float32 oracle any more closely
+# than bfloat16 rounding allows: one ulp at full scale is 2**-8 = 3.9e-3.
 OUT_RTOL = 1e-2
+# The LSE is float32 throughout on both sides.
 LSE_RTOL = 5e-7
 DQ_RTOL = 1e-2
 # The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
-# while the float32 oracle keeps them in float32, which is worth about 1.6e-3 of the 4.1e-3 above.
-# The rest is the bfloat16 `kv` the two sides share. Neither effect needs a looser bound than the
-# other gradients get: what used to need one was the oracle's own bfloat16 leaf, see
-# `_float32_leaves`.
+# while the float32 oracle keeps them in float32. The rest is the bfloat16 `kv` the two sides
+# share. Neither effect needs a looser bound than the other gradients get: what used to need one
+# was the oracle's own bfloat16 leaf, see `_float32_leaves`.
 DKV_RTOL = 1e-2
-# The loosest fitting of the five, at 1.2x rather than the 1.9x to 2.9x the others carry. The sink
-# gradient is a full reduction over every query in the row, so it cancels harder than anything
-# else here and its worst draw pairs a large deviation with a small scale.
+# The sink gradient is a full reduction over every query in the row, so it cancels harder than
+# anything else here.
 DSINK_RTOL = 1e-2
 
 # Compiled against eager. The forward and the log-sum-exp are bit-identical, but `dKV` is not
 # comparable that way on either side: the backward scatters it with `atomic_addx4`, so its
 # summation order is whatever the scheduler picks and the same eager call against itself moves by
-# the same amount. Measured worst case is 3.1e-3 on `dkv`, one bfloat16 ulp of its largest entry,
-# and 1.4e-7 on `dsink`; `dq` is exact.
+# the same amount.
 COMPILE_RTOL = 1e-2
 
 
@@ -306,12 +296,9 @@ def _float32_leaves(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
     `_dense_reference` computes in whatever dtype it is handed, so widening the leaves is
     what puts the oracle in float32 at all. Widening changes none of the values, a bfloat16 number
     being exactly representable in float32, so the oracle answers for exactly the numbers the
-    kernel saw. Feeding it the bfloat16 leaves instead would round each of the roughly 164k
-    per-slot gradient contributions back to bfloat16 and accumulate about 200 of them per KV
-    position on that coarse grid, worth `sqrt(200) * 2**-9`, about 2.6e-2 on `dkv`. That is an
-    artifact of how the oracle is built and not a property of the kernel: measured against a
-    float32-leaf oracle the same kernel deviates by 4.1e-3, and the two oracles disagree with each
-    other by 2.6e-2.
+    kernel saw. Feeding it the bfloat16 leaves instead would round every per-slot gradient
+    contribution back to bfloat16 before accumulating them, which inflates the disagreement by an
+    artifact of how the oracle is built rather than by anything the kernel did.
     """
     return tuple(tensor.detach().float().clone().requires_grad_(True) for tensor in tensors)
 
@@ -332,7 +319,7 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
     """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
@@ -351,7 +338,7 @@ def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
     _assert_relative(lse, reference_lse, LSE_RTOL, "lse")
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
     """A caller states the slots it means and the kernel covers the difference to its own tile.
 
@@ -375,7 +362,7 @@ def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
     _assert_relative(out, reference, OUT_RTOL, "output")
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_fully_masked_query_reads_as_zero_keys():
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
@@ -401,7 +388,7 @@ def test_fully_masked_query_reads_as_zero_keys():
     assert torch.isfinite(out).all() and torch.isfinite(lse).all()
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_tilelang_zero_fills_an_out_of_range_gather():
     """An index outside `[0, n_positions)` must read as zeros, not as whatever it points at.
 
@@ -452,7 +439,7 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
 
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv):
     """All three differentiable inputs, each against its own bound.
 
@@ -480,7 +467,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     _assert_relative(kernel_sinks.grad, reference_sinks.grad, DSINK_RTOL, "dsink")
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_kernel_traces_under_torch_compile():
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
@@ -636,8 +623,6 @@ def _entries_admitted(layer_type: str, doc_lens: tuple[int, ...], picks: torch.T
     return torch.zeros((sum(doc_lens), 0), dtype=torch.bool, device="cuda")
 
 
-@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
-@pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor:
     """`(seq_len, n_positions)` bool: which KV positions each query's gather slots address."""
     slots = indices[0, :, 0, :].long()
@@ -647,7 +632,7 @@ def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor
     return selected.scatter_(1, safe, True)[:, :n_positions]
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens, layer_idx, monkeypatch):
@@ -704,7 +689,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     assert torch.equal(selected, admitted), "the sparse and dense paths select different keys"
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx, monkeypatch):
@@ -744,7 +729,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     assert (counts[:, :n_positions] <= 1).all(), "a query gathers the same key twice"
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_lens, monkeypatch):
     """An unused gather slot must hold `IGNORE_SLOT` (-1), never a position that `kv_buf` actually has.
@@ -796,11 +781,7 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
 
 # One CSA layer in bfloat16, so `PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
 # accumulating bfloat16 inputs) does not apply, but neither does the whole-model bound `test_deepseek_v4.py`
-# carries, which is sized for four hyper-connected layers amplifying a bfloat16 expert floor. Each bound below
-# is the tightest round number holding over 30 seeds; the worst is 1.4e-3 on the output and 7.6e-3 on a
-# gradient, against 6.9e-4 and 6.2e-3 on the fixed seed the test actually runs. The gradient bound is the
-# tighter fit of the two, at 1.3x: every seed lands between 5.8e-3 and 7.6e-3, so the bound sits just above a
-# well-sampled ceiling rather than above a long tail.
+# carries, which is sized for four hyper-connected layers amplifying a bfloat16 expert floor.
 KERNEL_RTOL, KERNEL_GRAD_RTOL = 5e-3, 1e-2
 
 # `compress_rate = 4` yields 129 + 254 = 383 compressed entries, under `index_topk = 512`, so
@@ -819,14 +800,12 @@ EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
 
 # A bfloat16 kernel against a float32 dense softmax, so these are three orders of magnitude looser
 # than a float32 comparison would be, and looser again than `KERNEL_RTOL`, which compares
-# two bfloat16 runs of the same path. Each is the tightest round number holding over 30 seeds on
-# all four layouts: the worst observed is 6.1e-3 on the output and 1.6e-2 on a gradient, against
-# 4.9e-3 and 9.8e-3 on the fixed seed the test runs.
-EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 8e-3, 2e-2
+# two bfloat16 runs of the same path.
+EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 1e-2, 5e-2
 
 
 @pytest.mark.parametrize("doc_lens", EAGER_KERNEL_DOC_LENS, ids=EAGER_KERNEL_DOC_IDS)
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     """The fused kernel against the naive dense softmax, single-document and packed.
 
@@ -885,14 +864,14 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     _assert_relative(kernel_input.grad, eager_input.grad, EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
     The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
-    dtype `dsv4_sparse_attn` accepts. Numerics belong to
-    `test_dsv4_sparse_attn.py`, which compares the kernel against the float32 gather oracle on
-    hand-built tensors; what is covered here is that the modeling code feeds the kernel inputs it
+    dtype `dsv4_sparse_attn` accepts. Numerics belong to the direct-kernel tests at the top of this
+    file, which compare against the float32 gather oracle on hand-built tensors; what is covered
+    here is that the modeling code feeds the kernel inputs it
     can act on, and that nothing in `q`, the KV buffer or the indices carries the packed row's
     layout into a document's own answer.
 
@@ -935,7 +914,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     _assert_relative(alone_input.grad, packed_input.grad, KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
-@requires_tilelang
+@requires_sparse_attn_kernel
 def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
@@ -990,9 +969,8 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
 
 # The HCA layer of the Flash config, which nothing else here builds: every other test at these
 # shapes takes `V4FLASH_CSA_LAYER`. Documents are exact multiples of the HCA compress rate of 128,
-# so both own whole entries and only the numbering, and with it the RoPE position, moves. Measured
-# over 20 seeds the worst deviation is 3.0e-6 on the output and 4.6e-6 on a gradient, so
-# `PACKED_RTOL` holds here with room to spare, as it does for the gather test above.
+# so both own whole entries and only the numbering, and with it the RoPE position, moves. The tight
+# `PACKED_RTOL` from the gather test above applies here too.
 V4FLASH_HCA_DOCS = (256, 512)
 
 
@@ -1045,14 +1023,10 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
 # Both consumers run in bfloat16, the only dtype the kernel accepts, so any absolute tolerance
 # written down here would be arbitrary. The bound below is anchored instead: the kernel may differ
 # from the eager consumer by a small multiple of what bfloat16 already costs that same eager
-# consumer against float32 on the same weights. Over 60 layer-type and seed combinations the worst
-# ratio measured is 1.70, on the attention-sink gradient, whose entries sit only a few bfloat16
-# ulps apart to begin with; the outputs differ by exactly one ulp, a ratio near 1.0 throughout.
-#
-# What that buys, measured by perturbing the kernel: dropping the sink lands at ratio 166, and a
-# systematic error of 5% in the softmax scale at 5.0. A 1% one lands at 1.4 and passes, which is
-# the resolution limit of a bfloat16-against-bfloat16 comparison rather than a slack chosen too
-# loosely; `test_dsv4_sparse_attn.py` is where the kernel's numerics are pinned against float32.
+# consumer against float32 on the same weights. This is the resolution limit of a
+# bfloat16-against-bfloat16 comparison rather than a slack chosen too loosely;
+# `test_kernel_backward_matches_autograd_through_the_reference` is where the kernel's numerics are
+# pinned against float32.
 KERNEL_PARITY_SLACK = 3.0
 
 # One packed row and two unpacked ones. A packed row cannot show what an unpacked one does, a
@@ -1082,18 +1056,18 @@ class _SparseAttnCallCounter(TorchDispatchMode):
 
 
 def _assert_within_the_bfloat16_floor(
-    candidate: torch.Tensor, reference: torch.Tensor, oracle: torch.Tensor, label: str
+    candidate: torch.Tensor, eager_bf16: torch.Tensor, eager_fp32: torch.Tensor, label: str
 ) -> None:
     """Bound the kernel's disagreement with eager by what bfloat16 costs eager against float32."""
-    gap = (candidate.float() - reference.float()).abs().max()
-    floor = (reference.float() - oracle.float()).abs().max()
+    gap = (candidate.float() - eager_bf16.float()).abs().max()
+    floor = (eager_bf16.float() - eager_fp32.float()).abs().max()
     assert gap <= KERNEL_PARITY_SLACK * floor, (
         f"{label}: the kernel differs from eager by {gap}, more than {KERNEL_PARITY_SLACK}x the "
         f"{floor} bfloat16 already costs the eager path against float32"
     )
 
 
-@pytest.mark.skipif(dsv4_attention.dsv4_sparse_attn is None, reason="the sparse attention kernel needs tilelang")
+@requires_sparse_attn_kernel
 @pytest.mark.parametrize("doc_lens", PARITY_DOC_LENS, ids=PARITY_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens):
@@ -1114,10 +1088,10 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     weights = module.state_dict()
-    eager = v4flash_attention(layer_idx, dtype=torch.bfloat16, attn_impl="eager")
-    eager.load_state_dict(weights)
-    oracle = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
-    oracle.load_state_dict({name: tensor.float() for name, tensor in weights.items()})
+    eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, attn_impl="eager")
+    eager_bf16.load_state_dict(weights)
+    eager_fp32 = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
+    eager_fp32.load_state_dict({name: tensor.float() for name, tensor in weights.items()})
 
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(doc_lens), V4FLASH_MODEL["hidden_size"])
@@ -1126,8 +1100,8 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     outputs, input_grads = {}, {}
     for name, layer, dtype in (
         ("kernel", module, torch.bfloat16),
-        ("eager", eager, torch.bfloat16),
-        ("oracle", oracle, torch.float32),
+        ("eager_bf16", eager_bf16, torch.bfloat16),
+        ("eager_fp32", eager_fp32, torch.float32),
     ):
         hidden_states = hidden.to(dtype).clone().requires_grad_(True)
         packed = _packed_context(doc_lens, dtype, _v4flash_config())
@@ -1139,12 +1113,12 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
         outputs[name] = output.detach()
         input_grads[name] = hidden_states.grad
 
-    _assert_within_the_bfloat16_floor(outputs["kernel"], outputs["eager"], outputs["oracle"], "output")
+    _assert_within_the_bfloat16_floor(outputs["kernel"], outputs["eager_bf16"], outputs["eager_fp32"], "output")
     _assert_within_the_bfloat16_floor(
-        input_grads["kernel"], input_grads["eager"], input_grads["oracle"], "hidden states gradient"
+        input_grads["kernel"], input_grads["eager_bf16"], input_grads["eager_fp32"], "hidden states gradient"
     )
-    for name, param in oracle.named_parameters():
-        kernel_grad, eager_grad = module.get_parameter(name).grad, eager.get_parameter(name).grad
+    for name, param in eager_fp32.named_parameters():
+        kernel_grad, eager_grad = module.get_parameter(name).grad, eager_bf16.get_parameter(name).grad
         if param.grad is None:
             # The Lightning Indexer reaches the loss only through integer top-k indices.
             assert kernel_grad is None and eager_grad is None, f"{name} trains on one path but not the other"
