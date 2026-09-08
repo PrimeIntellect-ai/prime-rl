@@ -45,8 +45,10 @@ MODEL = dict(
         "sliding_attention",
     ],
     compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
-    index_n_heads=4,
-    index_head_dim=24,
+    # The real V4-Flash Lightning Indexer shapes. `fp8_indexer` is the only indexer path and it
+    # does `tl.arange(0, index_head_dim)`, so the dimension has to be a power of two.
+    index_n_heads=64,
+    index_head_dim=128,
     # Smaller than the number of compressed entries the sequence yields, so the Lightning
     # Indexer's selection has to actually discard some of them.
     index_topk=2,

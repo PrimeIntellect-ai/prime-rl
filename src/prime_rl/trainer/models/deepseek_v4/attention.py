@@ -324,27 +324,6 @@ class PackedContext:
                 "substitutes (see `prime_rl.trainer.models.layers.lm_head`), which this rejects."
             )
 
-    def token_entry_causal_mask(self, compress_rate: int, threshold: Tensor) -> Tensor:
-        """`(1, seq_len, n_entries)` bool: which compressed entries each query token may read.
-
-        Element `[0, t, e]` is true when query token `t` may read entry `e` of the rate's layout.
-        Both of these have to hold:
-
-        - `e` belongs to `t`'s own document, so no query reads another document's history;
-        - `e` closed before `t` arrived, i.e. its index within that document is below
-          `threshold[0, t]`, the count of entries the query's position has completed.
-
-        One `seq_lens` describes one packed row, so the leading axis is 1 and broadcasts over the
-        batch, as `threshold` does.
-
-        `threshold` counts per document, so it is compared against `entry_local_idx` and not
-        against the sequence-global entry number; those two coordinate systems disagree for every
-        document after the first.
-        """
-        layout = self.compression_layouts[compress_rate]
-        same_document = self.tok_doc_idx[None, :, None] == layout.entry_doc_idx[None, None, :]
-        return same_document & (threshold.unsqueeze(-1) > layout.entry_local_idx[None, None, :])
-
 
 @dataclass(frozen=True)
 class SparseAttnInputs:
