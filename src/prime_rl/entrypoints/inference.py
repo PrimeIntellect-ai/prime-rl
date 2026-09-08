@@ -59,8 +59,7 @@ def wait_for_distributed_startup_barrier(config: InferenceConfig) -> None:
             return
         if time.monotonic() >= deadline:
             raise TimeoutError(
-                f"Startup barrier {barrier_group} timed out after {timeout}s "
-                f"with {arrived}/{expected} ranks ready."
+                f"Startup barrier {barrier_group} timed out after {timeout}s with {arrived}/{expected} ranks ready."
             )
         time.sleep(1)
 
