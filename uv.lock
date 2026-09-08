@@ -17,27 +17,27 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-vllm = false
-verifiers = false
-harbor = "2026-08-11T00:00:00Z"
-prime-traces = false
-prime-pydantic-config = false
-vllm-router = false
-dion = false
-prime-runs = false
-flash-attn-3 = false
-prime-tunnel = false
-fastokens = false
-deep-gemm = false
-prime-evals = false
-torchao = false
-tokenspeed-mla = false
-nixl-cu13 = false
 deep-ep = false
-prime-sandboxes = false
-renderers = false
-prime-kernels = false
+deep-gemm = false
+dion = false
+fastokens = false
+flash-attn-3 = false
+harbor = "2026-08-11T00:00:00Z"
+nixl-cu13 = false
 prime = false
+prime-evals = false
+prime-kernels = false
+prime-pydantic-config = false
+prime-runs = false
+prime-sandboxes = false
+prime-traces = false
+prime-tunnel = false
+renderers = false
+tokenspeed-mla = false
+torchao = false
+verifiers = false
+vllm = false
+vllm-router = false
 
 [manifest]
 members = [
@@ -7750,6 +7750,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "prime-pydantic-config", extra = ["toml"] },
+    { name = "prime-runs" },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
@@ -7791,6 +7792,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.54.0,<3.0.0" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
+    { name = "prime-runs", specifier = ">=0.1.1" },
     { name = "prime-sandboxes", specifier = ">=0.2.39" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
