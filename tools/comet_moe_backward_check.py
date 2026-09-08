@@ -1,18 +1,3 @@
-"""End-to-end correctness check for `comet_moe.autograd.CometMoELayerFunction`: real forward
-*and* backward, compared against `TorchTokenDispatcher` + a plain differentiable gate/up/SwiGLU/
-down expert function (`torch._grouped_mm`-based, matching `differentiable_ffn.py`'s own math and
-`models.layers.moe.GroupedExperts`' separate gate_proj/up_proj weight layout) as ground truth --
-both forward output and every gradient (`x`, `top_scores`, `gate_proj`, `up_proj`, `down_proj`)
-must match.
-
-Not a pytest unit test: needs a real multi-GPU distributed environment (symmetric memory, NCCL).
-Run with:
-
-    uv run torchrun --nproc_per_node=<N> tools/comet_moe_backward_check.py
-"""
-
-import os
-
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -38,8 +23,6 @@ def main():
     intermediate = 128
     block_m = 32
     n_blocks = 16
-    n_chunks = 4
-    use_fused_kernel = os.environ.get("COMET_USE_FUSED_KERNEL", "0") == "1"
 
     torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
@@ -127,8 +110,6 @@ def main():
             top_k,
             block_m,
             n_blocks,
-            n_chunks,
-            use_fused_kernel,
         )
         (cm_out * grad_seed).sum().backward()
 

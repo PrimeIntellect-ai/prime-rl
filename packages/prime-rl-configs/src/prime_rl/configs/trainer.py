@@ -237,12 +237,6 @@ class CometMoEDispatchConfig(BaseConfig):
     documented buffer-sizing contract), so size this for the worst per-rank routing imbalance you
     expect, not just the average case."""
 
-    n_chunks: int = Field(1, ge=1)
-
-
-    use_fused_kernel: bool = False
-
-
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | CometMoEDispatchConfig,

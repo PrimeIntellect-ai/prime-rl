@@ -21,8 +21,6 @@ class CometMoETokenDispatcher:
         block_m: int = 128,
         n_blocks: int = 132,
         capacity_multiplier: int = 4,
-        n_chunks: int = 1,
-        use_fused_kernel: bool = False,
     ) -> None:
         self.num_experts = num_experts
         self.top_k = top_k
@@ -30,8 +28,6 @@ class CometMoETokenDispatcher:
         self.block_m = block_m
         self.n_blocks = n_blocks
         self.capacity_multiplier = capacity_multiplier
-        self.n_chunks = n_chunks
-        self.use_fused_kernel = use_fused_kernel
         self._bufs: CometMoEBuffers | None = None
         self._grad_recv: CometMoEBuffers | None = None
         self._grad_combine: CometMoEBuffers | None = None
@@ -102,8 +98,6 @@ class CometMoETokenDispatcher:
             self.top_k,
             self.block_m,
             self.n_blocks,
-            self.n_chunks,
-            self.use_fused_kernel,
         ).type_as(x)
 
     def synchronize(self) -> None:

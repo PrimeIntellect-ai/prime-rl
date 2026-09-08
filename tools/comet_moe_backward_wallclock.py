@@ -1,14 +1,3 @@
-"""Forward+backward wallclock at realistic MoE scale (Qwen3-30B-A3B-shaped: hidden_dim=2048,
-num_experts=128, top_k=8, ep=8 -- see `prime-rl-bench`'s `SYNC_PROFILE_2026-08-17.md`), comparing
-`comet_moe.autograd.CometMoELayerFunction` against `TorchTokenDispatcher` + a plain differentiable
-expert function, correctness-checked first, then timed for both directions together (one fwd+bwd
-step, matching how a real training step pays for both).
-
-Run with: uv run torchrun --nproc_per_node=<N> tools/comet_moe_backward_wallclock.py
-"""
-
-import os
-
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -48,8 +37,6 @@ def main():
     intermediate = 768
     block_m = 128
     n_blocks = 132
-    n_chunks = int(os.environ.get("COMET_N_CHUNKS", "1"))
-    use_fused_kernel = os.environ.get("COMET_USE_FUSED_KERNEL", "0") == "1"
 
     torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
@@ -125,8 +112,6 @@ def main():
         top_k,
         block_m,
         n_blocks,
-        n_chunks,
-        use_fused_kernel,
     )
     (cm_out * grad_seed).sum().backward()
 
@@ -178,8 +163,6 @@ def main():
             top_k,
             block_m,
             n_blocks,
-            n_chunks,
-            use_fused_kernel,
         )
         (out * grad_seed).sum().backward()
 

@@ -112,8 +112,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             if not isinstance(config.moe.compute, BF16MoEComputeConfig):
                 get_logger().warning(
                     f"model.moe.dispatch=comet ignores model.moe.compute (configured as "
-                    f"{config.moe.compute.type}): comet_moe always runs its own torch._grouped_mm "
-                    f"bf16 expert FFN, fused with dispatch/combine -- see CometMoEDispatchConfig's docstring."
+                    f"{config.moe.compute.type}): comet_moe always runs its own bf16 expert FFN, "
+                    f"fused with dispatch via a single CTA-specialized kernel -- see "
+                    f"CometMoEDispatchConfig's docstring."
                 )
             token_dispatcher = CometMoETokenDispatcher(
                 num_experts=moe.experts.num_experts,
@@ -122,8 +123,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 block_m=dispatch.block_m,
                 n_blocks=dispatch.n_blocks,
                 capacity_multiplier=dispatch.capacity_multiplier,
-                n_chunks=dispatch.n_chunks,
-                use_fused_kernel=dispatch.use_fused_kernel,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
