@@ -123,6 +123,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 n_blocks=dispatch.n_blocks,
                 capacity_multiplier=dispatch.capacity_multiplier,
                 n_chunks=dispatch.n_chunks,
+                use_fused_kernel=dispatch.use_fused_kernel,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")

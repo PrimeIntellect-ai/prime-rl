@@ -49,6 +49,7 @@ def main():
     block_m = 128
     n_blocks = 132
     n_chunks = int(os.environ.get("COMET_N_CHUNKS", "1"))
+    use_fused_kernel = os.environ.get("COMET_USE_FUSED_KERNEL", "0") == "1"
 
     torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
@@ -85,7 +86,6 @@ def main():
         dtype=torch.bfloat16,
         device=device,
     )
-
     from prime_rl.trainer.models.layers.activations import Silu
 
     torch.manual_seed(1000 + rank)
@@ -126,6 +126,7 @@ def main():
         block_m,
         n_blocks,
         n_chunks,
+        use_fused_kernel,
     )
     (cm_out * grad_seed).sum().backward()
 
@@ -178,6 +179,7 @@ def main():
             block_m,
             n_blocks,
             n_chunks,
+            use_fused_kernel,
         )
         (out * grad_seed).sum().backward()
 

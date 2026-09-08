@@ -240,6 +240,10 @@ class CometMoEDispatchConfig(BaseConfig):
     n_chunks: int = Field(1, ge=1)
 
 
+    use_fused_kernel: bool = False
+
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | CometMoEDispatchConfig,
     Field(discriminator="type"),

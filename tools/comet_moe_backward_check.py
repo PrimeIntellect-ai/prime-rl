@@ -11,6 +11,8 @@ Run with:
     uv run torchrun --nproc_per_node=<N> tools/comet_moe_backward_check.py
 """
 
+import os
+
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -37,6 +39,7 @@ def main():
     block_m = 32
     n_blocks = 16
     n_chunks = 4
+    use_fused_kernel = os.environ.get("COMET_USE_FUSED_KERNEL", "0") == "1"
 
     torch.manual_seed(7)
     gate_proj_data = (torch.randn(num_local_experts, intermediate, hidden_dim, device=device) * 0.02).to(torch.bfloat16)
@@ -125,6 +128,7 @@ def main():
             block_m,
             n_blocks,
             n_chunks,
+            use_fused_kernel,
         )
         (cm_out * grad_seed).sum().backward()
 
