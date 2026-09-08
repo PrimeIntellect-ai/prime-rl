@@ -180,7 +180,6 @@ def dsv4_sparse_attn_backward(
     return dq, dkv, delta
 
 
-# As above: the fake mirrors the op's signature, and only the shape-determining arguments are read.
 @dsv4_sparse_attn_backward.register_fake
 def _dsv4_sparse_attn_backward_fake(
     q: torch.Tensor,
