@@ -15,7 +15,7 @@ def _env(name: str, task_keys: list[str], *, interval: int = 1) -> SimpleNamespa
     return SimpleNamespace(
         name=name,
         examples=[_task(key) for key in task_keys],
-        config=SimpleNamespace(interval=interval),
+        config=SimpleNamespace(interval=interval, group_size=8),
     )
 
 
@@ -54,7 +54,7 @@ def test_eval_source_cursor_advances_only_over_completed_prefix() -> None:
     assert eval_source.cursor == 4
 
 
-def test_eval_checkpoint_saves_only_cursor_and_resume_skips_completed_prefix(tmp_path) -> None:
+def test_eval_checkpoint_resume_skips_completed_prefix(tmp_path) -> None:
     eval_envs = [_env("math", ["m0", "m1"]), _env("code", ["c0", "c1"])]
     eval_source = EvalSource(eval_envs, _eval_config())
     eval_source.load_state_dict({"cursor": 2})
@@ -71,14 +71,46 @@ def test_eval_checkpoint_saves_only_cursor_and_resume_skips_completed_prefix(tmp
     ckpt.save(eval_source)
 
     with (ckpt.get_ckpt_path(2) / "progress.pt").open("rb") as f:
-        assert pickle.load(f) == {"cursor": 2}
+        assert pickle.load(f) == eval_source.state_dict()
 
     assert ckpt.latest_step() == 2
 
     restored_source = EvalSource(eval_envs, _eval_config())
     ckpt.load(2, restored_source)
 
-    assert restored_source.state_dict() == {"cursor": 2}
+    assert restored_source.state_dict() == eval_source.state_dict()
+
+
+def test_eval_checkpoint_preserves_partial_and_out_of_order_progress(tmp_path) -> None:
+    envs = [_env("math", ["m0", "m1"]), _env("code", ["c0", "c1"])]
+    source = EvalSource(envs, _eval_config())
+    source.trigger(0)
+    for _ in range(8):
+        source.record_attempt(3, 8)
+    for _ in range(3):
+        source.record_attempt(1, 8, "group-one")
+    assert source.cursor == 0
+    ckpt = CheckpointManager(tmp_path)
+    ckpt.save(source)
+    restored = EvalSource(envs, _eval_config())
+    ckpt.load(0, restored)
+    assert restored.group_ids == {1: "group-one"}
+    restored.trigger(0)
+    assert [(r.source_index, r.num_rollouts) for r in restored.queue] == [(0, 8), (1, 5), (2, 8)]
+    assert restored.triggered_rollout_count("code", 0) == 5
+    for index, count in [(0, 8), (1, 5), (2, 8)]:
+        for _ in range(count):
+            restored.record_attempt(index, 8)
+    assert restored.cursor == 4
+    assert not restored.partial
+    assert not restored._completed
+
+
+def test_eval_checkpoint_rejects_changed_order(tmp_path) -> None:
+    source = EvalSource([_env("math", ["m0", "m1"])], _eval_config())
+    changed = EvalSource([_env("math", ["m1", "m0"])], _eval_config())
+    with pytest.raises(ValueError, match="dataset order"):
+        changed.load_state_dict(source.state_dict())
 
 
 def test_eval_checkpoint_rejects_step_cursor_mismatch(tmp_path) -> None:

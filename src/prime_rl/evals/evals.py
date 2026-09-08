@@ -93,6 +93,7 @@ class Evals:
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.ckpt_manager = CheckpointManager(config.output_dir)
         self.last_saved_cursor = 0
+        self.last_saved_revision = 0
         self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
@@ -405,14 +406,13 @@ class Evals:
             return
 
         for env_name in fired:
-            task_count = self.eval_source.triggered_task_count(env_name, step)
-            self.eval_sink.set_batch_size(env_name, step, task_count * self.eval_sink.group_size_for(env_name))
+            self.eval_sink.set_batch_size(env_name, step, self.eval_source.triggered_rollout_count(env_name, step))
 
         now = time.perf_counter()
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         total_rollouts = sum(
-            self.eval_envs.get(request.env_name).config.group_size
+            request.num_rollouts or self.eval_envs.get(request.env_name).config.group_size
             for request in self.eval_source.queue
             if request.step == step and request.env_name in fired
         )
@@ -456,6 +456,11 @@ class Evals:
                     cancellation_task.result()
                 continue
 
+            group_id = (
+                item.group_id if isinstance(item, (GroupCancellation, DispatchFailure)) else episode_group_id(item)
+            )
+            if group_id in self.dispatcher.eval_group_sizes:
+                self.eval_sink.expected_group_sizes[group_id] = self.dispatcher.eval_group_sizes[group_id]
             if isinstance(item, GroupCancellation):
                 eval_batch = self.eval_sink.cancel(item)
                 group_completed = False
@@ -474,14 +479,15 @@ class Evals:
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
-            if group_completed:
-                source_index = self.dispatcher.pop_source_index(group_id)
-                if self.config.online is not None:
-                    continue
+            if self.config.online is None and not isinstance(item, GroupCancellation):
+                source_index = self.dispatcher.source_indices_by_group.get(group_id)
                 if source_index is None:
                     raise RuntimeError(f"Eval group {group_id} is missing its source cursor")
-                if self.eval_source.mark_completed(source_index):
-                    self.maybe_save_checkpoint()
+                env_name = item.env_name if isinstance(item, DispatchFailure) else item.env.name
+                self.eval_source.record_attempt(source_index, self.eval_envs.get(env_name).config.group_size, group_id)
+                self.maybe_save_checkpoint()
+            if group_completed:
+                self.dispatcher.pop_source_index(group_id)
 
         if cancellation_task is not None:
             cancelled = await cancellation_task
@@ -494,12 +500,14 @@ class Evals:
         if self.config.ckpt is None:
             return
         cursor = self.eval_source.cursor
-        if cursor <= 0 or cursor == self.last_saved_cursor:
+        revision = self.eval_source.revision
+        if revision == self.last_saved_revision:
             return
-        if not force and cursor - self.last_saved_cursor < self.config.ckpt.interval:
+        if not force and revision - self.last_saved_revision < self.config.ckpt.interval:
             return
         self.ckpt_manager.save(self.eval_source)
         self.last_saved_cursor = cursor
+        self.last_saved_revision = revision
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
@@ -570,6 +578,8 @@ class Evals:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        if hasattr(self, "eval_source"):
+            self.maybe_save_checkpoint(force=True)
         if self.periodic_logger is not None:
             await self.periodic_logger.stop()
         if self.inference_metrics is not None:

@@ -82,6 +82,7 @@ class TaskRequest:
     task: vf.Task
     step: int
     source_index: int | None = None
+    num_rollouts: int | None = None
 
 
 @dataclass

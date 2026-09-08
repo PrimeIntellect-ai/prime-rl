@@ -191,6 +191,7 @@ class Dispatcher:
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
         self.source_indices_by_group: dict[str, int] = {}
+        self.eval_group_sizes: dict[str, int] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -466,9 +467,12 @@ class Dispatcher:
         if fresh is None:
             return False
         gid = uuid.uuid4()
+        if kind == "eval" and fresh.source_index in self.eval_source.group_ids:
+            gid = uuid.UUID(self.eval_source.group_ids[fresh.source_index])
         self.groups[gid] = fresh
         if fresh.source_index is not None:
             self.source_indices_by_group[str(gid)] = fresh.source_index
+            self.eval_group_sizes[str(gid)] = fresh.target_episodes
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
@@ -486,7 +490,7 @@ class Dispatcher:
             return None
 
         env_name = request.env_name
-        group_size = envs.get(env_name).config.group_size
+        group_size = request.num_rollouts or envs.get(env_name).config.group_size
 
         return GroupState(
             kind=kind,
@@ -500,6 +504,7 @@ class Dispatcher:
         )
 
     def pop_source_index(self, group_id: str) -> int | None:
+        self.eval_group_sizes.pop(group_id, None)
         return self.source_indices_by_group.pop(group_id, None)
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
@@ -719,6 +724,7 @@ class Dispatcher:
         if claimed:
             await safe_cancel_all([task for task, _ in claimed])
         self.source_indices_by_group.pop(str(group_id), None)
+        self.eval_group_sizes.pop(str(group_id), None)
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -731,6 +737,7 @@ class Dispatcher:
         self.inflight.clear()
         self.groups.clear()
         self.source_indices_by_group.clear()
+        self.eval_group_sizes.clear()
         if tasks:
             await safe_cancel_all(tasks)
 

@@ -39,13 +39,17 @@ class CheckpointManager:
         try:
             with os.fdopen(fd, "wb") as f:
                 pickle.dump(eval_source.state_dict(), f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
             raise
-        get_logger().debug(
-            f"Evals checkpoint saved to {ckpt_path} (cursor={cursor}) in {format_time(time.perf_counter() - start)}"
+        get_logger().info(
+            f"Evals checkpoint saved to {ckpt_path} (cursor={cursor}, "
+            f"completed_beyond_cursor={len(eval_source._completed)}, partial_groups={len(eval_source.partial)}) "
+            f"in {format_time(time.perf_counter() - start)}"
         )
 
     def load(

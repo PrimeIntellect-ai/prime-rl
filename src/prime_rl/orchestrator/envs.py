@@ -101,12 +101,16 @@ class Env:
     ) -> vf.WireEpisode:
         """Run and return one typed episode. A failed multi-trace episode marks
         its otherwise-clean traces failed so partial episodes never train."""
-        episode = await self.env_client.run(
-            task_data=task_data,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-        )
+        deadline = self.config.env.timeout.episode
+        if deadline is not None:
+            deadline += (self.config.env.timeout.finalize or 0) + 300
+        async with asyncio.timeout(deadline):
+            episode = await self.env_client.run(
+                task_data=task_data,
+                client=client,
+                model=model_name,
+                sampling=self._sampling(cache_salt),
+            )
         for trace in episode.traces:
             if not episode.ok and trace.ok:
                 error = episode.last_error or vf.Error(

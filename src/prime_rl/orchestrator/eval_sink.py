@@ -27,6 +27,7 @@ class EvalSink:
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
         self.expected_batch_sizes: dict[tuple[str, int], int] = {}
+        self.expected_group_sizes: dict[str, int] = {}
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
         env_name = episode_env_name(episode)
@@ -35,7 +36,7 @@ class EvalSink:
         bkey = (env_name, eval_step)
         group = self.pending_groups[group_id]
         group.append(episode)
-        if self._group_size(group_id) >= self.group_size_for(env_name):
+        if self._group_size(group_id) >= self.expected_group_sizes.get(group_id, self.group_size_for(env_name)):
             self.process_group(group_id)
         if self._batch_size(bkey) >= self.batch_size_for(env_name, eval_step):
             return self.process_batch(bkey)
@@ -49,7 +50,7 @@ class EvalSink:
         group_id = failure.group_id
         bkey = (failure.env_name, failure.step)
         self.pending_group_failures[group_id].append(failure)
-        if self._group_size(group_id) >= self.group_size_for(failure.env_name):
+        if self._group_size(group_id) >= self.expected_group_sizes.get(group_id, self.group_size_for(failure.env_name)):
             self.process_group(group_id)
         if self._batch_size(bkey) >= self.batch_size_for(failure.env_name, failure.step):
             return self.process_batch(bkey)
@@ -62,7 +63,9 @@ class EvalSink:
         group_id = cancellation.group_id
         bkey = (cancellation.env_name, cancellation.step)
         self.pending_group_cancellations[group_id] = cancellation
-        if self._group_size(group_id) >= self.group_size_for(cancellation.env_name):
+        if self._group_size(group_id) >= self.expected_group_sizes.get(
+            group_id, self.group_size_for(cancellation.env_name)
+        ):
             self.process_group(group_id)
         if self._batch_size(bkey) >= self.batch_size_for(cancellation.env_name, cancellation.step):
             return self.process_batch(bkey)
@@ -143,6 +146,7 @@ class EvalSink:
         )
 
     def process_group(self, group_id: str) -> None:
+        self.expected_group_sizes.pop(group_id, None)
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)

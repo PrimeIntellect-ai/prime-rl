@@ -70,7 +70,7 @@ class CheckpointConfig(BaseConfig):
     """Checkpoint progress for an interruptible standalone eval run."""
 
     interval: int = Field(1, ge=1)
-    """Save after the task cursor advances by N completed groups."""
+    """Save after N terminal attempts, including partially completed and out-of-order groups."""
 
 
 class EvalsConfig(BaseConfig):
