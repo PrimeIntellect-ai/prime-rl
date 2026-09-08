@@ -1,5 +1,7 @@
 import copy
 import math
+from collections.abc import Callable
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -10,7 +12,7 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_referenc
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
-from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
+from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.utils.utils import default_dtype
 
@@ -68,12 +70,21 @@ def _randomize(module: nn.Module) -> None:
                 param.normal_(mean=0.0, std=0.02)
 
 
-def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype, config: DeepseekV4Config) -> PackedContext:
+def _packed_context(
+    doc_lens: tuple[int, ...],
+    dtype: torch.dtype,
+    config: DeepseekV4Config,
+    cp_rank: int = 0,
+    cp_world_size: int = 1,
+) -> PackedContext:
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
     half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
     be the one the caller runs at.
+
+    `doc_lens` always describes the whole row, `cp_world_size` shards included: the context
+    parallel tests below hand it the same layout every rank sees and vary only `cp_rank`.
     """
     with torch.device("cuda"), default_dtype(dtype):
         rotary = DeepseekV4RotaryEmbedding(config)
@@ -82,6 +93,8 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype, config: Deeps
         seq_lens=torch.tensor(doc_lens, device="cuda"),
         dtype=dtype,
         device=torch.device("cuda"),
+        cp_rank=cp_rank,
+        cp_world_size=cp_world_size,
     )
 
 
@@ -657,7 +670,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     if module.compressor is not None:
         real_compressor = module.compressor.forward
 
-        def compressor(hidden_states, q_residual, packed):
+        def compressor(hidden_states, q_residual, packed, **kwargs):
             compressed_kv, recorded["picks"] = real_compressor(hidden_states, q_residual, packed)
             return compressed_kv, recorded["picks"]
 
@@ -1123,3 +1136,221 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
             assert kernel_grad is None and eager_grad is None, f"{name} trains on one path but not the other"
             continue
         _assert_within_the_bfloat16_floor(kernel_grad, eager_grad, param.grad, f"{name} gradient")
+
+
+# Context parallelism shards the queries of the packed row across ranks and leaves the key side
+# globally resident, so every rank runs the same layer over `total_tokens / cp_world_size` query
+# rows against the whole row's keys. One process cannot hold a real process group, so the tests
+# below emulate the collective: they run each rank in turn on its own chunk of one shared leaf and
+# splice that rank's live tensor back into the gathered row, which is what makes summing the
+# per-rank backwards equal to `_all_gather`'s registered `_reduce_scatter_sum`.
+
+# Row widths that 4 divides, so both CP world sizes shard them evenly. `(517, 1019)` puts the
+# `cp = 2` cut at token 768, inside the second document, so a shard boundary that leaked into the
+# document bookkeeping would show. `(300,)` gives 75-token shards at `cp = 4`, below
+# `sliding_window = 128`: this scheme makes no minimum-shard assumption and the narrow case has to
+# work. `(2600,)` is excluded for the reason `KERNEL_DOC_LENS` gives: it saturates `index_topk`, so
+# a near-tie can flip a pick, and the two sides here feed the FP8 quantizer a different GEMM row
+# count, which makes such a flip legitimate rather than a bug.
+CP_DOC_LENS = [(517, 1019), (300,)]
+CP_DOC_IDS = ["two-docs", "one-short-doc"]
+CP_WORLD_SIZES = [2, 4]
+CP_WORLD_SIZE_IDS = ["cp2", "cp4"]
+
+
+def _cp_gathered_projections(
+    module: nn.Module,
+    doc_lens: tuple[int, ...],
+    dtype: torch.dtype,
+    config: DeepseekV4Config,
+    cp_world_size: int,
+) -> list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]:
+    """What one attention layer all-gathers, in the order its forward does, per source chunk.
+
+    `DeepseekV4Attention.forward` gathers its rotated KV first, then calls the compressor, whose
+    `compress` gathers its own `cat(kv_proj, gate_proj)`; a CSA compressor then runs the indexer,
+    whose inner compressor gathers a third. A sliding layer owns no compressor and gathers once.
+
+    The order is what identifies a gather, not the width: at the Flash shapes the attention KV is
+    `head_dim = 512` wide and the indexer compressor's concatenation is
+    `2 * (n_series * index_head_dim) = 2 * 256 = 512` wide as well, so a check that keyed on width
+    would happily accept the two swapped.
+
+    Only the first entry is rotated, which is the ordering the layer commits to. RoPE is per-token,
+    so `forward` rotates its keys on this rank's own shard and the collective carries them in final
+    form; a compressor instead gathers raw projections, because its pooling reads across tokens,
+    and rotates each entry afterwards at the position its layout supplies. That makes the first
+    entry the one thing here that depends on which chunk it is applied to: chunk `j` belongs to
+    rank `j` and is rotated at rank `j`'s query positions, so each entry takes that index and the
+    tables are evaluated once per rank rather than once per gather.
+    """
+    # One context per rank, rather than one per gather call: each rank's gathers all read the same
+    # tables and `_packed_context` rebuilds a rotary embedding every time it is called.
+    rope_tables = [
+        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
+            module.rope_layer_type
+        ]
+        for cp_rank in range(cp_world_size)
+    ]
+
+    def rotated_kv(hidden: torch.Tensor, rank_index: int) -> torch.Tensor:
+        kv = module.kv_norm(module.kv_proj(hidden)).view(*hidden.shape[:2], 1, module.head_dim)
+        cos, sin = rope_tables[rank_index]
+        return apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+
+    def concatenated_projections(compressor: nn.Module) -> Callable[[torch.Tensor, int], torch.Tensor]:
+        return lambda hidden, _: torch.cat([compressor.kv_proj(hidden), compressor.gate_proj(hidden)], dim=-1)
+
+    projections = [("attention kv", rotated_kv)]
+    if module.compressor is not None:
+        projections.append((f"{module.layer_type} compress", concatenated_projections(module.compressor)))
+        indexer = getattr(module.compressor, "indexer", None)
+        if indexer is not None:
+            projections.append(("indexer compress", concatenated_projections(indexer.compressor)))
+    return projections
+
+
+def _fake_gather_for_cp(
+    projections: list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]],
+    chunks: tuple[torch.Tensor, ...],
+    cp_rank: int,
+) -> tuple[Callable[..., torch.Tensor], list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]]:
+    """A `gather_for_cp` stand-in for `cp_rank`, plus the list of gathers it has yet to see.
+
+    Two properties make it an emulation rather than a mock. First, it is differentiable and it
+    splices in the caller's own tensor: the slab at `cp_rank` is the incoming argument object and
+    the others are the same projection applied to the sibling chunks, undetached. The graph
+    therefore runs through the collective from every rank, and summing the per-rank backwards is
+    exactly what the real `_all_gather`'s registered `_reduce_scatter_sum` computes. Detaching the
+    siblings, or rebuilding this rank's slab from the full row, would leave the gradient assertions
+    vacuous. The sibling slabs are rebuilt on every call, so each rank's backward has a graph of
+    its own to free.
+
+    Second, it identifies each gather by position in `projections` rather than by tensor width,
+    which two of a CSA layer's three gathers share. Popping in order and checking the argument
+    against that rank's chunk of the expected projection makes a reordering fail loudly instead of
+    silently comparing the wrong pair. The bound is slack because it does not have to be tight:
+    both sides run the same ops over the same tensor, the rotated entry included, and they agree
+    bit for bit unless the layer gathered something else entirely or rotated it somewhere else.
+    """
+    pending = list(projections)
+
+    def gather(tensor: torch.Tensor, cp_group) -> torch.Tensor:
+        assert pending, f"rank {cp_rank} gathered more often than its {len(projections)} projections account for"
+        label, projection = pending.pop(0)
+        slabs = [projection(chunk, rank_index) for rank_index, chunk in enumerate(chunks)]
+        assert tensor.shape == slabs[cp_rank].shape, (
+            f"gather '{label}' was handed a {tuple(tensor.shape)} tensor, expected {tuple(slabs[cp_rank].shape)}"
+        )
+        _assert_relative(tensor, slabs[cp_rank], PACKED_RTOL, f"gather '{label}'")
+        slabs[cp_rank] = tensor
+        return torch.cat(slabs, dim=1)
+
+    return gather, pending
+
+
+@pytest.mark.parametrize("doc_lens", CP_DOC_LENS, ids=CP_DOC_IDS)
+@pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
+@pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
+def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_size, doc_lens, monkeypatch):
+    """A layer run shard by shard must answer each query, and each parameter, as the whole row does.
+
+    Sharding the queries and keeping the keys global rewrites every index in the layer: the window
+    slots, the RoPE tables the queries rotate at, the indexer's `[ks, ke)` ranges and the entry
+    numbering all have a Q side that narrows and a K side that does not. Nothing about that
+    bookkeeping is visible in the shape of the output, so every way of getting it wrong (rotating
+    the queries at the global table, slicing the window after building it, offsetting a pick by the
+    shard's token count instead of the row's) still returns finite numbers of the right shape.
+
+    The backward is the other half, and the reason the objective is `sum(out * g)` against a fixed
+    random cotangent rather than `out.sum()`: a plain sum is invariant under a sign error in any
+    row, and it weights every channel identically. Each rank's backward reaches the shared leaf
+    both directly, through its own queries, and through the sibling chunks its gather pulled in, so
+    the accumulated total over all ranks is what the real `_reduce_scatter_sum` would deliver.
+
+    Float32 and the eager consumer deliberately: the property at stake is index bookkeeping, not
+    kernel arithmetic, and float32 lets `PACKED_RTOL` do the bounding instead of a kernel-sized
+    tolerance that would hide an off-by-one in a window base.
+    """
+    module = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
+    config = _v4flash_config("eager")
+    seq_len = sum(doc_lens)
+    with torch.device("cuda"):
+        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"]).requires_grad_(True)
+        cotangent = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"])
+
+    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, torch.float32, config))
+    (out_full * cotangent).sum().backward()
+    reference_out = out_full.detach()
+    reference_input_grad = hidden_full.grad.clone()
+    reference_grads = _take_grads(module)
+    hidden_full.grad = None
+
+    # Views of the one leaf, so every rank's backward accumulates into the same buffers.
+    chunks = hidden_full.chunk(cp_world_size, dim=1)
+    n_queries = seq_len // cp_world_size
+    projections = _cp_gathered_projections(module, doc_lens, torch.float32, config, cp_world_size)
+    for cp_rank, chunk in enumerate(chunks):
+        gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
+        monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
+        module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
+
+        packed = _packed_context(doc_lens, torch.float32, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        out_rank, _ = module(chunk, packed=packed)
+        assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
+
+        rows = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
+        _assert_relative(out_rank, reference_out[:, rows], PACKED_RTOL, f"rank {cp_rank} output")
+        (out_rank * cotangent[:, rows]).sum().backward()
+
+    _assert_relative(hidden_full.grad, reference_input_grad, PACKED_GRAD_RTOL, "hidden states gradient")
+    _compare_accumulated_grads(module, reference_grads)
+
+
+# Two bfloat16 runs of the same kernel, so the floor is bfloat16 rounding at the output's own
+# scale, one ulp being 2**-8. This sits a step looser than `KERNEL_RTOL`, which compares runs whose
+# gather slots are laid out identically: a shard and the whole row feed the projections and the FP8
+# indexer different GEMM row counts, so the picks can come back in a different order and the online
+# softmax accumulates them in that order.
+CP_KERNEL_RTOL = 1e-2
+
+
+@requires_sparse_attn_kernel
+@pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
+def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, monkeypatch):
+    """The production path's local-query-against-global-key contract, on the fused kernel.
+
+    Its float32 neighbour above pins the index bookkeeping on the eager consumer, which is not the
+    path a run takes. What this adds is that the kernel accepts the asymmetry at all: `q` carries
+    `n_queries` rows while `kv_buf` carries the whole row's positions plus its compressed entries,
+    and `indices` addresses the second while being indexed by the first. A kernel launch that
+    derived its KV extent from the query count would read past the buffer here and nowhere else.
+
+    One CSA layer, the layer type with all three gathers and the only one whose picks come from a
+    kernel of their own. Forward only and bounded by `CP_KERNEL_RTOL`: `dsv4_sparse_attn` asserts
+    bfloat16, so the float32 `PACKED_RTOL` cannot apply.
+    """
+    module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    config = _v4flash_config()
+    seq_len = sum(KERNEL_DOC_LENS)
+    with torch.device("cuda"):
+        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
+
+    with torch.no_grad():
+        reference_out, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, config))
+
+    chunks = hidden_full.chunk(cp_world_size, dim=1)
+    n_queries = seq_len // cp_world_size
+    projections = _cp_gathered_projections(module, KERNEL_DOC_LENS, torch.bfloat16, config, cp_world_size)
+    for cp_rank, chunk in enumerate(chunks):
+        gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
+        monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
+        module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
+
+        packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        with torch.no_grad():
+            out_rank, _ = module(chunk, packed=packed)
+        assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
+
+        rows = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
+        _assert_relative(out_rank, reference_out[:, rows], CP_KERNEL_RTOL, f"rank {cp_rank} output")

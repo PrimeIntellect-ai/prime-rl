@@ -35,6 +35,7 @@ impl = "custom"        # or "hf" to force the HF path
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
+| DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | `ring` only |
 
 Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
 
