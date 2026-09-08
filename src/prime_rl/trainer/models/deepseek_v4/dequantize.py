@@ -81,6 +81,20 @@ def dequantize_state_dict_(state_dict: StateDict) -> None:
     the CPU-only path. Triton has nothing to run on CPU, so it's imported lazily rather than at
     module load, keeping this module importable in the CPU-only test job
     (`tests/unit/train/models/test_deepseek_v4_cpu.py`).
+
+    The device-to-host leg of that transfer copies into a pinned-memory tensor rather than
+    plain `.cpu()`: nsys profiling (2048x4096-element outputs, real checkpoint shapes) showed
+    the kernel itself takes ~174us but a plain `.cpu()` -- landing in pageable host memory --
+    took ~6.86ms, ~2.4 GB/s effective, well under normal PCIe bandwidth. `cudaMemcpy` from a
+    pageable destination has to stage through an internal pinned buffer first; allocating the
+    destination pinned once avoids that extra hop and measured ~390us, ~17.6x faster.
+
+    A shared pinned staging buffer per unique output shape (there are only ~27 per layer, so
+    the same buffer would be reused across all 256 experts) was tried to amortize the pinned
+    allocation itself, on top of this. Measured worse, not better: the extra CPU-side clone
+    needed to get each key its own persistent tensor out of the shared buffer cost more than
+    the allocation it was meant to save (589us/tensor device-to-host vs 390us/tensor here,
+    real H100 measurement, not a guess). Reverted; a fresh pinned allocation per key wins.
     """
     triton_dequantize_weight = None
     if torch.cuda.is_available():
@@ -97,4 +111,7 @@ def dequantize_state_dict_(state_dict: StateDict) -> None:
         if triton_dequantize_weight is None:
             state_dict[key] = dequantize_weight(weight, scale)
         else:
-            state_dict[key] = triton_dequantize_weight(weight.cuda(), scale.cuda()).cpu()
+            gpu_result = triton_dequantize_weight(weight.cuda(), scale.cuda())
+            pinned_result = torch.empty_like(gpu_result, device="cpu", pin_memory=True)
+            pinned_result.copy_(gpu_result)
+            state_dict[key] = pinned_result
