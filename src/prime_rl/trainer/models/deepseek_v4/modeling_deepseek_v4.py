@@ -233,15 +233,15 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Rejected: the
-            sliding window is built from post-shard boundaries, which global ones cannot address.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if seq_lens_are_pre_shard:
             raise NotImplementedError(
-                "DeepSeek V4 does not support context parallelism: pre-shard document boundaries "
-                "do not address the post-shard local sliding window."
+                "DeepSeek V4 does not support context parallelism: the sliding window and the "
+                "compressors' entry layout become indices into this shard's own KV buffer, and "
+                "boundaries for the whole row would put them past its end."
             )
 
         if inputs_embeds is None:
