@@ -206,6 +206,9 @@ def write_back_loaded_packed_parameters(model: nn.Module, state_dict: dict[str, 
 
 def split_packed_optimizer_state_for_checkpoint(model: nn.Module, state_dict: dict[str, Any]) -> dict[str, Any]:
     """Expose packed optimizer tensors under their logical names for DCP."""
+    # DCP returns {} when no optimizers are supplied, including model-only loads.
+    if not state_dict:
+        return state_dict
     packed_infos = list(get_model_packed_parameters(model))
     if not packed_infos:
         return state_dict
@@ -253,12 +256,15 @@ def write_back_loaded_packed_optimizer_state(
                     continue
                 logical_param_states = [checkpoint_state_dict["state"][fqn] for fqn in packed_info.logical_fqns]
                 for state_key, value in state.items():
+                    loaded_value = logical_param_states[0][state_key]
                     if isinstance(value, torch.Tensor) and value.shape == packed_info.parameter.shape:
-                        value.copy_(
-                            packed_info.spec.pack_logical_tensors(
-                                [logical_param_state[state_key] for logical_param_state in logical_param_states]
-                            )
+                        loaded_value = packed_info.spec.pack_logical_tensors(
+                            [logical_param_state[state_key] for logical_param_state in logical_param_states]
                         )
+                    if isinstance(value, torch.Tensor):
+                        value.copy_(loaded_value)
+                    else:
+                        state[state_key] = loaded_value
 
 
 def join_loaded_optimizer_state_for_runtime(
@@ -267,6 +273,8 @@ def join_loaded_optimizer_state_for_runtime(
     runtime_state_dict: dict[str, Any],
 ) -> dict[str, Any]:
     """Pack the logical optimizer state DCP loaded back into the runtime optimizer state."""
+    if not checkpoint_state_dict:
+        return checkpoint_state_dict
     packed_infos = list(get_model_packed_parameters(model))
     if not packed_infos:
         return checkpoint_state_dict
