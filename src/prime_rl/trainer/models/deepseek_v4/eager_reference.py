@@ -1,9 +1,8 @@
 """Naive DeepSeek V4 attention reference.
 
-Nothing in the production path calls these. They exist for the tests and for the benchmarks in
-`notes/ds-v4-kernels/bench/`, where a dense, obviously correct implementation is the standard the
-fused kernel is measured against. They take plain tensors, so this module imports nothing from
-`attention.py` and the dependency runs one way only.
+Nothing in the production path calls these. They exist for the tests, where a dense, obviously
+correct implementation is the standard the fused kernel is measured against. They take plain
+tensors, so this module imports nothing from `attention.py` and the dependency runs one way only.
 """
 
 import torch
