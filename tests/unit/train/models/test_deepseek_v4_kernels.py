@@ -1,21 +1,3 @@
-"""Every DeepSeek V4 kernel check that needs a GPU, in two sections.
-
-The first calls `prime_rl::dsv4_sparse_attn` directly on hand-built tensors, so the kernel is
-exercised without any of the modeling code that normally produces its inputs, and its numerics are
-compared against a float32 gather oracle. The second builds real `DeepseekV4Attention` layers and
-asserts that the modeling code hands the kernel inputs it can act on, that the indices it
-constructs address exactly the keys the dense mask admits, and that a packed row still answers each
-document as if it stood alone.
-
-Only the real DeepSeek V4-Flash shapes appear here (the `V4FLASH_*` prefix below names that
-model variant; none of this is FlashAttention). The backward does not compile below 32 heads
-and the forward does not compile at `head_dim = 32`, and no configuration this model runs is
-anywhere near those, so a smaller shape would only test a kernel nobody instantiates. The toy
-`MODEL` config that `test_deepseek_v4.py` uses cannot reach any of this: the kernel does not tile
-4 heads over 32 channels, and the sparse path's slot padding, top-k saturation and index arithmetic
-are all invisible at that size.
-"""
-
 import copy
 import math
 
@@ -32,10 +14,6 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.utils.utils import default_dtype
 
-# Guarded so collection survives on an install without tilelang: `pytest -m "not gpu"` imports every
-# module before deselecting by marker, and the kernel pulls in tilelang, which only the `gpu` extra
-# provides and only on linux. The CPU CI job does install it (`uv sync --all-extras`, and tilelang
-# imports without a GPU), but a non-linux or extras-free checkout genuinely lacks it.
 try:
     import tilelang
     from tilelang import language as T
