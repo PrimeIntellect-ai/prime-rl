@@ -9,6 +9,7 @@ embedding all the way to `hc_head`, which collapses them back before the final n
 from __future__ import annotations
 
 import torch
+import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -49,6 +50,17 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.attn_hc = DeepseekV4HyperConnection(config)
         self.ffn_hc = DeepseekV4HyperConnection(config)
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        """Hook `setup_sparse_mla_cp` calls on every layer to publish the CP topology.
+
+        Attention is the only sublayer that needs it; the layer keeps its own copy because the
+        model reads the topology back off its first layer.
+        """
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        self.self_attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def forward(
         self,
@@ -112,9 +124,10 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
-            frozenset(),
-            "its sliding window is built from post-shard document boundaries, "
-            "which CP's global (pre-shard) boundaries cannot address",
+            frozenset({"ring"}),
+            "its attention all-gathers its own keys rather than going through the shared "
+            "FlashAttention._compute_attention that both the ring and the ulysses substitutions "
+            "rebind, so the style knob changes nothing here and only the tested style is offered",
         )
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -194,6 +207,17 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         self.post_init()
 
+    def _context_parallel_state(self) -> tuple[dist.ProcessGroup | None, int, int]:
+        """The topology `setup_sparse_mla_cp` published to the layers, or the single-rank default.
+
+        Every layer got the same one, so the first is representative.
+        """
+        if len(self.layers) == 0:
+            return None, 0, 1
+
+        layer = self.layers[0]
+        return getattr(layer, "_cp_group", None), getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -229,19 +253,31 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4 shards the
+            queries alone and keeps every key, entry and index value global, so it needs the
+            whole row's boundaries: this must be set exactly when context parallelism is on.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if seq_lens_are_pre_shard:
-            raise NotImplementedError(
-                "DeepSeek V4 does not support context parallelism: the sliding window and the "
-                "compressors' entry layout become indices into this shard's own KV buffer, and "
-                "boundaries for the whole row would put them past its end."
+
+        _, cp_rank, cp_world_size = self._context_parallel_state()
+        if seq_lens_are_pre_shard != (cp_world_size > 1):
+            raise ValueError(
+                f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size="
+                f"{cp_world_size}: this model reads the whole row's document boundaries exactly "
+                "when its queries are sharded across ranks."
             )
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
+        total_tokens = int(seq_lens.sum())
+        if total_tokens != inputs_embeds.shape[1] * cp_world_size:
+            raise ValueError(
+                f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
+                f"{inputs_embeds.shape[1]} tokens each make up {inputs_embeds.shape[1] * cp_world_size}"
+            )
 
         # Every layer type attends over the same local window; the compressed variants add their
         # own out-of-window entries and the per-query bias that gates them. One layout per distinct
@@ -252,6 +288,8 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             seq_lens=seq_lens,
             dtype=inputs_embeds.dtype,
             device=inputs_embeds.device,
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
         )
         if position_ids is not None:
             packed.check_position_ids(position_ids)
