@@ -113,9 +113,7 @@ def monkey_patch_deepep_v2_empty_decode_metadata():
 
     _receiver._prime_rl_handles_empty_decode_metadata = True
     DeepEPV2PrepareAndFinalize._receiver = _receiver
-    init_logger(__name__).warning(
-        "Patched vLLM 0.28 DeepEP v2 empty decode expert metadata."
-    )
+    init_logger(__name__).warning("Patched vLLM 0.28 DeepEP v2 empty decode expert metadata.")
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
