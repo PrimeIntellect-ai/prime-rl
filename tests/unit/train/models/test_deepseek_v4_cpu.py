@@ -65,6 +65,10 @@ _MODEL = dict(
     hc_sinkhorn_iters=20,
     hc_eps=1e-6,
     rms_norm_eps=1e-6,
+    # Eager, because the fused kernel cannot tile 4 attention heads. Nothing here reads
+    # attention; the Flash-shaped config the kernel does accept shrinks the MoE fields
+    # these tests quantize to nothing.
+    _attn_impl="eager",
 )
 
 
