@@ -228,7 +228,7 @@ def run_dynamo_local(config: InferenceConfig) -> None:
             while True:
                 for spec, process in zip(specs, processes):
                     if (returncode := process.poll()) is not None:
-                        raise RuntimeError(f"Dynamo {spec.name} exited with code {returncode or 1}")
+                        raise RuntimeError(f"Dynamo {spec.name} exited with code {returncode}")
                 time.sleep(0.2)
     except KeyboardInterrupt:
         return

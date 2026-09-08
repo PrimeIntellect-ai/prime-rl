@@ -78,7 +78,8 @@ def test_managed_dynamo_uses_filesystem_worker_and_rejects_port_collision():
         build_dynamo_process_specs(managed_config(server_port=8080, env_vars={"DYN_SYSTEM_PORT": "8081"}))
 
 
-def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch, returncode):
     processes = []
     terminated = []
     environments = []
@@ -92,7 +93,7 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
             return self.returncode
 
     def popen(*_args, **kwargs):
-        process = FakeProcess(None if not processes else 7)
+        process = FakeProcess(None if not processes else returncode)
         processes.append(process)
         environments.append(kwargs["env"])
         return process
@@ -107,7 +108,7 @@ def test_managed_dynamo_child_failure_stops_both_processes(monkeypatch):
     monkeypatch.setenv("KUBECONFIG", "not-for-frontend")
     monkeypatch.setattr(dynamo_launcher, "_terminate", terminated.append)
 
-    with pytest.raises(RuntimeError, match="Dynamo worker exited with code 7"):
+    with pytest.raises(RuntimeError, match=f"Dynamo worker exited with code {returncode}"):
         dynamo_launcher.run_dynamo_local(managed_config(env_vars={"DYN_METRICS_PREFIX": "managed"}))
     assert len(processes) == 2
     assert terminated == list(reversed(processes))

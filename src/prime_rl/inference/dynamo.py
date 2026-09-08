@@ -395,12 +395,12 @@ class DynamoAdminPlane(AdminPlane):
 
         operation = "pause_generation" if paused else "resume_generation"
         body = {"mode": "keep", "clear_cache": False} if paused else {}
-        response = await self.clients[0].post(
+        response = await _admin_post(
+            self.clients[0],
             f"/engine/{operation}",
-            timeout=httpx.Timeout(connect=10.0, read=ADMIN_TIMEOUT_S, write=10.0, pool=10.0),
+            timeout_s=ADMIN_TIMEOUT_S,
             json=body,
         )
-        response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("status") != "ok":
             raise ValueError(f"Dynamo worker {operation} failed")

@@ -10,7 +10,7 @@ from prime_rl.inference.dynamo import (
     parse_dynamo_worker,
     topology_fingerprint,
 )
-from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
+from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S, AdminPlane, setup_admin_plane
 
 MODEL = "Qwen/Qwen3-0.6B"
 
@@ -421,6 +421,30 @@ def test_dynamo_python_worker_translates_collective_rpc_to_engine_route():
         "engine_rpc": "update_weights_from_path",
         "model_path": "/shared/step_1",
     }
+
+
+def test_dynamo_python_worker_pause_and_resume_use_admin_retries():
+    config = ClientConfig(
+        base_url="http://worker:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo=dynamo_config(),
+    )
+    admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
+    admin._admin_protocol = "engine_routes"
+    admin.clients = [AsyncMock()]
+    response = MagicMock()
+    response.json.return_value = {"status": "ok"}
+
+    with patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock(return_value=response)) as post:
+        asyncio.run(admin._set_generation_paused(True))
+        asyncio.run(admin._set_generation_paused(False))
+
+    assert [call.args[1] for call in post.await_args_list] == [
+        "/engine/pause_generation",
+        "/engine/resume_generation",
+    ]
+    assert all(call.kwargs["timeout_s"] == ADMIN_TIMEOUT_S for call in post.await_args_list)
 
 
 def test_dynamo_nixl_lifecycle_uses_collective_rpc():
