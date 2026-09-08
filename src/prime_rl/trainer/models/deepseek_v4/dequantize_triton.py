@@ -119,6 +119,16 @@ def _dequant_mxfp4_kernel(
     tl.store(out_base + (packed_byte_offsets * 2 + 1) * stride_oc, high_out)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=2),
+    ],
+    key=["rows", "cols"],
+)
 @triton.jit
 def _dequant_fp8_kernel(
     weight_ptr,
@@ -241,8 +251,7 @@ def dequantize_weight_triton(weight: Tensor, scale: Tensor) -> Tensor:
             raise ValueError(f"Weight shape {(rows, cols)} not divisible by scale grid {(scale_rows, scale_cols)}")
         block_rows, block_cols = rows // scale_rows, cols // scale_cols
         out = torch.empty((batch, rows, cols), device=weight.device, dtype=torch.bfloat16)
-        BLOCK_M, BLOCK_N = 32, 32
-        grid = (batch, triton.cdiv(rows, BLOCK_M), triton.cdiv(cols, BLOCK_N))
+        grid = lambda meta: (batch, triton.cdiv(rows, meta["BLOCK_M"]), triton.cdiv(cols, meta["BLOCK_N"]))
         _dequant_fp8_kernel[grid](
             weight3d,
             scale3d.view(torch.uint8),
@@ -260,8 +269,6 @@ def dequantize_weight_triton(weight: Tensor, scale: Tensor) -> Tensor:
             out.stride(0),
             out.stride(1),
             out.stride(2),
-            BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N,
         )
         return out.reshape(*lead, rows, cols)
 
