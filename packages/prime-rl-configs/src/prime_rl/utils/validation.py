@@ -58,6 +58,17 @@ def propagate_shared_fields(data: Any) -> Any:
         fill("orchestrator.model.client.dynamo.enabled", True)
 
         discovery_url = get("orchestrator.model.client.dynamo.discovery_url")
+        configured_port = get("inference.env_vars.DYN_RL_PORT")
+        if discovery_url is None:
+            server_port = get("inference.server.port") or 8000
+            default_client_url = f"http://localhost:{server_port}/v1"
+            client_url = urlsplit(get("orchestrator.model.client.base_url") or default_client_url)
+            launch_port = configured_port if configured_port is not None else int(server_port) + 1
+            if client_url.port is not None and str(launch_port) != str(client_url.port + 1):
+                raise ValueError(
+                    "Managed Dynamo DYN_RL_PORT conflicts with the discovery URL derived from "
+                    "orchestrator.model.client.base_url."
+                )
         if discovery_url is not None:
             try:
                 parsed_discovery_url = urlsplit(discovery_url)
@@ -76,7 +87,6 @@ def propagate_shared_fields(data: Any) -> Any:
                 raise ValueError("Managed Dynamo discovery_url cannot include a path other than /v1.")
             if discovery_port is None:
                 raise ValueError("Managed Dynamo discovery_url must include an explicit port.")
-            configured_port = get("inference.env_vars.DYN_RL_PORT")
             if configured_port is not None and str(configured_port) != str(discovery_port):
                 raise ValueError("Managed Dynamo discovery_url conflicts with inference.env_vars.DYN_RL_PORT.")
             fill("inference.env_vars.DYN_RL_PORT", str(discovery_port))

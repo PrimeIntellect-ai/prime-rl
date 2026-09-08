@@ -942,6 +942,64 @@ def test_managed_dynamo_rejects_conflicting_discovery_port():
         )
 
 
+def test_managed_dynamo_rejects_implicit_discovery_port_conflict():
+    with pytest.raises(ValueError, match="DYN_RL_PORT conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"base_url": "http://localhost:8000/v1"}},
+                },
+                "inference": {"backend": "dynamo", "env_vars": {"DYN_RL_PORT": "9001"}},
+            }
+        )
+
+
+def test_managed_dynamo_rejects_implicit_launch_port_conflict():
+    with pytest.raises(ValueError, match="DYN_RL_PORT conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"base_url": "http://localhost:9000/v1"}},
+                },
+                "inference": {"backend": "dynamo"},
+            }
+        )
+
+
+def test_managed_dynamo_accepts_implicit_discovery_port_for_custom_server_port():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "gsm8k",
+                            "env": {
+                                "taskset": {"id": "gsm8k"},
+                                "agent": {"harness": {"id": "null"}, "runtime": {"type": "subprocess"}},
+                            },
+                        }
+                    ]
+                },
+            },
+            "inference": {
+                "backend": "dynamo",
+                "server": {"port": "9000"},
+            },
+        }
+    )
+
+    assert config.orchestrator.any_policy_sourced
+    assert config.orchestrator.model.client.base_url == "http://localhost:9000/v1"
+    assert config.inference is not None and config.inference.server.port == 9000
+
+
 def test_explicit_inference_parser_wins_over_auto():
     """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""
