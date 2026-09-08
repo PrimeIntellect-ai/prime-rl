@@ -10,7 +10,7 @@ against `dequantize_weight` directly, since the real checkpoint's MoE expert wei
 import pytest
 import torch
 
-from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
+from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_, dequantize_weight
 from prime_rl.trainer.models.deepseek_v4.dequantize_triton import dequantize_weight_triton
 
 pytestmark = [pytest.mark.gpu]
@@ -66,6 +66,26 @@ def test_dequantize_weight_triton_matches_reference_packed_mxfp4_random():
     result = dequantize_weight_triton(packed.cuda(), scale.cuda())
 
     assert torch.equal(result.cpu(), reference)
+
+
+def test_dequantize_state_dict_streams_cpu_tensors_through_gpu():
+    """The real entry point: `load_state_dict` always loads to CPU (the full checkpoint can't
+    be GPU-resident all at once), so this must dispatch on CUDA *availability*, not on the
+    weight already being a CUDA tensor -- and stream each pair through the GPU itself, not
+    require the caller to have staged it there.
+    """
+    torch.manual_seed(0)
+    packed = torch.randint(-128, 128, (16, 64), dtype=torch.int8)  # stays on CPU
+    scale = torch.randint(120, 135, (16, 4), dtype=torch.uint8).view(torch.float8_e8m0fnu)  # stays on CPU
+    expected = dequantize_weight(packed, scale)
+
+    state_dict = {"layers.0.ffn.experts.0.w1.weight": packed, "layers.0.ffn.experts.0.w1.scale": scale}
+    dequantize_state_dict_(state_dict)
+
+    result = state_dict["layers.0.ffn.experts.0.w1.weight"]
+    assert "layers.0.ffn.experts.0.w1.scale" not in state_dict
+    assert result.device.type == "cpu"
+    assert torch.equal(result, expected)
 
 
 def test_dequantize_weight_triton_matches_reference_batched_experts():
