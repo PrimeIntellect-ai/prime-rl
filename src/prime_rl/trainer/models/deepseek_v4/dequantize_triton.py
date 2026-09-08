@@ -74,7 +74,6 @@ def _dequant_mxfp4_kernel(
     packed_ptr,
     scale_ptr,
     out_ptr,
-    scale_cols,
     stride_pb,
     stride_pr,
     stride_pc,
@@ -107,12 +106,10 @@ def _dequant_mxfp4_kernel(
 
     # `float8_e8m0fnu` stores its value as a biased power-of-2 exponent, byte == value's
     # exponent + 127 (PyTorch's `.float()` on this dtype decodes the same way) -- the raw byte
-    # itself is not the scale, `2 ** (byte - 127)` is.
-    scale_byte = tl.load(
-        scale_ptr + pid_b * stride_sb + pid_r * stride_sr + pid_g * stride_sc,
-        mask=pid_g < scale_cols,
-        other=127,
-    ).to(tl.float32)
+    # itself is not the scale, `2 ** (byte - 127)` is. No mask needed: the grid is sized to
+    # exactly `scale_cols` programs (`dequantize_weight_triton`'s `grid = (batch, rows,
+    # scale_cols)`), so `pid_g` never runs past the scale tensor.
+    scale_byte = tl.load(scale_ptr + pid_b * stride_sb + pid_r * stride_sr + pid_g * stride_sc).to(tl.float32)
     scale_val = tl.exp2(scale_byte - 127.0)
 
     low_out = (low_val * scale_val).to(tl.bfloat16)
@@ -237,7 +234,6 @@ def dequantize_weight_triton(weight: Tensor, scale: Tensor) -> Tensor:
             weight3d,
             scale3d.view(torch.uint8),
             out,
-            scale_cols,
             weight3d.stride(0),
             weight3d.stride(1),
             weight3d.stride(2),
