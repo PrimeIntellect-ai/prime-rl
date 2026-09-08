@@ -37,7 +37,7 @@ from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.evals.ckpt import CheckpointManager
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -99,7 +99,7 @@ class Evals:
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
         self.clients: InferenceClient | None = None
-        self.admin_clients: AdminClients | None = None
+        self.admin_plane: AdminPlane | None = None
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
@@ -125,7 +125,7 @@ class Evals:
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.eval.client, model_name=config.model)
-        self.admin_clients = AdminClients(config.eval.client)
+        self.admin_plane = AdminPlane(config.eval.client)
 
         self.spawn_env_servers()
 
@@ -135,7 +135,7 @@ class Evals:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.admin_clients.wait_for_ready(config.model)
+        await self.admin_plane.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         self.receiver: WeightReceiver | None = None
@@ -148,7 +148,7 @@ class Evals:
             self.receiver = setup_weight_receiver(
                 config.online.broadcasts_dir,
                 weight_broadcast,
-                admin_clients=self.admin_clients.clients,
+                admin_plane=self.admin_plane,
                 model_name=config.model,
             )
             await self.receiver.initialize()
@@ -201,7 +201,7 @@ class Evals:
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin_clients.clients,
+            self.admin_plane.clients,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints
@@ -212,7 +212,7 @@ class Evals:
         if not await self.inference_metrics.probe():
             concurrency = config.eval.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.admin_clients.clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin_plane.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -537,6 +537,7 @@ class Evals:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
                 f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+                f"Error {full.has_error.mean():.1%} | "
                 f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
             )
             return
@@ -578,8 +579,8 @@ class Evals:
             await self.dispatcher.stop()
         if self.clients is not None:
             await self.clients.aclose()
-        if self.admin_clients is not None:
-            await self.admin_clients.aclose()
+        if self.admin_plane is not None:
+            await self.admin_plane.aclose()
         cleanup_processes(self.env_server_procs)
 
 
