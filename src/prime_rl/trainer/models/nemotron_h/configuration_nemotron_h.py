@@ -117,7 +117,6 @@ class NemotronHConfig(PretrainedConfig):
         self.rescale_prenorm_residual = rescale_prenorm_residual
         self.load_balance_coeff = load_balance_coeff
 
-        kwargs.pop("use_mamba_kernels", None)
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
             pad_token_id=pad_token_id,

@@ -51,7 +51,7 @@ def _make_model(device="cuda"):
     config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.bfloat16):
-        model = NemotronHForCausalLM._from_config(config)
+        model = NemotronHForCausalLM(config)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
@@ -183,7 +183,7 @@ def test_kl_with_fused_lm_head():
     config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = NemotronHForCausalLM._from_config(config)
+        model = NemotronHForCausalLM(config)
 
     # Get logits from vanilla head
     inject_prime_lm_head(model, chunk_size=None)

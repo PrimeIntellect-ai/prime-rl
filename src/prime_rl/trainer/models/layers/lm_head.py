@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, PrimeRLModel
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_final_logit_softcapping
 
@@ -313,7 +314,8 @@ def inject_prime_lm_head(
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
-    _patch_model_forward(model)
+    if not isinstance(model, PrimeRLModel) or isinstance(model, PreTrainedModelPrimeRL):
+        _patch_model_forward(model)
 
 
 def _patch_model_forward(model: nn.Module) -> None:

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 CPStyle = Literal["ring", "ulysses"]
@@ -16,15 +16,7 @@ class CPSupport:
     reason: str = ""
 
 
-class PreTrainedModelPrimeRL(PreTrainedModel):
-    """
-    Base class for all PrimeRL models that extends HuggingFace PreTrainedModel.
-
-    Provides a unified interface for state dict conversion between different formats
-    (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
-    after loading with meta device.
-    """
-
+class PrimeRLModel(nn.Module):
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         """CP styles this architecture supports, given its config.
@@ -42,36 +34,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         Runtime upcasts for training or inference do not change the wire dtype.
         """
         return False
-
-    @classmethod
-    def from_config(cls, config, **kwargs):
-        """Public from_config that mirrors the Auto class API."""
-        return cls._from_config(config, **kwargs)
-
-    @classmethod
-    def _can_set_experts_implementation(cls) -> bool:
-        """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
-        return False
-
-    def _check_and_adjust_attn_implementation(
-        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
-    ) -> str:
-        """Bypass transformers' flash attention availability checks.
-
-        PrimeRL custom models dispatch attention through their own ``ATTN_IMPL2CLASS``
-        dictionaries, not through transformers' ``ALL_ATTENTION_FUNCTIONS``.  The default
-        ``_check_and_adjust_attn_implementation`` validates that the requested flash
-        attention package is installed and the device is supported, which fails on
-        CPU-only machines and is unnecessary because we never call transformers'
-        attention dispatch for custom models.
-        """
-        if attn_implementation is None:
-            attn_implementation = "flash_attention_3"
-        return attn_implementation
-
-    def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
-        """PrimeRL models always use eager experts implementation."""
-        return "eager"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -169,4 +131,36 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]
+class PreTrainedModelPrimeRL(PreTrainedModel, PrimeRLModel):
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        """Public from_config that mirrors the Auto class API."""
+        return cls._from_config(config, **kwargs)
+
+    @classmethod
+    def _can_set_experts_implementation(cls) -> bool:
+        """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
+        return False
+
+    def _check_and_adjust_attn_implementation(
+        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
+    ) -> str:
+        """Bypass transformers' flash attention availability checks.
+
+        PrimeRL custom models dispatch attention through their own ``ATTN_IMPL2CLASS``
+        dictionaries, not through transformers' ``ALL_ATTENTION_FUNCTIONS``.  The default
+        ``_check_and_adjust_attn_implementation`` validates that the requested flash
+        attention package is installed and the device is supported, which fails on
+        CPU-only machines and is unnecessary because we never call transformers'
+        attention dispatch for custom models.
+        """
+        if attn_implementation is None:
+            attn_implementation = "flash_attention_3"
+        return attn_implementation
+
+    def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
+        """PrimeRL models always use eager experts implementation."""
+        return "eager"
+
+
+__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PrimeRLModel", "PreTrainedModelPrimeRL"]

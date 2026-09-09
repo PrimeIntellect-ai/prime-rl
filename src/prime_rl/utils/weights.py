@@ -97,10 +97,10 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
     Format detection uses the model's full key set, so a partial dict (one rank's
     slice) converts the same way as the full state dict would.
     """
-    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+    from prime_rl.trainer.models.base import PrimeRLModel
 
     full_keys = dict.fromkeys(resolve_fqn(model, key) for key in model.state_dict().keys())
-    if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(full_keys):
+    if isinstance(model, PrimeRLModel) and model.is_prime_state_dict(full_keys):
         # PrimeRL custom model holding weights in prime format: apply the model's
         # declarative prime->HF conversion chain (renames, expert stack/unstack).
         return model.convert_to_hf(state_dict)
