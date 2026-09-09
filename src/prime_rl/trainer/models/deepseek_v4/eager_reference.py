@@ -68,18 +68,10 @@ def token_entry_causal_mask(
     - `e` belongs to `t`'s own document, so no query reads another document's history;
     - `e` closed before `t` arrived, i.e. its index within that document is below
       `threshold[0, t]`, the count of entries the query's position has completed.
-
-    One `seq_lens` describes one packed row, so the leading axis is 1 and broadcasts over the
-    batch, as `threshold` does.
-
-    `threshold` counts per document, so it is compared against `entry_local_idx` and not against
-    the sequence-global entry number; those two coordinate systems disagree for every document
-    after the first. That is the whole reason this exists: the indexer hands its kernel one
-    contiguous `[ks, ke)` range per query instead, and this is the dense statement of the same
-    rule to measure that range against.
     """
     same_document = tok_doc_idx[None, :, None] == entry_doc_idx[None, None, :]
-    return same_document & (threshold.unsqueeze(-1) > entry_local_idx[None, None, :])
+    closed_before_query = threshold.unsqueeze(-1) > entry_local_idx[None, None, :]
+    return same_document & closed_before_query
 
 
 def block_bias_from_indices(top_k_indices: Tensor, n_entries: int, dtype: torch.dtype) -> Tensor:
@@ -116,20 +108,3 @@ def dense_mask_from_indices(indices: Tensor, n_positions: int, dtype: torch.dtyp
     mask = torch.full((batch, 1, seq_len, n_positions + 1), float("-inf"), dtype=dtype, device=indices.device)
     mask.scatter_(-1, safe, 0.0)
     return mask[..., :n_positions].contiguous()
-
-
-def indexer_scores(q: Tensor, compressed_kv: Tensor, weights: Tensor) -> Tensor:
-    """Lightning-Indexer score `score[b,t,e] = sum_h w[b,t,h] * relu(sum_d q[b,t,h,d] k[b,e,d])`.
-
-    `q` is `(batch, seq_len, heads, dim)`, `compressed_kv` is `(batch, n_entries, dim)`, `weights`
-    is `(batch, seq_len, heads)`, and the result is `(batch, seq_len, n_entries)`, in float32.
-
-    This is the standard `fp8_indexer` is measured against: the same formula, in float32 and
-    through the `(batch, seq_len, heads, n_entries)` intermediate the kernel exists to avoid, so
-    the only difference between the two is the kernel's FP8 quantization. Both constant scales the
-    model applies, `index_head_dim ** -0.5` and `index_n_heads ** -0.5`, are dropped here because
-    the kernel drops them too, and being positive they cannot change which entries a top-k selects.
-    """
-    scores = q.float() @ compressed_kv.transpose(-1, -2).float().unsqueeze(1)
-    scores = F.relu(scores) * weights.float().unsqueeze(-1)
-    return scores.sum(dim=2)

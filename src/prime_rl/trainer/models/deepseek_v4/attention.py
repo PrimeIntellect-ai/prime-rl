@@ -483,14 +483,6 @@ class DeepseekV4Compressor(nn.Module):
 class DeepseekV4Indexer(nn.Module):
     """Lightning Indexer: picks the `index_topk` compressed entries each query may read.
 
-    It owns a compressor at the narrow `index_head_dim` and scores each query against its entries
-    with `fp8_indexer`, a fused Triton kernel that quantizes queries and keys to FP8 (UE8M0) and
-    never materializes a `(seq, heads, entries)` score tensor. GLM DSA runs the same kernel as its
-    only indexer path, unconditional and ungated, and this mirrors that. The indices this returns
-    address the entries of the compressor that owns it: both share `compress_rate` and the
-    `compress` RoPE base, so entry `e` in one covers the same source tokens as entry `e` in the
-    other, and the scores depend only on the query-key distance.
-
     Every query gets `index_topk` picks, the width the kernel pads to. An early query has fewer
     entries whose source tokens all lie at or before it, and its surplus picks come back as
     `IGNORE_SLOT` (-1).
@@ -513,28 +505,21 @@ class DeepseekV4Indexer(nn.Module):
         compressed_kv = self.compressor.compress(hidden_states, packed)
         n_entries = compressed_kv.shape[1]
 
-        # The token-position table for this rope type is already on `packed`; the compressor's own
-        # rotary is only ever evaluated at entry positions.
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
         q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
         w = self.weights_proj(hidden_states)
 
-        # The kernel wants a per-query contiguous readable range in the entry axis, `[ks, ke)`:
-        # `first_entry_of_doc` locates where the query's own document starts, and the number of
-        # entries closed so far advances that into the document.
         layout = packed.compression_layouts[self.compressor.compress_rate]
-        ks = layout.first_entry_of_doc[packed.tok_doc_idx].int()
-        ke = (ks + self.compressor.causal_threshold(packed.position_ids)[0]).int()
+        entry_start = layout.first_entry_of_doc[packed.tok_doc_idx].int()
+        entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
-        # The kernel has no batch axis, and `ks`/`ke` come from the row's shared `PackedContext`,
-        # so every batch entry indexes the same ranges.
+        # fp8_indexer has no batch axis
         top_k_indices = torch.stack(
-            [fp8_indexer(q[b], compressed_kv[b], w[b], ks, ke, self.index_topk) for b in range(batch)]
+            [fp8_indexer(q[b], compressed_kv[b], w[b], entry_start, entry_stop, self.index_topk) for b in range(batch)]
         )
-        # The kernel's sentinel for "no valid pick" is `n_entries`; DS V4's own is `IGNORE_SLOT`.
-        # This also covers `n_entries == 0` for free: every query's range is empty, so the kernel's
-        # own out-of-range cleanup already maps every pick to its sentinel.
+
+        # Mark indices-to-ignore with IGNORE_SLOT
         in_range = top_k_indices < n_entries
         top_k_indices = torch.where(in_range, top_k_indices, torch.full_like(top_k_indices, IGNORE_SLOT))
         return top_k_indices.long()
