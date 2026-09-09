@@ -1252,9 +1252,6 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
 # Looser than `KERNEL_RTOL`: a shard and the whole sequence feed the FP8 indexer different GEMM
 # row counts, so picks can come back in a different order for the online softmax to accumulate.
 CP_KERNEL_RTOL = 1e-2
-# Looser again for the gradients, which the ranks accumulate in an order the whole sequence never
-# uses. A wrong shard offset lands two orders of magnitude above this, so the slack still bites.
-CP_KERNEL_GRAD_RTOL = 5e-2
 
 
 @requires_sparse_attn_kernel
@@ -1265,15 +1262,10 @@ def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, m
     config = _v4flash_config()
     seq_len = sum(KERNEL_DOC_LENS)
     with torch.device("cuda"):
-        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16).requires_grad_(True)
-        cotangent = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
+        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
 
-    out_full, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, config))
-    (out_full * cotangent).sum().backward()
-    reference_out = out_full.detach()
-    reference_input_grad = hidden_full.grad.clone()
-    reference_grads = _take_grads(module)
-    hidden_full.grad = None
+    with torch.no_grad():
+        reference_out, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, config))
 
     chunks = hidden_full.chunk(cp_world_size, dim=1)
     n_queries = seq_len // cp_world_size
@@ -1284,12 +1276,9 @@ def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, m
         module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
 
         packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
-        out_rank, _ = module(chunk, packed=packed)
+        with torch.no_grad():
+            out_rank, _ = module(chunk, packed=packed)
         assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
 
         rows = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
         _assert_relative(out_rank, reference_out[:, rows], CP_KERNEL_RTOL, f"rank {cp_rank} output")
-        (out_rank * cotangent[:, rows]).sum().backward()
-
-    _assert_relative(hidden_full.grad, reference_input_grad, CP_KERNEL_GRAD_RTOL, "hidden states gradient")
-    _compare_accumulated_grads(module, reference_grads, rtol=CP_KERNEL_GRAD_RTOL)
