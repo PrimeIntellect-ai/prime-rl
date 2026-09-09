@@ -65,8 +65,9 @@ MODEL = dict(
     rms_norm_eps=1e-6,
 )
 
-MODEL_BATCH, MODEL_SEQ = 2, 32
-MODULE_BATCH = 2
+# The Lightning Indexer scores one packed row, which makes every batch axis here 1.
+BATCH = 1
+MODEL_SEQ = 32
 
 SLIDING_LAYER, CSA_LAYER, HCA_LAYER = 0, 1, 2
 COMPRESS_RATE = MODEL["compress_rates"]["compressed_sparse_attention"]
@@ -193,7 +194,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
 
     counts = []
     for token_id in (0, 1):
-        input_ids = torch.full((MODEL_BATCH, MODEL_SEQ), token_id, device="cuda", dtype=torch.long)
+        input_ids = torch.full((BATCH, MODEL_SEQ), token_id, device="cuda", dtype=torch.long)
         for layer in hash_layers:
             layer.mlp.tokens_per_expert.zero_()
         position_ids, seq_lens = _single_doc(input_ids)
@@ -204,7 +205,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     assert set(table[0].tolist()) != set(table[1].tolist()), "the two table rows must differ for this to bite"
     assert not torch.equal(counts[0], counts[1]), "a hash layer must route the two token ids to different experts"
     expected = torch.zeros_like(counts[0][0])
-    expected[table[0]] = MODEL_BATCH * MODEL_SEQ
+    expected[table[0]] = BATCH * MODEL_SEQ
     torch.testing.assert_close(counts[0][0], expected)
 
 
@@ -216,7 +217,7 @@ def test_deepseek_v4_backward():
     _randomize(model)
     inject_prime_lm_head(model)
 
-    input_ids = torch.randint(0, MODEL["vocab_size"], (MODEL_BATCH, MODEL_SEQ), device="cuda")
+    input_ids = torch.randint(0, MODEL["vocab_size"], (BATCH, MODEL_SEQ), device="cuda")
     position_ids, seq_lens = _single_doc(input_ids)
     output = model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
     output["logits"].sum().backward()
@@ -638,7 +639,7 @@ def _entry_counts(doc_lens: tuple[int, ...], compress_rate: int) -> list[int]:
 def _fp32_hidden_states(seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Two leaves carrying identical values, one for the packed run and one for the lone runs."""
     with torch.device("cuda"):
-        hidden = torch.randn(MODULE_BATCH, seq_len, MODEL["hidden_size"])
+        hidden = torch.randn(BATCH, seq_len, MODEL["hidden_size"])
     return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
 
 
@@ -806,7 +807,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
 
     packed_entries = compressor.compress(packed_input, packed)
-    assert packed_entries.shape == (MODULE_BATCH, sum(counts), compressor.head_dim)
+    assert packed_entries.shape == (BATCH, sum(counts), compressor.head_dim)
 
     with torch.device("cuda"):
         weight = torch.randn_like(packed_entries)
@@ -819,9 +820,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
         alone = compressor.compress(
             alone_input[:, _doc_slice(doc_lens, index)], _packed_context((doc_lens[index],), torch.float32)
         )
-        assert alone.shape == (MODULE_BATCH, count, compressor.head_dim), (
-            f"document {index} compressed to the wrong count"
-        )
+        assert alone.shape == (BATCH, count, compressor.head_dim), f"document {index} compressed to the wrong count"
         torch.testing.assert_close(
             packed_entries[:, entries],
             alone,
