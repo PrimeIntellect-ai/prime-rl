@@ -1316,6 +1316,7 @@ CP_KERNEL_RTOL = 1e-2
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 @pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
 def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, monkeypatch):
     """The production path's local-query-against-global-key contract, on the fused kernel.
