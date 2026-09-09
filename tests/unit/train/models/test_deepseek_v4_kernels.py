@@ -1138,20 +1138,8 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
         _assert_within_the_bfloat16_floor(kernel_grad, eager_grad, param.grad, f"{name} gradient")
 
 
-# Context parallelism shards the queries of the packed row across ranks and leaves the key side
-# globally resident, so every rank runs the same layer over `total_tokens / cp_world_size` query
-# rows against the whole row's keys. One process cannot hold a real process group, so the tests
-# below emulate the collective: they run each rank in turn on its own chunk of one shared leaf and
-# splice that rank's live tensor back into the gathered row, which is what makes summing the
-# per-rank backwards equal to `_all_gather`'s registered `_reduce_scatter_sum`.
-
-# Row widths that 4 divides, so both CP world sizes shard them evenly. `(517, 1019)` puts the
-# `cp = 2` cut at token 768, inside the second document, so a shard boundary that leaked into the
-# document bookkeeping would show. `(300,)` gives 75-token shards at `cp = 4`, below
-# `sliding_window = 128`: this scheme makes no minimum-shard assumption and the narrow case has to
-# work. `(2600,)` is excluded for the reason `KERNEL_DOC_LENS` gives: it saturates `index_topk`, so
-# a near-tie can flip a pick, and the two sides here feed the FP8 quantizer a different GEMM row
-# count, which makes such a flip legitimate rather than a bug.
+# Widths that 4 divides. `(517, 1019)` puts the `cp = 2` cut inside the second document, and
+# `(300,)` gives 75-token shards at `cp = 4`, narrower than `sliding_window = 128`.
 CP_DOC_LENS = [(517, 1019), (300,)]
 CP_DOC_IDS = ["two-docs", "one-short-doc"]
 CP_WORLD_SIZES = [2, 4]
@@ -1167,25 +1155,10 @@ def _cp_gathered_projections(
 ) -> list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]:
     """What one attention layer all-gathers, in the order its forward does, per source chunk.
 
-    `DeepseekV4Attention.forward` gathers its rotated KV first, then calls the compressor, whose
-    `compress` gathers its own `cat(kv_proj, gate_proj)`; a CSA compressor then runs the indexer,
-    whose inner compressor gathers a third. A sliding layer owns no compressor and gathers once.
-
-    The order is what identifies a gather, not the width: at the Flash shapes the attention KV is
-    `head_dim = 512` wide and the indexer compressor's concatenation is
-    `2 * (n_series * index_head_dim) = 2 * 256 = 512` wide as well, so a check that keyed on width
-    would happily accept the two swapped.
-
-    Only the first entry is rotated, which is the ordering the layer commits to. RoPE is per-token,
-    so `forward` rotates its keys on this rank's own shard and the collective carries them in final
-    form; a compressor instead gathers raw projections, because its pooling reads across tokens,
-    and rotates each entry afterwards at the position its layout supplies. That makes the first
-    entry the one thing here that depends on which chunk it is applied to: chunk `j` belongs to
-    rank `j` and is rotated at rank `j`'s query positions, so each entry takes that index and the
-    tables are evaluated once per rank rather than once per gather.
+    Order identifies a gather, not width: two of a CSA layer's three are 512 wide. Only the
+    first is rotated, at its own rank's query positions, which is what the rank index is for.
     """
-    # One context per rank, rather than one per gather call: each rank's gathers all read the same
-    # tables and `_packed_context` rebuilds a rotary embedding every time it is called.
+    # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
         _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
             module.rope_layer_type
@@ -1217,21 +1190,9 @@ def _fake_gather_for_cp(
 ) -> tuple[Callable[..., torch.Tensor], list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]]:
     """A `gather_for_cp` stand-in for `cp_rank`, plus the list of gathers it has yet to see.
 
-    Two properties make it an emulation rather than a mock. First, it is differentiable and it
-    splices in the caller's own tensor: the slab at `cp_rank` is the incoming argument object and
-    the others are the same projection applied to the sibling chunks, undetached. The graph
-    therefore runs through the collective from every rank, and summing the per-rank backwards is
-    exactly what the real `_all_gather`'s registered `_reduce_scatter_sum` computes. Detaching the
-    siblings, or rebuilding this rank's slab from the full row, would leave the gradient assertions
-    vacuous. The sibling slabs are rebuilt on every call, so each rank's backward has a graph of
-    its own to free.
-
-    Second, it identifies each gather by position in `projections` rather than by tensor width,
-    which two of a CSA layer's three gathers share. Popping in order and checking the argument
-    against that rank's chunk of the expected projection makes a reordering fail loudly instead of
-    silently comparing the wrong pair. The bound is slack because it does not have to be tight:
-    both sides run the same ops over the same tensor, the rotated entry included, and they agree
-    bit for bit unless the layer gathered something else entirely or rotated it somewhere else.
+    The slab at `cp_rank` is the caller's own tensor and the siblings stay attached, so summing
+    the per-rank backwards is what `_all_gather`'s `_reduce_scatter_sum` computes. Gathers are
+    matched by position, since two of a CSA layer's three share a width.
     """
     pending = list(projections)
 
@@ -1253,25 +1214,6 @@ def _fake_gather_for_cp(
 @pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_size, doc_lens, monkeypatch):
-    """A layer run shard by shard must answer each query, and each parameter, as the whole row does.
-
-    Sharding the queries and keeping the keys global rewrites every index in the layer: the window
-    slots, the RoPE tables the queries rotate at, the indexer's `[ks, ke)` ranges and the entry
-    numbering all have a Q side that narrows and a K side that does not. Nothing about that
-    bookkeeping is visible in the shape of the output, so every way of getting it wrong (rotating
-    the queries at the global table, slicing the window after building it, offsetting a pick by the
-    shard's token count instead of the row's) still returns finite numbers of the right shape.
-
-    The backward is the other half, and the reason the objective is `sum(out * g)` against a fixed
-    random cotangent rather than `out.sum()`: a plain sum is invariant under a sign error in any
-    row, and it weights every channel identically. Each rank's backward reaches the shared leaf
-    both directly, through its own queries, and through the sibling chunks its gather pulled in, so
-    the accumulated total over all ranks is what the real `_reduce_scatter_sum` would deliver.
-
-    Float32 and the eager consumer deliberately: the property at stake is index bookkeeping, not
-    kernel arithmetic, and float32 lets `PACKED_RTOL` do the bounding instead of a kernel-sized
-    tolerance that would hide an off-by-one in a window base.
-    """
     module = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
     config = _v4flash_config("eager")
     seq_len = sum(doc_lens)
@@ -1307,11 +1249,8 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     _compare_accumulated_grads(module, reference_grads)
 
 
-# Two bfloat16 runs of the same kernel, so the floor is bfloat16 rounding at the output's own
-# scale, one ulp being 2**-8. This sits a step looser than `KERNEL_RTOL`, which compares runs whose
-# gather slots are laid out identically: a shard and the whole row feed the projections and the FP8
-# indexer different GEMM row counts, so the picks can come back in a different order and the online
-# softmax accumulates them in that order.
+# Looser than `KERNEL_RTOL`: a shard and the whole sequence feed the FP8 indexer different GEMM
+# row counts, so picks can come back in a different order for the online softmax to accumulate.
 CP_KERNEL_RTOL = 1e-2
 
 
@@ -1319,18 +1258,6 @@ CP_KERNEL_RTOL = 1e-2
 @requires_datacenter_gpu
 @pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
 def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, monkeypatch):
-    """The production path's local-query-against-global-key contract, on the fused kernel.
-
-    Its float32 neighbour above pins the index bookkeeping on the eager consumer, which is not the
-    path a run takes. What this adds is that the kernel accepts the asymmetry at all: `q` carries
-    `n_queries` rows while `kv_buf` carries the whole row's positions plus its compressed entries,
-    and `indices` addresses the second while being indexed by the first. A kernel launch that
-    derived its KV extent from the query count would read past the buffer here and nowhere else.
-
-    One CSA layer, the layer type with all three gathers and the only one whose picks come from a
-    kernel of their own. Forward only and bounded by `CP_KERNEL_RTOL`: `dsv4_sparse_attn` asserts
-    bfloat16, so the float32 `PACKED_RTOL` cannot apply.
-    """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     config = _v4flash_config()
     seq_len = sum(KERNEL_DOC_LENS)
