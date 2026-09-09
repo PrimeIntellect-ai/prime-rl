@@ -31,6 +31,14 @@ requires_sparse_attn_kernel = pytest.mark.skipif(
     reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
 )
 
+# The kernels' shared tiles fit only the datacenter Hopper and Blackwell SMs. The opt-in limit does
+# not follow capability order, so this enumerates rather than compares: sm120 allows well under half
+# of what sm90 does.
+requires_datacenter_gpu = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
+    reason="the fused sparse attention kernels need the shared memory of a datacenter Hopper or Blackwell GPU",
+)
+
 
 @pytest.fixture(autouse=True)
 def _seed_rng():
@@ -320,6 +328,7 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
     """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
@@ -339,6 +348,7 @@ def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
     """A caller states the slots it means and the kernel covers the difference to its own tile.
 
@@ -363,6 +373,7 @@ def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_fully_masked_query_reads_as_zero_keys():
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
@@ -440,6 +451,7 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
 
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv):
     """All three differentiable inputs, each against its own bound.
 
@@ -468,6 +480,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_kernel_traces_under_torch_compile():
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
@@ -633,6 +646,7 @@ def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens, layer_idx, monkeypatch):
@@ -690,6 +704,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx, monkeypatch):
@@ -730,6 +745,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_lens, monkeypatch):
     """An unused gather slot must hold `IGNORE_SLOT` (-1), never a position that `kv_buf` actually has.
@@ -806,6 +822,7 @@ EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 1e-2, 5e-2
 
 @pytest.mark.parametrize("doc_lens", EAGER_KERNEL_DOC_LENS, ids=EAGER_KERNEL_DOC_IDS)
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     """The fused kernel against the naive dense softmax, single-document and packed.
 
@@ -865,6 +882,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
@@ -915,6 +933,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
@@ -1068,6 +1087,7 @@ def _assert_within_the_bfloat16_floor(
 
 
 @requires_sparse_attn_kernel
+@requires_datacenter_gpu
 @pytest.mark.parametrize("doc_lens", PARITY_DOC_LENS, ids=PARITY_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
 def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens):
