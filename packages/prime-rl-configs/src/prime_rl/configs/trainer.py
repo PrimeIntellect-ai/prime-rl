@@ -66,15 +66,6 @@ class OptimizerInBackwardOffloadConfig(BaseConfig):
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
-    release_gradient_pages: bool = False
-    """Release consumed FP32 CPU gradient pages after each native optimizer chunk. Requires Linux anonymous mmap; reduces resident memory when optimizer steps overlap backward."""
-
-    @model_validator(mode="after")
-    def gradient_page_release_requires_native(self):
-        if self.release_gradient_pages and self.cpu_optimizer_backend != "native":
-            raise ValueError("release_gradient_pages requires cpu_optimizer_backend='native'")
-        return self
-
 
 def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
     if value is True:

@@ -1,6 +1,3 @@
-import sys
-
-import pytest
 import torch
 
 from prime_rl.trainer.optim.cpu_adam import (
@@ -10,29 +7,8 @@ from prime_rl.trainer.optim.cpu_adam import (
     copy_or_add_bfloat16_multi_,
     sign_sgd_step,
 )
-from prime_rl.trainer.optim.gradient_slab import ReclaimableGradientSlab
 from prime_rl.trainer.optim.offload import _cast_full_offload_compute_parameters
 from prime_rl.trainer.sign_sgd import SignSGD
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Anonymous gradient page reclamation requires Linux")
-def test_reclaimed_gradient_pages_preserve_other_regions_and_allow_reuse():
-    page = ReclaimableGradientSlab.alignment
-    slab = ReclaimableGradientSlab(3 * page)
-    before, consumed, after = slab.tensor.chunk(3)
-    before.fill_(1.25)
-    consumed.fill_(2.5)
-    after.fill_(-3.75)
-    slab.release(page, page)
-    torch.testing.assert_close(before, torch.full_like(before, 1.25), rtol=0, atol=0)
-    torch.testing.assert_close(after, torch.full_like(after, -3.75), rtol=0, atol=0)
-    assert consumed.count_nonzero() == 0
-    consumed.add_(4.5)
-    torch.testing.assert_close(consumed, torch.full_like(consumed, 4.5), rtol=0, atol=0)
-    with pytest.raises(ValueError, match="whole pages"):
-        slab.release(1, page)
-    with pytest.raises(ValueError, match="outside"):
-        slab.release(3 * page, page)
 
 
 def test_full_offload_preserves_per_parameter_compute_dtypes():

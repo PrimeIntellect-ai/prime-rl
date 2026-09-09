@@ -21,7 +21,6 @@ from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
-from prime_rl.trainer.optim.gradient_slab import ReclaimableGradientSlab
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
@@ -486,7 +485,6 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         chunk_ready_callback: Callable[[int], None],
         gradient_dtypes: dict[int, torch.dtype],
         compute_dtypes: dict[int, torch.dtype],
-        release_gradient_pages: bool = False,
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
@@ -516,7 +514,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         if len(dtensor_params) != len(params):
             raise TypeError("Bounded gradient offload requires FSDP2 DTensor parameters")
 
-        alignment = ReclaimableGradientSlab.alignment if release_gradient_pages else 64
+        alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
         offsets: dict[int, int] = {}
         slab_numel = 0
         max_param_numel: dict[torch.dtype, int] = defaultdict(int)
@@ -526,16 +524,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             slab_numel += (local.numel() + alignment - 1) // alignment * alignment
             gradient_dtype = gradient_dtypes[id(param)]
             max_param_numel[gradient_dtype] = max(max_param_numel[gradient_dtype], local.numel())
-        self._reclaimable_slab = ReclaimableGradientSlab(slab_numel) if release_gradient_pages else None
-        accumulator_slab = (
-            self._reclaimable_slab.tensor
-            if self._reclaimable_slab is not None
-            else torch.empty(slab_numel, dtype=torch.float32, device="cpu")
-        )
-        self._gradient_page_ranges = {
-            id(param): (offsets[id(param)], (param.to_local().numel() + alignment - 1) // alignment * alignment)
-            for param in dtensor_params
-        }
+        accumulator_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu")
         self._buffers: dict[int, _CPUGradientBuffer] = {}
         self._ready_events: dict[int, list[torch.cuda.Event]] = {}
         for param in dtensor_params:
@@ -653,13 +642,6 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         for slot in slots:
             free_slots["normal" if slot.tensor.numel() == normal_numel else "oversized"].put(slot)
         return slots, free_slots
-
-    def release_chunk(self, chunk_idx: int, target_params: list[nn.Parameter] | None = None) -> None:
-        super().release_chunk(chunk_idx, target_params)
-        if self._reclaimable_slab is not None:
-            for param in self._chunks[chunk_idx]:
-                self._reclaimable_slab.release(*self._gradient_page_ranges[id(param)])
-                self._buffers[id(param)].initialized = False
 
     @staticmethod
     def _free_slot_count(slots: dict[str, queue.Queue[_PinnedTransferSlot]]) -> int:
@@ -1136,7 +1118,6 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 chunk_ready_callback=self._step_cpu_chunk,
                 gradient_dtypes=gradient_dtypes,
                 compute_dtypes=compute_dtypes,
-                release_gradient_pages=offload_config.release_gradient_pages,
             )
         else:
             self._gradient_manager = GradientOffloadManager(
