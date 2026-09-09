@@ -38,4 +38,3 @@ enabled = true
 [orchestrator.renderer]
 name = "qwen3"
 enable_thinking = false
-
