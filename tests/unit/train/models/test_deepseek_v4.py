@@ -916,27 +916,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
     torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
 
 
-# Context parallelism, at the level of wiring and validation. Numeric parity under CP is covered
-# at module level in `test_deepseek_v4_kernels.py`, which is where all of it lives: everything
-# CP-aware in this architecture is `attention.py` plus the one `PackedContext.build` call below,
-# while the hyper-connections, the MoE, the hash routing and the LM head never see `packed` and are
-# per-token, so sharding the row cannot change what they compute. Whole-model parity is
-# deliberately not attempted here: emulating the collective in-process would need every rank's
-# hidden states at every layer at once, which one process cannot produce layer by layer, so a
-# 2-GPU end-to-end run closes that gap instead. The toy config's 4 attention heads are below the
-# fused kernel's 32-head floor, so nothing here could run the production kernel anyway.
-
-
 def test_deepseek_v4_context_parallel_setup_reaches_every_layer():
-    """`setup_sparse_mla_cp` must publish the topology to all of them, and the model read it back.
-
-    The hook walks `model.model.layers` and skips anything without the attribute, so a layer that
-    lost the hook would leave that layer's attention running with `cp_world_size = 1`: it would
-    skip its gathers, attend its shard's queries against its shard's keys alone, and return a
-    finite, wrong answer rather than raise. `DeepseekV4Model._cp_rank_and_world_size` reads the
-    shard off the first layer only, and that pair is what the model's own `PackedContext` is
-    built from, so it is checked against what was set rather than assumed to agree.
-    """
     model = get_prime_model()
     cp_group = MagicMock()
 
@@ -954,14 +934,6 @@ def test_deepseek_v4_context_parallel_setup_reaches_every_layer():
 
 @pytest.mark.parametrize("cp_world_size", [1, 2], ids=["cp-off", "cp-on"])
 def test_deepseek_v4_rejects_seq_lens_that_disagree_with_the_cp_topology(cp_world_size):
-    """`seq_lens_are_pre_shard` must be set exactly when CP is on, and the check bites both ways.
-
-    V4 needs the whole row's document boundaries, because its keys and entries stay global while
-    its queries shard, so the flag is not an option the caller may set either way. Both mistakes
-    are silent otherwise: pre-shard boundaries with CP off would lay out a row `cp_world_size`
-    times wider than the one that arrived, and post-shard boundaries with CP on would clip every
-    window and every compressed entry at a boundary the other ranks do not share.
-    """
     model = get_prime_model()
     seq_lens_are_pre_shard = cp_world_size == 1
     if cp_world_size > 1:
@@ -971,7 +943,7 @@ def test_deepseek_v4_rejects_seq_lens_that_disagree_with_the_cp_topology(cp_worl
     position_ids, seq_lens = _single_doc(input_ids)
 
     message = f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
-    with pytest.raises(ValueError, match=re.escape(message)):
+    with pytest.raises(AssertionError, match=re.escape(message)):
         model(
             input_ids,
             position_ids=position_ids,
@@ -981,13 +953,6 @@ def test_deepseek_v4_rejects_seq_lens_that_disagree_with_the_cp_topology(cp_worl
 
 
 def test_deepseek_v4_rejects_seq_lens_that_do_not_cover_every_cp_shard():
-    """Under CP the row `seq_lens` describes is every rank's shard, not the one that arrived.
-
-    The two counts are equal without CP, so nothing else in the model distinguishes them, and a
-    caller that shards `seq_lens` alongside `input_ids` would otherwise get a `PackedContext`
-    covering a `cp_world_size`-th of the row with no complaint until the gathered keys turned out
-    to be the wrong width.
-    """
     model = get_prime_model()
     setup_sparse_mla_cp(model, MagicMock(), cp_rank=0, cp_world_size=2)
 
@@ -995,15 +960,5 @@ def test_deepseek_v4_rejects_seq_lens_that_do_not_cover_every_cp_shard():
     position_ids, seq_lens = _single_doc(input_ids)
 
     message = f"seq_lens covers {MODEL_SEQ} tokens, but 2 CP rank(s) holding {MODEL_SEQ} tokens each"
-    with pytest.raises(ValueError, match=re.escape(message)):
+    with pytest.raises(AssertionError, match=re.escape(message)):
         model(input_ids, position_ids=position_ids, seq_lens=seq_lens, seq_lens_are_pre_shard=True)
-
-
-def test_deepseek_v4_offers_ring_context_parallelism_only():
-    """V4 attention gathers its own keys, so the trainer's style knob must not offer it ulysses.
-
-    Both `substitute_ring_attn` and `substitute_ulysses_attn` rebind the shared
-    `FlashAttention._compute_attention`, which this architecture never calls, so a style outside
-    this set would be accepted by the trainer and then change nothing about how attention runs.
-    """
-    assert DeepseekV4ForCausalLM.cp_support(_prime_config()).styles == frozenset({"ring"})

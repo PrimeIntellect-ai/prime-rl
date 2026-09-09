@@ -259,27 +259,22 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             queries alone and keeps every key, entry and index value global, so it needs the
             whole row's boundaries: this must be set exactly when context parallelism is on.
         """
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+        assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
 
         cp_rank, cp_world_size = self._cp_rank_and_world_size()
-        if seq_lens_are_pre_shard != (cp_world_size > 1):
-            raise ValueError(
-                f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size="
-                f"{cp_world_size}: this model reads the whole row's document boundaries exactly "
-                "when its queries are sharded across ranks."
-            )
+        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
+            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
+        )
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
         total_tokens = int(seq_lens.sum())
-        if total_tokens != inputs_embeds.shape[1] * cp_world_size:
-            raise ValueError(
-                f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
-                f"{inputs_embeds.shape[1]} tokens each make up {inputs_embeds.shape[1] * cp_world_size}"
-            )
+        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
+            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
+            f"{inputs_embeds.shape[1]} tokens each"
+        )
 
         # Every layer type attends over the same local window; the compressed variants add their
         # own out-of-window entries and the per-query bias that gates them. One layout per distinct
