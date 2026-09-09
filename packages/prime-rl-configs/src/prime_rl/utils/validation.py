@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -47,6 +48,48 @@ def propagate_shared_fields(data: Any) -> Any:
             node[parts[-1]] = value
 
     conflicts: list[tuple[str, str]] = []
+
+    if get("inference.backend") == "dynamo":
+        client = get("orchestrator.model.client")
+        if isinstance(client, dict) and client.get("dynamo") is None:
+            client["dynamo"] = {}
+        if get("orchestrator.model.client.dynamo.enabled") is False:
+            raise ValueError("Managed Dynamo inference cannot use orchestrator.model.client.dynamo.enabled = false.")
+        fill("orchestrator.model.client.dynamo.enabled", True)
+
+        discovery_url = get("orchestrator.model.client.dynamo.discovery_url")
+        configured_port = get("inference.env_vars.DYN_RL_PORT")
+        if discovery_url is None:
+            server_port = get("inference.server.port") or 8000
+            default_client_url = f"http://localhost:{server_port}/v1"
+            client_url = urlsplit(get("orchestrator.model.client.base_url") or default_client_url)
+            launch_port = configured_port if configured_port is not None else int(server_port) + 1
+            if client_url.port is not None and str(launch_port) != str(client_url.port + 1):
+                raise ValueError(
+                    "Managed Dynamo DYN_RL_PORT conflicts with the discovery URL derived from "
+                    "orchestrator.model.client.base_url."
+                )
+        if discovery_url is not None:
+            try:
+                parsed_discovery_url = urlsplit(discovery_url)
+                discovery_port = parsed_discovery_url.port
+            except ValueError as error:
+                raise ValueError("Managed Dynamo discovery_url must contain a valid port.") from error
+            if parsed_discovery_url.scheme != "http":
+                raise ValueError("Managed Dynamo discovery_url must use http.")
+            if parsed_discovery_url.hostname not in ("127.0.0.1", "::1", "localhost"):
+                raise ValueError("Managed Dynamo discovery_url must use a loopback host.")
+            if parsed_discovery_url.username is not None or parsed_discovery_url.password is not None:
+                raise ValueError("Managed Dynamo discovery_url cannot include credentials.")
+            if parsed_discovery_url.query or parsed_discovery_url.fragment:
+                raise ValueError("Managed Dynamo discovery_url cannot include a query or fragment.")
+            if parsed_discovery_url.path not in ("", "/", "/v1", "/v1/"):
+                raise ValueError("Managed Dynamo discovery_url cannot include a path other than /v1.")
+            if discovery_port is None:
+                raise ValueError("Managed Dynamo discovery_url must include an explicit port.")
+            if configured_port is not None and str(configured_port) != str(discovery_port):
+                raise ValueError("Managed Dynamo discovery_url conflicts with inference.env_vars.DYN_RL_PORT.")
+            fill("inference.env_vars.DYN_RL_PORT", str(discovery_port))
 
     def propagate(shared_path: str, *targets: str) -> None:
         """Verbatim shared → targets. Records *disagreeing* overlap into

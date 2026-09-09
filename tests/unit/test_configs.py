@@ -858,6 +858,148 @@ def test_shared_model_name_resolves_inference_parsers():
     assert config.inference.vllm.tool_call_parser == "qwen3_coder"
 
 
+def test_managed_dynamo_inference_enables_dynamo_admin_discovery():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "qwen3"}},
+            "inference": {"backend": "dynamo"},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.backend == "dynamo"
+    assert config.orchestrator.model.client.dynamo is not None
+    assert config.orchestrator.model.client.dynamo.enabled is True
+    materialized = config.model_dump()
+    materialized = {
+        **materialized,
+        "orchestrator": {
+            **materialized["orchestrator"],
+            "model": {
+                **materialized["orchestrator"]["model"],
+                "client": {**materialized["orchestrator"]["model"]["client"], "dynamo": None},
+            },
+        },
+    }
+    round_tripped = RLConfig.model_validate(materialized)
+    assert round_tripped.orchestrator.model.client.dynamo.enabled is True
+
+
+def test_managed_dynamo_propagates_explicit_discovery_port():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "qwen3"},
+                "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000/v1"}}},
+            },
+            "inference": {"backend": "dynamo"},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.env_vars["DYN_RL_PORT"] == "9000"
+
+
+@pytest.mark.parametrize(
+    "discovery_url, message",
+    [
+        ("https://localhost:9000", "must use http"),
+        ("http://localhost:9000/admin", "cannot include a path"),
+        ("http://user:pass@localhost:9000", "cannot include credentials"),
+        ("http://localhost:9000?x=1", "cannot include a query"),
+        ("http://localhost:9000#fragment", "cannot include a query"),
+        ("http://remote.example:9000", "must use a loopback host"),
+    ],
+)
+def test_managed_dynamo_rejects_unmanaged_discovery_url(discovery_url, message):
+    with pytest.raises(ValueError, match=message):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"dynamo": {"discovery_url": discovery_url}}},
+                },
+                "inference": {"backend": "dynamo"},
+            }
+        )
+
+
+def test_managed_dynamo_rejects_conflicting_discovery_port():
+    with pytest.raises(ValueError, match="discovery_url conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"dynamo": {"discovery_url": "http://localhost:9000"}}},
+                },
+                "inference": {"backend": "dynamo", "env_vars": {"DYN_RL_PORT": "9001"}},
+            }
+        )
+
+
+def test_managed_dynamo_rejects_implicit_discovery_port_conflict():
+    with pytest.raises(ValueError, match="DYN_RL_PORT conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"base_url": "http://localhost:8000/v1"}},
+                },
+                "inference": {"backend": "dynamo", "env_vars": {"DYN_RL_PORT": "9001"}},
+            }
+        )
+
+
+def test_managed_dynamo_rejects_implicit_launch_port_conflict():
+    with pytest.raises(ValueError, match="DYN_RL_PORT conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": {"name": "qwen3"},
+                    "model": {"client": {"base_url": "http://localhost:9000/v1"}},
+                },
+                "inference": {"backend": "dynamo"},
+            }
+        )
+
+
+def test_managed_dynamo_accepts_implicit_discovery_port_for_custom_server_port():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "gsm8k",
+                            "env": {
+                                "taskset": {"id": "gsm8k"},
+                                "agent": {"harness": {"id": "null"}, "runtime": {"type": "subprocess"}},
+                            },
+                        }
+                    ]
+                },
+            },
+            "inference": {
+                "backend": "dynamo",
+                "server": {"port": "9000"},
+            },
+        }
+    )
+
+    assert config.orchestrator.any_policy_sourced
+    assert config.orchestrator.model.client.base_url == "http://localhost:9000/v1"
+    assert config.inference is not None and config.inference.server.port == 9000
+
+
 def test_explicit_inference_parser_wins_over_auto():
     """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""

@@ -869,7 +869,9 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
-        if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
+        if (
+            self.inference.backend == "dynamo" or not self.orchestrator.any_policy_sourced
+        ) and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = f"http://{host}:{port}/v1"
