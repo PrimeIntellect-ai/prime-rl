@@ -66,3 +66,19 @@ class MXFP8GroupedGemm:
             offs,
             high_precision_wgrad=self.high_precision_wgrad,
         )
+
+
+@dataclass(frozen=True)
+class NVFP4GroupedGemm:
+    kernel: ModuleType
+    backward: str
+    token_group_alignment: int
+
+    def __call__(
+        self,
+        x: torch.Tensor,
+        weight_t: torch.Tensor,
+        *,
+        offs: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.kernel.grouped_gemm(x, weight_t, offs=offs, backward=self.backward)

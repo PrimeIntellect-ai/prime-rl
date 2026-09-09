@@ -178,6 +178,9 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     [
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
+        {"moe": {"compute": {"type": "nvfp4"}}},
+        {"moe": {"compute": {"type": "nvfp4", "backward": "bf16"}}},
+        {"ep": 2, "moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "deepep"}}},
         {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
         {
             "ep": 2,
@@ -193,7 +196,7 @@ def test_supported_moe_runtime_configs(model):
     assert config.moe.compute.resolve_layers(43) == set(range(43))
 
 
-@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
+@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8", "nvfp4"])
 @pytest.mark.parametrize(
     ("selection", "num_layers", "selected"),
     [
@@ -253,6 +256,18 @@ def test_moe_compute_apply_to_cli(selection, selected):
                 },
             },
             "does not support DeepEP",
+        ),
+        (
+            {"moe": {"compute": {"type": "nvfp4"}}, "lora": {}},
+            "does not support LoRA",
+        ),
+        (
+            {"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}},
+            "requires compile.fullgraph=false",
+        ),
+        (
+            {"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}},
+            "Input should be",
         ),
     ],
 )
