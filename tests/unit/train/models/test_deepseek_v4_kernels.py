@@ -580,14 +580,17 @@ def _entry_counts(doc_lens: tuple[int, ...], compress_rate: int) -> list[int]:
 
 
 def _expected_picks(layer_type: str, doc_lens: tuple[int, ...]) -> int:
-    """How many pick slots every query of this layer type gets, on top of its local window."""
+    """How many pick slots every query of this layer type gets, on top of its local window.
+
+    CSA gets `index_topk` whatever the row holds, because `fp8_indexer` pads its output to the
+    requested width and the surplus comes back as `IGNORE_SLOT`. HCA's tracks the longest document.
+    """
     rate = V4FLASH_MODEL["compress_rates"].get(layer_type)
     if rate is None:
         return 0
-    counts = _entry_counts(doc_lens, rate)
     if layer_type == "heavily_compressed_attention":
-        return max(counts)
-    return min(V4FLASH_MODEL["index_topk"], sum(counts))
+        return max(_entry_counts(doc_lens, rate))
+    return V4FLASH_MODEL["index_topk"]
 
 
 def _hca_entries_admitted(doc_lens: tuple[int, ...]) -> torch.Tensor:
