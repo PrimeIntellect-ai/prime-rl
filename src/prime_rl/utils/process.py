@@ -27,6 +27,8 @@ DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
 
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    # Prime's renderer client uses the native token-generation endpoint.
+    "VLLM_ENABLE_SCALE_OUT_ENDPOINTS": "1",
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",

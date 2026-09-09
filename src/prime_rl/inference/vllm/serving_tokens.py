@@ -28,16 +28,16 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import Request
-from vllm.entrypoints.openai.engine.protocol import (
-    ErrorResponse,
-    RequestResponseMetadata,
-)
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+from vllm.entrypoints.serve.engine.protocol import (
+    ErrorResponse,
+    RequestResponseMetadata,
+)
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
