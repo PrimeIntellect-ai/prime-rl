@@ -1,8 +1,9 @@
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
+from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import CPSupport, PrimeRLModel
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -47,7 +48,7 @@ class NemotronHDecoderLayer(nn.Module):
         if self.layer_type == "mamba":
             self.mamba = NemotronHMamba2(config)
         elif self.layer_type == "attention":
-            self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation or "flash_attention_3"](
+            self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](
                 AttentionConfig(
                     hidden_size=config.hidden_size,
                     head_dim=config.head_dim,
@@ -151,11 +152,12 @@ class NemotronHModel(nn.Module):
     def forward(
         self,
         input_ids: torch.LongTensor,
+        position_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> torch.Tensor:
+    ) -> BaseModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
@@ -172,10 +174,12 @@ class NemotronHModel(nn.Module):
                 max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return self.norm(hidden_states)
+        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
-class NemotronHForCausalLM(PrimeRLModel):
+class NemotronHForCausalLM(PreTrainedModelPrimeRL):
+    config: NemotronHConfig
+
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
@@ -210,8 +214,7 @@ class NemotronHForCausalLM(PrimeRLModel):
         return state_dict
 
     def __init__(self, config: NemotronHConfig) -> None:
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.model = NemotronHModel(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
 
@@ -235,14 +238,14 @@ class NemotronHForCausalLM(PrimeRLModel):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> PrimeLmOutput:
-        hidden_states = self.model(
+        outputs = self.model(
             input_ids=input_ids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
         return self.lm_head(
-            hidden_states,
+            outputs.last_hidden_state,
             labels,
             temperature=temperature,
             sampling_mask=sampling_mask,

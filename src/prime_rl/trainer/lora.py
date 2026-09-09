@@ -219,13 +219,13 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
-    from prime_rl.trainer.models import PrimeRLModel
+    from prime_rl.trainer.models import PreTrainedModelPrimeRL
 
     lora_state = setup_lora_state(config, torch.device("cuda", get_world().local_rank))
-    if isinstance(model, PrimeRLModel):
+    if isinstance(model, PreTrainedModelPrimeRL):
         lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
     uses_gpt_oss_moe_adapter = (
-        isinstance(model, PrimeRLModel) and getattr(model.config, "model_type", None) == "gpt_oss"
+        isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
     )
 
     from torch.distributed.fsdp import FSDPModule

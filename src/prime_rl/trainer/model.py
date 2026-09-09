@@ -34,8 +34,8 @@ from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
     PrimeLmOutput,
-    PrimeRLModel,
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
@@ -910,7 +910,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     torch.distributed.barrier()
 
     # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
-    if isinstance(model, PrimeRLModel):
+    if isinstance(model, PreTrainedModelPrimeRL):
         model.init_buffers_post_meta()
     else:
         fix_model_post_empty(model)
@@ -932,7 +932,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # Dynamically convert between different weight formats if needed.
     # All ranks read just the key names (cheap) to determine the path independently.
     # Only master loads the full state dict when conversion is actually needed.
-    if isinstance(model, PrimeRLModel):
+    if isinstance(model, PreTrainedModelPrimeRL):
         source_path = snapshot_path
         convert_dir = config.conversion_dir or source_path
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
@@ -976,7 +976,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
     if (
-        isinstance(model, PrimeRLModel)
+        isinstance(model, PreTrainedModelPrimeRL)
         and snapshot_path.name == "prime"
         and not (snapshot_path / ".prime-v1").is_file()
     ):
@@ -994,7 +994,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     )
     write_back_loaded_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
-    if not isinstance(model, PrimeRLModel) and model.config.tie_word_embeddings:
+    if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
 
     _move_buffers_to_cuda(model, config)
@@ -1022,7 +1022,7 @@ def can_reinit_empty_buffers(model: nn.Module):
     This is usually any non-persistent buffers.
     """
     # Custom PrimeRL models handle buffer reinit via init_buffers_post_meta
-    if isinstance(model, PrimeRLModel):
+    if isinstance(model, PreTrainedModelPrimeRL):
         return True
 
     buffer_names = [name for name, _ in model.named_buffers()]
@@ -1308,7 +1308,7 @@ def setup_model(
             device = "cpu" if config.fsdp_cpu_offload else "cuda"
             model.to_empty(device=device)
             torch.distributed.barrier()
-            if isinstance(model, PrimeRLModel):
+            if isinstance(model, PreTrainedModelPrimeRL):
                 model.init_buffers_post_meta()
             else:
                 fix_model_post_empty(model)
@@ -1369,7 +1369,7 @@ def forward(
     else:
         kwargs["position_ids"] = position_ids
 
-    if isinstance(model, PrimeRLModel):
+    if isinstance(model, PreTrainedModelPrimeRL):
         kwargs["seq_lens"] = seq_lens
         kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
 
