@@ -91,9 +91,6 @@ class FlashAttention(nn.Module):
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
-        self._flash_attn_call = self.func
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""
@@ -112,11 +109,9 @@ class FlashAttention(nn.Module):
             # so cu_seqlens must be passed as keyword args to avoid misalignment.
             kwargs["cu_seqlens_q"] = cu_seqlens
             kwargs["cu_seqlens_k"] = cu_seqlens
-            out = self._flash_attn_call(q, k, v, **kwargs)
+            out, _ = self.func(q, k, v, **kwargs)
         else:
-            out = self._flash_attn_call(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
+            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(

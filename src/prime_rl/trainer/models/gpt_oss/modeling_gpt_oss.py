@@ -140,10 +140,6 @@ class GptOssModel(GptOssPreTrainedModel):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
-        if (input_ids is None) == (inputs_embeds is None):
-            raise ValueError("Specify exactly one of input_ids or inputs_embeds")
-        if position_ids is None:
-            raise ValueError("position_ids are required for custom GPT-OSS")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
