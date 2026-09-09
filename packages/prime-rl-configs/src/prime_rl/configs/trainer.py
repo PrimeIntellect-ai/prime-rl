@@ -1,6 +1,5 @@
 import re
 import warnings
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -183,30 +182,30 @@ QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discrim
 
 
 class MoEComputeConfigBase(BaseConfig):
-    apply_to: list[str] = ["*"]
-    """Routed-expert module paths to use this backend for, e.g. ``model.layers.[0-3].mlp.experts``.
-    Patterns match full names using shell-style wildcards, or ``re:``-prefixed regular expressions.
-    Unmatched expert groups use BF16 compute and transport. ``["*"]`` selects all; ``[]`` selects none.
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
+    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of model layers, rounded down. Other expert groups use BF16 compute and transport.
     """
 
     @field_validator("apply_to")
     @classmethod
-    def validate_apply_to(cls, patterns: list[str]) -> list[str]:
-        for pattern in patterns:
-            if not pattern or pattern == "re:":
-                raise ValueError("apply_to patterns must not be empty")
-            if pattern.startswith("re:"):
-                try:
-                    re.compile(pattern[3:])
-                except re.error as exc:
-                    raise ValueError(f"Invalid apply_to regex {pattern!r}: {exc}") from exc
-        return patterns
+    def validate_apply_to(cls, value: str | list[int]) -> str | list[int]:
+        if isinstance(value, str) and value != "all":
+            if re.fullmatch(r"\d+(?:\.\d+)?%", value) is None or float(value[:-1]) > 100:
+                raise ValueError('apply_to must be "all", a percentage from "0%" to "100%", or a list of layer indices')
+        return value
 
-    def matches_module(self, name: str) -> bool:
-        return any(
-            re.match(pattern[3:], name) is not None if pattern.startswith("re:") else fnmatchcase(name, pattern)
-            for pattern in self.apply_to
-        )
+    def resolve_layers(self, num_layers: int) -> set[int]:
+        if isinstance(self.apply_to, list):
+            invalid = [index for index in self.apply_to if index >= num_layers]
+            if invalid:
+                raise ValueError(
+                    f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
+                )
+            return set(self.apply_to)
+        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
+        return set(range(count))
 
 
 class BF16MoEComputeConfig(MoEComputeConfigBase):

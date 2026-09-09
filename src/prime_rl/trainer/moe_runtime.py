@@ -28,6 +28,7 @@ from prime_rl.trainer.models.layers.grouped_gemm import (
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.vlm import get_language_model
 
 
 def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
@@ -56,24 +57,33 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
-    moe_layers = {
-        f"{name}.experts" if name else "experts": module
-        for name, module in model.named_modules()
-        if isinstance(module, MoE)
-    }
+    moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
         if config.moe != MoERuntimeConfig():
             raise ValueError("A non-default model.moe runtime was configured, but the model has no custom MoE layers.")
         return
 
-    selected_layers = {name for name in moe_layers if config.moe.compute.matches_module(name)}
+    selected_moes = set(moe_layers)
+    if config.moe.compute.apply_to != "all":
+        language_model = get_language_model(
+            model, override=config.vlm.language_model_attr if config.vlm is not None else None
+        )
+        selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
+        selected_moes = {
+            module
+            for index, layer in enumerate(language_model.layers.children())
+            if index in selected_layers
+            for module in layer.modules()
+            if isinstance(module, MoE)
+        }
+        get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     bf16_grouped_gemm = BF16GroupedGemm()
-    selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_layers else bf16_grouped_gemm
+    selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_moes else bf16_grouped_gemm
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
 
-    for name, moe in moe_layers.items():
-        grouped_gemm = selected_grouped_gemm if name in selected_layers else bf16_grouped_gemm
+    for moe in moe_layers:
+        grouped_gemm = selected_grouped_gemm if moe in selected_moes else bf16_grouped_gemm
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
@@ -118,7 +128,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
 
     get_logger().info(
-        f"Configured {len(selected_layers)}/{len(moe_layers)} MoE layers with compute={config.moe.compute.type}, "
+        f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={config.moe.compute.type}, "
         f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
-    get_logger().debug(f"Selected routed-expert modules: {sorted(selected_layers)}")

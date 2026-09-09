@@ -190,34 +190,45 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
 )
 def test_supported_moe_runtime_configs(model):
     config = TrainerModelConfig.model_validate(model)
-    assert config.moe.compute.matches_module("model.layers.42.mlp.experts")
+    assert config.moe.compute.resolve_layers(43) == set(range(43))
 
 
 @pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
 @pytest.mark.parametrize(
-    ("patterns", "selected"),
+    ("selection", "num_layers", "selected"),
     [
-        (["*"], [0, 1, 2, 10]),
-        ([], []),
-        (["model.layers.[0-2].mlp.experts"], [0, 1, 2]),
-        (["model.layers.0.mlp.experts", "model.layers.10.mlp.experts"], [0, 10]),
-        ([r"re:model\.layers\.(0|2)\.mlp\.experts$"], [0, 2]),
-        (["model.layers.0.mlp.router"], []),
+        ("all", 10, set(range(10))),
+        ("85%", 48, set(range(40))),
+        ("100%", 3, {0, 1, 2}),
+        ("0%", 3, set()),
+        ("33.3%", 10, {0, 1, 2}),
+        ([], 10, set()),
+        ([2, 0], 10, {0, 2}),
+        ([0, 2, 2], 3, {0, 2}),
     ],
 )
-def test_moe_compute_apply_to(backend, patterns, selected):
-    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": patterns}}})
+def test_moe_compute_apply_to(backend, selection, num_layers, selected):
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": selection}}})
     config = TrainerModelConfig.model_validate_json(config.model_dump_json())
-    actual = [
-        index for index in (0, 1, 2, 10) if config.moe.compute.matches_module(f"model.layers.{index}.mlp.experts")
-    ]
-    assert actual == selected
+    assert config.moe.compute.resolve_layers(num_layers) == selected
 
 
-@pytest.mark.parametrize("pattern", ["", "re:", "re:["])
-def test_moe_compute_rejects_invalid_apply_to(pattern):
+@pytest.mark.parametrize("selection", ["*", "model.layers.*", "", "101%", "-1%", "nan%", [-1], [1.5], [True]])
+def test_moe_compute_rejects_invalid_apply_to(selection):
     with pytest.raises(ValidationError, match="apply_to"):
-        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [pattern]}}})
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+
+
+def test_moe_compute_rejects_out_of_range_layer():
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [3]}}})
+    with pytest.raises(ValueError, match="out of range"):
+        config.moe.compute.resolve_layers(3)
+
+
+@pytest.mark.parametrize(("selection", "selected"), [("all", {0, 1, 2}), ("50%", {0}), ("[0, 2]", {0, 2})])
+def test_moe_compute_apply_to_cli(selection, selected):
+    config = cli(TrainerModelConfig, args=["--moe.compute.type", "mxfp8", "--moe.compute.apply-to", selection])
+    assert config.moe.compute.resolve_layers(3) == selected
 
 
 @pytest.mark.parametrize(
