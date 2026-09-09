@@ -56,17 +56,24 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
-    moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
+    moe_layers = {
+        f"{name}.experts" if name else "experts": module
+        for name, module in model.named_modules()
+        if isinstance(module, MoE)
+    }
     if not moe_layers:
         if config.moe != MoERuntimeConfig():
             raise ValueError("A non-default model.moe runtime was configured, but the model has no custom MoE layers.")
         return
 
-    grouped_gemm = _resolve_grouped_gemm(config)
+    selected_layers = {name for name in moe_layers if config.moe.compute.matches_module(name)}
+    bf16_grouped_gemm = BF16GroupedGemm()
+    selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_layers else bf16_grouped_gemm
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
 
-    for moe in moe_layers:
+    for name, moe in moe_layers.items():
+        grouped_gemm = selected_grouped_gemm if name in selected_layers else bf16_grouped_gemm
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
@@ -79,7 +86,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 token_group_alignment=grouped_gemm.token_group_alignment,
             )
         elif isinstance(dispatch, TorchMoEDispatchConfig):
-            if dispatch.transport == "mxfp8":
+            if dispatch.transport == "mxfp8" and isinstance(grouped_gemm, MXFP8GroupedGemm):
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
@@ -111,6 +118,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
 
     get_logger().info(
-        f"Configured {len(moe_layers)} MoE layers with compute={config.moe.compute.type}, "
-        f"dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
+        f"Configured {len(selected_layers)}/{len(moe_layers)} MoE layers with compute={config.moe.compute.type}, "
+        f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
+    get_logger().debug(f"Selected routed-expert modules: {sorted(selected_layers)}")

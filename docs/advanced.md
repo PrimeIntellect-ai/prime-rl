@@ -68,6 +68,20 @@ type = "torch"
 transport = "mxfp8"
 ```
 
+All MoE compute backends accept `apply_to`, a list of routed-expert module paths. The default `["*"]` selects every expert group; `[]` selects none. Shell-style patterns match full names, and `re:` prefixes a regular expression matched from the start of the name. Unmatched groups use BF16 compute and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
+
+For example, this selects routed experts in Qwen3's first four model layers:
+
+```toml
+[trainer.model.moe.compute]
+type = "mxfp8"
+apply_to = ["model.layers.[0-3].mlp.experts"]
+```
+
+Patterns refer to the trainer's module names, including the `.experts` suffix. Layer numbers are model block indices, including non-MoE blocks in hybrid models. A match selects the whole routed-expert group, including all its projections. Backend shape checks and token alignment apply only to the selected compute path.
+
+In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends

@@ -2,14 +2,33 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
+from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
 )
+from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.parametrize("patterns", [[], ["other.experts"]])
+def test_unselected_moe_uses_bf16_without_loading_quantization_backend(patterns):
+    moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None)
+    parameters = dict(moe.named_parameters())
+    config = ModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": patterns}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    configure_moe_runtime(moe, config, dims)
+
+    assert isinstance(moe.experts.grouped_gemm, BF16GroupedGemm)
+    assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
+    assert moe.token_dispatcher.token_group_alignment == moe.experts.grouped_gemm.token_group_alignment
+    assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
 def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:

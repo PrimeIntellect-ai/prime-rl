@@ -1,8 +1,10 @@
+import re
 import warnings
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -180,19 +182,46 @@ class MXFP8Config(BaseConfig):
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
 
 
-class BF16MoEComputeConfig(BaseConfig):
+class MoEComputeConfigBase(BaseConfig):
+    apply_to: list[str] = ["*"]
+    """Routed-expert module paths to use this backend for, e.g. ``model.layers.[0-3].mlp.experts``.
+    Patterns match full names using shell-style wildcards, or ``re:``-prefixed regular expressions.
+    Unmatched expert groups use BF16 compute and transport. ``["*"]`` selects all; ``[]`` selects none.
+    """
+
+    @field_validator("apply_to")
+    @classmethod
+    def validate_apply_to(cls, patterns: list[str]) -> list[str]:
+        for pattern in patterns:
+            if not pattern or pattern == "re:":
+                raise ValueError("apply_to patterns must not be empty")
+            if pattern.startswith("re:"):
+                try:
+                    re.compile(pattern[3:])
+                except re.error as exc:
+                    raise ValueError(f"Invalid apply_to regex {pattern!r}: {exc}") from exc
+        return patterns
+
+    def matches_module(self, name: str) -> bool:
+        return any(
+            re.match(pattern[3:], name) is not None if pattern.startswith("re:") else fnmatchcase(name, pattern)
+            for pattern in self.apply_to
+        )
+
+
+class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
 
 
-class DeepGemmFP8MoEComputeConfig(BaseConfig):
+class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
 
-class MXFP8MoEComputeConfig(BaseConfig):
+class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"

@@ -189,7 +189,35 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     ],
 )
 def test_supported_moe_runtime_configs(model):
-    TrainerModelConfig.model_validate(model)
+    config = TrainerModelConfig.model_validate(model)
+    assert config.moe.compute.matches_module("model.layers.42.mlp.experts")
+
+
+@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
+@pytest.mark.parametrize(
+    ("patterns", "selected"),
+    [
+        (["*"], [0, 1, 2, 10]),
+        ([], []),
+        (["model.layers.[0-2].mlp.experts"], [0, 1, 2]),
+        (["model.layers.0.mlp.experts", "model.layers.10.mlp.experts"], [0, 10]),
+        ([r"re:model\.layers\.(0|2)\.mlp\.experts$"], [0, 2]),
+        (["model.layers.0.mlp.router"], []),
+    ],
+)
+def test_moe_compute_apply_to(backend, patterns, selected):
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": patterns}}})
+    config = TrainerModelConfig.model_validate_json(config.model_dump_json())
+    actual = [
+        index for index in (0, 1, 2, 10) if config.moe.compute.matches_module(f"model.layers.{index}.mlp.experts")
+    ]
+    assert actual == selected
+
+
+@pytest.mark.parametrize("pattern", ["", "re:", "re:["])
+def test_moe_compute_rejects_invalid_apply_to(pattern):
+    with pytest.raises(ValidationError, match="apply_to"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [pattern]}}})
 
 
 @pytest.mark.parametrize(
