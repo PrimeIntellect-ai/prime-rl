@@ -13,19 +13,21 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-09-02T01:24:49.823477581Z"
+exclude-newer = "2026-09-02T04:53:16.060082943Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 vllm = false
 verifiers = false
 harbor = "2026-08-11T00:00:00Z"
+prime-traces = false
 prime-pydantic-config = false
 vllm-router = false
 dion = false
-fastokens = false
+prime-runs = false
 flash-attn-3 = false
 prime-tunnel = false
+fastokens = false
 deep-gemm = false
 prime-evals = false
 torchao = false
@@ -1536,7 +1538,7 @@ wheels = [
 [[package]]
 name = "dion"
 version = "0.1.0"
-source = { git = "https://github.com/samsja/dion.git?rev=d891eeb#d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+source = { git = "https://github.com/samsja/dion.git?rev=99e5f7e#99e5f7e5f0a7dbe418ce6dfc84196dba052e67c8" }
 dependencies = [
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5408,6 +5410,7 @@ dependencies = [
     { name = "prime", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-pydantic-config", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-rl-configs", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "prime-runs", extra = ["train"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "psutil", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pybase64", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5543,7 +5546,7 @@ requires-dist = [
     { name = "deep-gemm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
-    { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
+    { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=99e5f7e" },
     { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_x86_64.whl" },
@@ -5577,6 +5580,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.1" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5648,6 +5652,24 @@ requires-dist = [
 ]
 
 [[package]]
+name = "prime-runs"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "prime-traces", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/ee/0e9cf800aa6b3db148b01d26e0d6957074027f52323b348ad35594e41d1c/prime_runs-0.1.2.tar.gz", hash = "sha256:2cd4775aa3176f95abf3def78ba257b6b0579ba2606d24307c88495e5b1bb6f1", size = 62099, upload-time = "2026-09-09T00:28:45.621Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/59/e48470b0b47d3fc261e31e13d1ed47177f0a71044234ae46b40b00063f1c/prime_runs-0.1.2-py3-none-any.whl", hash = "sha256:95ca0775317cf2733aa38a0a26b263174b992d5be63009a4cfeeff212924759b", size = 43333, upload-time = "2026-09-09T00:28:44.22Z" },
+]
+
+[package.optional-dependencies]
+train = [
+    { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[[package]]
 name = "prime-sandboxes"
 version = "0.2.39"
 source = { registry = "https://pypi.org/simple" }
@@ -5664,6 +5686,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/8c/0bf89180addb74f75e41fbf6fa06c5401ea802b69ec0b565330562270be2/prime_sandboxes-0.2.39.tar.gz", hash = "sha256:7ff6c23aa2c96985a9129d977d532c0ae2fb6afb6d394dac746393ce0c53b597", size = 103161, upload-time = "2026-08-19T23:09:27.921Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/a5/8a2a1aefecfc58ca926d6b21e8302a127884bf2a45952ed390b5f702eeda/prime_sandboxes-0.2.39-py3-none-any.whl", hash = "sha256:3ea355158473c1697f9ef6ec2a07f3189e9a2555c80d1c88e1f7e22979772e0a", size = 58161, upload-time = "2026-08-19T23:09:26.69Z" },
+]
+
+[[package]]
+name = "prime-traces"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/5d/d3646fb34d4f3cf4caf2064eb3830c4da5c18a3ecd3292ce9e85eb04398f/prime_traces-0.0.4.tar.gz", hash = "sha256:713b59984292304bd4e99a55998b7d69373f22b5205a7e097ef0d0d8e531561c", size = 50935, upload-time = "2026-09-04T16:51:10.488Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/55/de30cc732631522f5f12cb590b63b80cb1c6ca004ad81762d94ee7dda256/prime_traces-0.0.4-py3-none-any.whl", hash = "sha256:68f2b527d266f9c3d02f6c86a1713309a58a61b81e1be6be43948e1dd2456d8f", size = 38409, upload-time = "2026-09-04T16:51:09.201Z" },
 ]
 
 [[package]]
@@ -8268,6 +8303,7 @@ dependencies = [
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "openai", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-pydantic-config", extra = ["toml"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "prime-runs", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-sandboxes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-tunnel", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -8309,6 +8345,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.54.0,<3.0.0" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
+    { name = "prime-runs", specifier = ">=0.1.1" },
     { name = "prime-sandboxes", specifier = ">=0.2.39" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
