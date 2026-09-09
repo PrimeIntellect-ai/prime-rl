@@ -502,9 +502,7 @@ class DeepseekV4Indexer(nn.Module):
     @torch.no_grad()  # Returns non-differentiable integer indices.
     def forward(self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
-        if batch != 1:
-            # The causal thresholds below come from sample 0 only.
-            raise ValueError(f"the indexer needs a packed batch of size 1, got {batch}")
+        assert batch == 1, f"the indexer needs a packed batch of size 1, got {batch}"
         compressed_kv = self.compressor.compress(hidden_states, packed)
         n_entries = compressed_kv.shape[1]
 
