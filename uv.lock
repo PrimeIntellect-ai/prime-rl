@@ -28,7 +28,9 @@ prime = false
 prime-evals = false
 prime-kernels = false
 prime-pydantic-config = false
+prime-runs = false
 prime-sandboxes = false
+prime-traces = false
 prime-tunnel = false
 renderers = false
 tokenspeed-mla = false
@@ -1471,7 +1473,7 @@ wheels = [
 [[package]]
 name = "dion"
 version = "0.1.0"
-source = { git = "https://github.com/samsja/dion.git?rev=d891eeb#d891eebbd950a6ff11d9b5f806282e33df83df9d" }
+source = { git = "https://github.com/samsja/dion.git?rev=99e5f7e#99e5f7e5f0a7dbe418ce6dfc84196dba052e67c8" }
 dependencies = [
     { name = "numpy" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
@@ -5030,6 +5032,7 @@ dependencies = [
     { name = "prime" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
+    { name = "prime-runs", extra = ["train"] },
     { name = "psutil" },
     { name = "pyarrow" },
     { name = "pybase64" },
@@ -5163,7 +5166,7 @@ requires-dist = [
     { name = "deep-gemm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
-    { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
+    { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=99e5f7e" },
     { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_x86_64.whl" },
@@ -5197,6 +5200,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.1" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5268,6 +5272,24 @@ requires-dist = [
 ]
 
 [[package]]
+name = "prime-runs"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "prime-traces" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/85/db/3d5a9362f0d373d10145eaee3ac255cf227bf4164b36d04119b18e226607/prime_runs-0.1.1.tar.gz", hash = "sha256:0be97dcc95b3f1648ca25475efa45a5892fb12a775bf1f61728baec73a0088bb", size = 61110, upload-time = "2026-09-04T17:01:33.379Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/52/3fa41ac5e3c8bfa8eb33520f86634ae56474228f85c59b16aa04875efd7d/prime_runs-0.1.1-py3-none-any.whl", hash = "sha256:d512753ff84159a1234d1ea93091857f0a59fba12ef7ab2f69bfb579deb5ce75", size = 43006, upload-time = "2026-09-04T17:01:31.821Z" },
+]
+
+[package.optional-dependencies]
+train = [
+    { name = "pyarrow" },
+]
+
+[[package]]
 name = "prime-sandboxes"
 version = "0.2.39"
 source = { registry = "https://pypi.org/simple" }
@@ -5284,6 +5306,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/8c/0bf89180addb74f75e41fbf6fa06c5401ea802b69ec0b565330562270be2/prime_sandboxes-0.2.39.tar.gz", hash = "sha256:7ff6c23aa2c96985a9129d977d532c0ae2fb6afb6d394dac746393ce0c53b597", size = 103161, upload-time = "2026-08-19T23:09:27.921Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/a5/8a2a1aefecfc58ca926d6b21e8302a127884bf2a45952ed390b5f702eeda/prime_sandboxes-0.2.39-py3-none-any.whl", hash = "sha256:3ea355158473c1697f9ef6ec2a07f3189e9a2555c80d1c88e1f7e22979772e0a", size = 58161, upload-time = "2026-08-19T23:09:26.69Z" },
+]
+
+[[package]]
+name = "prime-traces"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/77/13fa99c0fb71909f2f35d048d9724efb9ae432484e47f12386b1542815e8/prime_traces-0.0.3.tar.gz", hash = "sha256:4071833db77a606ccbb718e5c73f2dfaf63982fe801aa096daed0bc605da554f", size = 50874, upload-time = "2026-08-27T19:46:44.672Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/9a/5a917de29a3a839c0ba36d445e3af562f744d9716b509571be643a01476c/prime_traces-0.0.3-py3-none-any.whl", hash = "sha256:0838f60651f1ed38371e383bd88b954e461d20ac424874e694bc83358934f5f3", size = 38345, upload-time = "2026-08-27T19:46:43.396Z" },
 ]
 
 [[package]]
@@ -7786,6 +7821,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "prime-pydantic-config", extra = ["toml"] },
+    { name = "prime-runs" },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
@@ -7827,6 +7863,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.54.0,<3.0.0" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
+    { name = "prime-runs", specifier = ">=0.1.1" },
     { name = "prime-sandboxes", specifier = ">=0.2.39" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
