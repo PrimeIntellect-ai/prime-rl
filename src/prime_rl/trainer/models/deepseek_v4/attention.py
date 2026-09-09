@@ -243,11 +243,10 @@ class PackedContext:
     set of positions rotates queries the thresholds were not counted at. `build` derives every
     field from one `seq_lens`, so none of those is reachable. It runs once per model forward.
 
-    Under context parallelism the treatment of queries and keys/values diverge. `position_ids`,
-    `tok_doc_idx`, `window_indices` and `position_embeddings` are indexed by a query, so they carry
-    this rank's `n_queries` rows; `compression_layouts` is the only field left on the K side, being
-    indexed by a compressed entry, which stays globally resident and so covers the whole
-    `total_tokens`-wide row. Index values are global throughout.
+    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries
+    and a full copy of the keys, so every field but `compression_layouts` has one entry per query
+    token and covers this rank's run alone, while `compression_layouts` covers the whole sequence.
+    Token indices always count from the start of the whole sequence, never from this rank's run.
     """
 
     position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
@@ -259,18 +258,17 @@ class PackedContext:
     def __post_init__(self) -> None:
         # Only reachable by constructing the dataclass directly; `build` cannot violate it.
         n_queries = self.tok_doc_idx.shape[0]
-        if self.position_ids.shape[-1] != n_queries:
-            raise ValueError(f"position_ids covers {self.position_ids.shape[-1]} tokens, but the row has {n_queries}")
-        if self.window_indices.shape[0] != n_queries:
-            raise ValueError(
-                f"window_indices covers {self.window_indices.shape[0]} query rows, but the row has {n_queries}"
-            )
+        assert self.position_ids.shape[-1] == n_queries, (
+            f"position_ids covers {self.position_ids.shape[-1]} query tokens, not {n_queries}"
+        )
+        assert self.window_indices.shape[0] == n_queries, (
+            f"window_indices covers {self.window_indices.shape[0]} query tokens, not {n_queries}"
+        )
         for rope_type, tables in self.position_embeddings.items():
             for table in tables:
-                if table.shape[-2] != n_queries:
-                    raise ValueError(
-                        f"position_embeddings[{rope_type}] covers {table.shape[-2]} tokens, but the row has {n_queries}"
-                    )
+                assert table.shape[-2] == n_queries, (
+                    f"position_embeddings[{rope_type}] covers {table.shape[-2]} query tokens, not {n_queries}"
+                )
 
     @classmethod
     def build(
@@ -298,8 +296,9 @@ class PackedContext:
         config = rotary_emb.config
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
         total_tokens = int(seq_lens.sum())
-        if total_tokens % cp_world_size:
-            raise ValueError(f"a row of {total_tokens} tokens does not split evenly across {cp_world_size} CP ranks")
+        assert total_tokens % cp_world_size == 0, (
+            f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
+        )
         n_queries = total_tokens // cp_world_size
         q_start = cp_rank * n_queries
 
@@ -378,7 +377,8 @@ class SparseAttnInputs:
     key, which `build` enforces.
 
     Under context parallelism the token half of `kv_buf` is still the whole global stream, `S`
-    being every token of the packed row, while `indices` carries one row per local query.
+    being every token of the packed row, while `indices` has one entry per query token this rank
+    holds.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
@@ -387,12 +387,15 @@ class SparseAttnInputs:
     def __post_init__(self) -> None:
         # Shape invariants only. Asserting on index values would read the device, and this runs
         # once per layer per step.
-        if self.kv_buf.ndim != 4 or self.kv_buf.shape[2] != 1:
-            raise ValueError(f"kv_buf must be (batch, n_positions, 1, head_dim), got {tuple(self.kv_buf.shape)}")
-        if self.indices.ndim != 4 or self.indices.shape[2] != 1:
-            raise ValueError(f"indices must be (batch, n_queries, 1, n_slots), got {tuple(self.indices.shape)}")
-        if self.indices.shape[0] != self.kv_buf.shape[0]:
-            raise ValueError(f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}")
+        assert self.kv_buf.ndim == 4 and self.kv_buf.shape[2] == 1, (
+            f"kv_buf must be (batch, n_positions, 1, head_dim), got {tuple(self.kv_buf.shape)}"
+        )
+        assert self.indices.ndim == 4 and self.indices.shape[2] == 1, (
+            f"indices must be (batch, n_queries, 1, n_slots), got {tuple(self.indices.shape)}"
+        )
+        assert self.indices.shape[0] == self.kv_buf.shape[0], (
+            f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}"
+        )
 
     @classmethod
     def build(
@@ -408,13 +411,15 @@ class SparseAttnInputs:
         A layer with no entries passes neither `compressed_kv` nor `top_k_indices`, receiving only
         the local sliding window.
         """
-        if (compressed_kv is None) != (top_k_indices is None):
-            raise ValueError("compressed_kv and top_k_indices describe the same entries: pass both or neither")
+        assert (compressed_kv is None) == (top_k_indices is None), (
+            "compressed_kv and top_k_indices describe the same entries: pass both or neither"
+        )
         # The two counts differ under CP: the keys are global and the queries are this rank's.
         batch, _, n_tokens, _ = kv.shape
         n_queries = window_indices.shape[0]
-        if top_k_indices is not None and top_k_indices.shape[1] != n_queries:
-            raise ValueError(f"top_k_indices covers {top_k_indices.shape[1]} query rows and window_indices {n_queries}")
+        assert top_k_indices is None or top_k_indices.shape[1] == n_queries, (
+            f"top_k_indices covers {top_k_indices.shape[1]} query tokens and window_indices {n_queries}"
+        )
 
         positions = kv if compressed_kv is None else torch.cat([kv, compressed_kv], dim=2)
         kv_buf = positions.transpose(1, 2).contiguous()  # (b, S + E, 1, d)
