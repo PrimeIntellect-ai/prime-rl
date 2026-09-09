@@ -17,6 +17,7 @@ dependencies = [
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.6.19",
+    "prime-runs[train]>=0.1.1",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -222,6 +223,8 @@ flash_attn_3 = false
 # appear in `uv tree` need to be listed; the resolver ignores entries for
 # packages it never sees.
 prime = false
+prime-runs = false
+prime-traces = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
