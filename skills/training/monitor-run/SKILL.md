@@ -97,6 +97,8 @@ SLURM batch logs are under `{run_dir}/launcher/logs/*job_*.log`.
 
 Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough. Drop into per-node or per-rank logs only when debugging. All logs are loguru with `HH:mm:ss  LEVEL  message`; levels: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`.
 
+For a trainer stall, check both `stdout.log` and `stderr.log` for every rank under `trainer/torchrun/*/attempt_*/*/`. A nonzero rank can log a fatal error to stdout and block during distributed teardown while rank 0 waits in a collective.
+
 Scan for problems:
 
 ```bash
