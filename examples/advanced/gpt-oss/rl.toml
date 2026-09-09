@@ -1,0 +1,50 @@
+max_steps = 20
+seq_len = 1024
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[model]
+name = "unsloth/gpt-oss-20b-BF16"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer.optim]
+lr = 1e-6
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_4"
+ep = 4
+
+[trainer.model.ac]
+mode = "selective"
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 64
+group_size = 8
+
+[orchestrator.concurrency]
+initial_inflight = 32
+max_inflight = 64
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.renderer]
+name = "default"
+
+[inference.vllm]
+data_parallel_size = 4
+max_model_len = 1024
+gpu_memory_utilization = 0.7
