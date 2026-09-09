@@ -502,6 +502,9 @@ class DeepseekV4Indexer(nn.Module):
     @torch.no_grad()  # Returns non-differentiable integer indices.
     def forward(self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
+        if batch != 1:
+            # The causal thresholds below come from sample 0 only.
+            raise ValueError(f"the indexer needs a packed batch of size 1, got {batch}")
         compressed_kv = self.compressor.compress(hidden_states, packed)
         n_entries = compressed_kv.shape[1]
 
@@ -515,9 +518,7 @@ class DeepseekV4Indexer(nn.Module):
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
         # fp8_indexer has no batch axis
-        top_k_indices = torch.stack(
-            [fp8_indexer(q[b], compressed_kv[b], w[b], entry_start, entry_stop, self.index_topk) for b in range(batch)]
-        )
+        top_k_indices = fp8_indexer(q[0], compressed_kv[0], w[0], entry_start, entry_stop, self.index_topk).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
         in_range = top_k_indices < n_entries
