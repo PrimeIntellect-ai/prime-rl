@@ -1280,6 +1280,28 @@ def setup_model(
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
+    if config.debug.moe_alignment and not (config.debug.dense_alignment and config.debug.dense_alignment_fp32_head):
+        raise ValueError("moe_alignment requires dense_alignment and dense_alignment_fp32_head")
+    if config.debug.dense_alignment_fp32_head and not config.debug.dense_alignment:
+        raise ValueError("dense_alignment_fp32_head requires dense_alignment")
+    if config.debug.dense_alignment:
+        from prime_rl.trainer.models.layers.dense_alignment import enable_trainer_alignment
+
+        if config.compile is not None or config.lora is not None:
+            raise ValueError("Dense alignment requires compile=None and no LoRA")
+        enable_trainer_alignment(
+            model, fp32_head=config.debug.dense_alignment_fp32_head, allow_moe=config.debug.moe_alignment
+        )
+        logger.info("Enabled shared dense Qwen3 forward arithmetic")
+
+    if config.debug.inference_swiglu:
+        from prime_rl.trainer.models.layers.inference_swiglu import enable_inference_swiglu
+
+        if config.compile is not None and config.compile.fullgraph:
+            raise ValueError("inference_swiglu requires compile.fullgraph=false because it preserves eager rounding")
+        count = enable_inference_swiglu(model)
+        logger.info(f"Using inference SwiGLU in {count} dense feed-forward modules")
+
     apply_quantization(model, config)
 
     frozen_vision_encoder = configure_trainable_parameters(model, config)
@@ -1299,6 +1321,13 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    if config.debug.moe_alignment:
+        from prime_rl.trainer.models.layers.moe_alignment import enable_trainer_moe_alignment
+
+        if parallel_dims.ep_enabled or config.moe.compute.type != "bf16" or config.moe_router_dtype != "float32":
+            raise ValueError("moe_alignment requires EP1, BF16 expert compute, and an FP32 router")
+        enable_trainer_moe_alignment(model)
+        logger.info("Enabled shared Qwen3 MoE forward arithmetic")
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

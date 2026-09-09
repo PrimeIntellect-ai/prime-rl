@@ -66,6 +66,15 @@ class OptimizerInBackwardOffloadConfig(BaseConfig):
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
+    release_gradient_pages: bool = False
+    """Release consumed FP32 CPU gradient pages after each native optimizer chunk. Requires Linux anonymous mmap; reduces resident memory when optimizer steps overlap backward."""
+
+    @model_validator(mode="after")
+    def gradient_page_release_requires_native(self):
+        if self.release_gradient_pages and self.cpu_optimizer_backend != "native":
+            raise ValueError("release_gradient_pages requires cpu_optimizer_backend='native'")
+        return self
+
 
 def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
     if value is True:
@@ -133,6 +142,21 @@ class LoRAConfig(BaseConfig):
 
 
 class DebugModelConfig(BaseConfig):
+    moe_alignment: bool = False
+    """Experimental shared Qwen3/GLM4 MoE routing, expert GEMMs, and ordered reduction. Requires dense alignment, FP32 head, and EP1/TP1."""
+
+    dense_alignment: bool = False
+    """Experimental shared eager Qwen3 forward: fixed-K linear, RMSNorm, CPU RoPE tables, vLLM FA4, SwiGLU, and full-vocabulary log-softmax. Requires compile=None and matching inference configuration."""
+
+    dense_alignment_fp32_head: bool = False
+    """Retain FP32 accumulator outputs in the aligned head. Requires dense_alignment and matching serving configuration."""
+
+    inference_swiglu: bool = False
+    """Use vLLM's SwiGLU forward in dense FeedForward modules with an eager two-stage backward. Experimental alignment ablation; introduces graph breaks."""
+
+    mismatch_diagnostics: bool = False
+    """Measure FP32 logprob bit mismatches, absolute errors, non-finite pairs, and stable K3 on sampled training tokens. Requires synchronized weights to isolate numerical train-infer mismatch."""
+
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
 

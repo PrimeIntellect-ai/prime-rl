@@ -1,0 +1,16 @@
+# Compose after qwen30b.toml, dense-alignment.toml, and fp32-head.toml.
+# EP1/TP1 avoids distributed expert and projection reductions in this first arm.
+[trainer.model]
+ep = 1
+
+[trainer.model.debug]
+moe_alignment = true
+
+[inference.env_vars]
+PRIME_MOE_ALIGNMENT = "1"
+
+[inference.vllm]
+tensor_parallel_size = 1
+
+[inference.vllm.kernel_config]
+moe_backend = "triton"

@@ -31,7 +31,12 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
   `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
   CPU optimizer kernel, only supports AdamW and SignSGD (SignSGD is stateless and
   halves the host RAM footprint), and disables gradient clipping. Use a
-  `[model.full_offload]` table only to select the Torch debugging backend or disable NUMA binding.
+  `[model.full_offload]` table to configure the backend, NUMA binding, or gradient page reclamation.
+  With the native backend on Linux, `model.full_offload.release_gradient_pages=true`
+  releases consumed FP32 gradient pages after each optimizer chunk. It reduces
+  resident memory during optimizer/backward overlap; unfinished gradient
+  accumulation still needs its full storage. For large-model capacity estimates,
+  inspect safetensors headers: an index's `metadata.total_size` can be incorrect.
 
 ## `rl` — RL training
 
@@ -56,6 +61,24 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   --package prime-rl --package <env>` (one) — they're auto-discovered, no
   `pyproject.toml` edit needed. Keep `--all-extras` for training so a targeted
   package sync does not prune accelerator dependencies from the environment.
+
+### Validate datasets before submission
+
+A config dry run resolves types but does not load task datasets. Check the actual
+splits and columns before allocating GPUs. `PrimeIntellect/Hendrycks-Math` has a
+`train` split only; pair `math-env` training with a separate evaluation taskset
+such as `math500`. For deterministic symbolic scoring, explicitly set
+`env.taskset.task.judge = "None"` on `math-env`, whose default enables an LLM
+reference-judge fallback. MATH-500 uses symbolic verification directly.
+Also resolve a representative task against the selected runtime with
+`verifiers.v1.utils.compile.resolve_runtime_config` before launching. Dataset
+loading and gold-answer checks do not validate runtime compatibility. Both
+`math-env` and `math500` require a network policy; subprocess cannot enforce it.
+Use a supported isolation runtime and check that its backend exists on the
+orchestrator node. Without one, select a compatible taskset rather than removing
+the task's network restrictions. Inspect episode-level `errors` when an
+orchestrator rapidly reports zero admitted output: failures before agent launch
+can produce episodes with no traces.
 
 ## `sft` — SFT training
 
@@ -146,6 +169,12 @@ Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). 
 | `evals` | Multi-env evals | Standalone evals / SFT online evals |
 
 ## Key paths
+
+For a generated local taskset, ensure its dataset directory is on shared storage
+and visible from the environment-server process. Repository-relative paths assume
+the launcher preserves the repository working directory; use an absolute dataset
+path when the remote working directory differs. The mismatch long-input generator
+is `uv run python tools/make_long_reverse_dataset.py <output_dir>`.
 
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes

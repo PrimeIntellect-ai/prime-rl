@@ -1,0 +1,8 @@
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+[trainer.model]
+ep = 8
+
+[inference.vllm]
+tensor_parallel_size = 8

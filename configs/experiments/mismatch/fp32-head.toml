@@ -1,0 +1,9 @@
+# Compose after dense-alignment.toml.
+[trainer.model.debug]
+dense_alignment_fp32_head = true
+
+[inference]
+enable_fp32_lm_head = true
+
+[inference.env_vars]
+PRIME_DENSE_FP32_HEAD = "1"

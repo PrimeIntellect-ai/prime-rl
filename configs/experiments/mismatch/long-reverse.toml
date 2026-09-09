@@ -1,0 +1,13 @@
+# Frozen numerical stress arm; dataset generation is recorded under outputs/mismatch/long-reverse.
+seq_len = 8192
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "reverse-text-long"
+env.taskset.id = "reverse-text"
+env.taskset.dataset_name = "outputs/mismatch/long-reverse"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+env.agent.max_turns = 1

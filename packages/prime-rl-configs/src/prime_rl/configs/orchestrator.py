@@ -554,6 +554,9 @@ class OrchestratorConfig(BaseConfig):
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
+    filter_zero_advantages: bool = True
+    """Prune zero-advantage RL tokens. Disable for frozen-weight scoring diagnostics that must cover groups without reward variation."""
+
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 

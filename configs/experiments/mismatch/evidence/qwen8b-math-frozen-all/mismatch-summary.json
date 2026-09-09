@@ -1,0 +1,23 @@
+[
+  {
+    "step": 1,
+    "logprob_abs_error/all/max": 0.23698103427886963,
+    "logprob_bit_mismatch/all/mean": 0.5312340259552002,
+    "logprob_nonfinite/all/mean": 0.0,
+    "mismatch_k3_stable/all/mean": 0.00019754661479964852
+  },
+  {
+    "step": 2,
+    "logprob_abs_error/all/max": 0.45858049392700195,
+    "logprob_bit_mismatch/all/mean": 0.5814073085784912,
+    "logprob_nonfinite/all/mean": 0.0,
+    "mismatch_k3_stable/all/mean": 0.0002598293649498373
+  },
+  {
+    "step": 3,
+    "logprob_abs_error/all/max": 0.35155534744262695,
+    "logprob_bit_mismatch/all/mean": 0.5220580101013184,
+    "logprob_nonfinite/all/mean": 0.0,
+    "mismatch_k3_stable/all/mean": 0.0002426500286674127
+  }
+]

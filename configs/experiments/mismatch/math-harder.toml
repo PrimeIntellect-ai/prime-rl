@@ -1,0 +1,18 @@
+# Compose after math.toml to test updates on harder single-turn problems.
+[[orchestrator.train.source]]
+name = "hendrycks-math"
+env.taskset.id = "math-env"
+env.taskset.dataset_split = "train"
+env.taskset.task.judge = "None"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.max_turns = 1
+
+[[orchestrator.eval.source]]
+name = "math500"
+num_examples = 64
+group_size = 1
+env.taskset.id = "math500"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.max_turns = 1

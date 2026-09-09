@@ -1,0 +1,3 @@
+[trainer.model]
+optim_cpu_offload = false
+full_offload = true

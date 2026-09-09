@@ -1,0 +1,254 @@
+{
+  "model": "Qwen/Qwen3-30B-A3B",
+  "endpoint": "http://127.0.0.1:8100",
+  "replays": [
+    {
+      "trace_id": "d0a9eb8e3bfb4045b1c19b435cff1165",
+      "branch": 0,
+      "tokens": 3757,
+      "sampled_tokens": 49,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "15e459f3ff3748029ea703b74e57b556",
+      "branch": 0,
+      "tokens": 1194,
+      "sampled_tokens": 130,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "2faf26c9bb1b437ebbae2b1b58428c82",
+      "branch": 0,
+      "tokens": 3889,
+      "sampled_tokens": 181,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "c39324a490044d29926121a39623a8f0",
+      "branch": 0,
+      "tokens": 1334,
+      "sampled_tokens": 270,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

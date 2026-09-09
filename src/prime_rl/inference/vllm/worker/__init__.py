@@ -20,3 +20,25 @@ else:
 
 # Install fp32 lm_head patch; self-gates on additional_config["fp32_lm_head"] at call time
 monkey_patch_fp32_lm_head()
+
+if os.environ.get("PRIME_DENSE_ALIGNMENT") == "1":
+    from prime_rl.trainer.models.layers.dense_alignment import enable_serving_alignment
+
+    enable_serving_alignment(fp32_head=os.environ.get("PRIME_DENSE_FP32_HEAD") == "1")
+    logger.info("PRIME_DENSE_ALIGNMENT=1: enabled shared dense Qwen3 forward arithmetic")
+
+if os.environ.get("PRIME_MOE_ALIGNMENT") == "1":
+    if os.environ.get("PRIME_DENSE_ALIGNMENT") != "1" or os.environ.get("PRIME_DENSE_FP32_HEAD") != "1":
+        raise ValueError("PRIME_MOE_ALIGNMENT requires shared dense arithmetic and the FP32 head")
+    from prime_rl.trainer.models.layers.moe_alignment import enable_serving_moe_alignment
+
+    enable_serving_moe_alignment()
+    logger.info("PRIME_MOE_ALIGNMENT=1: enabled shared Qwen3 MoE arithmetic")
+
+if os.environ.get("PRIME_GLM_ALIGNMENT") == "1":
+    if os.environ.get("PRIME_DENSE_ALIGNMENT") != "1" or os.environ.get("PRIME_DENSE_FP32_HEAD") != "1":
+        raise ValueError("PRIME_GLM_ALIGNMENT requires shared dense arithmetic and the FP32 head")
+    from prime_rl.trainer.models.layers.moe_alignment import enable_serving_glm_alignment
+
+    enable_serving_glm_alignment()
+    logger.info("PRIME_GLM_ALIGNMENT=1: enabled shared GLM MoE arithmetic")

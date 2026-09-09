@@ -1,0 +1,23 @@
+# Compose after vllm-batch-invariant.toml to keep NCCL settings symmetric.
+[trainer.model]
+compile = "None"
+attn = "flash_attention_4"
+
+[trainer.model.debug]
+dense_alignment = true
+
+[inference]
+enable_fp32_lm_head = false
+
+[inference.env_vars]
+PRIME_DENSE_ALIGNMENT = "1"
+
+[inference.vllm]
+enforce_eager = true
+
+[inference.vllm.compilation_config]
+mode = 0
+
+[inference.vllm.attention_config]
+backend = "FLASH_ATTN"
+flash_attn_version = 4

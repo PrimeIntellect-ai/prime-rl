@@ -1,0 +1,264 @@
+{
+  "gpu": "NVIDIA H200",
+  "torch": "2.13.0+cu130",
+  "results": {
+    "linear/torch_vs_vllm_invariant/rows_1": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.001220703125,
+      "abs_error_max": 0.00048828125,
+      "abs_error_mean": 1.3667158782482147e-07
+    },
+    "linear/vllm_batch_shape/rows_1": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "linear/torch_vs_vllm_invariant/rows_17": {
+      "elements": 69632,
+      "bit_mismatch_fraction": 0.0018095128471031785,
+      "abs_error_max": 0.015625,
+      "abs_error_mean": 2.2447886749432655e-06
+    },
+    "linear/vllm_batch_shape/rows_17": {
+      "elements": 69632,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "linear/torch_vs_vllm_invariant/rows_128": {
+      "elements": 524288,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "linear/vllm_batch_shape/rows_128": {
+      "elements": 524288,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "linear/torch_vs_vllm_invariant/rows_257": {
+      "elements": 1052672,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "linear/vllm_batch_shape/rows_257": {
+      "elements": 1052672,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rmsnorm/eager_vs_vllm_invariant/rows_1": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rmsnorm/compiled_vs_vllm_invariant/rows_1": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rmsnorm/eager_vs_vllm_invariant/rows_17": {
+      "elements": 69632,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rmsnorm/compiled_vs_vllm_invariant/rows_17": {
+      "elements": 69632,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rmsnorm/eager_vs_vllm_invariant/rows_257": {
+      "elements": 1052672,
+      "bit_mismatch_fraction": 5.699781013390748e-06,
+      "abs_error_max": 0.015625,
+      "abs_error_mean": 3.722391284100013e-08
+    },
+    "rmsnorm/compiled_vs_vllm_invariant/rows_257": {
+      "elements": 1052672,
+      "bit_mismatch_fraction": 5.699781013390748e-06,
+      "abs_error_max": 0.015625,
+      "abs_error_mean": 3.722391284100013e-08
+    },
+    "swiglu/eager_vs_vllm_cuda": {
+      "elements": 3158016,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "swiglu/compiled_vs_vllm_cuda": {
+      "elements": 3158016,
+      "bit_mismatch_fraction": 0.27467530965805054,
+      "abs_error_max": 0.0625,
+      "abs_error_mean": 0.00047663639998063445
+    },
+    "swiglu/aligned_vs_vllm_cuda": {
+      "elements": 3158016,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "swiglu/backward/gate": {
+      "elements": 3158016,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "swiglu/backward/up": {
+      "elements": 3158016,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rope/cos_table": {
+      "elements": 524288,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rope/sin_table": {
+      "elements": 524288,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rope/eager/query": {
+      "elements": 33554432,
+      "bit_mismatch_fraction": 0.2622303068637848,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0009443892049603164
+    },
+    "rope/eager/key": {
+      "elements": 8388608,
+      "bit_mismatch_fraction": 0.26220059394836426,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0009455856052227318
+    },
+    "rope/eager/query_after_593": {
+      "elements": 31121408,
+      "bit_mismatch_fraction": 0.2670280635356903,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0009618303156457841
+    },
+    "rope/compiled/query": {
+      "elements": 33554432,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rope/compiled/key": {
+      "elements": 8388608,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "rope/compiled/query_after_593": {
+      "elements": 31121408,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/linear": {
+      "elements": 4352,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/norm": {
+      "elements": 69632,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/logsoftmax": {
+      "elements": 2582912,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/rope_eager/query": {
+      "elements": 33554432,
+      "bit_mismatch_fraction": 0.2621282935142517,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0009438428096473217
+    },
+    "aligned/rope_eager/key": {
+      "elements": 8388608,
+      "bit_mismatch_fraction": 0.2621333599090576,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0009434227831661701
+    },
+    "aligned/rope_serving/query": {
+      "elements": 33554432,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/rope_serving/key": {
+      "elements": 8388608,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_decode/257": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_paged_decode/257": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_decode/1024": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_paged_decode/1024": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_decode/8192": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/prefill_vs_paged_decode/8192": {
+      "elements": 4096,
+      "bit_mismatch_fraction": 0.0,
+      "abs_error_max": 0.0,
+      "abs_error_mean": 0.0
+    },
+    "aligned/attention/backward/q": {
+      "elements": 524288,
+      "bit_mismatch_fraction": 0.4290618896484375,
+      "abs_error_max": 0.015625,
+      "abs_error_mean": 0.00028024689527228475
+    },
+    "aligned/attention/backward/k": {
+      "elements": 131072,
+      "bit_mismatch_fraction": 0.5011749267578125,
+      "abs_error_max": 0.017578125,
+      "abs_error_mean": 0.0006575663574039936
+    },
+    "aligned/attention/backward/v": {
+      "elements": 131072,
+      "bit_mismatch_fraction": 0.49610137939453125,
+      "abs_error_max": 0.03125,
+      "abs_error_mean": 0.0007105816621333361
+    }
+  }
+}

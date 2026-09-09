@@ -29,7 +29,7 @@ class AnnotationWriter:
         self.is_duplicate_rank = parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0
         self._pending: list[dict[str, Any]] = []
 
-    def export(self, micro_batch: Mapping[str, Any], model_output: Mapping[str, Tensor]) -> None:
+    def export(self, micro_batch: Mapping[str, Any], model_output: Mapping[str, Tensor], *, step: int) -> None:
         if self.is_duplicate_rank:
             return
         trace_ids = micro_batch["trace_ids"]
@@ -62,6 +62,7 @@ class AnnotationWriter:
             self._pending.append(
                 make_update(
                     trace_id,
+                    info={"trainer": {"step": step, "policy_version": step - 1}},
                     branches={branch_index: {"trainer_logprobs": logprob_span, "entropies": entropy_span}},
                 )
             )

@@ -1,0 +1,254 @@
+{
+  "model": "Qwen/Qwen3-30B-A3B",
+  "endpoint": "http://prime-nebius-puku-h200-gpu-039:8100",
+  "replays": [
+    {
+      "trace_id": "33990897e96e4208a39857e813329da2",
+      "branch": 0,
+      "tokens": 68,
+      "sampled_tokens": 24,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "401bc34343314db58e95e6b095dca65a",
+      "branch": 0,
+      "tokens": 68,
+      "sampled_tokens": 24,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "f6c58db592f848fe95c398f72003a5b4",
+      "branch": 0,
+      "tokens": 74,
+      "sampled_tokens": 26,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "trace_id": "2d27bfb794db4f76b667667350156af4",
+      "branch": 0,
+      "tokens": 68,
+      "sampled_tokens": 24,
+      "comparisons": {
+        "trainer_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "trainer_vs_prefill": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        },
+        "prefill_vs_decode": {
+          "logprob_abs_error": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_bit_mismatch": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "logprob_nonfinite": {
+            "mean": 0.0,
+            "max": 0.0
+          },
+          "mismatch_k3_stable": {
+            "mean": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+[slurm]
+partition = "all"
+job_name = "mismatch"
+time = "02:00:00"
+cleanup_grace_period = 0

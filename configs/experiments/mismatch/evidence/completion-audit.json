@@ -1,0 +1,530 @@
+{
+  "checked_at": "2026-09-09T18:20:43.749119+00:00",
+  "verified": true,
+  "scope": "Sampled FP32 logprobs in six 20-step learning runs and six 3-step frozen runs; frozen trainer/prefill/decode replay; observed policy versions, update evidence, sampling settings, and completed two-node serial allocations. Not an accuracy or universal numerical guarantee.",
+  "runs": [
+    {
+      "job": 269,
+      "run": "qwen8b-reverse-dense-align-fp32-head",
+      "kind": "frozen",
+      "model": "Qwen/Qwen3-8B",
+      "accounting": {
+        "JobID": "269",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T05:22:40",
+        "End": "2026-09-09T05:28:25"
+      },
+      "sampled_tokens": 12536,
+      "policy_records": 96,
+      "max_sequence_length": 326,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "c981756ccab8802e5304121c11c58e817208ca2ce7fc70e68c918f3e935b12fd",
+      "prefill_replay_tokens": 114,
+      "prefill_sequence_lengths": [
+        73,
+        72,
+        73,
+        72
+      ]
+    },
+    {
+      "job": 271,
+      "run": "qwen8b-reverse-learning-aligned-local",
+      "kind": "learning",
+      "model": "Qwen/Qwen3-8B",
+      "accounting": {
+        "JobID": "271",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T05:38:29",
+        "End": "2026-09-09T05:50:41"
+      },
+      "sampled_tokens": 62444,
+      "policy_records": 640,
+      "max_sequence_length": 326,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "669653bfa3ea21472755f7b7bfcf17a0c1969caf80b87bbe217ed0e52549275e",
+      "nonzero_gradient_steps": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "router_update_probe": {}
+    },
+    {
+      "job": 273,
+      "run": "qwen8b-math-learning-aligned",
+      "kind": "learning",
+      "model": "Qwen/Qwen3-8B",
+      "accounting": {
+        "JobID": "273",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T05:50:41",
+        "End": "2026-09-09T06:13:02"
+      },
+      "sampled_tokens": 152381,
+      "policy_records": 640,
+      "max_sequence_length": 626,
+      "long_position_tokens": 81,
+      "zero_audit_sha256": "e7d0dd5b90fefc0c5d3029fc8ba13b998c86dc728f12ac45902976b90d96eb66",
+      "nonzero_gradient_steps": [
+        2,
+        8,
+        15,
+        20
+      ],
+      "router_update_probe": {}
+    },
+    {
+      "job": 277,
+      "run": "qwen8b-long-reverse-frozen-aligned",
+      "kind": "long",
+      "model": "Qwen/Qwen3-8B",
+      "accounting": {
+        "JobID": "277",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T06:13:02",
+        "End": "2026-09-09T06:20:14"
+      },
+      "sampled_tokens": 45402,
+      "policy_records": 96,
+      "max_sequence_length": 4220,
+      "long_position_tokens": 45402,
+      "zero_audit_sha256": "737f95d54366251973dc015dfecad65ba36ffc3b316faf35f2234f2c2be8e3fd",
+      "prefill_replay_tokens": 751,
+      "prefill_sequence_lengths": [
+        1381,
+        4107
+      ]
+    },
+    {
+      "job": 280,
+      "run": "qwen30b-reverse-frozen-aligned",
+      "kind": "frozen",
+      "model": "Qwen/Qwen3-30B-A3B",
+      "accounting": {
+        "JobID": "280",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T06:20:14",
+        "End": "2026-09-09T06:29:45"
+      },
+      "sampled_tokens": 4637,
+      "policy_records": 96,
+      "max_sequence_length": 134,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "1393b318d2596d526edffdd88326e321a1ecc2b263736f7cd782e3c883b51a4b",
+      "prefill_replay_tokens": 98,
+      "prefill_sequence_lengths": [
+        68,
+        68,
+        74,
+        68
+      ]
+    },
+    {
+      "job": 285,
+      "run": "qwen30b-reverse-learning-fp32-transfer",
+      "kind": "learning",
+      "model": "Qwen/Qwen3-30B-A3B",
+      "accounting": {
+        "JobID": "285",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T06:40:43",
+        "End": "2026-09-09T07:15:46"
+      },
+      "sampled_tokens": 26833,
+      "policy_records": 640,
+      "max_sequence_length": 302,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "557c0bd55d6d7c781e57f7aee3ef9ac5fe199f96796f3560da5b501200972860",
+      "nonzero_gradient_steps": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "router_update_probe": {
+        "available": false,
+        "complete": false,
+        "changed_steps": [],
+        "nonfinite_elements": 0,
+        "scored_updated_policy_steps": [],
+        "updated_policy_required": false,
+        "updated_policy_scored": false
+      }
+    },
+    {
+      "job": 300,
+      "run": "qwen30b-math-uniform-learning",
+      "kind": "learning",
+      "model": "Qwen/Qwen3-30B-A3B",
+      "accounting": {
+        "JobID": "300",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T09:41:20",
+        "End": "2026-09-09T10:43:33"
+      },
+      "sampled_tokens": 119124,
+      "policy_records": 640,
+      "max_sequence_length": 521,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "adc26e16d332f89a895460796cb218f234091c81633567c5954abae5f9c9f099",
+      "nonzero_gradient_steps": [
+        2,
+        15
+      ],
+      "router_update_probe": {
+        "available": true,
+        "complete": true,
+        "changed_steps": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "nonfinite_elements": 0,
+        "scored_updated_policy_steps": [
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "updated_policy_required": true,
+        "updated_policy_scored": true
+      }
+    },
+    {
+      "job": 301,
+      "run": "qwen30b-long-reverse-frozen-aligned",
+      "kind": "long",
+      "model": "Qwen/Qwen3-30B-A3B",
+      "accounting": {
+        "JobID": "301",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T10:43:33",
+        "End": "2026-09-09T10:58:14"
+      },
+      "sampled_tokens": 40947,
+      "policy_records": 96,
+      "max_sequence_length": 4220,
+      "long_position_tokens": 40947,
+      "zero_audit_sha256": "e198450fd9266b2a117d22746b1ec6ad3035b74b30312b887d6a525b323eaa01",
+      "prefill_replay_tokens": 630,
+      "prefill_sequence_lengths": [
+        3757,
+        1194,
+        3889,
+        1334
+      ]
+    },
+    {
+      "job": 313,
+      "run": "glm45air-reverse-frozen-reclaim-unrounded",
+      "kind": "frozen",
+      "model": "zai-org/GLM-4.5-Air",
+      "accounting": {
+        "JobID": "313",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T11:18:06",
+        "End": "2026-09-09T11:41:57"
+      },
+      "sampled_tokens": 4655,
+      "policy_records": 96,
+      "max_sequence_length": 124,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "56bf148e104b9a26227786612549f4648c49ef4196c1a753fb7fc9fb186d3b73",
+      "prefill_replay_tokens": 107,
+      "prefill_sequence_lengths": [
+        66,
+        66,
+        66,
+        61
+      ]
+    },
+    {
+      "job": 321,
+      "run": "glm45air-reverse-learning-idle-headroom",
+      "kind": "learning",
+      "model": "zai-org/GLM-4.5-Air",
+      "accounting": {
+        "JobID": "321",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T12:00:19",
+        "End": "2026-09-09T13:27:49"
+      },
+      "sampled_tokens": 27653,
+      "policy_records": 640,
+      "max_sequence_length": 151,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "b45b87c2b88beb08278c5091b788e4e815fe261056849a51c9eb4a51d693d33b",
+      "nonzero_gradient_steps": [],
+      "router_update_probe": {
+        "available": true,
+        "complete": true,
+        "changed_steps": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "nonfinite_elements": 0,
+        "scored_updated_policy_steps": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "updated_policy_required": true,
+        "updated_policy_scored": true
+      }
+    },
+    {
+      "job": 322,
+      "run": "glm45air-math-uniform-learning-idle-headroom",
+      "kind": "learning",
+      "model": "zai-org/GLM-4.5-Air",
+      "accounting": {
+        "JobID": "322",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T13:27:49",
+        "End": "2026-09-09T17:19:28"
+      },
+      "sampled_tokens": 24261,
+      "policy_records": 160,
+      "max_sequence_length": 416,
+      "long_position_tokens": 0,
+      "zero_audit_sha256": "249e77abc8eb583ed8dd576bf363ac45d6cd18e22233ff1d95e8f58eb74e93ae",
+      "nonzero_gradient_steps": [],
+      "router_update_probe": {
+        "available": true,
+        "complete": true,
+        "changed_steps": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "nonfinite_elements": 0,
+        "scored_updated_policy_steps": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "updated_policy_required": true,
+        "updated_policy_scored": true
+      }
+    },
+    {
+      "job": 323,
+      "run": "glm45air-long-reverse-frozen-idle-headroom",
+      "kind": "long",
+      "model": "zai-org/GLM-4.5-Air",
+      "accounting": {
+        "JobID": "323",
+        "State": "COMPLETED",
+        "ExitCode": "0:0",
+        "NNodes": "2",
+        "Start": "2026-09-09T17:19:28",
+        "End": "2026-09-09T18:19:01"
+      },
+      "sampled_tokens": 12288,
+      "policy_records": 24,
+      "max_sequence_length": 4137,
+      "long_position_tokens": 12288,
+      "zero_audit_sha256": "f8068ba8ef8a368d68e351bed4791faadccff00efdeebf21cef2bd10a497b5e9",
+      "prefill_replay_tokens": 2048,
+      "prefill_sequence_lengths": [
+        1550,
+        1550,
+        1550,
+        1550
+      ]
+    }
+  ],
+  "learning_sampled_tokens": 412696,
+  "all_sampled_tokens": 533161,
+  "learning_training_traces": 3360,
+  "nonzero_baseline": {
+    "run": "qwen8b-math-frozen-all",
+    "policy_audit": {
+      "trained_traces": 96,
+      "per_step": {
+        "1": 32,
+        "2": 32,
+        "3": 32
+      },
+      "missing_trainer_versions": 0,
+      "violations": [],
+      "verified": true
+    },
+    "metrics": [
+      {
+        "step": 1,
+        "logprob_abs_error/all/max": 0.23698103427886963,
+        "logprob_bit_mismatch/all/mean": 0.5312340259552002,
+        "logprob_nonfinite/all/mean": 0.0,
+        "mismatch_k3_stable/all/mean": 0.00019754661479964852
+      },
+      {
+        "step": 2,
+        "logprob_abs_error/all/max": 0.45858049392700195,
+        "logprob_bit_mismatch/all/mean": 0.5814073085784912,
+        "logprob_nonfinite/all/mean": 0.0,
+        "mismatch_k3_stable/all/mean": 0.0002598293649498373
+      },
+      {
+        "step": 3,
+        "logprob_abs_error/all/max": 0.35155534744262695,
+        "logprob_bit_mismatch/all/mean": 0.5220580101013184,
+        "logprob_nonfinite/all/mean": 0.0,
+        "mismatch_k3_stable/all/mean": 0.0002426500286674127
+      }
+    ]
+  }
+}

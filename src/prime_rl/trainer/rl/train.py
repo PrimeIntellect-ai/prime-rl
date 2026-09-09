@@ -13,6 +13,7 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
@@ -37,6 +38,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+from prime_rl.trainer.rl.mismatch import mismatch_diagnostics, parameter_change_counts
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -172,6 +174,13 @@ def train(config: TrainerConfig):
         ),
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
+
+    router_probe = None
+    if config.model.debug.mismatch_diagnostics and config.model.debug.moe_alignment:
+        router_name, router_probe = next(
+            (name, param) for name, param in model.named_parameters() if name.endswith("mlp.router.gate.weight")
+        )
+        logger.info(f"Probing parameter updates on {router_name}")
 
     logger.info(f"Initializing scheduler ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
@@ -313,6 +322,10 @@ def train(config: TrainerConfig):
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
+        router_before = None
+        if router_probe is not None:
+            local_router = router_probe.to_local() if isinstance(router_probe, DTensor) else router_probe
+            router_before = local_router.detach().clone()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize each loss component by its own global (dp_cp) token count, so every rank
@@ -549,6 +562,11 @@ def train(config: TrainerConfig):
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
                 mismatch_kl = mismatch_kl[mismatch_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
+                if config.model.debug.mismatch_diagnostics:
+                    for key, values in mismatch_diagnostics(
+                        out["logprobs"][mismatch_mask], inference_logprobs[mismatch_mask]
+                    ).items():
+                        tensors[f"{key}/all"].append(values)
                 mismatch_env_names = [
                     env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
                 ]
@@ -558,7 +576,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            annotation_writer.export(micro_batch, out)
+            annotation_writer.export(micro_batch, out, step=progress.step)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -595,6 +613,13 @@ def train(config: TrainerConfig):
         # Update the model parameters
         optimizer.step()
         optimizer.zero_grad()
+
+        router_update_counts = None
+        if router_before is not None:
+            local_router = router_probe.to_local() if isinstance(router_probe, DTensor) else router_probe
+            counts = parameter_change_counts(router_before, local_router)
+            dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+            router_update_counts = counts.tolist()
 
         # Update learning rate scheduler
         scheduler.step()
@@ -692,6 +717,9 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if router_update_counts is not None:
+            optim_metrics["optim/router_probe_changed_elements"] = router_update_counts[0]
+            optim_metrics["optim/router_probe_nonfinite_elements"] = router_update_counts[1]
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics

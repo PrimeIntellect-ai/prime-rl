@@ -1,0 +1,50 @@
+diff --git a/prime_kernels/kernels.toml b/prime_kernels/kernels.toml
+index 2c6f5ec..a278159 100644
+--- a/prime_kernels/kernels.toml
++++ b/prime_kernels/kernels.toml
+@@ -32,0 +33,6 @@ arch = ["10.0"]
++[mismatch_router]
++description = "Fixed-tile IEEE FP32 router projection for train-inference alignment"
++python-only = true
++requires = ["triton"]
++arch = ["9.0"]
++
+diff --git a/prime_kernels/mismatch_router/__init__.py b/prime_kernels/mismatch_router/__init__.py
+new file mode 100644
+index 0000000..981c8dc
+--- /dev/null
++++ b/prime_kernels/mismatch_router/__init__.py
+@@ -0,0 +1,33 @@
++"""Fixed-tile IEEE FP32 router projection for numerical alignment experiments."""
++
++import torch
++import triton
++import triton.language as tl
++
++
++@triton.jit
++def _router_mm(X, W, Y, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
++    rows = tl.program_id(0) * 32 + tl.arange(0, 32)
++    columns = tl.program_id(1) * 64 + tl.arange(0, 64)
++    inner = tl.arange(0, 32)
++    accumulator = tl.full((32, 64), 0, tl.float32)
++    for offset in range(tl.cdiv(K, 32)):
++        k = offset * 32 + inner
++        x = tl.load(X + rows[:, None] * K + k[None, :], (rows[:, None] < M) & (k[None, :] < K), 0)
++        w = tl.load(W + columns[None, :] * K + k[:, None], (columns[None, :] < N) & (k[:, None] < K), 0)
++        accumulator = tl.dot(x, w, accumulator, input_precision="ieee")
++    tl.store(Y + rows[:, None] * N + columns[None, :], accumulator, (rows[:, None] < M) & (columns[None, :] < N))
++
++
++def linear(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
++    if x.ndim != 2 or weight.ndim != 2 or x.shape[1] != weight.shape[1]:
++        raise ValueError("Router inputs must be [tokens, hidden] and [experts, hidden]")
++    if x.device != weight.device or not x.is_cuda:
++        raise ValueError("Router inputs must share a CUDA device")
++    x, weight = x.float().contiguous(), weight.float().contiguous()
++    output = torch.empty((x.shape[0], weight.shape[0]), device=x.device, dtype=torch.float32)
++    if x.shape[0]:
++        _router_mm[(triton.cdiv(x.shape[0], 32), triton.cdiv(weight.shape[0], 64))](
++            x, weight, output, x.shape[0], weight.shape[0], x.shape[1], num_warps=4, num_stages=2,
++        )
++    return output

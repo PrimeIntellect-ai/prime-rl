@@ -1,0 +1,2 @@
+[trainer.model.debug]
+inference_swiglu = true

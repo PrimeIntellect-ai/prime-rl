@@ -1,0 +1,11 @@
+{
+  "torch_version": "2.13.0+cu130",
+  "allocator_config": "expandable_segments:False,pinned_max_round_threshold_mb:1",
+  "requested_bytes": 4429185024,
+  "allocated_bytes": 4429185024,
+  "active_bytes": 4429185024,
+  "tensor_bytes": [
+    2952790016,
+    1476395008
+  ]
+}

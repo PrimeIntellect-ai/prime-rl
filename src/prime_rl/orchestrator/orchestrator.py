@@ -69,6 +69,7 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     set_default_executor,
+    train_work,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -521,6 +522,11 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
+                # The watcher may enqueue cancellations before receiving the final
+                # weights. Wait only after those results have been consumed.
+                await self.wait_for_final_broadcast()
+                if not self.dispatcher.is_idle:
+                    continue
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -624,6 +630,14 @@ class Orchestrator:
             return
         self.consecutive_empty_batches = 0
         effective = batch.cohort.effective
+        if config.max_off_policy_steps == 0:
+            for episode in effective:
+                policy = train_work(episode).policy
+                if policy is not None and (policy.start != step - 1 or policy.end != step - 1):
+                    raise RuntimeError(
+                        f"Synchronized batch {step} requires policy v{step - 1}, but episode {episode.id} "
+                        f"spans v{policy.start}..v{policy.end}"
+                    )
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
             get_logger().warning(
@@ -637,7 +651,7 @@ class Orchestrator:
         # satisfiable: the trainer broadcasts every version, and
         # ``wait_for_final_broadcast`` keeps the watcher alive through the last
         # rendezvous after the pipeline drains.
-        required_version = step - 1 - TARGET_LAG
+        required_version = step - 1 - min(TARGET_LAG, config.max_off_policy_steps)
         if self.policy.version < required_version:
             get_logger().info(
                 f"Holding batch {step} until inference applies policy v{required_version} "
@@ -778,8 +792,6 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        if config.max_steps is not None and step >= config.max_steps:
-            await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
         # and with a tight ``max_off_policy_steps`` it never fills at all (the
@@ -1006,12 +1018,13 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        target_lag = min(TARGET_LAG, self.config.max_off_policy_steps)
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > target_lag:
             if was_set:
                 get_logger().info(
-                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
+                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - target_lag} "
                     f"(currently v{self.policy.version})"
                 )
                 self.gate_closed_at = time.perf_counter()

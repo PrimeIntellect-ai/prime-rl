@@ -1,0 +1,15 @@
+{
+  "router_batch_shapes_exact": [
+    1,
+    17,
+    128
+  ],
+  "router_fp64_max_abs_error": 5.276637493167868e-06,
+  "router_gradients_exact": true,
+  "grouped_gradients_exact_including_empty_expert": true,
+  "expert_dispatch_and_reduction_batch_shapes_exact": [
+    1,
+    17,
+    128
+  ]
+}

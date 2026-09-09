@@ -78,6 +78,13 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 
 ### Logs
 
+For checkpoint-cache inspection, use the path printed by the trainer's weight
+load log. A standalone helper's default Hub cache can differ from the cache
+selected by the training entrypoint. Compare original and converted weights
+under the actual load path before concluding that a conversion is missing.
+The same applies to offline dataset helpers: match the run's `HF_HOME` or
+`HF_DATASETS_CACHE` before interpreting an offline cache miss as missing data.
+
 ```
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
@@ -175,7 +182,12 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ```
 
 Everything the file monitor dumps lives under `monitors/file/`; nothing is written
-there when the monitor is off. The traces and everything written about them sit under
+there when the monitor is off. A step can have several metric rows: mismatch
+diagnostics and optimizer statistics may arrive separately. Join the relevant
+keys by step and producer instead of assuming one row contains every metric.
+Some infrastructure rows have `step=null`; select the desired metric keys or
+exclude those rows before comparing numeric step values.
+The traces and everything written about them sit under
 `traces/`. Each stream is a directory of numbered chunks — the writer rolls to a new
 chunk at `monitors.file.chunk_bytes` (5 GiB) and, with `monitors.file.compress` (on),
 seals the full one with zstd in the background; a finished run seals its live chunk
@@ -195,8 +207,17 @@ A trace has several steps, so each is stamped as its own event rather than impli
 where the record sits. The file monitor stamps `info.kind` and `info.dispatch`/
 `info.arrival` (`{step, time}` each) as an episode lands; the ship-time annotation adds
 `info.effective` and `info.ship` — the orchestrator step whose batch shipped the
-cohort, or for eval the step that produced the policy it measured. Staleness is
+cohort, or for eval the step that triggered the evaluation. Staleness is
 `ship.step - dispatch.step`. Only `effective` ties to a step; `all` is the whole stream.
+
+For RL evaluations, inspect `run.work.policy.start` and `.end` before attributing
+an accuracy score to one checkpoint. The dispatcher can schedule training once
+all evaluation requests have been dispatched, while evaluations are still in
+flight. The evaluation success line and `eval/<env>/policy_version` report the
+minimum starting version; they do not establish that every response stayed on
+that version. Group evaluation records by `run.work.step`, check every policy
+span, and report mixed spans explicitly. The strict training mismatch audit
+covers consumed training traces separately.
 
 Everything learned after arrival is an append-only trace update keyed by `trace_id`,
 one file per producer so each has a single writer: the orchestrator records cohort
@@ -215,12 +236,191 @@ The batches consumed by the trainer are shipped over ZMQ by default, so nothing 
 
 ### Common failure modes
 
+For numerical train/inference alignment, enable
+`trainer.model.debug.mismatch_diagnostics` and use synchronized rollouts
+(`orchestrator.max_off_policy_steps = 0`). Read `logprob_bit_mismatch/all/mean`,
+`logprob_abs_error/all/max`, `logprob_nonfinite/all/mean`, and
+`mismatch_k3_stable/all/mean` alongside the standard KL. A rounded zero KL does
+not prove equal logprobs. Require nonempty sampled-token coverage and zero
+bit mismatches/non-finite pairs; set both
+`trainer.monitors.file.float_decimals = "None"` and
+`orchestrator.monitors.file.float_decimals = "None"` for exact trace inspection
+(the shared file-monitor block currently only propagates `path`). See
+`configs/experiments/mismatch/README.md` for
+the frozen-weight and two-node experiment workflow.
+
 A few warnings are normal. Escalate when errors are persistent, growing, or hit a large fraction of rollouts.
 
 - **Env workers**: exceptions in env code, timeouts, sandbox errors, OOM kills (most common source — runs user code).
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
+- **Final broadcast**: if the trainer waits for `.receiver_ready` at the last
+  step, check whether the orchestrator still consumes dispatcher results.
+  Cancellation events use the bounded result queue; waiting for weights inside
+  batch finalization can deadlock that queue. The orchestrator must stop train
+  scheduling, drain results, then wait for the final broadcast when idle and
+  re-check for any final eval work before exiting.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
+- **Batch-invariant serving and NCCL weight broadcast**: vLLM 0.28's
+  `VLLM_BATCH_INVARIANT=1` overrides NCCL protocol, algorithm, channel, and
+  transport settings. Apply those same NCCL settings to the trainer before
+  communicator creation; asymmetric settings can fail the communicator warmup
+  with `Message truncated` and leave the other ranks blocked. See the shared
+  environment table in `configs/experiments/mismatch/vllm-batch-invariant.toml`.
+- **Synchronized mismatch audits**: `max_off_policy_steps=0` checks each live
+  episode's policy span before shipment and rejects a span that differs from
+  `step - 1`. Trainer trace annotations record the training step and incoming
+  policy version. Run `uv run python tools/audit_mismatch_policy.py <run_dir>`
+  after a run; it requires nonempty trainer coverage and joins generation,
+  shipment, and trainer records. Missing trainer version records fail the audit.
+  For an exact-zero arm, `tools/audit_mismatch_zero.py <run_dir>` additionally
+  compares raw FP32 trace bits and requires all configured steps. It reports
+  actual sampled-token and long-position coverage, and fails incomplete runs
+  even if their completed steps have zero mismatch.
+  Prefill replay must run while the matching frozen server is alive. For short
+  queued runs, the experiment helper `outputs/mismatch/watch_prefill.py` accepts
+  positional job ID, run directory, and replay limit. It waits for the first
+  trainer metric, then uses `srun --jobid ... --overlap` inside that allocation;
+  it does not allocate another node. It rejects nonzero learning rates and
+  checks finite, bitwise equality across trainer, prefill, and decode. Watch
+  its log for completion; a terminal job before replay is a failed check.
+  The dispatch gate also uses zero lead in this mode: after shipping a batch,
+  new work waits for its updated policy instead of generating stale samples
+  that the train sink would immediately drop.
+- **Frozen diagnostics with uniform rewards**: default zero-advantage pruning
+  can starve a scoring run on easy tasks. Set
+  `orchestrator.filter_zero_advantages=false` to retain those sampled tokens
+  for measurement; keep `trainer.optim.lr=0`. Record this setting when comparing
+  metrics, since filtering changes the measured population.
+- **Dense operator alignment probes**: run
+  `uv run python tools/probe_mismatch_ops.py <output.json>` on an allocated idle
+  GPU. vLLM 0.28's activation modules require `set_current_vllm_config` even
+  when calling their CUDA forward directly. The optional trainer
+  `model.debug.inference_swiglu` path uses that CUDA operation with an eager
+  backward; full-graph compilation is incompatible with its graph break.
+  The `model.debug.dense_alignment` experiment additionally requires eager
+  trainer execution and the matching `dense-alignment.toml` inference overlay.
+  That overlay disables `inference.enable_fp32_lm_head` so serving uses the
+  shared BF16 projection instead of the default FP32-output projection that
+  bypasses the linear module. Log-softmax still computes in FP32.
+  Verify the attention version in worker logs: vLLM 0.28 downgrades FA4 to FA2
+  when `VLLM_BATCH_INVARIANT=1`, even on Hopper. The dense experiment overrides
+  that selector only on SM90 with Qwen3's 128-dimensional heads and pins one
+  split. Its paged-cache probe must pass; a requested FA4 config alone is not
+  proof that serving executed FA4.
+  Compose `fp32-head.toml` after the dense overlay to preserve FP32 head
+  accumulator outputs in both engines. Validate it with the probe's
+  `--fp32-head-only` option. On vLLM's V2 model runner, patching the older
+  `Sampler.compute_logprobs` alone does not affect selected-token logprobs:
+  `vllm.v1.worker.gpu.sample.logprob.compute_token_logprobs` is a separate
+  reduction, also used by prompt-logprob scoring. Tiny residual errors with
+  rounded-zero KL require checking this path explicitly.
+  Validate its gradients and attention prefill/decode agreement before a full
+  run. The vLLM-vendored FA4 function may return a tuple even without an explicit
+  LSE request; extract its output tensor before numerical comparisons. Include
+  actual long positions in RoPE and attention probes, rather than inferring
+  coverage from the configured context limit.
+- **MoE alignment probes**: the EP1/TP1 Qwen3 experiment uses a shared router,
+  expert GEMMs, and explicit expert-ID-ordered FP32 summation. Validate with
+  `tools/probe_mismatch_moe.py`, including empty-expert gradients and batch
+  shapes. Triton 3.7.1 compiled a borrowed GEMM's `tl.dot` as TF32 even with
+  `default_dot_input_precision='ieee'` in its launch metadata. Check the actual
+  IR and a high-precision reference; the shared router kernel explicitly passes
+  `input_precision='ieee'` to `tl.dot`. Its Python-only source is registered in
+  the prime-kernels checkout and must be available to both trainer and serving.
+  A frozen run can pass while learning fails after the first update if FP32
+  router weights are downcast on the wire. In the aligned MoE path, preserve
+  `mlp.router.gate.weight` through `keep_in_fp32_for_weight_transfer` as well as
+  preserving FP32 router compute. Source-checkpoint precision alone does not
+  describe updated router values. Recheck after real optimizer updates.
+  With both MoE alignment and mismatch diagnostics enabled, the trainer also
+  snapshots one router's local shards before backward and compares them after
+  the optimizer completes. `optim/router_probe_changed_elements` counts changed
+  finite FP32 elements across ranks; `optim/router_probe_nonfinite_elements`
+  must stay zero. The startup log names the sampled parameter. A positive count
+  proves that router changed; zero does not prove every model parameter stayed
+  fixed. This is useful with full CPU offload, where gradient clipping and its
+  gradient-norm metric are disabled. The zero audit reports these update steps
+  separately from logprob equality and requires complete, finite probe records
+  when they are present. For a positive-learning-rate run with probe records,
+  the audit also requires a scored policy after at least one observed update.
+  A frozen run is exempt; a learning run with all-zero gradients must not pass
+  this learning gate just because its unchanged-policy logprobs match.
+  The GLM variant additionally needs sigmoid routing with selection bias,
+  partial RoPE, and shared-expert addition. Validate CPU-offloaded weight views
+  directly when using UVA; successful GPU-resident GEMMs alone do not validate
+  that path. Record actual model fit separately from small operator probes.
+  `tools/probe_mismatch_ops.py <output.json> --moe-layouts` exercises 32-query/4-KV
+  and 96-query/8-KV head layouts, covering Qwen3 MoE and GLM attention. It compares
+  prefill, decode, and paged decode at lengths257,1024,8192 and checks backward
+  against an FP32 reference. Inspect the forward bit-mismatch fields as well as
+  the exit status; backward comparisons use numerical tolerances.
+- **Pinned serving-weight budgets**: vLLM's CPU offload budget counts logical
+  tensor bytes. PyTorch's pinned allocator can reserve more: GLM's2.75GiB and
+  1.375GiB expert tensors allocate6GiB together under power-of-two rounding.
+  On the tested PyTorch2.13 runtime, `pinned_max_round_threshold_mb:1` in
+  `PYTORCH_ALLOC_CONF` makes these allocations exact-size; set the deprecated
+  `PYTORCH_CUDA_ALLOC_CONF` consistently if the launcher exports it too. Use
+  `tools/probe_mismatch_pinned_memory.py <output.json>` before a large offload
+  launch and compare requested versus allocated bytes. Initialize CUDA before
+  reading `torch.cuda.memory.host_memory_stats()`; otherwise it returns an empty
+  dictionary even after a C++ pinned allocation. Monitor host `MemAvailable` and
+  `Shmem`, not only GPU memory or `AnonPages`, while serving weights load.
+  The large GLM experiment launcher also runs `outputs/mismatch/host_memory_guard.py`
+  on each allocated node. It checks available host RAM each second and cancels
+  its own job below the experiment's64GiB reserve. This is a host-exhaustion stop,
+  separate from the priority watchdog and numerical audit; inspect its per-node
+  logs if a run ends unexpectedly. The reserve is for these1.5TiB cluster nodes.
+  Inspect the aggregate SLURM batch log as well as `inference.log`: a single
+  external-LB replica can fail while others keep serving. Resolve its path from
+  the launcher's `#SBATCH --output` directive; generated runs use
+  `launcher/logs/job_<job_id>.log`. A glob over `launcher/*.log` only finds the
+  yield log and misses this aggregate output. GLM learning job314
+  hit CUDA allocation failure on its first decode at the default0.9 GPU-memory
+  utilization, before its separate priority cancellation. The GLM alignment
+  overlay reserves more GPU headroom with0.75 utilization and an8192-token
+  context cap. Job321 completed twenty reverse-text training steps with a passing
+  exact-zero updated-policy audit under these settings. Job322 also completed
+  twenty single-turn GSM8K steps, and job323 completed three frozen long-input
+  steps with exact sampled logprobs through sequence length4,137 and a passing
+  live trainer/prefill/decode replay. These measurements validate the tested
+  batches; validate longer or differently packed workloads separately.
+- **Priority-yield watchdogs**: when a run is configured to yield to eligible
+  pending jobs, inspect dependencies as well as pending reasons. After a SLURM
+  dependency update, an unsatisfied job can briefly show reason `None` or `Resources` before
+  `Dependency`. `squeue --format='%i|%r|%E'` exposes the unfulfilled dependency
+  during that transition. It is not yet eligible demand for GPU resources.
+  If the researcher permits using idle GPUs, inspect pending jobs' explicit
+  excluded nodes (`%x`) against this allocation (`SLURM_JOB_NODELIST`). A job
+  excluding every node in the allocation cannot consume these GPUs. Recheck
+  exclusions each poll because scheduling constraints can change. If node
+  expansion fails, keep the conservative yield behavior. Do not ignore a job
+  merely because its current reason is `BadConstraints`.
+- **Missing cached compiler artifacts**: a vLLM startup traceback for a missing
+  `.cubin` or `.ttir` under a shared `torch_compile_cache` can come from stale
+  cache metadata. Retry with fresh `VLLM_CACHE_ROOT`, `TORCHINDUCTOR_CACHE_DIR`,
+  and `TRITON_CACHE_DIR` directories under node-local `/tmp`, unique per job and
+  external-LB serving port. Set them in each inference process's launch
+  environment; do not clear another run's shared cache. Preserve compilation
+  settings when comparing numerical baselines.
+  Apply the same isolation to trainer ranks that invoke Triton kernels. A
+  private inference cache does not isolate the trainer's default
+  `~/.triton/cache`. Set each trainer's cache paths before importing torch/model
+  code, using its job ID and `LOCAL_RANK`; an experiment wrapper passed as the
+  torchrun script can do this after torchrun assigns the rank.
+  Avoid periodic `faulthandler.dump_traceback_later` in the borrowed Python 3.12
+  runtime: an experiment's ranks received SIGSEGV while the timed dump was
+  printing Torch/checkpoint frames. Keep cache isolation separate from stack
+  instrumentation, and use normal logs and process state for routine monitoring.
+- **Subprocess harnesses stuck before inference**: if rollouts are in flight but
+  vLLM has generated no tokens, inspect subprocess CPU use and wait channels
+  without printing argv (harness argv contains temporary API secrets). Many
+  Python processes in `open_last_lookups`/`do_renameat2` can indicate shared
+  filesystem import/bytecode contention. A node-local `UV_CACHE_DIR` puts PEP
+  723 harness environments on local storage; set `PYTHONDONTWRITEBYTECODE=1`
+  and cap `orchestrator.concurrency` during the smoke. Export the cache location
+  on each node before env servers start; keep the installed project runtime
+  separate and unchanged. Verify that rollouts actually complete after retrying.
 
 ### Process tree
 
