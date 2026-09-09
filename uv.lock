@@ -4954,8 +4954,8 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 
 [[package]]
 name = "prime-kernels"
-version = "0.1.0+cu130torch2.13.0.nvfp4.g564904f"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-564904f/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g564904f-cp312-cp312-linux_aarch64.whl" }
+version = "0.1.0+cu130torch2.13.0.nvfp4.gd9a5ceb"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4963,7 +4963,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-564904f/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g564904f-cp312-cp312-linux_aarch64.whl", hash = "sha256:7bb6d4db14cb599de97514c78b74aa72de53d77ebd801232f3e1b461429cee10" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl", hash = "sha256:dc73e91ce1ae0dd0174618cb89c4a603b11232dce02a4978d81ac7e979bcb350" },
 ]
 
 [package.metadata]
@@ -5116,7 +5116,7 @@ gpu = [
 ]
 kernels = [
     { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0.nvfp4.g564904f", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-564904f/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g564904f-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0.nvfp4.gd9a5ceb", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5170,7 +5170,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "prime", specifier = ">=0.6.19" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-564904f/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g564904f-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
     { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
