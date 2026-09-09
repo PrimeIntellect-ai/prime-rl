@@ -221,6 +221,15 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
+    if config.vllm.enable_return_routed_expert_weights:
+        from vllm.engine.arg_utils import EngineArgs
+
+        if not hasattr(EngineArgs, "enable_return_routed_expert_weights"):
+            raise RuntimeError(
+                "Total Router Recall requires the TRR-patched vLLM build; "
+                "stock vLLM does not export routing coefficients."
+            )
+
     namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")

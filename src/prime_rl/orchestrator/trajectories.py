@@ -19,6 +19,7 @@ from collections.abc import Iterator
 
 import numpy as np
 import verifiers.v1 as vf
+from verifiers.v1.routing import RoutingData
 
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.transports.batch.types import EncodedTensor, RoutedExperts, SamplingMask
@@ -49,7 +50,7 @@ def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTenso
     return encoded or None
 
 
-def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExperts | None:
+def _encode_routed_experts(arr: np.ndarray | RoutingData | None, num_tokens: int) -> RoutedExperts | None:
     """The branch's router-replay array (`[tokens, layers, top_k]`) -> the transport
     `RoutedExperts` the trainer replays. Defensively realigns the token axis to `num_tokens`
     (the trainer asserts `routed_experts.shape[0] == len(token_ids)`): truncate if longer,
@@ -57,6 +58,19 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     is a backstop."""
     if arr is None:
         return None
+    if isinstance(arr, RoutingData):
+        if len(arr) != num_tokens:
+            raise ValueError("Full routing must align exactly with branch input tokens")
+        # The verifier owns terminal-row validity; never manufacture missing
+        # real coefficients with the legacy truncate/zero-pad fallback below.
+        return RoutedExperts(
+            data=arr.ids.tobytes(),
+            shape=list(arr.ids.shape),
+            dtype=str(arr.ids.dtype),
+            weights=arr.weights.tobytes(),
+            valid=arr.valid.tobytes(),
+            format_version=1,
+        )
     arr = np.ascontiguousarray(arr)
     if arr.shape[0] > num_tokens:
         arr = arr[:num_tokens]

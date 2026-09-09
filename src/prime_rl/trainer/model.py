@@ -54,6 +54,7 @@ from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.routing_replay import RoutingReplay, validate_routing_replay
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
@@ -508,8 +509,44 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
+def validate_full_router_replay_model(
+    model: nn.Module, *, cp_size: int = 1, ep_size: int = 1, has_vlm: bool = False
+) -> None:
+    """Fail closed for the MVP's frozen, normalized custom Qwen3-MoE objective."""
+    from prime_rl.trainer.models.qwen3_moe import Qwen3MoeForCausalLM
+
+    if cp_size != 1 or ep_size != 1 or has_vlm:
+        raise ValueError("Full routing replay does not support CP>1, EP>1, or VLM training")
+    if not isinstance(model, Qwen3MoeForCausalLM):
+        raise ValueError("Full routing replay only supports the custom Qwen3-MoE model")
+    if not model.config.norm_topk_prob:
+        raise ValueError("Full routing replay requires Qwen3 normalized top-k coefficients")
+    layers = model.model.layers
+    if not layers or len(layers) != model.config.num_hidden_layers:
+        raise ValueError("Full routing replay requires the complete Qwen3 MoE layer layout")
+    for layer in layers:
+        moe = layer.mlp
+        if not isinstance(moe, MoE):
+            raise ValueError("Full routing replay requires an MoE block in every Qwen3 layer")
+        router = moe.router
+        if (
+            not isinstance(router, TokenChoiceTopKRouter)
+            or router.score_func != "softmax"
+            or not router.route_norm
+            or router.route_scale != 1.0
+            or moe.score_before_experts
+        ):
+            raise ValueError("Full routing replay requires Qwen3 normalized top-k weights with route scale 1")
+        if any(parameter.requires_grad for parameter in router.parameters()):
+            raise ValueError("Full routing replay requires frozen MoE router parameters")
+
+
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+    model: nn.Module,
+    reset_stats: bool = True,
+    try_to_avoid_padding_experts: bool = True,
+    *,
+    include_routing_confidence: bool = True,
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     per_layer_routing_confidence = []
@@ -527,8 +564,9 @@ def get_load_balance_stats(
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.detach())
 
-        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
-        per_layer_routing_confidence.append(routing_confidence.detach())
+        if include_routing_confidence:
+            routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+            per_layer_routing_confidence.append(routing_confidence.detach())
 
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
@@ -537,7 +575,7 @@ def get_load_balance_stats(
         return {"max_vio": None, "routing_confidence": None}
     return {
         "max_vio": torch.stack(per_layer_max_vio),
-        "routing_confidence": torch.stack(per_layer_routing_confidence),
+        "routing_confidence": torch.stack(per_layer_routing_confidence) if per_layer_routing_confidence else None,
     }
 
 
@@ -775,8 +813,18 @@ def setup_processor(config: ModelConfig):
     return processor
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
+def setup_fsdp(
+    model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims, *, preserve_routing_weights: bool = False
+):
+    # FSDP recursively casts floating forward inputs, including tensors inside a
+    # NamedTuple. Full replay must keep its recorded coefficients in FP32 at the
+    # root and every nested FSDP boundary. Qwen hidden states already have the
+    # parameter compute dtype; no blanket input cast is needed for this mode.
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=DTYPE_MAP[config.reduce_dtype],
+        cast_forward_inputs=not preserve_routing_weights,
+    )
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
     shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
@@ -823,7 +871,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             fully_shard(
                 block_mlp.router,
                 mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+                mp_policy=MixedPrecisionPolicy(
+                    param_dtype=torch.float32,
+                    reduce_dtype=torch.float32,
+                    cast_forward_inputs=not preserve_routing_weights,
+                ),
                 offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
@@ -1240,6 +1292,8 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    *,
+    full_router_replay: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1317,7 +1371,7 @@ def setup_model(
     if config.compile is not None:
         apply_compile(model, config.compile)
 
-    setup_fsdp(model, config, parallel_dims)
+    setup_fsdp(model, config, parallel_dims, preserve_routing_weights=full_router_replay)
 
     if not possible_to_load_to_meta:
         _move_buffers_to_cuda(model, config)
@@ -1357,7 +1411,7 @@ def forward(
     seq_lens: Int[Tensor, "segments"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
-    routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    routed_experts: Int[Tensor, "batch seq layers topk"] | RoutingReplay | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
@@ -1397,6 +1451,15 @@ def forward(
         kwargs["seq_lens"] = seq_lens
         kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
 
+    if isinstance(routed_experts, RoutingReplay):
+        validate_full_router_replay_model(
+            model, cp_size=2 if seq_lens_are_pre_shard else 1, has_vlm=bool(mm_kwargs) or mm_token_type_ids is not None
+        )
+        validate_routing_replay(
+            routed_experts,
+            expected_shape=(*input_ids.shape, model.config.num_hidden_layers, model.config.num_experts_per_tok),
+            device=input_ids.device,
+        )
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
 

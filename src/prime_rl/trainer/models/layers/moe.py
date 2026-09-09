@@ -17,6 +17,7 @@ from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
+from prime_rl.trainer.routing_replay import RoutingReplay, replay_routing, validate_routing_replay
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
 
@@ -229,12 +230,14 @@ class TokenChoiceTopKRouter(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        routed_experts: torch.Tensor | None = None,
+        routed_experts: torch.Tensor | RoutingReplay | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
-            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
+            routed_experts (torch.Tensor | RoutingReplay | None, optional): Expert IDs, or paired IDs and
+                final FP32 coefficients, with shape ``(bs * slen, top_k)``. A pair skips all gate computation
+                and treats coefficients as constants. The loader must validate finite values and ID ranges.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -243,10 +246,17 @@ class TokenChoiceTopKRouter(nn.Module):
                 - selected_experts_indices (torch.Tensor):
                     Expert indices selected for each token with shape ``(bs*slen, top_k)``.
                 - num_tokens_per_expert (torch.Tensor):
-                    Number of tokens assigned to each expert with shape ``(num_experts,)``.
+                    Number of dispatch assignments to each expert with shape ``(num_experts,)``.
+                    This includes zero-weight slots; RoutingReplay carries no captured-row validity mask.
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
+                    NaN in direct replay: the trainer gate is not evaluated, so its confidence is unavailable.
         """
+        if isinstance(routed_experts, RoutingReplay):
+            return replay_routing(
+                routed_experts, num_tokens=x.shape[0], top_k=self.top_k, num_experts=self.num_experts, device=x.device
+            )
+
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
@@ -405,12 +415,13 @@ class MoE(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        routed_experts: torch.Tensor | None = None,
+        routed_experts: torch.Tensor | RoutingReplay | None = None,
     ) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
-            routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
+            routed_experts (torch.Tensor | RoutingReplay | None, optional): Expert IDs or paired IDs and
+                final FP32 coefficients with shape ``(bs, slen, top_k)``.
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -418,7 +429,15 @@ class MoE(nn.Module):
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
 
-        if routed_experts is not None:
+        if isinstance(routed_experts, RoutingReplay):
+            validate_routing_replay(routed_experts, expected_shape=(bs, slen, self.router.top_k), device=x.device)
+            # Layer slices are non-contiguous. Flatten both streams in the same
+            # token order; checkpoint recomputation receives the same pair.
+            routed_experts = RoutingReplay(
+                routed_experts.ids.reshape(-1, self.router.top_k),
+                routed_experts.weights.reshape(-1, self.router.top_k),
+            )
+        elif routed_experts is not None:
             _, _, top_k = routed_experts.shape
             routed_experts = routed_experts.reshape(
                 -1, top_k
@@ -431,7 +450,17 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
-        ) = self.router(x, routed_experts=routed_experts)
+        ) = (
+            replay_routing(
+                routed_experts,
+                num_tokens=x.shape[0],
+                top_k=self.router.top_k,
+                num_experts=self.router.num_experts,
+                device=x.device,
+            )
+            if isinstance(routed_experts, RoutingReplay)
+            else self.router(x, routed_experts=routed_experts)
+        )
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():

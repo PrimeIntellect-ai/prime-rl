@@ -14,7 +14,11 @@ def setup_vllm_env(config: InferenceConfig):
     # for sampling-mask capture, but router replay remains on V1 because vLLM
     # rejects routed-expert capture with KV connectors and prime-rl's stitching
     # patch is V1-only. setdefault keeps an explicit env-var choice authoritative.
-    if config.enable_return_sampling_mask:
+    if config.vllm.enable_return_routed_expert_weights:
+        if os.environ.get("VLLM_USE_V2_MODEL_RUNNER", "1") != "1":
+            raise ValueError("Total Router Recall requires the patched vLLM V2 model runner")
+        os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+    elif config.enable_return_sampling_mask:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
     elif config.vllm.enable_return_routed_experts:
         use_v2_runner = config.deployment.type != "disaggregated"

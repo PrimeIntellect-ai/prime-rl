@@ -136,6 +136,11 @@ class VllmConfig(BaseConfig):
     enable_return_routed_experts: bool = False
     """Return routed experts in responses."""
 
+    enable_return_routed_expert_weights: bool = False
+    """Return FP32 coefficients paired with routed expert IDs. Requires the TRR-patched
+    vLLM V2 runner and enable_return_routed_experts=true; unsupported by stock vLLM 0.28.
+    """
+
     @model_validator(mode="before")
     @classmethod
     def parse_extra_values(cls, data: dict) -> dict:
@@ -484,6 +489,17 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_router_weight_capture(self):
+        if self.vllm.enable_return_routed_expert_weights:
+            if not self.vllm.enable_return_routed_experts:
+                raise ValueError("Routing-weight capture requires enable_return_routed_experts=true")
+            if self.deployment.type == "disaggregated" or self.use_pd_kv_transfer:
+                raise ValueError("Routing-weight capture does not support disaggregated P/D")
+            if self.kv_cache_offload is not None:
+                raise ValueError("Routing-weight capture does not support external KV cache offload")
         return self
 
     @model_validator(mode="after")

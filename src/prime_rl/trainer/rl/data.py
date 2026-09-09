@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, Literal, TypedDict
 
 import numpy as np
 import torch
@@ -7,6 +7,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.trainer.routing_replay import RoutingReplay, validate_routing_replay
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -14,6 +15,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.routing import validate_routed_experts
 
 
 class TensorMicroBatch(TypedDict):
@@ -40,7 +42,7 @@ class TensorMicroBatch(TypedDict):
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
-    routed_experts: Int[Tensor, "batch seq layers topk"] | None
+    routed_experts: Int[Tensor, "batch seq layers topk"] | RoutingReplay | None
 
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
@@ -213,15 +215,18 @@ class DataLoader:
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
-            routed_experts = (
-                torch.frombuffer(
-                    packed_routed_experts.data,
-                    dtype=_torch_dtype(packed_routed_experts.dtype),
-                )
-                .reshape(packed_routed_experts.shape)
-                .to(torch.int32)
-                .unsqueeze(0)
-            )
+            ids, weights, valid = validate_routed_experts(packed_routed_experts)
+            if ids.shape[0] != len(micro_batch.input_ids):
+                raise ValueError("Routing rows must match the packed microbatch token count")
+            # Own the storage: bytes/NumPy views can be read-only or reused by a
+            # receiver while a previous microbatch awaits checkpoint backward.
+            id_tensor = torch.from_numpy(ids.astype(np.int32, copy=True)).unsqueeze(0)
+            if weights is not None:
+                _validate_packed_routing_validity(micro_batch, ids, weights, valid)
+                weight_tensor = torch.from_numpy(weights.astype(np.float32, copy=True)).unsqueeze(0)
+                routed_experts = RoutingReplay(id_tensor, weight_tensor)
+            else:
+                routed_experts = id_tensor
         sampling_mask = None
         packed_sampling_mask = micro_batch.sampling_mask
         if packed_sampling_mask is not None:
@@ -265,6 +270,106 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
+
+
+def _validate_packed_routing_validity(
+    micro_batch: MicroBatch, ids: np.ndarray, weights: np.ndarray, valid: np.ndarray | None
+) -> None:
+    """Every input before a participating target needs captured routing.
+
+    A target token's loss uses its preceding input row. Thus the final target
+    row itself may be uncaptured, and zero-loss tails/padding need no routes.
+    Raw-sample ingress separately restricts missing captures to terminal rows;
+    this packed check protects the actual causal inputs of the training loss.
+    """
+    num_tokens = len(micro_batch.input_ids)
+    if valid is None or valid.shape != (num_tokens,):
+        raise ValueError("Full routing replay requires one validity flag per packed token")
+    if micro_batch.mm_kwargs or micro_batch.mm_token_type_ids is not None:
+        raise ValueError("Full routing replay does not support multimodal microbatches")
+    lengths = micro_batch.seq_lens
+    if (
+        not lengths
+        or any(length <= 0 for length in lengths)
+        or sum(lengths) != num_tokens
+        or lengths != micro_batch.sequence_lengths
+    ):
+        raise ValueError("Full routing replay requires aligned positive sequence_lengths and seq_lens")
+    for name in ("loss_mask", "rl_weights", "ce_weights", "ref_kl_weights"):
+        values = getattr(micro_batch, name)
+        if values is not None and len(values) != num_tokens:
+            raise ValueError(f"Full routing replay requires token-aligned {name}")
+    # The byte codec has already checked finite values and zero placeholders.
+    # Match the loss's actual RL membership; a zero-weight RL token is inactive.
+    participating = np.asarray(micro_batch.loss_mask, dtype=bool).copy()
+    if micro_batch.rl_weights is not None:
+        participating &= np.asarray(micro_batch.rl_weights) != 0
+    for stream in (micro_batch.ce_weights, micro_batch.ref_kl_weights):
+        if stream is not None:
+            participating |= np.asarray(stream) != 0
+    start = 0
+    for length in lengths:
+        end = start + length
+        targets = np.flatnonzero(participating[start:end])
+        if len(targets):
+            if targets[0] == 0:
+                raise ValueError("Full routing replay requires loss-masked sequence starts")
+            if not np.all(valid[start : start + int(targets[-1])]):
+                raise ValueError("Full routing replay is missing a causal input row before a participating target")
+        start = end
+
+    # Full v1 is normalized Qwen3 top-k, not arbitrary mixture coefficients.
+    # Check once at trainer ingress, while capture validity is still available.
+    # Do not renormalize/reorder the actual payload or inspect GPU values later.
+    if valid.any():
+        if not np.allclose(weights.sum(axis=-1)[valid], 1.0, rtol=1e-5, atol=1e-6):
+            raise ValueError("Captured full-replay rows must have normalized top-k coefficients")
+        ordered = np.sort(ids, axis=-1)
+        # K is small; check one slot pair at a time to bound temporary memory.
+        if any(
+            np.any((ordered[..., slot - 1] == ordered[..., slot]) & valid[:, None]) for slot in range(1, ids.shape[-1])
+        ):
+            raise ValueError("Captured full-replay rows must contain unique expert IDs")
+
+
+def prepare_router_replay(
+    micro_batch: TensorMicroBatch,
+    *,
+    enabled: bool,
+    mode: Literal["ids", "ids_and_weights"],
+    model_config: Any,
+) -> Tensor | RoutingReplay | None:
+    """Choose the objective and validate full routing bounds before any H2D copy."""
+    if mode not in ("ids", "ids_and_weights"):
+        raise ValueError(f"Unknown router replay mode: {mode}")
+    if mode == "ids_and_weights" and not enabled:
+        raise ValueError("ids_and_weights requires enable_router_replay=true")
+    if not enabled:
+        return None
+    replay = micro_batch["routed_experts"]
+    if replay is None:
+        raise ValueError("Router replay requires routed experts from inference (enable_return_routed_experts=True)")
+    if mode == "ids":
+        # Explicit IDs mode keeps the legacy recomputed-coefficient objective,
+        # even when the inference server supplied both streams.
+        return replay.ids if isinstance(replay, RoutingReplay) else replay
+    if not isinstance(replay, RoutingReplay):
+        raise ValueError("ids_and_weights requires captured routing weights; IDs-only data is insufficient")
+    if micro_batch.get("mm_kwargs") or micro_batch.get("mm_token_type_ids") is not None:
+        raise ValueError("Full routing replay does not support multimodal microbatches")
+    if getattr(model_config, "model_type", None) != "qwen3_moe":
+        raise ValueError("Full routing replay only supports custom Qwen3-MoE")
+    expected_shape = (
+        *micro_batch["input_ids"].shape,
+        model_config.num_hidden_layers,
+        model_config.num_experts_per_tok,
+    )
+    validate_routing_replay(replay, expected_shape=expected_shape, device=torch.device("cpu"))
+    if not torch.isfinite(replay.weights).all():
+        raise ValueError("Full routing replay weights must be finite")
+    if replay.ids.numel() and (replay.ids.min() < 0 or replay.ids.max() >= model_config.num_experts):
+        raise ValueError("Full routing replay expert IDs are outside the model's expert range")
+    return replay
 
 
 def _torch_dtype(name: str) -> torch.dtype:
