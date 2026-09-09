@@ -185,7 +185,7 @@ wheels = [
 [[package]]
 name = "ai-dynamo"
 version = "1.5.0"
-source = { git = "https://github.com/ai-dynamo/dynamo.git?rev=3643d5b9b679f175862060a63cea2a42dc8c5599#3643d5b9b679f175862060a63cea2a42dc8c5599" }
+source = { git = "https://github.com/biswapanda/dynamo.git?rev=3545796#3545796c78201684bdc39a7862bf00fab116cc6b" }
 dependencies = [
     { name = "ai-dynamo-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -203,7 +203,7 @@ dependencies = [
 [[package]]
 name = "ai-dynamo-runtime"
 version = "1.5.0"
-source = { git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=3643d5b9b679f175862060a63cea2a42dc8c5599#3643d5b9b679f175862060a63cea2a42dc8c5599" }
+source = { git = "https://github.com/biswapanda/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=3545796#3545796c78201684bdc39a7862bf00fab116cc6b" }
 dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5535,8 +5535,8 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?rev=3643d5b9b679f175862060a63cea2a42dc8c5599" },
-    { name = "ai-dynamo-runtime", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/ai-dynamo/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=3643d5b9b679f175862060a63cea2a42dc8c5599" },
+    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/biswapanda/dynamo.git?rev=3545796" },
+    { name = "ai-dynamo-runtime", marker = "sys_platform == 'linux' and extra == 'dynamo'", git = "https://github.com/biswapanda/dynamo.git?subdirectory=lib%2Fbindings%2Fpython&rev=3545796" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
