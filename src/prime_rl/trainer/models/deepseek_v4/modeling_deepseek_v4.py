@@ -125,9 +125,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
             frozenset({"ring"}),
-            "its attention all-gathers its own keys rather than going through the shared "
-            "FlashAttention._compute_attention that both the ring and the ulysses substitutions "
-            "rebind, so the style knob changes nothing here and only the tested style is offered",
+            "currently only supporting the minimal ring strategy where all keys, or tensors"
+            "required to form the keys are all-gathered in the CP region.",
         )
 
     def _init_weights(self, module: nn.Module) -> None:
