@@ -2,8 +2,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from prime_rl.trainer.distributed.comet_moe.autograd import CometMoELayerFunction, init_comet_moe_grad_buffers
-from prime_rl.trainer.distributed.comet_moe.buffers import init_comet_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.autograd import (
+    OverlappedMoELayerFunction,
+    init_overlapped_moe_grad_buffers,
+)
+from prime_rl.trainer.distributed.overlapped_moe.buffers import init_overlapped_moe_buffers
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 
 
@@ -55,7 +58,7 @@ def main():
 
     max_capacity = 4 * num_local_tokens * top_k + num_experts * block_m
     max_capacity = ((max_capacity + block_m - 1) // block_m) * block_m
-    bufs = init_comet_moe_buffers(
+    bufs = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -64,7 +67,7 @@ def main():
         dtype=torch.bfloat16,
         device=device,
     )
-    grad_recv, grad_combine = init_comet_moe_grad_buffers(
+    grad_recv, grad_combine = init_overlapped_moe_grad_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -96,7 +99,7 @@ def main():
     gate_proj_cm = gate_proj_data.clone().requires_grad_(True)
     up_proj_cm = up_proj_data.clone().requires_grad_(True)
     down_proj_cm = down_proj_data.clone().requires_grad_(True)
-    cm_out = CometMoELayerFunction.apply(
+    cm_out = OverlappedMoELayerFunction.apply(
         x_cm,
         top_scores_cm,
         selected,
@@ -141,13 +144,13 @@ def main():
         out = ref_dispatcher.run(x_r, s_r, selected, reference_experts, score_before_experts=False)
         (out * grad_seed).sum().backward()
 
-    def comet_step():
+    def overlapped_step():
         x_c = x_data.clone().requires_grad_(True)
         s_c = top_scores_data.clone().float().requires_grad_(True)
         gp_c = gate_proj_data.clone().requires_grad_(True)
         up_c = up_proj_data.clone().requires_grad_(True)
         dp_c = down_proj_data.clone().requires_grad_(True)
-        out = CometMoELayerFunction.apply(
+        out = OverlappedMoELayerFunction.apply(
             x_c,
             s_c,
             selected,
@@ -167,12 +170,12 @@ def main():
         (out * grad_seed).sum().backward()
 
     ref_ms = time_cuda(ref_step)
-    comet_ms = time_cuda(comet_step)
+    overlapped_ms = time_cuda(overlapped_step)
 
     if rank == 0:
         print(f"reference (TorchTokenDispatcher, fwd+bwd):  {ref_ms:.4f} ms/iter")
-        print(f"comet_moe (CometMoELayerFunction, fwd+bwd): {comet_ms:.4f} ms/iter")
-        print(f"speedup: {ref_ms / comet_ms:.2f}x")
+        print(f"overlapped_moe (OverlappedMoELayerFunction, fwd+bwd): {overlapped_ms:.4f} ms/iter")
+        print(f"speedup: {ref_ms / overlapped_ms:.2f}x")
 
     dist.barrier()
     dist.destroy_process_group()

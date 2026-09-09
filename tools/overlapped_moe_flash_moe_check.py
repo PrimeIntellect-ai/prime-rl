@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from prime_rl.trainer.distributed.comet_moe.flash_moe_compute import (
+from prime_rl.trainer.distributed.overlapped_moe.flash_moe_compute import (
     init_flash_moe_scratch,
     run_flash_moe_expert_compute,
 )

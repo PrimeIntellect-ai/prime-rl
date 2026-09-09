@@ -219,27 +219,27 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
-class CometMoEDispatchConfig(BaseConfig):
-    type: Literal["comet"] = "comet"
+class OverlappedMoEDispatchConfig(BaseConfig):
+    type: Literal["overlapped_moe"] = "overlapped_moe"
     block_m: int = Field(128, ge=1)
-    """Row-tile size for comet_moe's dispatch/combine alignment and its expert FFN's grouped GEMM
+    """Row-tile size for overlapped_moe's dispatch/combine alignment and its expert FFN's grouped GEMM
     boundaries. 128 was the value validated against a real training-step profile
     (`prime-rl-bench`'s `SYNC_PROFILE_2026-08-17.md`, num_experts=128, top_k=8, ep=8)."""
 
     n_blocks: int = Field(132, ge=1)
-    """CUDA grid size for the `comet_scatter` kernels -- roughly the SM count is a reasonable
+    """CUDA grid size for the `fine_grained_compute_comm_overlap` kernels -- roughly the SM count is a reasonable
     starting point (132 matches a B200's SM count)."""
 
     capacity_multiplier: int = Field(4, ge=1)
     """Buffers are sized once, from the *first* call's local token count, as
     `capacity_multiplier * num_local_tokens * top_k + num_experts * block_m` and reused after --
-    a later call needing more raises `RuntimeError` rather than silently truncating (comet_moe's
+    a later call needing more raises `RuntimeError` rather than silently truncating (overlapped_moe's
     documented buffer-sizing contract), so size this for the worst per-rank routing imbalance you
     expect, not just the average case."""
 
 
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | CometMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | OverlappedMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 

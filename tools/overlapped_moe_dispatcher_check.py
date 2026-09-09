@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.comet_moe.token_dispatcher import CometMoETokenDispatcher
+from prime_rl.trainer.distributed.overlapped_moe.token_dispatcher import OverlappedMoETokenDispatcher
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
@@ -39,7 +39,9 @@ def main():
         p.requires_grad_(True)
 
     ref_dispatcher = TorchTokenDispatcher(num_experts=num_experts, top_k=top_k, token_group_alignment=1, group=group)
-    cm_dispatcher = CometMoETokenDispatcher(num_experts=num_experts, top_k=top_k, group=group, block_m=32, n_blocks=16)
+    cm_dispatcher = OverlappedMoETokenDispatcher(
+        num_experts=num_experts, top_k=top_k, group=group, block_m=32, n_blocks=16
+    )
 
     n_iters = 5
     all_ok = True
@@ -84,8 +86,8 @@ def main():
     ok_tensor = torch.tensor([1 if all_ok else 0], device=device)
     dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN, group=group)
     if rank == 0:
-        assert bool(ok_tensor.item()), "CometMoETokenDispatcher mismatch vs TorchTokenDispatcher reference"
-        print(f"PASS: CometMoETokenDispatcher matches TorchTokenDispatcher over {n_iters} iterations", flush=True)
+        assert bool(ok_tensor.item()), "OverlappedMoETokenDispatcher mismatch vs TorchTokenDispatcher reference"
+        print(f"PASS: OverlappedMoETokenDispatcher matches TorchTokenDispatcher over {n_iters} iterations", flush=True)
 
     dist.destroy_process_group()
 

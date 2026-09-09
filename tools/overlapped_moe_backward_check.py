@@ -2,8 +2,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from prime_rl.trainer.distributed.comet_moe.autograd import CometMoELayerFunction, init_comet_moe_grad_buffers
-from prime_rl.trainer.distributed.comet_moe.buffers import init_comet_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.autograd import (
+    OverlappedMoELayerFunction,
+    init_overlapped_moe_grad_buffers,
+)
+from prime_rl.trainer.distributed.overlapped_moe.buffers import init_overlapped_moe_buffers
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 
 
@@ -46,7 +49,7 @@ def main():
 
     max_capacity = 16 * num_local_tokens * top_k
     max_capacity = ((max_capacity + block_m - 1) // block_m) * block_m
-    bufs = init_comet_moe_buffers(
+    bufs = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -55,7 +58,7 @@ def main():
         dtype=torch.bfloat16,
         device=device,
     )
-    grad_recv, grad_combine = init_comet_moe_grad_buffers(
+    grad_recv, grad_combine = init_overlapped_moe_grad_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -87,14 +90,14 @@ def main():
         grad_seed = torch.randn_like(ref_out)
         (ref_out * grad_seed).sum().backward()
 
-        # comet_moe path: independent leaves, same data/grad_seed
+        # overlapped_moe path: independent leaves, same data/grad_seed
         x_cm = x_data.clone().requires_grad_(True)
         top_scores_cm = top_scores_data.clone().float().requires_grad_(True)
         gate_proj_cm = gate_proj_data.clone().requires_grad_(True)
         up_proj_cm = up_proj_data.clone().requires_grad_(True)
         down_proj_cm = down_proj_data.clone().requires_grad_(True)
 
-        cm_out = CometMoELayerFunction.apply(
+        cm_out = OverlappedMoELayerFunction.apply(
             x_cm,
             top_scores_cm,
             selected,
@@ -134,9 +137,9 @@ def main():
     ok_tensor = torch.tensor([1 if all_ok else 0], device=device)
     dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN, group=group)
     if rank == 0:
-        assert bool(ok_tensor.item()), "comet_moe forward/backward mismatch vs reference on some iteration"
+        assert bool(ok_tensor.item()), "overlapped_moe forward/backward mismatch vs reference on some iteration"
         print(
-            f"PASS: comet_moe forward+backward matches the plain-NCCL dispatcher reference over {n_iters} iterations",
+            f"PASS: overlapped_moe forward+backward matches the plain-NCCL dispatcher reference over {n_iters} iterations",
             flush=True,
         )
 

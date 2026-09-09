@@ -1,4 +1,4 @@
-"""End-to-end correctness check + wall-clock benchmark for the fused comet_moe prototype
+"""End-to-end correctness check + wall-clock benchmark for the fused overlapped_moe prototype
 (dispatch + grouped-GEMM + combine, CTA-specialized, in one/two Triton kernel launches).
 
 Compares against `prime_rl.trainer.distributed.token_dispatcher.TorchTokenDispatcher` -- this
@@ -8,14 +8,14 @@ routing, weights, and a real `torch._grouped_mm` expert function.
 Not a pytest unit test: needs a real multi-GPU distributed environment (symmetric memory,
 NCCL). Run with:
 
-    uv run torchrun --nproc_per_node=<N> tools/comet_moe_bench.py
+    uv run torchrun --nproc_per_node=<N> tools/overlapped_moe_bench.py
 """
 
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.comet_moe.api import run_comet_moe_layer_with_buffers
-from prime_rl.trainer.distributed.comet_moe.buffers import init_comet_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.api import run_overlapped_moe_layer_with_buffers
+from prime_rl.trainer.distributed.overlapped_moe.buffers import init_overlapped_moe_buffers
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 
 
@@ -54,9 +54,9 @@ def main():
     # from this call's own (per-rank-different) routing outcome -- generous fixed upper bound.
     # Allocated *once* and reused every iteration: repeatedly allocating fresh symmetric memory
     # is not just wasteful, it hung after the first call (rendezvous is itself a collective; see
-    # `run_comet_moe_layer_with_buffers`'s docstring).
+    # `run_overlapped_moe_layer_with_buffers`'s docstring).
     max_capacity = 4 * num_local_tokens * top_k
-    bufs = init_comet_moe_buffers(
+    bufs = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -76,7 +76,7 @@ def main():
         top_scores = torch.softmax(top_scores, dim=-1)
 
         ref_out = ref_dispatcher.run(x, top_scores, selected, reference_experts, score_before_experts=False)
-        comet_out = run_comet_moe_layer_with_buffers(
+        overlapped_out = run_overlapped_moe_layer_with_buffers(
             x,
             top_scores,
             selected,
@@ -90,8 +90,8 @@ def main():
             n_compute_ctas=n_compute_ctas,
         )
 
-        ok = torch.allclose(comet_out.float(), ref_out.float(), atol=2e-2, rtol=2e-2)
-        max_diff = (comet_out.float() - ref_out.float()).abs().max().item()
+        ok = torch.allclose(overlapped_out.float(), ref_out.float(), atol=2e-2, rtol=2e-2)
+        max_diff = (overlapped_out.float() - ref_out.float()).abs().max().item()
         if not ok:
             print(f"[rank {rank}] iter {it}: MISMATCH (max diff {max_diff:.4f})", flush=True)
         all_ok = all_ok and ok
@@ -102,9 +102,9 @@ def main():
     ok_tensor = torch.tensor([1 if all_ok else 0], device=device)
     dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN, group=group)
     if rank == 0:
-        assert bool(ok_tensor.item()), "comet_moe output mismatch vs reference on some iteration"
+        assert bool(ok_tensor.item()), "overlapped_moe output mismatch vs reference on some iteration"
         print(
-            f"PASS: comet_moe end-to-end matches the existing plain-NCCL dispatcher over {n_iters} iterations",
+            f"PASS: overlapped_moe end-to-end matches the existing plain-NCCL dispatcher over {n_iters} iterations",
             flush=True,
         )
 

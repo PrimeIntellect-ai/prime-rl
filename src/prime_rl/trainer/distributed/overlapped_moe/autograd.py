@@ -1,8 +1,8 @@
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.comet_moe.buffers import CometMoEBuffers, init_comet_moe_buffers
-from prime_rl.trainer.distributed.comet_moe.metadata import (
+from prime_rl.trainer.distributed.overlapped_moe.buffers import OverlappedMoEBuffers, init_overlapped_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.metadata import (
     TileList,
     build_schedule,
     compute_backward_aux,
@@ -10,7 +10,7 @@ from prime_rl.trainer.distributed.comet_moe.metadata import (
 from prime_rl.trainer.models.layers.activations import Activation, Silu
 
 
-def init_comet_moe_grad_buffers(
+def init_overlapped_moe_grad_buffers(
     group: dist.ProcessGroup,
     *,
     hidden_dim: int,
@@ -19,8 +19,8 @@ def init_comet_moe_grad_buffers(
     block_m: int,
     dtype: torch.dtype,
     device: torch.device,
-) -> tuple[CometMoEBuffers, CometMoEBuffers]:
-    grad_recv = init_comet_moe_buffers(
+) -> tuple[OverlappedMoEBuffers, OverlappedMoEBuffers]:
+    grad_recv = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=dispatch_capacity,
@@ -29,7 +29,7 @@ def init_comet_moe_grad_buffers(
         dtype=dtype,
         device=device,
     )
-    grad_combine = init_comet_moe_buffers(
+    grad_combine = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=dispatch_capacity,
@@ -42,8 +42,8 @@ def init_comet_moe_grad_buffers(
 
 
 def _run_fused_kernel_dispatch_and_ffn(
-    comet_scatter,
-    bufs: CometMoEBuffers,
+    overlap_kernels,
+    bufs: OverlappedMoEBuffers,
     schedule,
     up_proj: torch.Tensor,
     down_proj: torch.Tensor,
@@ -70,7 +70,7 @@ def _run_fused_kernel_dispatch_and_ffn(
     block_end_clock = torch.empty_like(block_start_clock)
 
     dispatch_tiles = schedule.dispatch_tiles
-    comet_scatter.fused_dispatch_ffn(
+    overlap_kernels.fused_dispatch_ffn(
         schedule.routed_input,
         bufs.dispatch_hidden.peer_ptrs,
         bufs.dispatch_flags.peer_ptrs,
@@ -100,7 +100,7 @@ def _run_fused_kernel_dispatch_and_ffn(
     return hidden_shadow, expert_out
 
 
-class CometMoELayerFunction(torch.autograd.Function):
+class OverlappedMoELayerFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
@@ -111,9 +111,9 @@ class CometMoELayerFunction(torch.autograd.Function):
         down_proj: torch.Tensor,
         gate_proj: torch.Tensor | None,
         activation: type[Activation],
-        bufs: CometMoEBuffers,
-        grad_recv: CometMoEBuffers,
-        grad_combine: CometMoEBuffers,
+        bufs: OverlappedMoEBuffers,
+        grad_recv: OverlappedMoEBuffers,
+        grad_combine: OverlappedMoEBuffers,
         group: dist.ProcessGroup,
         num_experts: int,
         top_k: int,
@@ -122,7 +122,7 @@ class CometMoELayerFunction(torch.autograd.Function):
     ) -> torch.Tensor:
         import prime_kernels
 
-        comet_scatter = prime_kernels.load("comet_scatter")
+        overlap_kernels = prime_kernels.load("fine_grained_compute_comm_overlap")
 
         hidden_dim = x.shape[1]
         n_local_tokens = x.shape[0]
@@ -153,11 +153,11 @@ class CometMoELayerFunction(torch.autograd.Function):
         is_gated = gate_proj is not None
         if activation is not Silu:
             raise NotImplementedError(
-                "comet_scatter.fused_dispatch_ffn only supports Silu (gated or ungated) -- "
+                "fine_grained_compute_comm_overlap.fused_dispatch_ffn only supports Silu (gated or ungated) -- "
                 "other activations aren't implemented."
             )
         hidden_shadow, expert_out = _run_fused_kernel_dispatch_and_ffn(
-            comet_scatter,
+            overlap_kernels,
             bufs,
             schedule,
             up_proj,
@@ -168,7 +168,7 @@ class CometMoELayerFunction(torch.autograd.Function):
         )
 
         with torch.no_grad():
-            comet_scatter.scatter_tiles(
+            overlap_kernels.scatter_tiles(
                 expert_out.detach(),
                 bufs.combine_hidden.peer_ptrs,
                 bufs.combine_flags.peer_ptrs,
@@ -180,7 +180,7 @@ class CometMoELayerFunction(torch.autograd.Function):
                 n_blocks,
             )
             weighted_routed_out = torch.empty(n_local_routed, hidden_dim, dtype=x.dtype, device=x.device)
-            comet_scatter.wait_and_reduce(
+            overlap_kernels.wait_and_reduce(
                 bufs.combine_hidden.local,
                 bufs.combine_flags.local,
                 schedule.routed_scores.float(),
@@ -236,7 +236,7 @@ class CometMoELayerFunction(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor):
         import prime_kernels
 
-        comet_scatter = prime_kernels.load("comet_scatter")
+        overlap_kernels = prime_kernels.load("fine_grained_compute_comm_overlap")
 
         (
             up_proj,
@@ -340,7 +340,7 @@ class CometMoELayerFunction(torch.autograd.Function):
             else None
         )
 
-        comet_scatter.fused_grad_combine_ffn(
+        overlap_kernels.fused_grad_combine_ffn(
             grad_combine_hidden,
             grad_recv.dispatch_hidden.peer_ptrs,
             grad_recv.dispatch_flags.peer_ptrs,
@@ -377,7 +377,7 @@ class CometMoELayerFunction(torch.autograd.Function):
 
         grad_combine.reset()
         grad_combine.barrier()
-        comet_scatter.scatter_tiles(
+        overlap_kernels.scatter_tiles(
             grad_dispatch_hidden,
             grad_combine.combine_hidden.peer_ptrs,
             grad_combine.combine_flags.peer_ptrs,
@@ -388,7 +388,7 @@ class CometMoELayerFunction(torch.autograd.Function):
             c_flag_index,
             n_blocks,
         )
-        comet_scatter.wait_tiles(grad_combine.combine_flags.local[: combine_capacity // block_m], combine_tile_valid)
+        overlap_kernels.wait_tiles(grad_combine.combine_flags.local[: combine_capacity // block_m], combine_tile_valid)
         grad_combine_bwd = grad_combine.combine_hidden.local[:combine_capacity]
         grad_routed_input = grad_combine_bwd[dispatch_row_to_combine_pos]
         grad_combine.barrier()

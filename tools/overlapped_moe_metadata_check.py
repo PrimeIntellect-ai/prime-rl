@@ -1,7 +1,11 @@
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.comet_moe.metadata import _tiles_for_source, build_schedule, compute_shared_layout
+from prime_rl.trainer.distributed.overlapped_moe.metadata import (
+    _tiles_for_source,
+    build_schedule,
+    compute_shared_layout,
+)
 
 
 def main():
@@ -174,8 +178,8 @@ def main():
     ok_tensor = torch.tensor([1 if all_ok else 0], device=device)
     dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN, group=group)
     if rank == 0:
-        assert bool(ok_tensor.item()), "comet_moe metadata check failed on some rank"
-        print("PASS: comet_moe metadata schedule internally consistent (dispatch + combine)", flush=True)
+        assert bool(ok_tensor.item()), "overlapped_moe metadata check failed on some rank"
+        print("PASS: overlapped_moe metadata schedule internally consistent (dispatch + combine)", flush=True)
 
     dist.destroy_process_group()
 

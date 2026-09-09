@@ -2,9 +2,9 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from prime_rl.trainer.distributed.comet_moe.api import run_comet_moe_layer_with_buffers_flash_moe
-from prime_rl.trainer.distributed.comet_moe.buffers import init_comet_moe_buffers
-from prime_rl.trainer.distributed.comet_moe.flash_moe_compute import init_flash_moe_scratch
+from prime_rl.trainer.distributed.overlapped_moe.api import run_overlapped_moe_layer_with_buffers_flash_moe
+from prime_rl.trainer.distributed.overlapped_moe.buffers import init_overlapped_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.flash_moe_compute import init_flash_moe_scratch
 from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 
 
@@ -50,7 +50,7 @@ def main():
     max_capacity = 4 * num_local_tokens * top_k + num_experts * block_m
     # round up to a multiple of block_m=128 so symmetric-memory buffers meet flash_moe's tiling
     max_capacity = ((max_capacity + block_m - 1) // block_m) * block_m
-    bufs = init_comet_moe_buffers(
+    bufs = init_overlapped_moe_buffers(
         group,
         hidden_dim=hidden_dim,
         dispatch_capacity=max_capacity,
@@ -71,7 +71,7 @@ def main():
         top_scores = torch.softmax(top_scores, dim=-1)
 
         ref_out = ref_dispatcher.run(x, top_scores, selected, reference_experts, score_before_experts=False)
-        comet_out = run_comet_moe_layer_with_buffers_flash_moe(
+        overlapped_out = run_overlapped_moe_layer_with_buffers_flash_moe(
             x,
             top_scores,
             selected,
@@ -85,7 +85,7 @@ def main():
             n_blocks=132,
         )
 
-        diff = (comet_out.float() - ref_out.float()).abs()
+        diff = (overlapped_out.float() - ref_out.float()).abs()
         rel = (diff / ref_out.float().abs().clamp_min(1e-3)).max().item()
         max_diff = diff.max().item()
         ok = max_diff < 0.05 or rel < 0.1
@@ -99,9 +99,9 @@ def main():
     ok_tensor = torch.tensor([1 if all_ok else 0], device=device)
     dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN, group=group)
     if rank == 0:
-        assert bool(ok_tensor.item()), "flash_moe comet_moe output mismatch vs reference on some iteration"
+        assert bool(ok_tensor.item()), "flash_moe overlapped_moe output mismatch vs reference on some iteration"
         print(
-            f"PASS: flash_moe comet_moe end-to-end matches the plain-NCCL dispatcher reference over {n_iters} iterations",
+            f"PASS: flash_moe overlapped_moe end-to-end matches the plain-NCCL dispatcher reference over {n_iters} iterations",
             flush=True,
         )
 

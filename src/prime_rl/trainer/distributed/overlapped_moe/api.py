@@ -1,18 +1,18 @@
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.comet_moe.buffers import CometMoEBuffers, init_comet_moe_buffers
-from prime_rl.trainer.distributed.comet_moe.flash_moe_compute import FlashMoeScratch, run_flash_moe_expert_compute
-from prime_rl.trainer.distributed.comet_moe.kernels import fused_combine_reduce, fused_dispatch_gemm
-from prime_rl.trainer.distributed.comet_moe.metadata import build_schedule
+from prime_rl.trainer.distributed.overlapped_moe.buffers import OverlappedMoEBuffers, init_overlapped_moe_buffers
+from prime_rl.trainer.distributed.overlapped_moe.flash_moe_compute import FlashMoeScratch, run_flash_moe_expert_compute
+from prime_rl.trainer.distributed.overlapped_moe.kernels import fused_combine_reduce, fused_dispatch_gemm
+from prime_rl.trainer.distributed.overlapped_moe.metadata import build_schedule
 
 
-def run_comet_moe_layer_with_buffers(
+def run_overlapped_moe_layer_with_buffers(
     x: torch.Tensor,
     top_scores: torch.Tensor,
     selected_experts_indices: torch.Tensor,
     weight: torch.Tensor,  # (num_local_experts, hidden_dim, out_dim)
-    bufs: CometMoEBuffers,
+    bufs: OverlappedMoEBuffers,
     *,
     num_experts: int,
     top_k: int,
@@ -55,7 +55,7 @@ def run_comet_moe_layer_with_buffers(
     # a device-side symmetric-memory barrier, not `dist.barrier()`: both give the same ordering
     # guarantee, but `dist.barrier()` was measured to cost several milliseconds *per call* in some
     # environments (idle-GPU/driver-reinit overhead after any host-blocking NCCL sync) -- see
-    # `CometMoEBuffers.barrier`'s docstring.
+    # `OverlappedMoEBuffers.barrier`'s docstring.
     bufs.barrier()
     expert_out = torch.zeros(schedule.recv_capacity, out_dim, dtype=x.dtype, device=device)
     n_local_routed = schedule.routed_input.shape[0]
@@ -103,13 +103,13 @@ def run_comet_moe_layer_with_buffers(
     return weighted_routed_out[schedule.token_row_map].sum(dim=1)
 
 
-def run_comet_moe_layer_with_buffers_flash_moe(
+def run_overlapped_moe_layer_with_buffers_flash_moe(
     x: torch.Tensor,
     top_scores: torch.Tensor,
     selected_experts_indices: torch.Tensor,
     gate_up_weight: torch.Tensor,  # (num_local_experts, 2*intermediate, hidden_dim), bf16
     down_weight: torch.Tensor,  # (num_local_experts, hidden_dim, intermediate), bf16
-    bufs: CometMoEBuffers,
+    bufs: OverlappedMoEBuffers,
     scratch: FlashMoeScratch,  # from `flash_moe_compute.init_flash_moe_scratch`
     *,
     num_experts: int,
@@ -120,17 +120,18 @@ def run_comet_moe_layer_with_buffers_flash_moe(
     flash_moe_warp_n: int = 4,
     flash_moe_stages: int = 2,
 ) -> torch.Tensor:
-    """Same dispatch/combine tile schedule as `run_comet_moe_layer_with_buffers`, but the expert
+    """Same dispatch/combine tile schedule as `run_overlapped_moe_layer_with_buffers`, but the expert
     compute step is `prime_kernels.flash_moe`'s real tcgen05/TMA fused MoE kernel (gate/up/SwiGLU/
     down + top-k reduce in one launch, plain bf16 -- see `flash_moe_compute.py` for why not mxfp8)
     instead of this package's own hand-written, un-tiled Triton GEMM, and the symmetric-memory
-    scatter/wait/reduce steps run through `prime_kernels.comet_scatter`'s hand-written CUDA
-    kernels instead of Triton.
+    scatter/wait/reduce steps run through `prime_kernels.fine_grained_compute_comm_overlap`'s
+    hand-written CUDA kernels instead of Triton.
 
     Triton's remote-store codegen for this access pattern (many ~512KB tile-granular symmetric-
-    memory writes) was profiled well below real NVLink bandwidth; `comet_scatter` does the same
-    scatter as a plain vectorized (128-bit) contiguous byte copy per tile, and the combine reduce
-    step's plain (non-atomic; see `fused_combine_reduce`'s docstring) weighted store the same way.
+    memory writes) was profiled well below real NVLink bandwidth; `fine_grained_compute_comm_overlap`
+    does the same scatter as a plain vectorized (128-bit) contiguous byte copy per tile, and the
+    combine reduce step's plain (non-atomic; see `fused_combine_reduce`'s docstring) weighted
+    store the same way.
 
     `scratch` must be sized for this rank's fixed `bufs.dispatch_capacity` and local routed-token
     count (see `init_flash_moe_scratch`) and reused across calls, not reallocated -- allocating
@@ -139,8 +140,8 @@ def run_comet_moe_layer_with_buffers_flash_moe(
     contention; see `FlashMoeScratch`'s docstring.
 
     `block_m` is fixed at flash_moe's required tile size (128), not a caller parameter like in
-    `run_comet_moe_layer_with_buffers`. Compute becomes a separate, whole-buffer kernel launch
-    rather than being CTA-interleaved with the dispatch scatter: `comet_scatter.wait_tiles` after
+    `run_overlapped_moe_layer_with_buffers`. Compute becomes a separate, whole-buffer kernel launch
+    rather than being CTA-interleaved with the dispatch scatter: `overlap_kernels.wait_tiles` after
     the scatter returns only once every row this rank expects has arrived, since flash_moe needs
     the whole buffer populated before it can run -- there's no compute to interleave the wait
     with here regardless, unlike the CTA-specialized Triton kernels `kernels.py` still uses for
@@ -149,7 +150,7 @@ def run_comet_moe_layer_with_buffers_flash_moe(
     import prime_kernels
     from prime_kernels.flash_moe import BLOCK_M as FLASH_MOE_BLOCK_M
 
-    comet_scatter = prime_kernels.load("comet_scatter")
+    overlap_kernels = prime_kernels.load("fine_grained_compute_comm_overlap")
 
     max_recv_tiles = bufs.dispatch_capacity // FLASH_MOE_BLOCK_M
     schedule = build_schedule(
@@ -169,10 +170,10 @@ def run_comet_moe_layer_with_buffers_flash_moe(
         )
 
     bufs.reset()
-    bufs.barrier()  # see run_comet_moe_layer_with_buffers's docstring and CometMoEBuffers.barrier's
+    bufs.barrier()  # see run_overlapped_moe_layer_with_buffers's docstring and OverlappedMoEBuffers.barrier's
 
     dispatch_tiles = schedule.dispatch_tiles
-    comet_scatter.scatter_tiles(
+    overlap_kernels.scatter_tiles(
         schedule.routed_input,
         bufs.dispatch_hidden.peer_ptrs,
         bufs.dispatch_flags.peer_ptrs,
@@ -183,7 +184,7 @@ def run_comet_moe_layer_with_buffers_flash_moe(
         dispatch_tiles.flag_index,
         n_blocks,
     )
-    comet_scatter.wait_tiles(bufs.dispatch_flags.local, schedule.recv_tile_valid)
+    overlap_kernels.wait_tiles(bufs.dispatch_flags.local, schedule.recv_tile_valid)
 
     expert_out = run_flash_moe_expert_compute(
         bufs.dispatch_hidden.local[: schedule.recv_capacity],
@@ -199,7 +200,7 @@ def run_comet_moe_layer_with_buffers_flash_moe(
     weighted_routed_out = scratch.weighted_routed_out
 
     combine_tiles = schedule.combine_tiles
-    comet_scatter.scatter_tiles(
+    overlap_kernels.scatter_tiles(
         expert_out,
         bufs.combine_hidden.peer_ptrs,
         bufs.combine_flags.peer_ptrs,
@@ -210,7 +211,7 @@ def run_comet_moe_layer_with_buffers_flash_moe(
         combine_tiles.flag_index,
         n_blocks,
     )
-    comet_scatter.wait_and_reduce(
+    overlap_kernels.wait_and_reduce(
         bufs.combine_hidden.local,
         bufs.combine_flags.local,
         schedule.routed_scores.float(),
@@ -229,7 +230,7 @@ def run_comet_moe_layer_with_buffers_flash_moe(
     return weighted_routed_out[schedule.token_row_map].sum(dim=1)
 
 
-def run_comet_moe_layer(
+def run_overlapped_moe_layer(
     x: torch.Tensor,
     top_scores: torch.Tensor,
     selected_experts_indices: torch.Tensor,
@@ -247,10 +248,10 @@ def run_comet_moe_layer(
     """Convenience one-shot wrapper: allocate fresh buffers, run once, return the output.
 
     For a single call (e.g. a one-off correctness check) this is fine. For repeated calls (a
-    real training loop, or a benchmark loop), allocate buffers once with `init_comet_moe_buffers`
-    and call `run_comet_moe_layer_with_buffers` directly instead -- see its docstring for why.
+    real training loop, or a benchmark loop), allocate buffers once with `init_overlapped_moe_buffers`
+    and call `run_overlapped_moe_layer_with_buffers` directly instead -- see its docstring for why.
     """
-    bufs = init_comet_moe_buffers(
+    bufs = init_overlapped_moe_buffers(
         group,
         hidden_dim=x.shape[1],
         dispatch_capacity=max_dispatch_capacity,
@@ -259,7 +260,7 @@ def run_comet_moe_layer(
         dtype=x.dtype,
         device=x.device,
     )
-    return run_comet_moe_layer_with_buffers(
+    return run_overlapped_moe_layer_with_buffers(
         x,
         top_scores,
         selected_experts_indices,

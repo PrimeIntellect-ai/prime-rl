@@ -1,0 +1,1 @@
+ PRIME_KERNELS=fine_grained_compute_comm_overlap uv pip install --no-build-isolation -e deps/prime-kernels

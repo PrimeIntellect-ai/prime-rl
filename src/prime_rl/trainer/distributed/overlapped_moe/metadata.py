@@ -17,7 +17,7 @@ class TileList:
 
 
 @dataclass
-class CometMoESchedule:
+class OverlappedMoESchedule:
     routed_input: torch.Tensor
     routed_scores: torch.Tensor
     token_indices_experts_sorted: torch.Tensor
@@ -292,7 +292,7 @@ def build_schedule(
     group: dist.ProcessGroup,
     block_m: int,
     max_recv_tiles: int,
-) -> CometMoESchedule:
+) -> OverlappedMoESchedule:
     ep_size = group.size()
     my_rank = dist.get_rank(group)
     num_local_experts = num_experts // ep_size
@@ -358,7 +358,7 @@ def build_schedule(
         own_tile_ordinal=combine_own_tile_ordinal,
     )
 
-    return CometMoESchedule(
+    return OverlappedMoESchedule(
         routed_input=routed_input,
         routed_scores=routed_scores,
         token_indices_experts_sorted=token_indices,

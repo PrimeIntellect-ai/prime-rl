@@ -6,12 +6,12 @@ from torch.distributed.tensor.parallel import parallelize_module
 
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
-    CometMoEDispatchConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
+    OverlappedMoEDispatchConfig,
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
@@ -106,17 +106,17 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
             )
-        elif isinstance(dispatch, CometMoEDispatchConfig):
-            from prime_rl.trainer.distributed.comet_moe.token_dispatcher import CometMoETokenDispatcher
+        elif isinstance(dispatch, OverlappedMoEDispatchConfig):
+            from prime_rl.trainer.distributed.overlapped_moe.token_dispatcher import OverlappedMoETokenDispatcher
 
             if not isinstance(config.moe.compute, BF16MoEComputeConfig):
                 get_logger().warning(
-                    f"model.moe.dispatch=comet ignores model.moe.compute (configured as "
-                    f"{config.moe.compute.type}): comet_moe always runs its own bf16 expert FFN, "
+                    f"model.moe.dispatch=overlapped_moe ignores model.moe.compute (configured as "
+                    f"{config.moe.compute.type}): overlapped_moe always runs its own bf16 expert FFN, "
                     f"fused with dispatch via a single CTA-specialized kernel -- see "
-                    f"CometMoEDispatchConfig's docstring."
+                    f"OverlappedMoEDispatchConfig's docstring."
                 )
-            token_dispatcher = CometMoETokenDispatcher(
+            token_dispatcher = OverlappedMoETokenDispatcher(
                 num_experts=moe.experts.num_experts,
                 top_k=moe.router.top_k,
                 group=ep_mesh.get_group(),

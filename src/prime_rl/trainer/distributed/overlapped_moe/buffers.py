@@ -32,7 +32,7 @@ def _make_peer_buffer(
 
 
 @dataclass
-class CometMoEBuffers:
+class OverlappedMoEBuffers:
     group: dist.ProcessGroup
     ep_size: int
     hidden_dim: int
@@ -67,7 +67,7 @@ class CometMoEBuffers:
         self._barrier_handle.barrier(0)
 
 
-def init_comet_moe_buffers(
+def init_overlapped_moe_buffers(
     group: dist.ProcessGroup,
     *,
     hidden_dim: int,
@@ -76,7 +76,7 @@ def init_comet_moe_buffers(
     block_m: int,
     dtype: torch.dtype,
     device: torch.device,
-) -> CometMoEBuffers:
+) -> OverlappedMoEBuffers:
     """Allocate the symmetric buffers for one MoE layer.
 
     Capacities are static (allocated once, reused every step) — real training would size them
@@ -87,7 +87,7 @@ def init_comet_moe_buffers(
     """
     backend = symm_mem.get_backend(device)
     if backend != "CUDA":
-        raise RuntimeError(f"comet_moe requires the CUDA symmetric-memory backend, got {backend}.")
+        raise RuntimeError(f"overlapped_moe requires the CUDA symmetric-memory backend, got {backend}.")
     if dispatch_capacity % block_m or combine_capacity % block_m:
         raise ValueError(f"capacities must be multiples of block_m={block_m}.")
 
@@ -104,7 +104,7 @@ def init_comet_moe_buffers(
         ),
     )
 
-    return CometMoEBuffers(
+    return OverlappedMoEBuffers(
         group=group,
         ep_size=ep_size,
         hidden_dim=hidden_dim,
