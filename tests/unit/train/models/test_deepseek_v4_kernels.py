@@ -180,52 +180,39 @@ V4FLASH_MODEL = dict(
     },
 )
 
-# The hand-built tensors of the first section describe the same CSA layer `V4FLASH_MODEL` does, so
-# they are read off it rather than written out again: 64 heads over 512 channels, each query
-# gathering `sliding_window + index_topk = 128 + 512` slots from a single KV group, in bfloat16.
+# Read off `V4FLASH_MODEL` so the hand-built tensors below describe the same CSA layer it does.
 HEADS = V4FLASH_MODEL["num_attention_heads"]
 DIM = V4FLASH_MODEL["head_dim"]
 KV_GROUP = V4FLASH_MODEL["num_key_value_heads"]
 TOPK = V4FLASH_MODEL["sliding_window"] + V4FLASH_MODEL["index_topk"]
 SM_SCALE = DIM**-0.5
 
-# Three shapes. The first is aligned to both of the backward's tile sizes and the second to
-# neither: `preprocess` tiles the query axis at 32 and `postprocess` tiles the KV axis at 64, so a
-# remainder tile in either is a distinct code path. `200 % 32 = 8` and `1000 % 64 = 40`. The third
-# carries a batch, which nothing else here does: `Q` and `Indices` are indexed by batch and the
-# `dKV[by, Indices[by, ...]]` atomics scatter per batch entry, so a batch stride dropped anywhere
-# in that chain is invisible at batch 1. Sequence lengths stay modest because the float32 oracle
-# materializes a `(batch, seq_len, topk, head_dim)` gather, roughly 640 KB per token even before
-# its backward.
+# The first is aligned to both of the backward's tile sizes (32 in `preprocess`, 64 in
+# `postprocess`), the second to neither, and the third carries a batch, which nothing else here
+# does. Sequence lengths stay modest because the float32 oracle materializes the whole gather.
 SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
-# A quarter of the gather slots are masked, which is what a real query with a short window or a
-# saturated top-k looks like: the masked slots still cost a GEMM column.
+# What a real query with a short window or a saturated top-k looks like; a masked slot still
+# costs a GEMM column.
 MASKED_FRACTION = 0.25
 
-# Bounds on the largest absolute deviation against each tensor's own scale, not element-wise:
-# every entry is a sum over hundreds of terms, so the near-zero entries are the ones whose
-# summands cancelled, and an element-wise relative bound would read out that cancellation noise.
-# The kernel returns bfloat16, so its output cannot agree with a float32 oracle any more closely
-# than bfloat16 rounding allows: one ulp at full scale is 2**-8 = 3.9e-3.
+# Bounds on the largest deviation against each tensor's own scale, not element-wise: every entry
+# sums hundreds of terms, so an element-wise bound would read out the near-zero entries'
+# cancellation noise. The kernel returns bfloat16, one ulp of which is 2**-8 at full scale.
 OUT_RTOL = 1e-2
 # The LSE is float32 throughout on both sides.
 LSE_RTOL = 5e-7
 DQ_RTOL = 1e-2
 # The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
-# while the float32 oracle keeps them in float32. The rest is the bfloat16 `kv` the two sides
-# share. Neither effect needs a looser bound than the other gradients get: what used to need one
-# was the oracle's own bfloat16 leaf, see `_float32_leaves`.
+# while the oracle keeps them in float32, on top of the bfloat16 `kv` both sides share.
 DKV_RTOL = 1e-2
 # The sink gradient is a full reduction over every query in the row, so it cancels harder than
 # anything else here.
 DSINK_RTOL = 1e-2
 
-# Compiled against eager. The forward and the log-sum-exp are bit-identical, but `dKV` is not
-# comparable that way on either side: the backward scatters it with `atomic_addx4`, so its
-# summation order is whatever the scheduler picks and the same eager call against itself moves by
-# the same amount.
+# Compiled against eager, where the forward and the log-sum-exp are bit-identical. `dKV` is not,
+# because `atomic_addx4` leaves its summation order to the scheduler, on both sides.
 COMPILE_RTOL = 1e-2
 
 
