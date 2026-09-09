@@ -1,6 +1,5 @@
 {#- Mooncake distributed store (shared pool across inference nodes) for KV cache offload.
-    One master + HTTP metadata server runs on the head inference node (first in the SLURM
-    nodelist); every inference node runs a client that contributes its DRAM/SSD segment to
+    One master + HTTP metadata server runs on the selected inference node; every inference node runs a client that contributes its DRAM/SSD segment to
     that single pool, so any node can reuse prefixes cached by any other. Included by the
     SLURM templates inside the per-node `bash -c` body, so NO single quotes / apostrophes.
     Requires shell vars: LOCAL_IP, INFER_NODE_RANK, OUTPUT_DIR (and SLURM env).
@@ -12,8 +11,9 @@
     mkdir -p "$MC_DIR"
     export PYTHONHASHSEED=0
     export MOONCAKE_CONFIG_PATH="$MC_DIR/config.json"
-    # The head inference node (first in the nodelist) hosts the one master + metadata server.
-    MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
+    # Allow the shared store control plane to run apart from the router/batch head.
+    MC_HEAD=${PRIME_MOONCAKE_MASTER_HOST:-$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)}
+    scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -Fx "$MC_HEAD" >/dev/null || { echo "Mooncake master must belong to this allocation: $MC_HEAD" >&2; exit 1; }
     MC_MASTER="$MC_HEAD:50051"
     MC_METADATA="http://$MC_HEAD:8080/metadata"
 {%- if kv_offload_disk_path %}
