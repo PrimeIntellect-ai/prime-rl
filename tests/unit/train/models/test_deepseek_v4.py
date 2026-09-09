@@ -75,6 +75,10 @@ MODEL = dict(
     rms_norm_eps=1e-6,
 )
 
+# Shared: model construction only writes transformers' private `_attn_implementation_internal`
+# and `_experts_implementation_internal`, idempotently, so deep-copy before any other mutation.
+MODEL_CONFIG = DeepseekV4Config(**MODEL)
+
 # The Lightning Indexer scores one packed row, which makes every batch axis here 1.
 BATCH = 1
 MODEL_SEQ = 32
@@ -138,14 +142,10 @@ def _randomize(module: nn.Module) -> None:
                 buffer.copy_(_tid2eid(buffer.shape[0], router.num_experts, router.top_k))
 
 
-def _prime_config() -> DeepseekV4Config:
-    return DeepseekV4Config(**MODEL)
-
-
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config())
+        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
     _randomize(model)
     eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model, chunk_size=None)
@@ -159,7 +159,7 @@ def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.M
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_prime_config(), layer_idx=layer_idx)
+        module = DeepseekV4Attention(MODEL_CONFIG, layer_idx=layer_idx)
     _randomize(module)
     eager_reference.use_eager_attention(module)
     return module
@@ -188,7 +188,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     be the one the caller runs at.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        rotary = DeepseekV4RotaryEmbedding(_prime_config())
+        rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
@@ -222,9 +222,8 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
 
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
-    prime_config = _prime_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = DeepseekV4ForCausalLM(prime_config)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     _randomize(model)
     eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model)
@@ -253,8 +252,7 @@ def test_deepseek_v4_backward():
 
 
 def test_deepseek_v4_weight_conversion_roundtrip():
-    prime_config = _prime_config()
-    model = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    model = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     original = {name: tensor.clone() for name, tensor in model.state_dict().items()}
 
     state_dict = model.state_dict()
@@ -299,8 +297,7 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     so getting it to reset one buffer too many is an easy mistake with no symptom other than every
     bootstrap token routing to expert 0.
     """
-    prime_config = _prime_config()
-    model = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    model = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     tables = _fill_hash_tables(model)
 
     state_dict = model.convert_to_hf(dict(model.state_dict()))
@@ -312,15 +309,13 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
         assert torch.equal(state_dict[f"layers.{layer_idx}.ffn.gate.tid2eid"], table)
 
     model.convert_to_prime(state_dict)
-    reloaded = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    reloaded = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     reloaded.load_state_dict(state_dict)
     for layer_idx, table in tables.items():
         assert torch.equal(reloaded.model.layers[layer_idx].mlp.router.tid2eid, table)
 
-    # And now the loading path itself, on a meta-device model, with the name `load_dcp_from_hf`
-    # asks the checkpoint for raising a `KeyError` in the stub below if the buffer ever moves.
     with torch.device("meta"):
-        meta_model = DeepseekV4ForCausalLM(prime_config)
+        meta_model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     expected = tables[0]
 
     def fake_dcp_load(state_dict, storage_reader=None):
@@ -406,7 +401,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config())
+        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 
@@ -422,14 +417,13 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
 
 def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
     """Rotary tables are non-persistent and computed eagerly, so meta loading loses them."""
-    prime_config = _prime_config()
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM(prime_config)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     model.to_empty(device="cuda")
 
     model.init_buffers_post_meta()
 
-    reference = 1.0 / (prime_config.rope_theta ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
+    reference = 1.0 / (MODEL_CONFIG.rope_theta ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
     torch.testing.assert_close(model.model.rotary_emb.main_inv_freq, reference)
     compressors = [layer.self_attn.compressor for layer in model.model.layers if layer.self_attn.compressor]
     assert compressors, "config must contain a compressed attention layer"
