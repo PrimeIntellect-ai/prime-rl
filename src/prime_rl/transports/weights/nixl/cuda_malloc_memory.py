@@ -1,4 +1,4 @@
-"""CUDA memory sizing and a cudaMalloc-backed pool for NIXL arenas."""
+"""cudaMalloc-backed pool for NIXL arenas."""
 
 from __future__ import annotations
 
@@ -17,17 +17,6 @@ from torch.utils.cpp_extension import load_inline  # noqa: E402
 
 _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
-
-
-def size_cuda_buffers(
-    buffer_bytes: int,
-    max_buffers: int,
-    device: torch.device,
-    extra_headroom_bytes: int,
-) -> int:
-    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-    headroom_bytes = max(4 * 1024**3, int(total_bytes * 0.02)) + extra_headroom_bytes
-    return max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
 
 
 def _get_pool() -> torch.cuda.MemPool:

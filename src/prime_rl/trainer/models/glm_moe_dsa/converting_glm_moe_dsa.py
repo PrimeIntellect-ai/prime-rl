@@ -90,9 +90,9 @@ def convert_tt_layer_to_vllm_kernel(
     router_key = f"{prefix}.mlp.router.gate.weight"
     if router_key in state_dict:
         add(f"{prefix}.mlp.gate.weight", state_dict[router_key])
-    expert_bias_key = f"{prefix}.mlp.expert_bias"
-    if expert_bias_key in state_dict:
-        add(f"{prefix}.mlp.gate.e_score_correction_bias", state_dict[expert_bias_key])
+    selection_bias_key = f"{prefix}.mlp.router.selection_bias"
+    if selection_bias_key in state_dict:
+        add(f"{prefix}.mlp.gate.e_score_correction_bias", state_dict[selection_bias_key])
 
     w1_key = f"{prefix}.mlp.experts.gate_proj"
     w2_key = f"{prefix}.mlp.experts.down_proj"

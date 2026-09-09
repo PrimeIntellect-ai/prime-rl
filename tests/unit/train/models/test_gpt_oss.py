@@ -5,6 +5,7 @@ import torch
 import torch.distributed as dist
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM as HFGptOssForCausalLM
 
+from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
 from prime_rl.trainer.models.gpt_oss.attention import (
@@ -30,6 +31,7 @@ def _config(attn_implementation: str = "flash_attention_4") -> GptOssConfig:
         sliding_window=4,
         rope_parameters={"rope_type": "default", "rope_theta": 150000.0},
         attn_implementation=attn_implementation,
+        use_cache=False,
     )
 
 
@@ -57,9 +59,15 @@ def test_gpt_oss_checkpoint_conversion_roundtrip():
 
 
 @pytest.mark.gpu
-def test_gpt_oss_matches_hf():
+@pytest.mark.parametrize("fused", [False, True])
+def test_gpt_oss_matches_hf(fused: bool):
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("GPT-OSS learned sinks require SM90 or SM100/SM110")
+    torch.manual_seed(0)
     hf_config = _config("eager")
     prime_config = _config()
+    hf_config.num_hidden_layers = prime_config.num_hidden_layers = 2
+    hf_config.layer_types = prime_config.layer_types = ["sliding_attention", "full_attention"]
     with torch.device("cuda"):
         hf_model = HFGptOssForCausalLM(hf_config).to(torch.bfloat16)
         prime_model = PrimeRLGptOssForCausalLM(prime_config).to(torch.bfloat16)
@@ -67,6 +75,8 @@ def test_gpt_oss_matches_hf():
     state_dict = hf_model.state_dict()
     prime_model.convert_to_prime(state_dict)
     prime_model.load_state_dict(state_dict)
+    if fused:
+        assert apply_model_fusions(prime_model, ["gate_up", "qkv"]) == {"qkv": 2, "gate_up": 2}
 
     hidden_states = torch.randn(2, 8, hf_config.hidden_size, device="cuda", dtype=torch.bfloat16)
     expected, _ = hf_model.model.layers[0].mlp(hidden_states)
@@ -109,6 +119,8 @@ def test_gpt_oss_matches_hf():
 def test_gpt_oss_context_parallel_attention(cp_style: str):
     if int(os.environ.get("WORLD_SIZE", 1)) != 2:
         pytest.skip("run with torchrun --nproc-per-node=2")
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("GPT-OSS learned sinks require SM90 or SM100/SM110")
 
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])

@@ -3,7 +3,6 @@ import os
 
 from prime_rl.inference.patches import (
     monkey_patch_fp32_lm_head,
-    monkey_patch_fp32_router_logits,
     monkey_patch_minimax_m2_for_lora,
     monkey_patch_no_moe_lora,
 )
@@ -21,6 +20,3 @@ else:
 
 # Install fp32 lm_head patch; self-gates on additional_config["fp32_lm_head"] at call time
 monkey_patch_fp32_lm_head()
-
-# Install fp32 router logits patch; self-gates on additional_config["fp32_router_logits"]
-monkey_patch_fp32_router_logits()

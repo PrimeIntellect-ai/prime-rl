@@ -66,13 +66,24 @@ Requires `nvcc`. Without `mamba-ssm`, NemotronH falls back to HF's pure-PyTorch 
 
 ### Trainer DeepEP backend
 
-`scripts/install_ep_kernels.sh` auto-detects the CUDA toolkit matching torch and the GPU arch, builds NVSHMEM + DeepEP from source, and skips if `deep_ep` already imports.
+The `disagg` extra installs the prebuilt DeepEP wheel pinned in `[tool.uv.sources]`:
 
 ```bash
-bash scripts/install_ep_kernels.sh
+uv sync --extra disagg
 ```
 
-Flags: `--workspace DIR`, `--deepep-ref REF` (default `73b6ea4`), `--nvshmem-ver VER` (default `3.3.24`), `--configure-drivers` (multi-node IBGDA; needs sudo + reboot).
+The prime-kernels repository owns source builds for DeepEP, DeepGEMM, and TorchAO. Use
+its scripts when a local rebuild is required:
+
+```bash
+git submodule update --init deps/prime-kernels
+bash deps/prime-kernels/scripts/install_ep_kernels.sh --wheel-dir /tmp/prime-kernels-wheels
+uv pip install --reinstall --no-deps /tmp/prime-kernels-wheels/deep_ep-*.whl
+```
+
+The build needs a CUDA toolkit whose version matches torch. Set
+`TORCH_CUDA_ARCH_LIST` when the build host has no GPU or when the wheel must support
+more than the local GPU architecture.
 
 Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
@@ -91,4 +102,4 @@ Binaries land in `third_party/llmd/bin/{epp,envoy,pd-sidecar}` (a shared path, s
 - `pyproject.toml` — dependencies, extras, dependency groups
 - `uv.lock` — pinned lockfile (refresh with `uv sync --all-extras`)
 - `scripts/install.sh` — bootstrap installer
-- `scripts/install_ep_kernels.sh` — DeepEP build script
+- `deps/prime-kernels/scripts/` — native wheel build scripts

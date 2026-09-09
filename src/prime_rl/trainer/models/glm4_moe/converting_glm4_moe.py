@@ -4,7 +4,7 @@ GLM-4 MoE specifics:
 
 * Router: HF ``mlp.gate.weight`` -> prime ``mlp.router.gate.weight``.
 * Expert bias: HF ``mlp.gate.e_score_correction_bias`` -> prime
-  ``mlp.expert_bias``.
+  ``mlp.router.selection_bias``.
 * Routed experts: HF per-expert ``mlp.experts.{e}.{gate,down,up}_proj.weight``
   stack into prime ``mlp.experts.{gate,down,up}_proj`` along dim 0; the fused
   transformers-v5 ``mlp.experts.gate_up_proj`` / ``down_proj`` layout is also
@@ -41,7 +41,7 @@ def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
     p = f"model.layers.{layer_idx}.mlp"
     ops: list[ConvOp] = [
         Rename(f"{p}.gate.weight", f"{p}.router.gate.weight"),
-        Rename(f"{p}.gate.e_score_correction_bias", f"{p}.expert_bias"),
+        Rename(f"{p}.gate.e_score_correction_bias", f"{p}.router.selection_bias"),
         routed_experts_op(
             f"model.layers.{layer_idx}",
             hf_experts="mlp.experts",

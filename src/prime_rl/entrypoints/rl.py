@@ -454,9 +454,24 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     train_env_names = env_server_names(config, "train")
     eval_env_names = env_server_names(config, "eval")
 
+    nixl_broadcast = (
+        config.weight_broadcast
+        if config.weight_broadcast is not None and config.weight_broadcast.type == "nixl"
+        else None
+    )
+    launch_modelexpress = nixl_broadcast is not None and config.slurm.launch_modelexpress
+    modelexpress_vars = {
+        "use_nixl_broadcast": nixl_broadcast is not None,
+        "launch_modelexpress": launch_modelexpress,
+        "modelexpress_host": nixl_broadcast.host if nixl_broadcast is not None else "",
+        "modelexpress_port": nixl_broadcast.port if nixl_broadcast is not None else 0,
+        "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
+    }
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
+            **modelexpress_vars,
             config_path=config_dir / RL_CONFIG,
             config_dir=config_dir,
             log_dir=log_dir,
@@ -510,6 +525,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            **modelexpress_vars,
         )
     else:
         script = template.render(
@@ -550,6 +566,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            **modelexpress_vars,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

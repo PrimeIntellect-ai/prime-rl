@@ -13,6 +13,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
@@ -71,13 +72,19 @@ def broadcast_expert_bias(
     num_tokens_per_expert: torch.Tensor,
     target_rows: int,
 ) -> torch.Tensor:
-    bias = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
-    if bias.shape[0] < target_rows:
-        bias = F.pad(bias, (0, 0, 0, target_rows - bias.shape[0]))
-    return bias
+    repeats = num_tokens_per_expert.to(torch.int64)
+    padding_rows = repeats.new_tensor(target_rows) - repeats.sum()
+    return torch.repeat_interleave(
+        torch.cat((bias, bias.new_zeros((1, bias.shape[1])))),
+        torch.cat((repeats, padding_rows.unsqueeze(0))),
+        dim=0,
+        output_size=target_rows,
+    )
 
 
 class GroupedExperts(nn.Module):
+    supported_fusions = {"gate_up": fuse_gate_up_projections}
+
     def __init__(
         self,
         dim: int,
@@ -94,6 +101,7 @@ class GroupedExperts(nn.Module):
         self.hidden_dim = hidden_dim
         self.gate_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim)) if expert_type == "gated" else None
         self.up_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
+        self.register_parameter("gate_up_proj", None)
         self.down_proj = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.gate_proj_bias = (
             nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias and self.gate_proj is not None else None
@@ -103,6 +111,8 @@ class GroupedExperts(nn.Module):
 
         self.grouped_gemm = grouped_gemm or BF16GroupedGemm()
         self.activation = ActivationDispatch[activation]
+        if expert_type == "non_gated":
+            self.supported_fusions = {}
 
     @property
     def token_group_alignment(self) -> int:
@@ -124,19 +134,26 @@ class GroupedExperts(nn.Module):
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         x_bf16 = x.bfloat16()
 
-        up_proj = to_local(self.up_proj).transpose(-2, -1)
-        up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
+        if self.gate_up_proj is None:
+            up_proj = to_local(self.up_proj).transpose(-2, -1)
+            up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
+
+            gate = None
+            if self.gate_proj is not None:
+                gate_proj = to_local(self.gate_proj).transpose(-2, -1)
+                gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
+        else:
+            gate_up_proj = to_local(self.gate_up_proj).transpose(-2, -1)
+            gate_up = self.grouped_gemm(x_bf16, gate_up_proj.bfloat16(), offs=offsets)
+            gate, up = gate_up.chunk(2, dim=-1)
+
         if self.up_proj_bias is not None:
             up_proj_bias = to_local(self.up_proj_bias)
             up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
 
-        gate = None
-        if self.gate_proj is not None:
-            gate_proj = to_local(self.gate_proj).transpose(-2, -1)
-            gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
-            if self.gate_proj_bias is not None:
-                gate_proj_bias = to_local(self.gate_proj_bias)
-                gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
+        if gate is not None and self.gate_proj_bias is not None:
+            gate_proj_bias = to_local(self.gate_proj_bias)
+            gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
 
         hidden = self.activation.apply(gate, up)
         down_proj = to_local(self.down_proj).transpose(-2, -1)
@@ -147,9 +164,14 @@ class GroupedExperts(nn.Module):
         return output.type_as(x)
 
     def init_weights(self, init_std: float):
-        first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
-        nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
-        remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
+        if self.gate_up_proj is None:
+            first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
+            nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
+            remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
+        else:
+            gate_proj, up_proj = self.gate_up_proj.chunk(2, dim=1)
+            nn.init.trunc_normal_(gate_proj, mean=0.0, std=0.02)
+            remaining = (up_proj, self.down_proj)
         for weight in remaining:
             nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
         for bias in (self.gate_proj_bias, self.up_proj_bias, self.down_proj_bias):
@@ -189,7 +211,10 @@ class TokenChoiceTopKRouter(nn.Module):
     ):
         super().__init__()
         self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
-        self.register_buffer("selection_bias", torch.zeros(num_experts) if selection_bias else None)
+        self.register_buffer(
+            "selection_bias",
+            torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
+        )
         self.num_experts = num_experts
         self.top_k = top_k
         self.score_func = score_func
@@ -202,13 +227,13 @@ class TokenChoiceTopKRouter(nn.Module):
         self.fp32_gate = False
 
     def forward(
-        self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        routed_experts: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
-            expert_bias (torch.Tensor | None, optional): Optional bias tensor for experts with shape ``(num_experts,)``.
-                Used for load balancing. Defaults to None.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
@@ -258,8 +283,6 @@ class TokenChoiceTopKRouter(nn.Module):
             selection_scores = scores
             if self.selection_bias is not None:
                 selection_scores = selection_scores + self.selection_bias
-            if expert_bias is not None:
-                selection_scores = selection_scores + expert_bias
             _, selected_experts_indices = torch.topk(
                 selection_scores,
                 k=self.top_k,
@@ -325,6 +348,7 @@ class MoE(nn.Module):
             score_func=args.score_func,
             route_norm=args.route_norm,
             route_scale=args.route_scale,
+            selection_bias=args.load_balance_coeff is not None,
         )
         return cls(
             router=router,
@@ -356,19 +380,12 @@ class MoE(nn.Module):
         )
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
-        #       expert_bias is updated outside the model in an optimizer step pre hook
+        #       router.selection_bias is updated outside the model in an optimizer step pre hook
         #       to work with gradient accumulation.
         self.load_balance_coeff = load_balance_coeff
         if self.load_balance_coeff is not None:
             assert self.load_balance_coeff > 0.0
-            self.register_buffer(
-                "expert_bias",
-                torch.zeros(experts.num_experts, dtype=torch.float32),
-                persistent=True,
-            )
-        else:
-            self.expert_bias = None
-        # tokens_per_expert will be used to track expert usage and to update the expert bias for load balancing
+        # tokens_per_expert tracks expert usage for selection-bias updates and metrics.
         self.register_buffer(
             "tokens_per_expert",
             torch.zeros(experts.num_experts, dtype=torch.float32),
@@ -414,10 +431,9 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
-        ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
+        ) = self.router(x, routed_experts=routed_experts)
 
-        # tokens_per_expert will be used to update the expert bias for load balancing.
-        # and also to count the expert usage
+        # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
             record_moe_routing_statistics(
                 self.tokens_per_expert,
@@ -460,5 +476,5 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
-            if self.load_balance_coeff is not None:
-                self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            if self.router.selection_bias is not None:
+                self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

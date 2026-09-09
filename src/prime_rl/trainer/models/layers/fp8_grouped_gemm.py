@@ -2,13 +2,6 @@ from __future__ import annotations
 
 import torch
 
-try:
-    import deep_gemm
-except ImportError:
-    deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
-    # are GPU-only at runtime, so leaving the symbol None is safe — only the
-    # autograd Function bodies below actually call into it.
-
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
     build_grouped_layout,
@@ -33,6 +26,8 @@ def _compute_grad_weight(
     block_starts_tensor: torch.Tensor,
     aligned_ms: list[int],
 ) -> torch.Tensor:
+    import deep_gemm
+
     is_sm100 = torch.cuda.get_device_capability(x.device)[0] >= 10
     if is_sm100:
         x_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(
@@ -97,6 +92,8 @@ def _compute_grad_weight(
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
 def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+    import deep_gemm
+
     (
         total_m,
         padded_total_m,
@@ -186,6 +183,8 @@ def _grouped_fp8_gemm_backward(
         )
 
     if needs_grad_x:
+        import deep_gemm
+
         use_ue8m0 = ue8m0_for_device(grad_output.device)
         dy_fp8 = grouped_per_token_cast_to_fp8_triton(
             grad_output,

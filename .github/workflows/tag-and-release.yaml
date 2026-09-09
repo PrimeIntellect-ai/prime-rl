@@ -113,21 +113,8 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-  # Wheels are attached while the release is still a draft, so it is never published without
-  # them — `[tool.uv.sources]` pins prime-kernels at a release asset, and an install that
-  # resolves to a wheel-less release would fall back to compiling CUDA from source.
-  kernels-from-auto-tag:
-    needs: auto-tag-on-main
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
-    permissions:
-      contents: write
-    uses: ./.github/workflows/build_kernels.yaml
-    with:
-      release_tag: ${{ needs.auto-tag-on-main.outputs.tag }}
-      ref: ${{ needs.auto-tag-on-main.outputs.tag }}
-
   release-from-auto-tag:
-    needs: [auto-tag-on-main, kernels-from-auto-tag]
+    needs: auto-tag-on-main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -219,17 +206,8 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  kernels-from-tag:
-    needs: resolve-release
-    permissions:
-      contents: write
-    uses: ./.github/workflows/build_kernels.yaml
-    with:
-      release_tag: ${{ needs.resolve-release.outputs.tag }}
-      ref: ${{ needs.resolve-release.outputs.tag }}
-
   publish-release:
-    needs: [resolve-release, kernels-from-tag]
+    needs: resolve-release
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.types import MicroBatch
-from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
+from prime_rl.utils.pathing import get_batch_dir, get_step_path, sync_wait_for_path
 
 
 class FileSystemBatchSender(BatchSender):
@@ -11,7 +11,7 @@ class FileSystemBatchSender(BatchSender):
 
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int = 0):
         super().__init__(output_dir, data_world_size)
-        self.rollout_dir = get_rollout_dir(output_dir)
+        self.batch_dir = get_batch_dir(output_dir)
         self.current_step = current_step
 
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
@@ -21,7 +21,7 @@ class FileSystemBatchSender(BatchSender):
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
-        step_path = get_step_path(self.rollout_dir, self.current_step)
+        step_path = get_step_path(self.batch_dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._encode_and_write, micro_batch_grid, step_path)
         self.current_step += 1
@@ -40,11 +40,11 @@ class FileSystemBatchReceiver(BatchReceiver):
 
     def __init__(self, output_dir: Path, data_rank: int, current_step: int = 0):
         super().__init__(output_dir, data_rank)
-        self.rollout_dir = get_rollout_dir(output_dir)
+        self.batch_dir = get_batch_dir(output_dir)
         self.current_step = current_step
 
     def _get_micro_batch_path(self) -> Path:
-        return get_step_path(self.rollout_dir, self.current_step) / f"rank_{self.data_rank}.bin"
+        return get_step_path(self.batch_dir, self.current_step) / f"rank_{self.data_rank}.bin"
 
     def wait(self) -> None:
         """Wait for the micro batch file to appear on disk."""

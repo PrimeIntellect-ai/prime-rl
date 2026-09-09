@@ -1,7 +1,7 @@
 """HF<->prime weight conversion for MiniMax M2, as a declarative op chain.
 
 Per layer: router ``block_sparse_moe.gate.weight`` <-> ``mlp.router.gate.weight``,
-the ``e_score_correction_bias`` <-> ``mlp.expert_bias``, and the routed experts
+the ``e_score_correction_bias`` <-> ``mlp.router.selection_bias``, and the routed experts
 (per-expert w1/w2/w3 ``nn.Linear`` <-> stacked gate/down/up projections). The prime-only runtime
 buffer ``mlp.tokens_per_expert`` is dropped on the way to HF.
 """
@@ -20,7 +20,7 @@ def conversion_chain(config) -> list[ConvOp]:
     for i in range(config.num_hidden_layers):
         p = f"model.layers.{i}"
         ops.append(Rename(f"{p}.block_sparse_moe.gate.weight", f"{p}.mlp.router.gate.weight"))
-        ops.append(Rename(f"{p}.block_sparse_moe.e_score_correction_bias", f"{p}.mlp.expert_bias"))
+        ops.append(Rename(f"{p}.block_sparse_moe.e_score_correction_bias", f"{p}.mlp.router.selection_bias"))
         ops.append(
             routed_experts_op(
                 p,

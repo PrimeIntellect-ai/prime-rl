@@ -213,6 +213,93 @@ def test_assign_advantages_full_length_stream():
     assert trace_to_samples(trace)[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
 
 
+def test_compaction_retries_train_only_causally_used_generations():
+    nodes = [
+        MessageNode(
+            parent=None,
+            message=UserMessage(content="work"),
+            sampled=False,
+            token_ids=[1],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=0,
+            message=AssistantMessage(content="evidence"),
+            sampled=True,
+            token_ids=[2],
+            mask=[True],
+            logprobs=[-0.1],
+        ),
+        MessageNode(
+            parent=1,
+            message=UserMessage(content="summarize"),
+            sampled=False,
+            token_ids=[3],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=2,
+            semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            message=AssistantMessage(content="rejected tool call"),
+            sampled=True,
+            token_ids=[4],
+            mask=[True],
+            logprobs=[-0.2],
+        ),
+        MessageNode(
+            parent=2,
+            semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            message=AssistantMessage(content="accepted summary"),
+            sampled=True,
+            token_ids=[5],
+            mask=[True],
+            logprobs=[-0.3],
+        ),
+        MessageNode(
+            parent=None,
+            message=UserMessage(content="compacted context"),
+            sampled=False,
+            token_ids=[6],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=5,
+            semantic_parents=[vf.ParentLink(node=4, type="compaction")],
+            message=AssistantMessage(content="answer"),
+            sampled=True,
+            token_ids=[7],
+            mask=[True],
+            logprobs=[-0.4],
+        ),
+    ]
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=nodes,
+        rewards={},
+        ok=True,
+    )
+    branches = {branch.nodes[-1].message.content: branch for branch in trace.branches}
+    assert branches["rejected tool call"].trainable is False
+    assert branches["accepted summary"].trainable is True
+    assert branches["answer"].trainable is True
+
+    assign_advantages(trace, 1.0)
+    assert trace.nodes[1].advantages == [1.0]
+    assert trace.nodes[3].advantages is None
+    assert trace.nodes[4].advantages == [1.0]
+    assert trace.nodes[6].advantages == [1.0]
+
+    trainable_ids = [
+        token_id
+        for sample in trace_to_samples(trace)
+        for token_id, trainable in zip(sample.token_ids, sample.mask, strict=True)
+        if trainable
+    ]
+
+    assert sorted(trainable_ids) == [2, 5, 7]
+
+
 def test_assign_advantages_slices_across_nodes():
     trace = _make_episode().traces[0]
     assign_advantages(trace, [1.0, 2.0, 3.0])

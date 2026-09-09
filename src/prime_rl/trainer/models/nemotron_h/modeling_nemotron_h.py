@@ -19,7 +19,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.nemotron_h.modular_nemotron_h import NemotronHMamba2Mixer
 from transformers.utils import auto_docstring, logging
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -376,6 +376,14 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     _supports_flash_attn = True
     _supports_sdpa = False
     _can_compile_fullgraph = False
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset({"ulysses"}),
+            "ring CP is a softmax-attention algorithm and cannot run this model's Mamba layers, "
+            "whereas ulysses' all-to-all on Q/K/V leaves the SSM kernel unchanged",
+        )
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

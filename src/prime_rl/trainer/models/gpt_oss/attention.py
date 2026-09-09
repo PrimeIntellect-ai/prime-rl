@@ -8,17 +8,25 @@ in its ring and Ulysses paths.
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
 
+@torch._dynamo.disable
+def _flash_attn(*args, **kwargs):
+    from flash_attn.cute import flash_attn_varlen_func
+
+    return flash_attn_varlen_func(*args, **kwargs)
+
+
 class GptOssAttention(nn.Module):
+    supported_fusions = {"qkv": fuse_qkv_projections}
+
     def __init__(self, config: GptOssConfig, layer_idx: int) -> None:
         super().__init__()
         if config.attention_dropout != 0:
             raise ValueError("The custom GPT-OSS implementation does not support attention dropout")
-
-        from flash_attn.cute import flash_attn_varlen_func
 
         self.head_dim = config.head_dim
         self.num_attention_heads = config.num_attention_heads
@@ -41,6 +49,8 @@ class GptOssAttention(nn.Module):
             config.num_key_value_heads * config.head_dim,
             bias=config.attention_bias,
         )
+        self.qkv_sizes = (self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
+        self.register_module("qkv_proj", None)
         self.o_proj = nn.Linear(
             config.num_attention_heads * config.head_dim,
             config.hidden_size,
@@ -48,7 +58,7 @@ class GptOssAttention(nn.Module):
         )
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
-        self.flash_attn = torch._dynamo.disable(flash_attn_varlen_func)
+        self.flash_attn = _flash_attn
 
     def compute_attention(
         self,
@@ -85,9 +95,13 @@ class GptOssAttention(nn.Module):
         if batch_size != 1:
             raise ValueError(f"Custom GPT-OSS expects one packed row, got batch size {batch_size}")
 
-        query = self.q_proj(hidden_states).view(batch_size, sequence_length, self.num_attention_heads, self.head_dim)
-        key = self.k_proj(hidden_states).view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
-        value = self.v_proj(hidden_states).view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
+        if self.qkv_proj is None:
+            query, key, value = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
+        else:
+            query, key, value = self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
+        query = query.view(batch_size, sequence_length, self.num_attention_heads, self.head_dim)
+        key = key.view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
+        value = value.view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
 
         cos, sin = position_embeddings
         query, key = apply_rotary_pos_emb(

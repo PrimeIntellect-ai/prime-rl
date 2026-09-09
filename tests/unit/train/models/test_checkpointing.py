@@ -5,7 +5,7 @@ from torch.utils.checkpoint import CheckpointPolicy, SelectiveCheckpointContext
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
 from prime_rl.trainer.activation_checkpointing import (
-    _full_checkpoint_policy,
+    _mandatory_checkpoint_policy,
     _selective_checkpoint_policy,
     get_activation_checkpoint_wrapper,
 )
@@ -95,23 +95,23 @@ def test_checkpoint_records_moe_routing_once(mode):
     assert hidden_states.grad is not None
 
 
-def test_full_policy_only_retains_non_replayable_ops():
+def test_mandatory_policy_only_retains_non_replayable_ops():
     context = SelectiveCheckpointContext(is_recompute=False)
 
-    assert _full_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
+    assert _mandatory_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
     assert (
-        _full_checkpoint_policy(context, torch.ops.prime_rl.record_moe_routing_statistics.default)
+        _mandatory_checkpoint_policy(context, torch.ops.prime_rl.record_moe_routing_statistics.default)
         is CheckpointPolicy.MUST_SAVE
     )
     assert (
-        _full_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
+        _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )
     assert (
-        _full_checkpoint_policy(context, torch.ops.prime_rl_collectives.mxfp8_all_to_all.default)
+        _mandatory_checkpoint_policy(context, torch.ops.prime_rl_collectives.mxfp8_all_to_all.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )
     assert (
-        _full_checkpoint_policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default)
+        _mandatory_checkpoint_policy(context, torch.ops.aten._scaled_dot_product_flash_attention.default)
         is CheckpointPolicy.PREFER_RECOMPUTE
     )

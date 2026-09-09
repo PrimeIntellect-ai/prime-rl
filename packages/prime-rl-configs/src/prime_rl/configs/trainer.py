@@ -85,6 +85,17 @@ class CompileConfig(BaseConfig):
     """Compile transformer blocks with ``fullgraph=True``."""
 
 
+class FusionsConfig(BaseConfig):
+    enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
+    """Runtime parameter fusions. ``gate_up`` runs each MoE expert's gate and up projections as one grouped GEMM; ``qkv`` runs attention's q, k and v projections as one GEMM. Only modules that support a fusion are packed, checkpoints keep the canonical parameter names and shapes, and fusions are skipped when LoRA is enabled. Set to ``[]`` to disable."""
+
+    raise_on_fail: bool = False
+    """Fail at startup when no module supports a requested fusion, instead of logging a warning and continuing without it."""
+
+    shard_fused_on_dim1: bool = False
+    """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
+
+
 class IndexCacheConfig(BaseConfig):
     topk_freq: int = Field(1, ge=1)
     """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
@@ -240,6 +251,9 @@ class ModelConfig(BaseModelConfig):
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
+    fusions: FusionsConfig = FusionsConfig()
+    """Runtime parameter fusions, on by default."""
+
     ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()
     """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
 
@@ -366,18 +380,17 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_moe_runtime(self):
+        if self.ep == 1:
+            return self
+
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(self.ep, int) and self.ep <= 1:
-                raise ValueError("model.moe.dispatch.type='deepep' requires model.ep > 1.")
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
-            if isinstance(self.ep, int) and self.ep <= 1:
-                raise ValueError("MXFP8 transport requires model.ep > 1.")
         return self
 
 
@@ -598,6 +611,9 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    overlap_transfer_and_replay: bool = False
+    """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
@@ -666,15 +682,12 @@ class TrainerConfig(BaseConfig):
     metrics_server: MetricsServerConfig | None = None
     """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
 
-    enable_token_export: bool = False
-    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
-
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
-        if self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
+        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
                 "Automatically setting optim.max_norm to None (disabled).",

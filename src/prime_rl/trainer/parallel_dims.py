@@ -25,7 +25,7 @@ import torch.distributed as dist
 from torch._utils import _get_available_device_type
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
-from prime_rl.configs.trainer import DeepEPMoEDispatchConfig, ModelConfig, TorchMoEDispatchConfig
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.utils.logger import format_time, get_logger
 
 device_type = _get_available_device_type() or "cuda"
@@ -312,21 +312,6 @@ def resolve_ep(config: ModelConfig) -> None:
 
     config.ep = resolved_ep
     get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
-
-    if isinstance(config.moe.dispatch, DeepEPMoEDispatchConfig) and config.ep <= 1:
-        raise ValueError(
-            "model.moe.dispatch.type='deepep' requires ep > 1, "
-            f"but auto-resolved ep=1 (world_size={world_size}). "
-            "Set ep explicitly or use model.moe.dispatch.type='torch'."
-        )
-    if (
-        isinstance(config.moe.dispatch, TorchMoEDispatchConfig)
-        and config.moe.dispatch.transport == "mxfp8"
-        and config.ep <= 1
-    ):
-        raise ValueError(
-            f"model.moe.dispatch.transport='mxfp8' requires ep > 1, but auto-resolved ep=1 (world_size={world_size})."
-        )
 
 
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:

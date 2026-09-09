@@ -88,6 +88,8 @@ class TrainSink:
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
+        self.pending_cancelled_attempts = 0
+        self.pending_stale_attempts = 0
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
@@ -243,6 +245,10 @@ class TrainSink:
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
         self.pending_failures.extend(failures)
+        if cancellation is not None:
+            self.pending_cancelled_attempts += cancellation.count
+            if cancellation.reason == "stale":
+                self.pending_stale_attempts += cancellation.count
 
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
@@ -277,7 +283,18 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
+                if env.requires_sampling_masks and sample.sampling_mask is None:
+                    # Rollout logprobs are mask-renormalized; training without the masks
+                    # silently biases every importance ratio.
+                    raise RuntimeError(
+                        f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
+                        "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
+                        "the inference server config (the rl entrypoint does this automatically) - "
+                        "it requires vLLM's native sampling-mask capture (>= 0.28)."
+                    )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
+            if self.config.constant_trainer_batch_size:
+                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
 
@@ -366,7 +383,7 @@ class TrainSink:
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
-        if self.config.train.filter_zero_advantages:
+        if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
                 trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
                 for trace_id, samples in selected
@@ -375,6 +392,7 @@ class TrainSink:
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
+        buffered_episode_ids = {self.episode_by_trace[trace_id].id for trace_id in self.pending_batch}
         traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[int, vf.Episode] = {}
         for trace_id in selected_ids:
@@ -390,7 +408,19 @@ class TrainSink:
 
         episodes = self.pending_episodes
         failures = self.pending_failures
+        cancelled_attempts = self.pending_cancelled_attempts
+        stale_attempts = self.pending_stale_attempts
         if samples:
             self.pending_episodes = TrainEpisodes()
             self.pending_failures = []
-        return TrainBatch(episodes=episodes, cohort=cohort, samples=samples, failures=failures)
+            self.pending_cancelled_attempts = 0
+            self.pending_stale_attempts = 0
+        return TrainBatch(
+            episodes=episodes,
+            cohort=cohort,
+            samples=samples,
+            failures=failures,
+            buffered_episode_ids=buffered_episode_ids,
+            cancelled_attempts=cancelled_attempts,
+            stale_attempts=stale_attempts,
+        )
