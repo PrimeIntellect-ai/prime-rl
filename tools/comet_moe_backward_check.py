@@ -21,7 +21,7 @@ def main():
     top_k = 2
     hidden_dim = 256
     intermediate = 128
-    block_m = 32
+    block_m = 128
     n_blocks = 16
 
     torch.manual_seed(7)
@@ -44,7 +44,7 @@ def main():
         group=group,
     )
 
-    max_capacity = 8 * num_local_tokens * top_k
+    max_capacity = 16 * num_local_tokens * top_k
     max_capacity = ((max_capacity + block_m - 1) // block_m) * block_m
     bufs = init_comet_moe_buffers(
         group,
