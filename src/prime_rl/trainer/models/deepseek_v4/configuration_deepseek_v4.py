@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from huggingface_hub.dataclasses import strict
 from transformers.configuration_utils import PretrainedConfig
@@ -125,6 +125,7 @@ class DeepseekV4Config(PretrainedConfig):
         index_n_heads: int = 64,
         index_head_dim: int = 128,
         index_topk: int = 512,
+        _attn_impl: Literal["kernel", "eager"] = "kernel",
         num_experts_per_tok: int = 6,
         n_routed_experts: int = 256,
         n_shared_experts: int = 1,
@@ -181,6 +182,9 @@ class DeepseekV4Config(PretrainedConfig):
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk
+        # Exists so tests can run toy shapes the kernel rejects; no shipped config may set it,
+        # and `to_dict` drops it so it never reaches disk.
+        self._attn_impl = _attn_impl
 
         self.partial_rotary_factor = (
             partial_rotary_factor
@@ -320,15 +324,18 @@ class DeepseekV4Config(PretrainedConfig):
                 self.rope_parameters = rope_parameters_dict
 
     def to_dict(self) -> dict[str, Any]:
-        """Drop the derived `mlp_layer_types` duck-typing shim before serializing.
+        """Drop the in-memory-only fields before serializing.
 
         `num_hash_layers` is the on-disk source of truth (matching the real checkpoint);
         `mlp_layer_types` only exists in memory so HF's real `DeepseekV4SparseMoeBlock`
         (which reads `config.mlp_layer_types[layer_idx]` directly) still works when this
-        config is handed to it, e.g. in HF-parity tests.
+        config is handed to it, e.g. in HF-parity tests. `_attn_impl` is a test knob: an
+        underscore prefix alone would not keep it out, since the base method strips an
+        explicit list of names.
         """
         output = super().to_dict()
         output.pop("mlp_layer_types", None)
+        output.pop("_attn_impl", None)
         return output
 
     def validate_layer_type(self) -> None:

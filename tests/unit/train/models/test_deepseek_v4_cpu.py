@@ -1,10 +1,3 @@
-"""DeepSeek V4 checks that need no GPU, kept out of the `gpu`-marked whole-model module.
-
-The dequantization math is a pure function over hand-built tensors, and the config checks only
-ever construct a `DeepseekV4Config`. Neither needs CUDA, and a module-level `pytest.mark.gpu`
-cannot be undone per test, so they live here and run in the CPU job.
-"""
-
 import torch
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config

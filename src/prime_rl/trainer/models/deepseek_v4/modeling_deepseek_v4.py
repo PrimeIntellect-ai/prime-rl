@@ -78,7 +78,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
 # the `selection_bias` prime-rl's router keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
-_KEEP_IN_FP32_MODULES = (
+KEEP_IN_FP32_MODULES = (
     "attn_hc",
     "ffn_hc",
     "hc_head",
@@ -100,11 +100,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV4DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention is eager-only, as in HF: FlashAttention caps the head dim at 256 while
-    # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask
-    # cannot grow to cover the compressed entries the block concatenates onto the KV axis.
-    # `DeepseekV4Attention` reads no dispatch table, so `config._attn_implementation` is
-    # inert here; these flags only keep transformers from advertising a backend we lack.
+    # V4 attention runs its own fused kernel; no transformers backend can serve it.
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False
@@ -117,7 +113,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
             frozenset(),
-            "its sliding window is a dense local mask built from post-shard document boundaries, "
+            "its sliding window is built from post-shard document boundaries, "
             "which CP's global (pre-shard) boundaries cannot address",
         )
 
@@ -133,7 +129,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return any(module_name in name for module_name in _KEEP_IN_FP32_MODULES)
+        return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -233,15 +229,15 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Rejected: the
-            window mask is dense and local, so global boundaries cannot address it.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if seq_lens_are_pre_shard:
             raise NotImplementedError(
-                "DeepSeek V4 does not support context parallelism: pre-shard document boundaries "
-                "do not address the local sliding-window mask."
+                "DeepSeek V4 does not support context parallelism: the sliding window and the "
+                "compressors' entry layout become indices into this shard's own KV buffer, and "
+                "boundaries for the whole row would put them past its end."
             )
 
         if inputs_embeds is None:
