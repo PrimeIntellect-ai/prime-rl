@@ -33,8 +33,8 @@ def enable_total_router_capture():
     original_manager_init = RoutedExpertsManager.__init__
 
     def check_config(config):
-        if config.model_config.hf_text_config.model_type not in ("qwen3_moe", "glm4_moe"):
-            raise ValueError("Experimental TRR supports Qwen3 MoE and GLM4 MoE only")
+        if config.model_config.hf_text_config.model_type != "qwen3_moe":
+            raise ValueError("Experimental TRR currently supports Qwen3 MoE only")
         if config.parallel_config.tensor_parallel_size != 1 or config.parallel_config.enable_expert_parallel:
             raise ValueError("Experimental TRR requires TP1 and EP1")
         if not config.model_config.enforce_eager:
