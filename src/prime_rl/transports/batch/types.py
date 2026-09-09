@@ -16,6 +16,10 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     data: bytes
     shape: list[int]  # [seq_len, layers, topk]
     dtype: str
+    # Append-only for compatibility with positional legacy ID-only messages.
+    weights: bytes | None = None  # v1: little-endian FP32, same [tokens, layers, topk]
+    valid: bytes | None = None  # v1: one 0/1 byte per input-token row
+    format_version: int = 0  # 0 = legacy IDs-only; 1 = paired coefficients
 
 
 # Sampling masks for top-p/top-k replay: flat int32 token-id bytes plus an

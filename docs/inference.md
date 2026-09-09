@@ -299,6 +299,69 @@ This however is not free, it adds a significant overhead to the HTTP requests as
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
 
+### Total Router Recall (experimental)
+
+Total Router Recall replays **expert IDs and captured FP32 routing coefficients**.
+It requires a vLLM build that implements `enable_return_routed_expert_weights`;
+the stock vLLM 0.28.0 package does not provide coefficient export.
+
+Add to an existing single-turn Qwen3-MoE RL recipe:
+
+```toml
+[trainer]
+enable_router_replay = true
+router_replay_mode = "ids_and_weights"
+
+[trainer.model]
+impl = "custom"
+freeze_moe_router = true
+ep = 1
+cp = 1
+
+[inference.vllm]
+moe_backend = "triton"
+```
+
+The managed launcher also enables
+`inference.vllm.enable_return_routed_expert_weights = true` and the existing ID
+capture flag. A standalone patched server needs both
+`--enable-return-routed-experts` and `--enable-return-routed-expert-weights` and the
+V2 runner. The Prime tokens endpoint requires `stream=false` for this mode.
+
+**Initial scope:** custom text-only Qwen3-MoE with normalized top-k routing and
+route scale 1, a supported modular vLLM routing backend, one generation call per
+branch, and trainer CP=EP=1. Reused-prefix/multi-turn full-mode traces, monolithic
+capture backends, speculation, disaggregated P/D and external KV offload are not
+supported and must fail rather than silently recompute coefficients. Ordinary
+in-engine prefix-cache hits remain part of the capture implementation.
+
+Direct replay bypasses the parameter-bearing router module and treats recorded
+weights as constants. Frozen router parameters remain registered for checkpointing;
+their forward hooks are not entered by the direct MoE path. Expert paths remain
+differentiable, but derivatives through the
+gating coefficients (including into incoming hidden states) are removed. This
+is not an STE or an exact gradient of the ordinary recomputed-router policy.
+Routing-confidence metrics are omitted in this mode; load counts describe actual
+dispatch slots, including zero-weight terminal/padding rows. Full-mode FSDP
+policies preserve FP32 coefficient inputs instead of casting them to BF16.
+
+The wire record pairs ID bytes, FP32 weights and input-row validity. Packing and
+truncation transform them together. CPU ingress also requires distinct expert IDs
+and normalized coefficients on real captured rows (with FP32 roundoff tolerance,
+without renormalizing the payload). A missing final sampled-token input row is
+allowed only where it cannot affect any later trained prediction; missing real
+context rows are errors. The existing IDs-only format and mode remain supported.
+
+FP32 weights add `4 * token_rows * layer_slots * top_k` bytes. For 32K rows,
+48 layers and top-8, weights add 48 MiB before HTTP/base64 overhead. Capture
+history also grows over the engine's CPU KV-slot pool. No out-of-band blob store
+or reduced-precision coefficient encoding is included in this MVP.
+
+**Qualification:** GPU eager/graph, prefix-cache and trainer FSDP/checkpoint tests
+must pass on the intended GPU/backend before this experimental mode is used for
+training. CPU tests alone do not establish GPU correctness, throughput or
+training-quality improvements.
+
 ### Sampling Replay
 
 Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over a sampling mask of surviving token ids. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same mask — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: vLLM records the sampling mask at sampling time (`--return-sampling-mask`, native since vLLM 0.28) and the trainer renormalizes its logprobs over it.

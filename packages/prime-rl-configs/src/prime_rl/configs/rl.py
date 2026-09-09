@@ -608,9 +608,15 @@ class RLConfig(BaseConfig):
                         stacklevel=2,
                     )
                 self.inference.vllm.enable_return_routed_experts = True
+                if self.trainer.router_replay_mode == "ids_and_weights":
+                    self.inference.vllm.enable_return_routed_expert_weights = True
+                    # InferenceConfig validators ran before these managed flags were set.
+                    self.inference.validate_router_weight_capture()
             else:
                 warnings.warn(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
+                    "Router replay is enabled, but inference is not configured. Pass "
+                    "`--enable-return-routed-experts` to the vLLM server. For ids_and_weights, "
+                    "also pass `--enable-return-routed-expert-weights` to a TRR-patched vLLM V2 server.",
                     stacklevel=2,
                 )
         return self

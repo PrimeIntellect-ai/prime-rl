@@ -664,6 +664,12 @@ class TrainerConfig(BaseConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    router_replay_mode: Literal["ids", "ids_and_weights"] = "ids"
+    """Replay expert IDs only, or IDs and recorded FP32 coefficients (Total Router Recall).
+    The initial coefficient mode requires a frozen custom Qwen3-MoE router, CP=EP=1,
+    and single-turn rollouts from the patched vLLM V2 runner. It is not an STE mode.
+    """
+
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 
@@ -788,4 +794,17 @@ class TrainerConfig(BaseConfig):
         if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
             raise ValueError("Router replay is only supported with the custom implementation or auto mode")
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_router_weight_replay(self):
+        if self.router_replay_mode == "ids_and_weights":
+            if not self.enable_router_replay:
+                raise ValueError("ids_and_weights requires enable_router_replay=true")
+            if not self.model.freeze_moe_router:
+                raise ValueError("ids_and_weights requires model.freeze_moe_router=true")
+            if self.model.cp != 1 or self.model.ep != 1:
+                raise ValueError("ids_and_weights currently requires model.cp=1 and model.ep=1")
+            if self.model.vlm is not None:
+                raise ValueError("ids_and_weights currently supports text-only Qwen3-MoE")
         return self

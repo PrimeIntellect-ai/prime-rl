@@ -74,6 +74,11 @@ class PrimeRlServingTokens(ServingTokens):
         request: GenerateRequest,
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
+        if getattr(self.model_config, "enable_return_routed_expert_weights", False) and request.stream:
+            return self.create_error_response(
+                "Total Router Recall currently requires stream=false on the tokens endpoint"
+            )
+
         # Upstream parses ``request.kv_transfer_params`` but never threads it
         # into the engine, so decode receives an empty NIXL handshake and
         # re-prefills the prompt locally (~100x slower under concurrency).
@@ -103,6 +108,8 @@ class PrimeRlServingTokens(ServingTokens):
             capture = _GenerateRoutedExpertsCapture(
                 result_generator,
                 start=request.sampling_params.routed_experts_prompt_start,
+                require_weights=getattr(self.model_config, "enable_return_routed_expert_weights", False),
+                num_experts=self.model_config.get_num_experts(),
             )
             result_generator = capture
 

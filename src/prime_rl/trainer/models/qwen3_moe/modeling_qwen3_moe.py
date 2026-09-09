@@ -35,6 +35,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
+from prime_rl.trainer.routing_replay import RoutingReplay, select_routing_layer
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
@@ -94,7 +95,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        routed_experts: Optional[torch.LongTensor] = None,
+        routed_experts: torch.Tensor | RoutingReplay | None = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -181,14 +182,16 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
+        routed_experts: torch.Tensor | RoutingReplay | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
+        routed_experts (`torch.Tensor` or `RoutingReplay`, *optional*):
+            Expert IDs, or paired IDs and final FP32 coefficients, with shape
+            `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`.
+            A pair uses constant coefficients and skips the router gate.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
@@ -210,7 +213,7 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = select_routing_layer(routed_experts, layer_idx)
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -263,7 +266,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
+        routed_experts: torch.Tensor | RoutingReplay | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -284,8 +287,10 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
+        routed_experts (`torch.Tensor` or `RoutingReplay`, *optional*):
+            Expert IDs, or paired IDs and final FP32 coefficients, with shape
+            `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`.
+            A pair uses constant coefficients and skips the router gate.
 
         Example:
 

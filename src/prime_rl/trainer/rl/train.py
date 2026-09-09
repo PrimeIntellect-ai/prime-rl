@@ -18,7 +18,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_router_replay
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -43,6 +43,7 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
+    validate_full_router_replay_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -129,6 +130,12 @@ def train(config: TrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
+    full_router_replay = config.router_replay_mode == "ids_and_weights"
+    if full_router_replay:
+        if not config.enable_router_replay or not config.model.freeze_moe_router:
+            raise ValueError("ids_and_weights requires enable_router_replay=true and model.freeze_moe_router=true")
+        if parallel_dims.cp != 1 or parallel_dims.ep != 1 or config.model.vlm is not None:
+            raise ValueError("Full routing replay does not support CP>1, EP>1, or VLM training")
 
     # Check for checkpoint to resume from
     checkpoint_step = None
@@ -147,7 +154,11 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, full_router_replay=full_router_replay)
+    if full_router_replay:
+        validate_full_router_replay_model(
+            model, cp_size=parallel_dims.cp, ep_size=parallel_dims.ep, has_vlm=config.model.vlm is not None
+        )
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -352,6 +363,15 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
+            # Validate complete CPU routing inputs before transferring either
+            # stream. Full mode cannot silently degrade to IDs-only replay.
+            cpu_routing = prepare_router_replay(
+                micro_batch,
+                enabled=config.enable_router_replay,
+                mode=config.router_replay_mode,
+                model_config=model.config,
+            )
+            routed_experts = cpu_routing.to("cuda") if cpu_routing is not None else None
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -363,19 +383,6 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
-            routed_experts = (
-                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
-            )
-
-            if routed_experts is None and config.enable_router_replay:
-                raise ValueError(
-                    "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
-                )
-
-            if routed_experts is not None and not config.enable_router_replay:
-                # we could've gotten routed experts from the inference server, but we didn't enable router replay
-                routed_experts = None
-
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
@@ -561,7 +568,11 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
+                load_balance_stats = get_load_balance_stats(
+                    model,
+                    try_to_avoid_padding_experts=not full_router_replay,
+                    include_routing_confidence=not full_router_replay,
+                )
                 for k, v in load_balance_stats.items():
                     if v is not None:
                         tensors[k].append(v)

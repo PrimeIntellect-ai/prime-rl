@@ -11,8 +11,11 @@ deltas here:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pybase64
+import pytest
 from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
 
@@ -88,3 +91,13 @@ def test_generate_response_post_process_replaces_upstream_routed_experts():
     payload = processed.model_dump(mode="json")
     assert payload["choices"][0]["routed_experts"] == compact_routed_experts
     assert payload["usage"]["total_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_full_routing_replay_rejects_streaming_before_upstream():
+    serving = SimpleNamespace(
+        model_config=SimpleNamespace(enable_return_routed_expert_weights=True),
+        create_error_response=lambda message: {"error": message},
+    )
+    response = await PrimeRlServingTokens.serve_tokens(serving, SimpleNamespace(stream=True))
+    assert "stream=false" in response["error"]
