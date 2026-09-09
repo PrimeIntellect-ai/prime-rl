@@ -1,8 +1,9 @@
+import re
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -180,19 +181,46 @@ class MXFP8Config(BaseConfig):
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
 
 
-class BF16MoEComputeConfig(BaseConfig):
+class MoEComputeConfigBase(BaseConfig):
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
+    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    """
+
+    @field_validator("apply_to")
+    @classmethod
+    def validate_apply_to(cls, value: str | list[int]) -> str | list[int]:
+        if isinstance(value, str) and value != "all":
+            if re.fullmatch(r"\d+(?:\.\d+)?%", value) is None or float(value[:-1]) > 100:
+                raise ValueError('apply_to must be "all", a percentage from "0%" to "100%", or a list of layer indices')
+        return value
+
+    def resolve_layers(self, num_layers: int) -> set[int]:
+        if isinstance(self.apply_to, list):
+            invalid = [index for index in self.apply_to if index >= num_layers]
+            if invalid:
+                raise ValueError(
+                    f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
+                )
+            return set(self.apply_to)
+        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
+        return set(range(count))
+
+
+class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
 
 
-class DeepGemmFP8MoEComputeConfig(BaseConfig):
+class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
 
-class MXFP8MoEComputeConfig(BaseConfig):
+class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"

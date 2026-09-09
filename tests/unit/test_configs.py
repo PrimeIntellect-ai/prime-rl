@@ -189,7 +189,46 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     ],
 )
 def test_supported_moe_runtime_configs(model):
-    TrainerModelConfig.model_validate(model)
+    config = TrainerModelConfig.model_validate(model)
+    assert config.moe.compute.resolve_layers(43) == set(range(43))
+
+
+@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
+@pytest.mark.parametrize(
+    ("selection", "num_layers", "selected"),
+    [
+        ("all", 10, set(range(10))),
+        ("85%", 48, set(range(40))),
+        ("100%", 3, {0, 1, 2}),
+        ("0%", 3, set()),
+        ("33.3%", 10, {0, 1, 2}),
+        ([], 10, set()),
+        ([2, 0], 10, {0, 2}),
+        ([0, 2, 2], 3, {0, 2}),
+    ],
+)
+def test_moe_compute_apply_to(backend, selection, num_layers, selected):
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": selection}}})
+    config = TrainerModelConfig.model_validate_json(config.model_dump_json())
+    assert config.moe.compute.resolve_layers(num_layers) == selected
+
+
+@pytest.mark.parametrize("selection", ["*", "model.layers.*", "", "101%", "-1%", "nan%", [-1], [1.5], [True]])
+def test_moe_compute_rejects_invalid_apply_to(selection):
+    with pytest.raises(ValidationError, match="apply_to"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+
+
+def test_moe_compute_rejects_out_of_range_layer():
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [3]}}})
+    with pytest.raises(ValueError, match="out of range"):
+        config.moe.compute.resolve_layers(3)
+
+
+@pytest.mark.parametrize(("selection", "selected"), [("all", {0, 1, 2}), ("50%", {0}), ("[0, 2]", {0, 2})])
+def test_moe_compute_apply_to_cli(selection, selected):
+    config = cli(TrainerModelConfig, args=["--moe.compute.type", "mxfp8", "--moe.compute.apply-to", selection])
+    assert config.moe.compute.resolve_layers(3) == selected
 
 
 @pytest.mark.parametrize(
