@@ -21,8 +21,6 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
 
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM as PrimeRLDeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
@@ -33,7 +31,6 @@ from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMi
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
-from prime_rl.utils.weights import load_state_dict, save_state_dict
 
 setup_logger("info")
 
@@ -79,76 +76,6 @@ def _qwen3_5_moe_vlm_config():
 
 
 ARCH_PRESETS = {
-    "deepseek_v4": {
-        "config_class": DeepseekV4Config,
-        "config_kwargs": dict(
-            # The real vocabulary, because the fake data loader draws token ids from the
-            # tokenizer's range and a narrower embedding would index out of bounds.
-            vocab_size=129280,
-            hidden_size=256,
-            moe_intermediate_size=128,
-            num_hidden_layers=5,
-            # The smallest shape the fused sparse-attention kernel serves: it tiles a
-            # power-of-two head count of at least 32 per KV group and reads whole 32-channel
-            # tiles of the head dimension. Anything smaller is eager-only.
-            num_attention_heads=32,
-            num_key_value_heads=1,
-            head_dim=64,
-            q_lora_rank=128,
-            partial_rotary_factor=0.5,
-            rope_theta=10000.0,
-            compress_rope_theta=160000.0,
-            # The real checkpoint's YaRN scaling on the compress branch, rescaled to this
-            # model's context: `factor` still takes `original_max_position_embeddings` to
-            # `max_position_embeddings`.
-            rope_parameters={
-                "rope_type": "yarn",
-                "factor": 16,
-                "original_max_position_embeddings": 256,
-                "beta_fast": 32,
-                "beta_slow": 1,
-            },
-            max_position_embeddings=4096,
-            sliding_window=32,
-            o_groups=4,
-            o_lora_rank=64,
-            # The real model's own opening schedule, which covers all three attention types.
-            layer_types=[
-                "sliding_attention",
-                "sliding_attention",
-                "compressed_sparse_attention",
-                "heavily_compressed_attention",
-                "compressed_sparse_attention",
-            ],
-            compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 32},
-            # The real V4-Flash Lightning Indexer shapes. `fp8_indexer` does
-            # `tl.arange(0, index_head_dim)`, so the head dimension has to be a power of two.
-            index_n_heads=64,
-            index_head_dim=128,
-            index_topk=32,
-            n_routed_experts=8,
-            num_experts_per_tok=3,
-            n_shared_experts=1,
-            num_hash_layers=2,
-            scoring_func="sqrtsoftplus",
-            topk_method="noaux_tc",
-            norm_topk_prob=True,
-            routed_scaling_factor=1.5,
-            swiglu_limit=10.0,
-            hc_mult=4,
-            hc_sinkhorn_iters=20,
-            hc_eps=1e-6,
-            rms_norm_eps=1e-6,
-            bos_token_id=0,
-            eos_token_id=1,
-        ),
-        # No correct HF implementation of DeepSeek V4 exists here, so there is nothing to
-        # cross-check logits against: the model is built from the PrimeRL class and saved
-        # under the names the published checkpoint ships.
-        "prime_model_class": PrimeRLDeepseekV4ForCausalLM,
-        "tokenizer_source": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "prime_only": True,
-    },
     "glm4_moe": {
         "config_class": Glm4MoeConfig,
         "config_kwargs": dict(
@@ -303,13 +230,12 @@ def create(arch: str, output_dir: Path) -> None:
     preset = ARCH_PRESETS[arch]
     config = _build_config(preset)
 
-    prime_only = preset.get("prime_only", False)
     text_config = getattr(config, "text_config", config)
     print(f"Creating mini {arch} model...")
     print(f"  hidden_size={text_config.hidden_size}, layers={text_config.num_hidden_layers}")
 
     with torch.device("cpu"):
-        model = preset["prime_model_class"](config) if prime_only else _create_hf_model(preset, config)
+        model = _create_hf_model(preset, config)
 
     param_count = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {param_count / 1e6:.1f}M")
@@ -318,43 +244,13 @@ def create(arch: str, output_dir: Path) -> None:
     tokenizer = AutoTokenizer.from_pretrained(preset["tokenizer_source"], trust_remote_code=True)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    if prime_only:
-        # `save_pretrained` would write PrimeRL's own module names. The trainer's loader converts
-        # from the names the published checkpoint ships, so write the checkpoint it expects.
-        config.architectures = [type(model).__name__]
-        config.save_pretrained(output_dir)
-        save_state_dict(model.convert_to_hf(dict(model.state_dict())), output_dir)
-    else:
-        model.save_pretrained(output_dir)
+    model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"  Saved to {output_dir}")
 
 
-def _verify_prime_only(preset, model_dir: Path) -> None:
-    """Verify the published-format checkpoint lands on every PrimeRL parameter.
-
-    With no HF implementation there is no second forward pass to compare against, so what is
-    left to check is the naming: a strict `load_state_dict` raises on any key the conversion
-    chain leaves in the wrong place, and on any parameter the checkpoint never reaches.
-    """
-    print(f"Verifying on-disk -> PrimeRL weight conversion for {model_dir}...")
-    config = AutoConfig.from_pretrained(str(model_dir))
-    model = preset["prime_model_class"]._from_config(config)
-
-    state_dict = load_state_dict(model_dir)
-    model.convert_to_prime(state_dict)
-    model.load_state_dict(state_dict)
-
-    print(f"  Loaded {len(state_dict)} tensors onto {type(model).__name__}")
-    print("  Verification passed.")
-
-
 def verify(arch: str, model_dir: Path) -> None:
     preset = ARCH_PRESETS[arch]
-    if preset.get("prime_only", False):
-        _verify_prime_only(preset, model_dir)
-        return
-
     is_vlm = preset.get("is_vlm", False)
     print(f"Verifying HF <-> PrimeRL roundtrip for {model_dir}...")
 
