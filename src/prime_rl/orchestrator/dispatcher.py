@@ -416,6 +416,8 @@ class Dispatcher:
                 return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
+            if self.rate_limiter is not None and not self.rate_limiter.has_capacity():
+                return
 
             async with self.scheduling_lock:
                 if self.policy_update_pending:

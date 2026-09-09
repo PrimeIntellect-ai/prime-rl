@@ -27,6 +27,10 @@ class EvalsEvalConfig(EvalConfig):
     """Adaptive in-flight episode concurrency (``[eval.concurrency]``), sized by the
     same controller as the orchestrator's ``[orchestrator.concurrency]``."""
 
+    tasks_per_minute: int | None = Field(None, ge=1)
+    """Limit episode admissions to fit sandbox creation capacity, leaving headroom
+    for judge sandboxes and retries. None disables this rate limit."""
+
     cancel_on_new_checkpoint: bool = True
     """For online evals, cancel unfinished episodes when a newer trainer checkpoint is ready.
     Disable to finish every triggered eval epoch before loading later weights. The trainer can
