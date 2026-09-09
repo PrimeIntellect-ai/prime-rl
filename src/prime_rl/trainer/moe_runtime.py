@@ -65,10 +65,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
     grouped_gemm = _resolve_grouped_gemm(config)
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
-    if ep_mesh is None and isinstance(dispatch, DeepEPMoEDispatchConfig):
-        raise ValueError("DeepEP token dispatch requires model.ep > 1.")
-    if ep_mesh is None and isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
-        raise ValueError("MXFP8 token transport requires model.ep > 1.")
 
     for moe in moe_layers:
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:

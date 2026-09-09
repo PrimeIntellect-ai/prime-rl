@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
+  - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
@@ -37,7 +38,8 @@ impl = "custom"        # or "hf" to force the HF path
 
 Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
 
-GPT-OSS owns its FlashAttention 4 path because learned attention sinks are part of the model semantics.
+GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
+and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
 
 ### Low-precision training
 
@@ -73,7 +75,7 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
 - **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
-- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries are installed by `uv sync --all-extras`.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml
 [trainer.model.moe.dispatch]
@@ -83,6 +85,24 @@ token_chunk_size = 4096
 ```
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
+
+### Runtime Fusions
+
+`model.fusions` packs parameters that are always computed together into one tensor, turning several GEMMs into one. Both fusions are on by default:
+
+- `gate_up` — each gated MoE expert's `gate_proj` and `up_proj` become one `[num_experts, 2 * intermediate_size, hidden_size]` weight, halving the routed-expert grouped GEMMs.
+- `qkv` — an attention layer's `q_proj`, `k_proj` and `v_proj` (and their biases) become one linear layer.
+
+```toml
+[trainer.model.fusions]
+enabled = ["gate_up", "qkv"]   # [] disables
+```
+
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning, or fails at startup with `raise_on_fail = true`. Fusions are skipped when LoRA is enabled.
+
+Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
+
+The experimental `shard_fused_on_dim1 = true` shards fused 2-D weights along dim 1 under FSDP, which makes weight loading and checkpointing zero-copy: fused weights and their optimizer state are read and written in place rather than assembled into a full copy on each rank first. It requires `hidden_size` to be divisible by the FSDP shard mesh size.
 
 ## Multimodal Training
 
@@ -162,7 +182,7 @@ If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
 ```bash
 salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
-uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
 ```
 
 The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version. Re-run both commands after every `uv sync`, since the lock pins the wheel.

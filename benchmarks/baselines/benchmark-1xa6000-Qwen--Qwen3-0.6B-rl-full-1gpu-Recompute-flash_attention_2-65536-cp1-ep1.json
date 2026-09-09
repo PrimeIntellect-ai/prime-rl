@@ -6,43 +6,46 @@
     "lora_rank": null,
     "seq_len": 65536,
     "ac": "Recompute",
+    "selective_targets": null,
     "attention": "flash_attention_2",
-    "output": "benchmark_result.json",
+    "output": "benchmarks/baselines/benchmark-1xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json",
     "dry_run": false,
-    "timeout": 1500,
+    "timeout": 600,
+    "max_steps": 4,
     "micro_batches": 2,
     "ep": 1,
     "cp": 1,
+    "fused_lm_head_token_chunk_size": 1024,
     "docker_image": null,
     "device_name": "NVIDIA RTX A6000",
-    "commit_sha": "c88d08fdf",
-    "timestamp": "2026-06-24T22:50:40+00:00",
+    "commit_sha": "7007d2ef",
+    "timestamp": "2026-08-29T02:35:31.543870+00:00",
     "success": true,
     "error_reason": null,
-    "time_taken": 276.12556480802596
+    "time_taken": 295.5118532651104
   },
   "metrics": {
     "mfu": {
-      "mean": 20.802552047875178,
-      "std": 0.16199364988631793,
-      "min": 20.664358307416567,
-      "max": 20.98082222151257
+      "mean": 16.701924322664684,
+      "std": 0.0999595293790186,
+      "min": 16.586575698092034,
+      "max": 16.763194274056005
     },
     "throughput": {
-      "mean": 2484.411208996455,
-      "std": 19.346608946709658,
-      "min": 2467.9069802355616,
-      "max": 2505.7016937694384
+      "mean": 1994.6806480062144,
+      "std": 11.937986005933869,
+      "min": 1980.9047701633856,
+      "max": 2001.998007610024
     },
     "step_time": {
-      "mean": 52.79691480938345,
-      "std": 0.4071756223542672,
-      "min": 52.35017399210483,
-      "max": 53.14720633160323
+      "mean": 65.74198961785685,
+      "std": 0.3962098986964774,
+      "min": 65.49867434287444,
+      "max": 66.19917749473825
     },
     "peak_memory": {
-      "gib": 11.728515625,
-      "pct": 24.742767157118376
+      "gib": 11.591145833333334,
+      "pct": 24.45296844104
     }
   }
 }

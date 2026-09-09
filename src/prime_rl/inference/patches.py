@@ -20,6 +20,26 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_deepseek_v4_allowed_layer_types()
+    monkey_patch_deepseek_v4_per_layer_rope()
+    monkey_patch_deepseek_v4_bf16_o_proj()
+
+
+def monkey_patch_deepseek_v4_allowed_layer_types():
+    """Let vLLM's `DeepseekV4Config` construct under a transformers pin below 5.15.
+
+    `vllm/transformers_utils/configs/deepseek_v4.py` leaves `layer_types` to
+    `PretrainedConfig`, whose validator checks it against a vocabulary that only gained V4's
+    compressed attention names in transformers 5.15, so `AutoConfig.from_pretrained` on any
+    DeepSeek V4 checkpoint raises. vLLM declares `transformers>=5.5.3`, so this is a gap in
+    upstream's own version floor rather than something prime-rl introduced.
+
+    `EngineArgs.__post_init__` loads general plugins before `create_model_config`, which is why
+    patching here is early enough. The trainer applies the same shim on its own import path.
+    """
+    from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
+
+    allow_deepseek_v4_layer_types()
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -105,6 +125,110 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_deepseek_v4_bf16_o_proj():
+    """Run DeepSeek V4's output projection in bf16 when the weights are not FP8.
+
+    vLLM's DeepSeek V4 output projection is FP8-only. All three CUDA attention
+    classes (``DeepseekV4FlashMLAAttention``,
+    ``DeepseekV4FlashInferMLAAttention``, ``DeepseekV4FlashInferSM120Attention``)
+    implement ``_o_proj`` by calling ``deep_gemm_fp8_o_proj``
+    (``vllm/models/deepseek_v4/nvidia/ops/o_proj.py``), which dereferences
+    ``wo_a.weight_scale``, falling back to ``wo_a.weight_scale_inv``, and hands
+    the result to DeepGEMM's ``fp8_einsum``. There is no branch on quant config
+    or weight dtype, and ``_o_proj`` is an ``@abstractmethod`` dispatched purely
+    by platform subclass, so no attention backend routes around it. A bf16
+    checkpoint has neither attribute and therefore fails with
+    ``AttributeError: 'ColumnParallelLinear' object has no attribute
+    'weight_scale_inv'``.
+
+    Quantizing is not an answer, because nothing quantizes by default:
+    ``[inference.vllm] quantization`` is unset, which leaves vLLM to infer the
+    scheme from the checkpoint. bf16 DeepSeek V4 checkpoints are a first-class
+    artifact here, written by ``tools/convert_fp8_to_bf16.py``,
+    ``tools/convert_dcp_to_bf16.py``, and trainer exports, and they carry no
+    scales for the op to find. Passing ``--quantization fp8_per_block`` does
+    produce a correct ``weight_scale_inv`` and is a genuine alternative on
+    hardware whose DeepGEMM build has block-scaled FP8 kernels, but it changes
+    the served numerics, so it is a deployment decision rather than a fix for
+    serving the bf16 weights as given.
+
+    Only the unquantized case is redirected: an FP8 weight keeps using vLLM's own
+    kernel, so a real FP8-serialized checkpoint behaves exactly as before. The
+    condition is the weight dtype rather than the presence of
+    ``weight_scale_inv``, so a checkpoint that *is* quantized but whose scales
+    ended up in the wrong layout still fails loudly instead of being silently
+    rerouted.
+
+    The replacement mirrors the Triton kernel's arithmetic
+    (``vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py:95-105``)
+    without the quantization step. The trailing ``rope_dim`` channels of each head
+    carry an inverse RoPE over interleaved pairs, with ``cos_sin_cache`` holding
+    ``rope_dim // 2`` cosines followed by the matching sines:
+
+        y[even] = x[even] * cos + x[odd] * sin
+        y[odd]  = x[odd]  * cos - x[even] * sin
+
+    The remaining ``nope_dim`` channels pass through. The projection is the same
+    grouped contraction ``fp8_einsum`` performs, with the group axis recovered by
+    reshaping: head ``g * heads_per_group + i`` belongs to group ``g`` at offset
+    ``i * head_dim``, matching the kernel's own
+    ``g = pid_gh // heads_per_group`` indexing.
+
+    Rotation is computed in fp32 and the contraction runs in bf16, whose CUDA
+    matmuls accumulate in fp32. That is strictly more accurate than the FP8 path
+    it replaces, and it avoids materializing an fp32 copy of the attention output.
+    """
+    from vllm.models.deepseek_v4.nvidia import flashinfer_sparse, flashmla
+    from vllm.models.deepseek_v4.nvidia.ops import o_proj as o_proj_module
+
+    original_o_proj = o_proj_module.deep_gemm_fp8_o_proj
+    if getattr(original_o_proj, "_prime_rl_has_bf16_fallback", False):
+        return
+
+    def _inverse_rope(o, positions, cos_sin_cache, rope_dim):
+        num_tokens, num_heads, head_dim = o.shape
+        half_rope = rope_dim // 2
+        cos_sin = cos_sin_cache[positions].float()
+        cos = cos_sin[:, :half_rope].view(num_tokens, 1, half_rope)
+        sin = cos_sin[:, half_rope:].view(num_tokens, 1, half_rope)
+
+        rotated = o[:, :, head_dim - rope_dim :].float().reshape(num_tokens, num_heads, half_rope, 2)
+        even, odd = rotated[..., 0], rotated[..., 1]
+        pairs = torch.stack((even * cos + odd * sin, odd * cos - even * sin), dim=-1)
+
+        out = o.clone()
+        out[:, :, head_dim - rope_dim :] = pairs.reshape(num_tokens, num_heads, rope_dim).to(o.dtype)
+        return out
+
+    def _patched_o_proj(o, positions, cos_sin_cache, wo_a, wo_b, *, n_groups, heads_per_group, **kwargs):
+        if wo_a.weight.dtype == torch.float8_e4m3fn:
+            return original_o_proj(
+                o,
+                positions,
+                cos_sin_cache,
+                wo_a,
+                wo_b,
+                n_groups=n_groups,
+                heads_per_group=heads_per_group,
+                **kwargs,
+            )
+
+        x = _inverse_rope(o, positions, cos_sin_cache, kwargs["rope_dim"])
+        x = x.reshape(o.shape[0], n_groups, heads_per_group * o.shape[-1])
+        weight = wo_a.weight.view(n_groups, kwargs["o_lora_rank"], -1)
+        z = torch.einsum("tgr,gdr->tgd", x, weight)
+        return wo_b(z.flatten(1))
+
+    _patched_o_proj._prime_rl_has_bf16_fallback = True
+    o_proj_module.deep_gemm_fp8_o_proj = _patched_o_proj
+
+    # Both attention modules did `from ...ops.o_proj import deep_gemm_fp8_o_proj` at
+    # import time, so patching the defining module alone would not reach the names
+    # their `_o_proj` methods actually call.
+    flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
+    flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
 
 
 def monkey_patch_nano_v3_reasoning_parser():
@@ -210,7 +334,6 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
-    from vllm import envs
     from vllm.config.vllm import VllmConfig
     from vllm.logger import init_logger
 
@@ -236,8 +359,10 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
 
         if config.parallel_config.pipeline_parallel_size > 1:
             raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
-        if envs.VLLM_USE_V2_MODEL_RUNNER:
-            raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: routed experts capture")
+        if config.use_v2_model_runner:
+            raise ValueError(
+                "Routed-expert capture with NIXL requires the V1 model runner. Set VLLM_USE_V2_MODEL_RUNNER=0."
+            )
 
         # vLLM rejects every KV connector, but our P/D path uses NIXL and
         # stitches prefill/decode routed experts in the router. CPU KV offload
@@ -612,32 +737,6 @@ def monkey_patch_minimax_m2_for_lora():
     )
 
 
-def monkey_patch_harmony_stop_token_propagation():
-    """Fix: vLLM doesn't merge harmony stop tokens into per-request SamplingParams.
-
-    The harmony mode sets stop_token_ids (including <|call|> and <|return|>) in
-    default_sampling_params at server init, but ChatCompletionRequest.to_sampling_params()
-    ignores them, using only self.stop_token_ids (which defaults to []).
-
-    Upstream: https://github.com/vllm-project/vllm/issues/22519
-    """
-    from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-
-    _original_to_sampling_params = ChatCompletionRequest.to_sampling_params
-
-    def _patched_to_sampling_params(self, max_tokens, default_sampling_params):
-        params = _original_to_sampling_params(self, max_tokens, default_sampling_params)
-        # Merge harmony stop tokens from default_sampling_params
-        default_stop_ids = default_sampling_params.get("stop_token_ids", [])
-        if default_stop_ids:
-            existing = set(params.stop_token_ids or [])
-            merged = list(existing | set(default_stop_ids))
-            params.stop_token_ids = merged
-        return params
-
-    ChatCompletionRequest.to_sampling_params = _patched_to_sampling_params
-
-
 def monkey_patch_no_moe_lora():
     """This disables LoRA for MoE layers and makes them pick better kernels.
 
@@ -720,45 +819,6 @@ def monkey_patch_fp32_lm_head():
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
 
 
-def monkey_patch_fp32_router_logits():
-    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x glm_moe_dsa).
-
-    vLLM's DeepseekV2MoE gate is a GateLinear with a bf16 weight and no out_dtype,
-    so router logits are rounded to bf16 before expert scoring. GLM-5.x was trained
-    with fp32 routing (Megatron ``--moe-router-dtype fp32``); upstream now runs its
-    gate fully in fp32 (vllm-project/vllm#47410, not in the pinned release).
-    Setting ``out_dtype=float32`` routes the gate through GateLinear's cuBLAS
-    bf16xbf16->fp32 tier: same GEMM, but the fp32 accumulator is written out
-    unrounded. Unlike the upstream PR, the gate weight stays bf16, so the LoRA
-    Triton kernel dtype assert and the bf16 weight-broadcast path are unaffected.
-
-    Activated by ``additional_config["fp32_router_logits"] = True``; the launcher
-    sets this when ``inference.enable_fp32_router_logits`` is set. The flag is read
-    at module construction, where vLLM guarantees a ``set_current_vllm_config()``
-    context. No-op if something else already set an out_dtype (e.g. the ROCm AITER
-    branch, whose kernel wants matching dtypes).
-    """
-    import torch
-    from vllm.config import get_current_vllm_config
-    from vllm.logger import init_logger
-    from vllm.model_executor.models.deepseek_v2 import DeepseekV2MoE
-
-    logger = init_logger(__name__)
-
-    _original_init = DeepseekV2MoE.__init__
-
-    def _patched_init(self, *args, **kwargs):
-        _original_init(self, *args, **kwargs)
-        additional_config = get_current_vllm_config().additional_config or {}
-        if not additional_config.get("fp32_router_logits", False):
-            return
-        if self.gate.out_dtype is None:
-            self.gate.set_out_dtype(torch.float32)
-
-    DeepseekV2MoE.__init__ = _patched_init
-    logger.info("Installed fp32 router logits patch (self-gates on additional_config['fp32_router_logits']).")
-
-
 def monkey_patch_dp_coordinator_startup_timeout():
     """Raise the DP coordinator startup timeout from vLLM's hard-coded 120s.
 
@@ -790,3 +850,124 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+_DEEPSEEK_V4_YARN_ROPE_TYPES = frozenset({"yarn", "deepseek_yarn", "deepseek_llama_scaling"})
+
+
+def _deepseek_v4_rope_parameters(rope_parameters, *, compress_ratio, max_position_embeddings):
+    """Flat, single-layer rope parameters for `build_deepseek_v4_rope`.
+
+    Handles both on-disk schemas. The real checkpoint ships a flat legacy `rope_scaling`, which
+    vLLM's config shim normalizes in place. HF's own `DeepseekV4Config` nests the parameters
+    under `main`/`compress` rope-type labels instead, and so does this repo's port. vLLM's shim
+    cannot read that: `is_rope_parameters_nested` only recognizes nesting by *attention* layer
+    type, so transformers leaves the sub-dicts alone and injects a top-level
+    `rope_type="default"` beside them. Upstream then builds unscaled RoPE for every layer and
+    hands `get_rope` a cache key containing a dict, which is unhashable. Selecting the branch
+    this layer wants resolves both. Upstream picks the base from `config.rope_theta` /
+    `config.compress_rope_theta` on its own either way.
+    """
+    rope_parameters = rope_parameters if isinstance(rope_parameters, dict) else {}
+    # `compress_ratio` is already clamped to >= 1 by the caller, so <= 1 is "no compressor",
+    # i.e. the reference's `else` branch. vLLM lumps the MTP layers in here too.
+    is_sliding = compress_ratio <= 1
+
+    if any(isinstance(value, dict) for value in rope_parameters.values()):
+        label = "main" if is_sliding else "compress"
+        branch = rope_parameters.get(label)
+        if not isinstance(branch, dict):
+            raise ValueError(
+                f"DeepSeek V4 rope_parameters is nested by rope type but has no {label!r} "
+                f"sub-dict; found {sorted(rope_parameters)}."
+            )
+        parameters = dict(branch)
+    else:
+        parameters = dict(rope_parameters)
+
+    rope_type = parameters.get("rope_type", parameters.get("type", "default"))
+    if is_sliding or rope_type not in _DEEPSEEK_V4_YARN_ROPE_TYPES:
+        # Plain RoPE, written as YaRN with `factor=1` rather than as `rope_type="default"`.
+        # The table is the same either way, since `_compute_inv_freq`'s interpolated and
+        # extrapolated frequencies coincide at `factor=1` and `yarn_get_mscale` returns 1.0,
+        # but `"default"` would route `get_rope` to a plain `RotaryEmbedding`, whose cache
+        # follows the ambient dtype and so fails the fp32 assertion in
+        # `vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py`.
+        # `original_max_position_embeddings` is widened because the cache is
+        # `original_max * factor` rows and must still span the context.
+        rope_type = "yarn"
+        parameters["factor"] = 1
+        parameters["original_max_position_embeddings"] = max_position_embeddings
+    parameters["rope_type"] = rope_type
+    return parameters
+
+
+def monkey_patch_deepseek_v4_per_layer_rope():
+    """Give each DeepSeek V4 layer the RoPE its reference implementation uses.
+
+    DeepSeek ships the reference inside the checkpoint we serve, at
+    https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/tree/main/inference. Its
+    `model.py:481-485` picks the frequencies per layer:
+
+        if self.compress_ratio:
+            original_seq_len, rope_theta = args.original_seq_len, args.compress_rope_theta
+        else:
+            # disable YaRN and use base rope_theta in pure sliding-window attention
+            original_seq_len, rope_theta = 0, args.rope_theta
+
+    and `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
+    `original_seq_len > 0`. So a pure sliding-window layer gets plain RoPE at `rope_theta` and
+    every compressed layer gets YaRN at `compress_rope_theta`. HF's `DeepseekV4Config` splits its
+    `rope_parameters` into `main`/`compress` for the same reason, and so does this repo's trainer.
+
+    `vllm/models/deepseek_v4/common/rope.py`'s `build_deepseek_v4_rope` branches the base on
+    `compress_ratio` but never the scaling, so on the real checkpoint it hands YaRN to layers 0
+    and 1 as well. No config value can correct that: `rope_type` is one global field there.
+    So this patch resolves `rope_parameters` per layer instead, which also gives upstream a
+    schema and a dtype it can handle; see `_deepseek_v4_rope_parameters` above.
+
+    Measured against the reference's own frequencies, at the test's `factor=16`,
+    `original_max_position_embeddings=4096` geometry, this takes the sliding layers from 5.1e-03
+    max absolute error to 6e-08, the float32 residual the compressed layers already have. The
+    rope tests in `tests/unit/train/models/test_deepseek_v4.py` are that comparison, over both
+    on-disk schemas and both scaled and unscaled configs.
+
+    Note that nothing in vLLM's DeepSeek V4 calls the module's `forward`; every consumer reads
+    `cos_sin_cache` and hands it to a fused kernel. The class choice is therefore about the
+    cache's dtype and row count, not about which channels the module would rotate.
+    """
+    from vllm.models.deepseek_v4.common import rope as dsv4_rope
+
+    original_build = dsv4_rope.build_deepseek_v4_rope
+
+    if getattr(original_build, "_prime_rl_matches_deepseek_reference", False):
+        return
+
+    def _patched_build(config, *, head_dim, rope_head_dim, max_position_embeddings, compress_ratio):
+        # Swapping a copy in also spares `config.rope_parameters` upstream's in-place mutation,
+        # which otherwise leaves the last-built layer's `rope_theta` on the shared config.
+        original_parameters = config.rope_parameters
+        config.rope_parameters = _deepseek_v4_rope_parameters(
+            original_parameters,
+            compress_ratio=compress_ratio,
+            max_position_embeddings=max_position_embeddings,
+        )
+        try:
+            return original_build(
+                config,
+                head_dim=head_dim,
+                rope_head_dim=rope_head_dim,
+                max_position_embeddings=max_position_embeddings,
+                compress_ratio=compress_ratio,
+            )
+        finally:
+            config.rope_parameters = original_parameters
+
+    _patched_build._prime_rl_matches_deepseek_reference = True
+    dsv4_rope.build_deepseek_v4_rope = _patched_build
+
+    # `attention.py` imports the builder into its own namespace, so the defining module alone
+    # would not reach the already-bound reference.
+    from vllm.models.deepseek_v4 import attention as dsv4_attention
+
+    dsv4_attention.build_deepseek_v4_rope = _patched_build

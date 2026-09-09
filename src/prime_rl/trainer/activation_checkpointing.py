@@ -7,12 +7,23 @@ import torch
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointImpl, checkpoint_wrapper
 from torch.utils.checkpoint import (
+    SAC_IGNORED_OPS,
     CheckpointPolicy,
     SelectiveCheckpointContext,
     create_selective_checkpoint_contexts,
 )
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
+
+# FSDP's replay-specific hooks emit a different number of profiler markers.
+SAC_IGNORED_OPS.update(
+    {
+        torch.ops.profiler._record_function_enter.default,
+        torch.ops.profiler._record_function_enter_new.default,
+        torch.ops.profiler._record_function_exit.default,
+        torch.ops.profiler._record_function_exit._RecordFunction,
+    }
+)
 
 # Adapted from TorchTitan's whole-block selective activation checkpointing policy.
 # These targets and the CUDA-to-CPU copy rule are correctness requirements. They
@@ -53,15 +64,20 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::convolution",
         "aten::linear",
         "aten::mm",
+        "prime_rl::dsv4_sparse_attn",
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
     }
 )
+# An operation target matches one qualified operator name, while a namespace
+# target matches every operation registered in that namespace.
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 
 
-def _full_checkpoint_policy(
+# PyTorch calls checkpoint policies with the dispatched operation's operands.
+# Keyword operands let us distinguish CUDA-to-CPU copies from other _to_copy calls.
+def _mandatory_checkpoint_policy(
     _context: SelectiveCheckpointContext,
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
     *args,
@@ -85,7 +101,7 @@ def _selective_checkpoint_policy(
     targets: frozenset[str] = DEFAULT_SELECTIVE_TARGETS,
     **kwargs,
 ) -> CheckpointPolicy:
-    runtime_policy = _full_checkpoint_policy(context, operation, *args, **kwargs)
+    runtime_policy = _mandatory_checkpoint_policy(context, operation, *args, **kwargs)
     if runtime_policy is CheckpointPolicy.MUST_SAVE:
         return runtime_policy
     if operation.namespace in targets or operation.name() in targets:
@@ -94,11 +110,11 @@ def _selective_checkpoint_policy(
 
 
 def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
-    if config.mode == "selective":
+    if config.mode == "full":
+        policy = _mandatory_checkpoint_policy
+    else:
         targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
         policy = partial(_selective_checkpoint_policy, targets=targets)
-    else:
-        policy = _full_checkpoint_policy
 
     return partial(
         checkpoint_wrapper,

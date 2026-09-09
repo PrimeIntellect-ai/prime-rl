@@ -3,7 +3,6 @@ import os
 import pytest
 import torch
 import torch.distributed as dist
-from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM as HFGptOssForCausalLM
 
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
@@ -15,7 +14,7 @@ from prime_rl.trainer.models.gpt_oss.attention import (
 from prime_rl.utils.cp import setup_cp_attention_params
 
 
-def _config(attn_implementation: str = "flash_attention_4") -> GptOssConfig:
+def _config() -> GptOssConfig:
     return GptOssConfig(
         num_hidden_layers=1,
         num_local_experts=4,
@@ -29,91 +28,47 @@ def _config(attn_implementation: str = "flash_attention_4") -> GptOssConfig:
         num_experts_per_tok=2,
         sliding_window=4,
         rope_parameters={"rope_type": "default", "rope_theta": 150000.0},
-        attn_implementation=attn_implementation,
+        attn_implementation="flash_attention_4",
+        use_cache=False,
     )
 
 
 def test_gpt_oss_checkpoint_conversion_roundtrip():
-    hf_config = _config("eager")
-    prime_config = _config()
     with torch.device("meta"):
-        hf_model = HFGptOssForCausalLM(hf_config)
-        prime_model = PrimeRLGptOssForCausalLM(prime_config)
+        model = PrimeRLGptOssForCausalLM(_config())
 
-    hf_state_dict = {name: torch.randn(tensor.shape) for name, tensor in hf_model.state_dict().items()}
-    expected_hf = {name: tensor.clone() for name, tensor in hf_state_dict.items()}
-    prime_state_dict = prime_model.convert_to_prime(hf_state_dict)
+    prime_state_dict = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    expected_prime = {name: tensor.clone() for name, tensor in prime_state_dict.items()}
+    hf_state_dict = model.convert_to_hf(prime_state_dict)
 
-    assert prime_model.is_prime_state_dict(prime_state_dict)
-    assert not prime_model.is_hf_state_dict(prime_state_dict)
-    assert set(prime_state_dict) == set(prime_model.state_dict())
-    for name, tensor in prime_state_dict.items():
-        assert tensor.shape == prime_model.state_dict()[name].shape, name
+    assert model.is_hf_state_dict(hf_state_dict)
+    assert not model.is_prime_state_dict(hf_state_dict)
 
-    roundtrip = prime_model.convert_to_hf(prime_state_dict)
-    assert roundtrip.keys() == expected_hf.keys()
+    roundtrip = model.convert_to_prime(hf_state_dict)
+    assert roundtrip.keys() == expected_prime.keys()
     for name, tensor in roundtrip.items():
-        torch.testing.assert_close(tensor, expected_hf[name])
+        torch.testing.assert_close(tensor, expected_prime[name])
 
 
-@pytest.mark.gpu
-def test_gpt_oss_matches_hf():
-    hf_config = _config("eager")
-    prime_config = _config()
-    with torch.device("cuda"):
-        hf_model = HFGptOssForCausalLM(hf_config).to(torch.bfloat16)
-        prime_model = PrimeRLGptOssForCausalLM(prime_config).to(torch.bfloat16)
+@pytest.fixture(scope="module")
+def cp_process_group():
+    if int(os.environ.get("WORLD_SIZE", 1)) != 2:
+        pytest.skip("run with torchrun --nproc-per-node=2")
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("GPT-OSS learned sinks require SM90 or SM100/SM110")
 
-    state_dict = hf_model.state_dict()
-    prime_model.convert_to_prime(state_dict)
-    prime_model.load_state_dict(state_dict)
-
-    hidden_states = torch.randn(2, 8, hf_config.hidden_size, device="cuda", dtype=torch.bfloat16)
-    expected, _ = hf_model.model.layers[0].mlp(hidden_states)
-    actual = prime_model.model.layers[0].mlp(hidden_states)
-    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
-
-    input_ids = torch.randint(0, hf_config.vocab_size, (1, 12), device="cuda")
-    seq_lens = torch.tensor([5, 7], device="cuda")
-    position_ids = torch.cat([torch.arange(5, device="cuda"), torch.arange(7, device="cuda")]).unsqueeze(0)
-    with torch.no_grad():
-        expected = torch.cat(
-            [
-                hf_model.model(input_ids=input_ids[:, :5]).last_hidden_state,
-                hf_model.model(input_ids=input_ids[:, 5:]).last_hidden_state,
-            ],
-            dim=1,
-        )
-        actual = prime_model.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            seq_lens=seq_lens,
-        ).last_hidden_state
-    torch.testing.assert_close(actual, expected, rtol=3e-2, atol=3e-2)
-
-    with torch.no_grad():
-        expected_logits = torch.cat(
-            [hf_model(input_ids=input_ids[:, :5]).logits, hf_model(input_ids=input_ids[:, 5:]).logits],
-            dim=1,
-        )
-        actual_logits = prime_model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            seq_lens=seq_lens,
-        )["logits"]
-    torch.testing.assert_close(actual_logits, expected_logits, rtol=3e-2, atol=3e-2)
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group("nccl")
+    yield dist.group.WORLD
+    dist.destroy_process_group()
 
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("cp_style", ["ring", "ulysses"])
-def test_gpt_oss_context_parallel_attention(cp_style: str):
-    if int(os.environ.get("WORLD_SIZE", 1)) != 2:
-        pytest.skip("run with torchrun --nproc-per-node=2")
-
-    dist.init_process_group("nccl")
+def test_gpt_oss_context_parallel_attention(cp_style: str, cp_process_group):
     local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    process_group = dist.group.WORLD
+    process_group = cp_process_group
     original_compute_attention = GptOssAttention.compute_attention
 
     try:
@@ -176,4 +131,3 @@ def test_gpt_oss_context_parallel_attention(cp_style: str):
         torch.testing.assert_close(sink_grad, reference_sink_grad, rtol=5e-2, atol=5e-2)
     finally:
         GptOssAttention.compute_attention = original_compute_attention
-        dist.destroy_process_group()

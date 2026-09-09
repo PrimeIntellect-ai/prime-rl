@@ -37,8 +37,9 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before tr
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
+from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -118,7 +119,7 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     clients: InferenceClient | None
-    admin_clients: AdminClients | None
+    admin_plane: AdminPlane | None
     sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -171,7 +172,7 @@ class Orchestrator:
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
         self.clients = None
-        self.admin_clients = None
+        self.admin_plane = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -207,7 +208,7 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_clients = AdminClients(config.model.client)
+        self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
 
         await monitors.setup(
             producer="orch",
@@ -289,7 +290,7 @@ class Orchestrator:
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
-        await self.admin_clients.wait_for_ready(config.model.name)
+        await self.admin_plane.wait_for_ready(config.model.name)
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -306,7 +307,7 @@ class Orchestrator:
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
-            admin_clients=self.admin_clients.clients,
+            admin_plane=self.admin_plane,
             model_name=config.model.name,
         )
         await self.receiver.initialize()
@@ -359,7 +360,7 @@ class Orchestrator:
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin_clients.clients,
+            self.admin_plane.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
             log_metrics=config.collect_inference_metrics,
@@ -559,6 +560,7 @@ class Orchestrator:
                 raise ValueError("Orchestrated episode is missing training-run provenance")
             kind = episode.run.work.type
             step = episode.run.work.step if kind == "eval" else self.progress.step
+            stamp_arrival([episode], kind, step)
             await monitors.log([episode], step, kind, "all")
 
             if kind == "eval":
@@ -649,9 +651,11 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # The effective (clean, trained-on) subset is logged at ship time; the full arrival
-        # window already streamed into the ``all`` cohort on arrival.
+        # The effective (clean, trained-on) subset is logged at ship time as annotation
+        # records against each trace's arrival record - membership, advantages, the step
+        # it shipped at - never a second episode copy.
         await monitors.log(effective.vf_episodes, step, "train", "effective")
+        await monitors.log_annotations(stamp_batch(effective.vf_episodes, step))
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -731,6 +735,38 @@ class Orchestrator:
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
+
+        active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
+        if step_time > 0 and self.wait_for_policy_time >= active_step_time:
+            get_logger().warning(
+                f"Orchestrator waited {format_time(self.wait_for_policy_time)} for policy updates, at least as long "
+                f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
+                "add more trainer nodes."
+            )
+
+        shipped_episode_ids = {episode.id for episode in batch.cohort}
+        discarded_episodes = [
+            episode
+            for episode in batch.episodes
+            if episode.id not in shipped_episode_ids and episode.id not in batch.buffered_episode_ids
+        ]
+        stale_episodes = sum(episode.id in batch.episodes.cancelled for episode in discarded_episodes)
+        errored_episodes = sum(
+            episode.id not in batch.episodes.cancelled
+            and (not episode.ok or any(trace.has_error for trace in episode.traces))
+            for episode in discarded_episodes
+        )
+        num_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled_attempts
+        num_discarded = len(discarded_episodes) + len(batch.failures) + batch.cancelled_attempts
+        num_stale = stale_episodes + batch.stale_attempts
+        num_errored = errored_episodes + len(batch.failures)
+        num_no_signal = num_discarded - num_stale - num_errored
+        if num_attempts and num_discarded / num_attempts > 0.5:
+            get_logger().warning(
+                f"Discarded {num_discarded}/{num_attempts} episodes ({num_discarded / num_attempts:.1%}): "
+                f"stale={num_stale}, errored={num_errored}, no_signal={num_no_signal}. Review max_off_policy_steps, "
+                "episode errors, and reward signal."
+            )
         self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
@@ -854,10 +890,9 @@ class Orchestrator:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
         computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
-        ``Error``, ``Dispatch Failure``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window —
-        over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
-        only scope where they carry signal (and they stay disjoint: a cancellation is a pipeline
-        decision, an episode error came from the environment, and a dispatch failure produced no episode)."""
+        ``Error``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window. Over the
+        shipped set they are 0/0/share-of-shipped by construction, so the window is the only scope
+        where they carry signal. A cancellation is a pipeline decision, not a rollout failure."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
@@ -866,16 +901,13 @@ class Orchestrator:
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
-        num_attempts = len(episodes) + len(batch.failures)
-        dispatch_failure_rate = len(batch.failures) / num_attempts if num_attempts else 0.0
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
-            f"Cancelled {episodes.metrics.cancelled.mean():.1%} | "
+            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -884,10 +916,7 @@ class Orchestrator:
 
         window_by_env = episodes.by_env()
         shipped_by_env = effective.by_env()
-        failures_by_env: dict[str, list[DispatchFailure]] = {}
-        for failure in batch.failures:
-            failures_by_env.setdefault(failure.env_name, []).append(failure)
-        env_names = sorted(set(window_by_env) | set(shipped_by_env) | set(failures_by_env))
+        env_names = sorted(set(window_by_env) | set(shipped_by_env))
         name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
         for env_name in env_names:
@@ -895,15 +924,11 @@ class Orchestrator:
             env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
             ratio = (pool.num_traces / n_generated) if n_generated else 0.0
-            env_failures = failures_by_env.get(env_name, [])
-            env_attempts = len(pool) + len(env_failures)
-            env_failure_rate = len(env_failures) / env_attempts if env_attempts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Dispatch Failure {env_failure_rate:.1%} | "
-                f"Cancelled {pool.metrics.cancelled.mean():.1%} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -919,6 +944,7 @@ class Orchestrator:
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         if batch.episodes.effective:
             await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
@@ -1030,8 +1056,8 @@ class Orchestrator:
                 await self.inference_metrics.stop()
             if self.clients is not None:
                 await self.clients.aclose()
-            if self.admin_clients is not None:
-                await self.admin_clients.aclose()
+            if self.admin_plane is not None:
+                await self.admin_plane.aclose()
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:

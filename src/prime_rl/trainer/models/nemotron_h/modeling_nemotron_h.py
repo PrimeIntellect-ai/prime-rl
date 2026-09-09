@@ -3,7 +3,7 @@ import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -142,6 +142,14 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     _supports_sdpa = False
     _can_compile_fullgraph = False
     _supports_attention_backend = True
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset({"ulysses"}),
+            "ring CP is a softmax-attention algorithm and cannot run this model's Mamba layers, "
+            "whereas ulysses' all-to-all on Q/K/V leaves the SSM kernel unchanged",
+        )
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

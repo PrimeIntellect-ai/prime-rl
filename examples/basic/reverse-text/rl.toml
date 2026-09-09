@@ -21,6 +21,19 @@ env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
+[orchestrator.eval]
+interval = 5
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.source]]
+name = "reverse-text-eval"
+num_examples = 256
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
 [trainer.optim]
 lr = 3e-6
 

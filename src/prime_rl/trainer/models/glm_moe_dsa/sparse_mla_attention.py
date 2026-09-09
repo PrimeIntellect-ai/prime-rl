@@ -10,11 +10,9 @@ from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import gather_for_cp
 
 try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
-    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
 except ImportError:
-    sparse_mla_fwd_interface = None  # type: ignore
-    sparse_mla_bwd = None  # type: ignore
+    sparse_mla = None  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -34,77 +32,6 @@ class SparseMlaAttentionArgs:
     index_topk: int
     use_index_cache: bool = False
     skip_topk: bool = False
-
-
-@torch.library.custom_op("prime_rl::sparse_mla", mutates_args=())
-def sparse_mla(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    indices: torch.Tensor,
-    sm_scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
-
-
-@sparse_mla.register_fake
-def _sparse_mla_fake(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    indices: torch.Tensor,
-    sm_scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return q.new_empty((*q.shape[:-1], 512)), q.new_empty(q.shape[:-1], dtype=torch.float32)
-
-
-@torch.library.custom_op("prime_rl::sparse_mla_backward", mutates_args=())
-def sparse_mla_backward(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    out: torch.Tensor,
-    grad_out: torch.Tensor,
-    indices: torch.Tensor,
-    lse: torch.Tensor,
-    sm_scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return sparse_mla_bwd(q, kv, out, grad_out.contiguous(), indices, lse, sm_scale=sm_scale)
-
-
-@sparse_mla_backward.register_fake
-def _sparse_mla_backward_fake(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    out: torch.Tensor,
-    grad_out: torch.Tensor,
-    indices: torch.Tensor,
-    lse: torch.Tensor,
-    sm_scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.empty_like(q), torch.empty_like(kv)
-
-
-def _sparse_mla_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sm_scale = inputs
-    out, lse = output
-    ctx.save_for_backward(q, kv, out, indices, lse)
-    ctx.sm_scale = sm_scale
-    ctx.mark_non_differentiable(lse)
-
-
-def _sparse_mla_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
-    q, kv, out, indices, lse = ctx.saved_tensors
-    dq, dkv = sparse_mla_backward(
-        q.detach(),
-        kv.detach(),
-        out.detach(),
-        grad_out,
-        indices,
-        lse.detach(),
-        ctx.sm_scale,
-    )
-    return dq, dkv, None, None
-
-
-sparse_mla.register_autograd(_sparse_mla_autograd_backward, setup_context=_sparse_mla_setup_context)
 
 
 def apply_rope_interleave_single(

@@ -37,8 +37,14 @@ from prime_rl.trainer.models import (
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
+)
+from prime_rl.trainer.models.fusions import (
+    apply_model_fusions,
+    get_fsdp_shard_placement_fn,
+    write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
@@ -656,6 +662,18 @@ def get_model(
             "but this architecture resolved to model.impl='hf'."
         )
 
+    # Past the check above, cp > 1 implies impl_to_use == "custom", so the model class always
+    # resolves. Queried here so a misconfigured job dies at setup rather than at the first forward.
+    if config.cp > 1:
+        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        support = cp_model_cls.cp_support(model_config)
+        if config.cp_style not in support.styles:
+            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
+            raise ValueError(
+                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
+                f"({support.reason}); {supported}."
+            )
+
     if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
         raise ValueError(
             "VLM training requires a registered custom PrimeRL VLM implementation; "
@@ -737,10 +755,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
+    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
+        "shard_placement_fn": shard_placement_fn,
     }
 
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -782,6 +802,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
                 offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
+                shard_placement_fn=shard_placement_fn,
             )
 
         fully_shard(
@@ -807,6 +828,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mp_policy=mp_policy,
             offload_policy=offload_policy,
             reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
         )
     else:
         get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
@@ -817,6 +839,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        shard_placement_fn=shard_placement_fn,
     )
 
     if not parallel_dims.ep_enabled:
@@ -853,10 +876,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
     if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
+        last_transformer_block = reversed_transformer_blocks[0]
+        prefetch_modules = [last_transformer_block]
+        last_mlp = getattr(last_transformer_block, "mlp", None)
+        if last_mlp is not None and isinstance(last_mlp, MoE):
+            prefetch_modules.append(last_mlp.experts)
+            if isinstance(last_mlp.router, FSDPModule):
+                prefetch_modules.append(last_mlp.router)
+
         if shard_norm_and_lm_head:
-            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
         else:
-            model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.set_modules_to_backward_prefetch(prefetch_modules)
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
@@ -961,6 +992,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    write_back_loaded_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
@@ -1002,10 +1034,17 @@ def can_reinit_empty_buffers(model: nn.Module):
         if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
     ]
     buffer_names = [
-        name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
+        name
+        for name in buffer_names
+        if not (name.startswith("model.layers.") and name.endswith("mlp.router.selection_bias"))
     ]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
+        return True
+
+    # GPT-OSS (has original_inv_freq alongside inv_freq from dynamic rope scaling)
+    gpt_oss_buffers = {"model.rotary_emb.inv_freq", "model.rotary_emb.original_inv_freq"}
+    if set(buffer_names) == gpt_oss_buffers:
         return True
 
     # Gemma3 model (has embed_scale and local rotary emb)
@@ -1022,9 +1061,21 @@ def fix_model_post_empty(model: nn.Module):
     # HF standard transformer model
     if "model.rotary_emb.inv_freq" in buffer_names:
         rotary_emb = model.model.rotary_emb
-        rope_init_fn = rotary_emb.rope_init_fn
+        if hasattr(rotary_emb, "rope_init_fn"):
+            rope_init_fn = rotary_emb.rope_init_fn
+        else:
+            # GPT-OSS stores rope_init_fn only as a local in __init__; re-derive it
+            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+            rope_init_fn = (
+                ROPE_INIT_FUNCTIONS[rotary_emb.rope_type]
+                if rotary_emb.rope_type != "default"
+                else rotary_emb.compute_default_rope_parameters
+            )
         inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
+        if "model.rotary_emb.original_inv_freq" in buffer_names:
+            rotary_emb.original_inv_freq.copy_(inv_freq)
     # Gemma3 local rotary emb
     if "model.rotary_emb_local.inv_freq" in buffer_names:
         rotary_emb_local = model.model.rotary_emb_local
@@ -1083,9 +1134,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
-        if capability < (10, 0):
+        if capability != (10, 0):
             raise ValueError(
-                f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
+                f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 
@@ -1141,7 +1192,12 @@ def _validate_flash_attn_4_installed() -> None:
 
 
 def resolve_auto_attn(config: ModelConfig) -> None:
-    """Resolve ``attn='auto'`` from the GPU architecture."""
+    """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
+
+    FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
+    Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
+    can't run the Hopper-only FA3 kernels, so they fall back to FA2.
+    """
     if config.attn != "auto":
         return
     major, minor = torch.cuda.get_device_capability()
@@ -1187,6 +1243,12 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    if config.fusions.enabled and config.lora is not None:
+        logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
+    elif config.fusions.enabled:
+        applied = apply_model_fusions(model, config.fusions.enabled, raise_on_fail=config.fusions.raise_on_fail)
+        logger.info(f"Applied runtime model fusions: {applied}")
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
@@ -1272,6 +1334,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
@@ -1288,6 +1351,11 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+
+    # Sampling masks are consumed by the injected prime lm_head; HF
+    # forwards don't know the kwarg, so only pass it when present.
+    if sampling_mask is not None:
+        kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the

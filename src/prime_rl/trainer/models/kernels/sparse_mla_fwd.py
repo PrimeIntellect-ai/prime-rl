@@ -14,7 +14,10 @@ except Exception:
     pass
 
 import tilelang
+import torch
 from tilelang import language as T
+
+from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_backward
 
 
 @tilelang.jit(
@@ -183,7 +186,17 @@ def sparse_mla_fwd(
     return main
 
 
-def sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, d_v=512, block_I=64, num_stages=2, threads=256):
+@torch.library.custom_op("prime_rl::sparse_mla", mutates_args=())
+def sparse_mla(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sm_scale: float | None = None,
+    d_v: int = 512,
+    block_I: int = 64,
+    num_stages: int = 2,
+    threads: int = 256,
+) -> tuple[torch.Tensor, torch.Tensor]:
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
@@ -210,3 +223,42 @@ def sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, d_v=512, block_I=64,
     )
     out, lse = kernel(q, kv, indices)
     return out, lse
+
+
+@sparse_mla.register_fake
+def _sparse_mla_fake(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sm_scale: float | None = None,
+    d_v: int = 512,
+    block_I: int = 64,
+    num_stages: int = 2,
+    threads: int = 256,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return q.new_empty((*q.shape[:-1], d_v)), q.new_empty(q.shape[:-1], dtype=torch.float32)
+
+
+def _sparse_mla_setup_context(ctx, inputs, output) -> None:
+    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads = inputs
+    out, lse = output
+    ctx.save_for_backward(q, kv, out, indices, lse)
+    ctx.sm_scale = sm_scale
+    ctx.mark_non_differentiable(lse)
+
+
+def _sparse_mla_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
+    q, kv, out, indices, lse = ctx.saved_tensors
+    dq, dkv = sparse_mla_backward(
+        q.detach(),
+        kv.detach(),
+        out.detach(),
+        grad_out,
+        indices,
+        lse.detach(),
+        ctx.sm_scale,
+    )
+    return dq, dkv, None, None, None, None, None, None
+
+
+sparse_mla.register_autograd(_sparse_mla_autograd_backward, setup_context=_sparse_mla_setup_context)

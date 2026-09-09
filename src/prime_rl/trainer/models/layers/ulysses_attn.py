@@ -157,12 +157,9 @@ def ulysses_flash_attn_varlen_func(
         kwargs["cu_seqlens_k"] = cu_seqlens_k
         kwargs["max_seqlen_q"] = max_seqlen_q
         kwargs["max_seqlen_k"] = max_seqlen_k
-        out = flash_fn(q, k, v, **kwargs)
+        out, _ = flash_fn(q, k, v, **kwargs)
     else:
         out = flash_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs)
-    if isinstance(out, tuple):
-        out = out[0]
-
     return _all_to_all_head_to_seq(out, cp_size, cp_group)
 
 
@@ -182,7 +179,6 @@ def substitute_ulysses_attn(
         from flash_attn.cute import flash_attn_varlen_func as flash_fn
 
         flash_attn_version = 4
-        flash_fn = torch._dynamo.disable(flash_fn)
     elif attn_impl == "flash_attention_3":
         from flash_attn_interface import flash_attn_varlen_func as flash_fn
 

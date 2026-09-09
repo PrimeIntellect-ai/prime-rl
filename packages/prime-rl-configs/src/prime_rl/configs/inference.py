@@ -458,11 +458,14 @@ class InferenceConfig(BaseConfig):
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
+    enable_return_sampling_mask: bool = False
+    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
     enable_fp32_router_logits: bool = True
-    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x) by setting ``out_dtype=float32`` on the gate: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented as a monkey-patch over vLLM's DeepseekV2MoE, activated by setting ``additional_config["fp32_router_logits"] = True`` on the vLLM config."""
+    """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
 
     # Launcher-only fields
 
@@ -491,6 +494,20 @@ class InferenceConfig(BaseConfig):
                 "The llm-d router backend does not support routed-expert return "
                 "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
                 "Use router type 'vllm-router' for routed-expert runs."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_disaggregated_combined_replay(self):
+        """NIXL routed-expert capture uses the V1 runner, while sampling replay needs V2."""
+        if (
+            self.deployment.type == "disaggregated"
+            and self.enable_return_sampling_mask
+            and self.vllm.enable_return_routed_experts
+        ):
+            raise ValueError(
+                "Combined router and sampling replay is not supported with disaggregated P/D: "
+                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
             )
         return self
 
@@ -607,6 +624,21 @@ class InferenceConfig(BaseConfig):
         if not hasattr(namespace, "logprobs_mode"):
             namespace.logprobs_mode = "processed_logprobs"
 
+        # Always surface cached prompt tokens in `usage` — the router's
+        # cache-discount billing counters parse them off /inference/v1/generate.
+        if "enable_prompt_tokens_details" not in extra_fields:
+            namespace.enable_prompt_tokens_details = True
+
+        # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
+        # `moe_router_dtype` off the HF config to pick the router logits dtype.
+        if self.enable_fp32_router_logits:
+            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
+            hf_overrides.setdefault("moe_router_dtype", "float32")
+            namespace.hf_overrides = hf_overrides
+
+        if self.enable_return_sampling_mask:
+            namespace.return_sampling_mask = True
+
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
@@ -616,8 +648,6 @@ class InferenceConfig(BaseConfig):
         additional_config = getattr(namespace, "additional_config", None) or {}
         if self.enable_fp32_lm_head:
             additional_config["fp32_lm_head"] = True
-        if self.enable_fp32_router_logits:
-            additional_config["fp32_router_logits"] = True
         if additional_config:
             namespace.additional_config = additional_config
 
