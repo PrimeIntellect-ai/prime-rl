@@ -66,9 +66,6 @@ def _run_fused_kernel_dispatch_and_ffn(
         if is_gated
         else None
     )
-    block_start_clock = torch.empty(n_producer_blocks + n_consumer_blocks, dtype=torch.int64, device=device)
-    block_end_clock = torch.empty_like(block_start_clock)
-
     dispatch_tiles = schedule.dispatch_tiles
     overlap_kernels.fused_dispatch_ffn(
         schedule.routed_input,
@@ -89,8 +86,6 @@ def _run_fused_kernel_dispatch_and_ffn(
         expert_out,
         act_scratch,
         gate_scratch,
-        block_start_clock,
-        block_end_clock,
         block_m,
         n_producer_blocks,
         n_consumer_blocks,
