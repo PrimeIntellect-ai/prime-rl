@@ -202,12 +202,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         self.post_init()
 
     def _cp_rank_and_world_size(self) -> tuple[int, int]:
-        """This rank's place in the query sharding, or the single-rank default.
-
-        `setup_sparse_mla_cp` published the same pair to every layer, so the first is
-        representative. The process group is not read back here, since attention gathers off its
-        own copy of it.
-        """
         if len(self.layers) == 0:
             return 0, 1
 
