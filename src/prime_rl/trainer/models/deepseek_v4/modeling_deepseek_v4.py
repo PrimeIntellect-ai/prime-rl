@@ -125,7 +125,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
             frozenset({"ring"}),
-            "currently only supporting the minimal ring strategy where all keys, or tensors"
+            "currently only supporting the minimal ring strategy where all keys, or tensors "
             "required to form the keys are all-gathered in the CP region.",
         )
 
