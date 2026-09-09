@@ -105,11 +105,11 @@ an input, so a position that disagrees with a document boundary, a window slot t
 RoPE table evaluated at positions other than the ones the causal thresholds count in, cannot be
 constructed. It runs once per model forward.
 
-Context parallelism splits the queries of the packed row across ranks and leaves everything else
-alone, which fixes where each tensor lives: every field above is indexed by a query and carries
-this rank's `n_queries` rows, save `compression_layouts`, which is indexed by a compressed entry
-and so stays global with `total_tokens` tokens behind it. Index values are always global.
-`cp_world_size = 1` makes the two counts equal, which is the non-CP case.
+Context parallelism splits the queries across ranks and leaves everything else alone: every field
+above has one entry per query token and so covers this rank's `n_queries` tokens, while
+`compression_layouts` covers all `total_tokens` of the sequence. Token indices always count from
+the start of the whole sequence. With `cp_world_size = 1`, `n_queries == total_tokens` and this is
+the non-CP case.
 
 [The Index Contract]
 
