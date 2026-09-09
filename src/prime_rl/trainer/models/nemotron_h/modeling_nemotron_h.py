@@ -129,10 +129,46 @@ class NemotronHDecoderLayer(nn.Module):
         return residual + hidden_states
 
 
-class NemotronHModel(nn.Module):
+class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
+    config: NemotronHConfig
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset({"ulysses"}),
+            "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
+        )
+
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return is_hf_state_dict(state_dict)
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return is_prime_state_dict(state_dict)
+
+    @classmethod
+    def conversion_chain(cls, config: NemotronHConfig):
+        return conversion_chain(config)
+
+    @classmethod
+    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        import re
+
+        for name in list(state_dict):
+            hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
+            if hf_name != name:
+                state_dict[hf_name] = state_dict.pop(name)
+        return state_dict
+
+
+class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
             NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
@@ -177,42 +213,7 @@ class NemotronHModel(nn.Module):
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
-class NemotronHForCausalLM(PreTrainedModelPrimeRL):
-    config: NemotronHConfig
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ulysses"}),
-            "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
-        )
-
-    @classmethod
-    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))
-
-    @classmethod
-    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return is_hf_state_dict(state_dict)
-
-    @classmethod
-    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config: NemotronHConfig):
-        return conversion_chain(config)
-
-    @classmethod
-    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        import re
-
-        for name in list(state_dict):
-            hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
-            if hf_name != name:
-                state_dict[hf_name] = state_dict.pop(name)
-        return state_dict
-
+class NemotronHForCausalLM(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__(config)
         self.model = NemotronHModel(config)
@@ -263,4 +264,5 @@ __all__ = [
     "NemotronHForCausalLM",
     "NemotronHMoE",
     "NemotronHModel",
+    "NemotronHPreTrainedModel",
 ]
