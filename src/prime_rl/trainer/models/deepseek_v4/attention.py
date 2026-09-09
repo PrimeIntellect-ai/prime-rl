@@ -255,21 +255,6 @@ class PackedContext:
     window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
-    def __post_init__(self) -> None:
-        # Only reachable by constructing the dataclass directly; `build` cannot violate it.
-        n_queries = self.tok_doc_idx.shape[0]
-        assert self.position_ids.shape[-1] == n_queries, (
-            f"position_ids covers {self.position_ids.shape[-1]} query tokens, not {n_queries}"
-        )
-        assert self.window_indices.shape[0] == n_queries, (
-            f"window_indices covers {self.window_indices.shape[0]} query tokens, not {n_queries}"
-        )
-        for rope_type, tables in self.position_embeddings.items():
-            for table in tables:
-                assert table.shape[-2] == n_queries, (
-                    f"position_embeddings[{rope_type}] covers {table.shape[-2]} query tokens, not {n_queries}"
-                )
-
     @classmethod
     def build(
         cls,
@@ -380,19 +365,6 @@ class SparseAttnInputs:
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
     indices: Tensor  # (batch, n_queries, 1, n_slots) int32 into kv_buf's position axis
-
-    def __post_init__(self) -> None:
-        # Shape invariants only. Asserting on index values would read the device, and this runs
-        # once per layer per step.
-        assert self.kv_buf.ndim == 4 and self.kv_buf.shape[2] == 1, (
-            f"kv_buf must be (batch, n_positions, 1, head_dim), got {tuple(self.kv_buf.shape)}"
-        )
-        assert self.indices.ndim == 4 and self.indices.shape[2] == 1, (
-            f"indices must be (batch, n_queries, 1, n_slots), got {tuple(self.indices.shape)}"
-        )
-        assert self.indices.shape[0] == self.kv_buf.shape[0], (
-            f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}"
-        )
 
     @classmethod
     def build(
