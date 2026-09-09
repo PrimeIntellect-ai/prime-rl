@@ -8,7 +8,7 @@ from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
-from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     conversion_chain,
@@ -107,8 +107,6 @@ class NemotronHDecoderLayer(nn.Module):
                     projection_bias=config.mlp_bias,
                     **moe_kwargs,
                 )
-        else:
-            raise ValueError(f"Unsupported Nemotron-H layer type: {self.layer_type}")
 
     def forward(
         self,
@@ -147,8 +145,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
             frozenset({"ulysses"}),
-            "ring CP is a softmax-attention algorithm and cannot run this model's Mamba layers, "
-            "whereas ulysses' all-to-all on Q/K/V leaves the SSM kernel unchanged",
+            "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
         )
 
     @classmethod
@@ -166,6 +163,16 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config: NemotronHConfig):
         return conversion_chain(config)
+
+    @classmethod
+    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        import re
+
+        for name in list(state_dict):
+            hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
+            if hf_name != name:
+                state_dict[hf_name] = state_dict.pop(name)
+        return state_dict
 
 
 class NemotronHModel(NemotronHPreTrainedModel):
@@ -201,12 +208,8 @@ class NemotronHModel(NemotronHPreTrainedModel):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
-        if (input_ids is None) == (inputs_embeds is None):
-            raise ValueError("Specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        if inputs_embeds.shape[0] != 1:
-            raise ValueError(f"Nemotron-H expects one packed row, got batch size {inputs_embeds.shape[0]}")
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),

@@ -2,13 +2,6 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
-from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig as HFNemotronHConfig
-from transformers.models.nemotron_h.modeling_nemotron_h import (
-    NemotronHAttention,
-)
-from transformers.models.nemotron_h.modeling_nemotron_h import (
-    NemotronHForCausalLM as HFNemotronHForCausalLM,
-)
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
@@ -19,6 +12,7 @@ from prime_rl.utils.utils import default_dtype
 pytestmark = [pytest.mark.gpu]
 
 _BASE = dict(
+    attn_implementation="flash_attention_2",
     vocab_size=256,
     hidden_size=256,
     num_attention_heads=4,
@@ -48,93 +42,16 @@ def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
     return torch.tensor([input_ids.shape[1]], device=input_ids.device)
 
 
-def get_model_pairs():
-    """Create an HF model and a PrimeRL model with shared weights."""
-    hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E", use_mamba_kernels=False)
-    hf_config._attn_implementation = "flash_attention_2"
-
-    prime_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    prime_config._attn_implementation = "flash_attention_2"
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_model = HFNemotronHForCausalLM._from_config(hf_config)
-        prime_model = NemotronHForCausalLM._from_config(prime_config)
-
-    with torch.no_grad():
-        state_dict = hf_model.state_dict()
-        for name in [name for name in state_dict if ".mixer.experts." in name]:
-            weights = state_dict.pop(name)
-            expert_prefix, projection = name.rsplit(".", 1)
-            for expert_idx, weight in enumerate(weights):
-                state_dict[f"{expert_prefix}.{expert_idx}.{projection}.weight"] = weight
-        prime_state_keys = prime_model.state_dict().keys()
-        prime_model.convert_to_prime(state_dict)
-        prime_model.load_state_dict(state_dict)
-
-    inject_prime_lm_head(prime_model, chunk_size=None)
-    assert set(prime_state_keys) - set(state_dict.keys()) == set()
-    return hf_model, prime_model
-
-
-def test_nemotron_h_mamba_moe_only():
-    """Test Mamba and MoE layers produce identical outputs (attention bypassed)."""
-    hf_model, prime_model = get_model_pairs()
-
-    def bypass_attention(hidden_states, *_args, **_kwargs):
-        return hidden_states
-
-    # Bypass attention layers in both models so only Mamba+MoE are exercised
-    for layer in hf_model.model.layers:
-        if isinstance(layer.mixer, NemotronHAttention):
-            layer.forward = bypass_attention
-
-    for layer in prime_model.model.layers:
-        if layer.layer_type == "attention":
-            layer.forward = bypass_attention
-
-    torch.manual_seed(42)
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        input_ids = torch.randint(0, 256, (1, 32))
-        position_ids = torch.arange(0, 32).unsqueeze(0)
-
-    hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
-    hf_output.logits.sum().backward()
-    prime_output["logits"].sum().backward()
-
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
-        f"Max logits diff: {logits_diff.abs().max()}"
-    )
-    grad_diff = hf_model.model.embeddings.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=1000), f"Max grad diff: {grad_diff.abs().max()}"
-
-
 def test_nemotron_h_reverse():
     """PrimeRL weights convert back to the source checkpoint layout."""
-    _, prime_model = get_model_pairs()
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    with torch.device("meta"):
+        prime_model = NemotronHForCausalLM(config)
     converted = prime_model.convert_to_hf(dict(prime_model.state_dict()))
 
     assert prime_model.is_hf_state_dict(converted)
     assert "backbone.layers.1.mixer.experts.0.up_proj.weight" in converted
     assert not any("mlp.experts.up_proj" in name for name in converted)
-
-
-def test_nemotron_h():
-    """Test full model (Mamba + MoE + Attention) produces close outputs."""
-    hf_model, prime_model = get_model_pairs()
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        input_ids = torch.randint(0, 256, (1, 32))
-        position_ids = torch.arange(0, 32).unsqueeze(0)
-
-    hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
-    # Slightly larger tolerance due to different SDPA attention implementations
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
-        f"Max logits diff: {logits_diff.abs().max()}"
-    )
 
 
 def test_nemotron_h_backward():

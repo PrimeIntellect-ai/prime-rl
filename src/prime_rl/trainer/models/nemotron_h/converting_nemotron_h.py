@@ -49,8 +49,6 @@ def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
                     PrefixRename(f"{prefix}.mixer.fc2_latent_proj.", f"{prefix}.mlp.fc2_latent_proj."),
                 ]
             )
-        else:
-            raise ValueError(f"Unsupported Nemotron-H layer type: {layer_type}")
     return ops
 
 

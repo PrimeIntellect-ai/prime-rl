@@ -142,6 +142,7 @@ overrides = [
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = "==4.6.2" },
     { name = "openenv-core" },
+    { name = "tilelang", specifier = "==0.1.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "transformers", specifier = "==5.6.2" },
@@ -396,6 +397,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/3d/4b9226cd45aa800a6904603dda9b323d728f3c3869952a673f3483b78b19/apache_tvm_ffi-0.1.11.tar.gz", hash = "sha256:153cd2c5a9717804cb0bcd9b2709f22a1e5f80ed05b5a490faf5949b136eedba", size = 2798354, upload-time = "2026-05-04T17:48:43.852Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/05/9d/0f81ca556e5836b3ca64818cdae3f47dc7822bd35d22ddef7a54106d801d/apache_tvm_ffi-0.1.11-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:6ae51cc7df415b5f373a9df4baa1165a65608e519bea81e7dd23428f00eeb689", size = 2418793, upload-time = "2026-05-04T17:47:57.879Z" },
     { url = "https://files.pythonhosted.org/packages/2a/a9/f48e5dd4ae1f6f0c5ffac259c0a9531b7d6a7c0a4c45bc2229d55de6adf8/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:da2c8d07fdc737d1ba75f4de25c29f156905b9dc980f1da90c395b4db525f522", size = 2605176, upload-time = "2026-05-04T17:47:59.676Z" },
     { url = "https://files.pythonhosted.org/packages/36/99/2848df4e8ed5bf51df1d286d1718510584fa61e88adbc9c5b23d71b38f7c/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:78aa1857b04a2ea718317041ab3f01288b3d496e6036eb1b99ebdc9da0fdaef5", size = 2725887, upload-time = "2026-05-04T17:48:01.381Z" },
     { url = "https://files.pythonhosted.org/packages/7d/80/963c991934a4eb0fa0c0178f51963333fe14a96b732009da642b6bf6b42e/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a8b845c8dff498fb981c1dda36c954549204191b485a385845e604966594d0b2", size = 2513121, upload-time = "2026-05-04T17:48:03.43Z" },
@@ -3311,18 +3313,20 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "mamba-ssm"
-version = "2.3.1"
-source = { registry = "https://pypi.org/simple" }
+version = "2.3.2.post1"
+source = { git = "https://github.com/state-spaces/mamba?rev=f577286#f577286d052741c35d39cd43bdc3fad27120f22c" }
 dependencies = [
+    { name = "apache-tvm-ffi" },
     { name = "einops" },
     { name = "ninja" },
     { name = "packaging" },
+    { name = "quack-kernels" },
     { name = "setuptools" },
+    { name = "tilelang" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "transformers" },
     { name = "triton" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/34/67/ec89aa703da194a813e35d2ea2de8f74a7ce6991a120a29f3a0c5e30d4b9/mamba_ssm-2.3.1.tar.gz", hash = "sha256:4d529477ad94753962216d583fc8f1c127c717b7d7c875d6bbb9376366d0d761", size = 121707, upload-time = "2026-03-10T09:27:34.798Z" }
 
 [[package]]
 name = "markdown"
@@ -3584,6 +3588,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0e/4a/c27b42ed9b1c7d13d9ba8b6905dece787d6259152f2309338aed29b2447b/ml_dtypes-0.5.4.tar.gz", hash = "sha256:8ab06a50fb9bf9666dd0fe5dfb4676fa2b0ac0f31ecff72a6c3af8e22c063453", size = 692314, upload-time = "2025-11-17T22:32:31.031Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/b8/3c70881695e056f8a32f8b941126cf78775d9a4d7feba8abcb52cb7b04f2/ml_dtypes-0.5.4-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:a174837a64f5b16cab6f368171a1a03a27936b31699d167684073ff1c4237dac", size = 676927, upload-time = "2025-11-17T22:31:48.182Z" },
     { url = "https://files.pythonhosted.org/packages/54/0f/428ef6881782e5ebb7eca459689448c0394fa0a80bea3aa9262cba5445ea/ml_dtypes-0.5.4-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a7f7c643e8b1320fd958bf098aa7ecf70623a42ec5154e3be3be673f4c34d900", size = 5028464, upload-time = "2025-11-17T22:31:50.135Z" },
     { url = "https://files.pythonhosted.org/packages/3a/cb/28ce52eb94390dda42599c98ea0204d74799e4d8047a0eb559b6fd648056/ml_dtypes-0.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9ad459e99793fa6e13bd5b7e6792c8f9190b4e5a1b45c63aba14a4d0a7f1d5ff", size = 5009002, upload-time = "2025-11-17T22:31:52.001Z" },
 ]
@@ -5033,6 +5038,7 @@ all = [
     { name = "flash-attn-3", marker = "sys_platform == 'linux'" },
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
@@ -5040,7 +5046,7 @@ all = [
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux'" },
-    { name = "tilelang", marker = "sys_platform == 'linux'" },
+    { name = "tilelang" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5084,12 +5090,13 @@ flash-attn-cute = [
 gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux'" },
-    { name = "tilelang", marker = "sys_platform == 'linux'" },
+    { name = "tilelang" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5144,6 +5151,7 @@ requires-dist = [
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
     { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
@@ -5214,7 +5222,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.12.1" },
 ]
-mamba-ssm = [{ name = "mamba-ssm", marker = "sys_platform == 'linux'", specifier = ">=2.3.0" }]
+mamba-ssm = [{ name = "mamba-ssm", marker = "sys_platform == 'linux'", git = "https://github.com/state-spaces/mamba?rev=f577286" }]
 
 [[package]]
 name = "prime-rl-configs"
@@ -7139,7 +7147,9 @@ dependencies = [
     { name = "ml-dtypes" },
     { name = "numpy" },
     { name = "psutil" },
-    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
+    { name = "setuptools", marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "torch-c-dlpack-ext" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -7147,6 +7157,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/9a/5776adb5b6e03e141c8cff020e16c45b87c9b7a7a5bdfe83416d6cc23933/tilelang-0.1.12.tar.gz", hash = "sha256:595b39581d099a53f875bd8d553863e7e4f58998052b58764f5472cbfbb87043", size = 93565090, upload-time = "2026-07-08T04:22:52.901Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/51/4ae1fb532406082a4ebf16c890f5f98db14b8588f2c486334ba23578b4bc/tilelang-0.1.12-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:8741d6cd519782645d55c17abd8986402c62948bc2122d3417c445d11de5dd16", size = 38347295, upload-time = "2026-07-08T04:22:35.691Z" },
     { url = "https://files.pythonhosted.org/packages/d1/53/f281a0bd9ee7e03d6a97828fc0e443321ed26ea2b0bd74bf9f1d9451d30f/tilelang-0.1.12-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bbeb5573cbe2544a51a5c9a6cc737c5e3b5c2d95411caa3687fd9b08eb9d5f97", size = 50501074, upload-time = "2026-07-08T04:22:39.973Z" },
     { url = "https://files.pythonhosted.org/packages/fb/a4/ff0b14d00d29fe418063cd97490f55aa9cad6f981a6fbbf29124b024637d/tilelang-0.1.12-cp38-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:a1701eba4ad603d73f1b128b88f6a2350f1b1161729e5b2d1e540a1ec7a82d52", size = 46281933, upload-time = "2026-07-08T04:22:44.244Z" },
 ]
@@ -7289,10 +7300,12 @@ name = "torch-c-dlpack-ext"
 version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/37/de/921b6491efce5c389a5ef9bbed3d2d6660005840dae488124173180859ab/torch_c_dlpack_ext-0.1.5.tar.gz", hash = "sha256:d06f0357d575d22a168cc77acb9020fc4bae30968ceb6718a055dcbe92bacabe", size = 12913, upload-time = "2026-01-12T11:25:08.484Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/67/10d236698525d7b7db4d74ec0a4b01f5b2db33968995fdd9ac6b4635e327/torch_c_dlpack_ext-0.1.5-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:c0f2bd51fcd99c0e5b50314e1985f2728c4941bfa821f065e6c30951d1f995ca", size = 5291237, upload-time = "2026-01-12T11:24:44.011Z" },
     { url = "https://files.pythonhosted.org/packages/87/06/8d760997307a5c3be4384424667bf31aae0a42060838c532c7d846516175/torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3562ee411258676f9c38b8ad39306d1c8d027b6a86f6a87c920d2d009a9d1510", size = 443069, upload-time = "2026-01-12T11:24:45.451Z" },
     { url = "https://files.pythonhosted.org/packages/e2/79/a914539b4785f3e44f891aa012a886edb8bc10fe081c440981c57543ce21/torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e6f9da4bb9af70e27facc777458be62e10dbbbddda7672d16138db0553c5a524", size = 897846, upload-time = "2026-01-12T11:24:48.168Z" },
 ]
@@ -8647,6 +8660,7 @@ version = "4.15.4.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/8a/8e/0c8f17309549d2e5cde9a3ccefa6365437f1e7bafe71878eaf9478e47b18/z3_solver-4.15.4.0.tar.gz", hash = "sha256:928c29b58c4eb62106da51c1914f6a4a55d0441f8f48a81b9da07950434a8946", size = 5018600, upload-time = "2025-10-29T18:12:03.062Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/33/a3d5d2eaeb0f7b3174d57d405437eabb2075d4d50bd9ea0957696c435c7b/z3_solver-4.15.4.0-py3-none-macosx_13_0_arm64.whl", hash = "sha256:407e825cc9211f95ef46bdc8d151bf630e7ab2d62a21d24cd74c09cc5b73f3aa", size = 37052538, upload-time = "2025-10-29T18:11:46.233Z" },
     { url = "https://files.pythonhosted.org/packages/21/c9/bb51a96af0091324c81b803f16c49f719f9f6ea0b0bb52200f5c97ec4892/z3_solver-4.15.4.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7e103a6f203f505b8b8b8e5c931cc407c95b61556512d4921c1ddc0b3f41b08e", size = 29268352, upload-time = "2025-10-29T18:11:53.032Z" },
     { url = "https://files.pythonhosted.org/packages/bf/2e/0b49f7e4e53817cfb09a0f6585012b782dfe0b666e8abefcb4fac0570606/z3_solver-4.15.4.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:62c7e9cbdd711932301f29919ad9158de9b2f58b4d281dd259bbcd0a2f408ba1", size = 27226534, upload-time = "2025-10-29T18:11:55.59Z" },
 ]

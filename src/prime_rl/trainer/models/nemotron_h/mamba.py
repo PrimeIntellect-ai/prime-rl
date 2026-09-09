@@ -3,8 +3,7 @@
 Packed training needs the convolution and state-space scan to reset at every
 document boundary. Under Ulysses context parallelism, each rank also needs the
 full sequence for its local Mamba heads because recurrent state cannot be split
-along the sequence. Nemotron-H owns that path here instead of adapting a
-Transformers mixer or relying on attention-global state.
+along the sequence.
 """
 
 import math
@@ -131,19 +130,12 @@ class NemotronHMamba2(nn.Module):
         rank: int,
         world_size: int,
     ) -> None:
-        if self.num_heads % world_size:
-            raise ValueError(f"Mamba heads ({self.num_heads}) must be divisible by CP size ({world_size})")
-        if self.num_groups % world_size:
-            raise ValueError(f"Mamba groups ({self.num_groups}) must be divisible by CP size ({world_size})")
         self.process_group = process_group
         self.context_parallel_rank = rank
         self.context_parallel_world_size = world_size
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
-        if batch_size != 1:
-            raise ValueError(f"Nemotron-H Mamba expects one packed row, got batch size {batch_size}")
-
         projected_states = self.in_proj(hidden_states)
         gate, convolution_input, time_step = torch.split(
             projected_states,

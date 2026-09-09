@@ -64,27 +64,9 @@ class NemotronHConfig(PretrainedConfig):
         eos_token_id: int | list[int] | None = 2,
         **kwargs,
     ) -> None:
-        if n_group != 1 or topk_group != 1:
-            raise NotImplementedError("Nemotron-H grouped expert routing is not supported")
-        if n_shared_experts != 1:
-            raise NotImplementedError("Nemotron-H requires exactly one shared expert")
-        if attention_dropout != 0.0 or hidden_dropout != 0.0:
-            raise NotImplementedError("Nemotron-H custom training does not support dropout")
-
         if layers_block_type is None:
             pattern = hybrid_override_pattern or "ME*E"
             layers_block_type = [self.PATTERN_TO_LAYER_TYPE[token] for token in pattern]
-        elif hybrid_override_pattern is not None:
-            pattern_layer_types = [self.PATTERN_TO_LAYER_TYPE[token] for token in hybrid_override_pattern]
-            if layers_block_type != pattern_layer_types:
-                raise ValueError("layers_block_type and hybrid_override_pattern describe different layers")
-
-        if num_hidden_layers is not None and num_hidden_layers != len(layers_block_type):
-            raise ValueError(
-                f"num_hidden_layers ({num_hidden_layers}) does not match "
-                f"the configured layer count ({len(layers_block_type)} layers)"
-            )
-
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.layers_block_type = layers_block_type
@@ -156,8 +138,6 @@ class NemotronHConfig(PretrainedConfig):
     def num_hidden_layers(self, value: int | None) -> None:
         if value is None or not hasattr(self, "layers_block_type"):
             return
-        if value > len(self.layers_block_type):
-            raise ValueError(f"Cannot increase Nemotron-H from {len(self.layers_block_type)} to {value} layers")
         self.layers_block_type = self.layers_block_type[:value]
 
 
