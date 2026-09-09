@@ -64,8 +64,6 @@ uv sync --extra gpu
 
 Native NemotronH uses Mamba2 Triton SSD kernels and FLA's packed causal convolution. The pinned `mamba-ssm` source installs without `nvcc`; no separate `causal-conv1d` installation is needed. `uv sync --all-extras` includes these dependencies.
 
-On clusters with shared home directories, set `TRITON_CACHE_DIR` to a node-local path in `[trainer.env_vars]` (for example, `/tmp/prime-rl-triton`) to avoid concurrent kernel-cache artifact read failures.
-
 ### Trainer DeepEP backend
 
 The `disagg` extra installs the prebuilt DeepEP wheel pinned in `[tool.uv.sources]`:

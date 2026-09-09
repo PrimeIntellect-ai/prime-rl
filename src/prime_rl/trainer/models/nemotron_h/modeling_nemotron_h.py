@@ -72,8 +72,6 @@ class NemotronHDecoderLayer(nn.Module):
                 selection_bias=True,
                 topk_sorted=False,
             )
-            router.fp32_gate = True
-
             expert_size = config.moe_latent_size or config.hidden_size
             experts = GroupedExperts(
                 dim=expert_size,
