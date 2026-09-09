@@ -8,7 +8,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
@@ -16,7 +16,15 @@ from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
-pytestmark = [pytest.mark.gpu]
+# Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
+# the kernel it would dispatch to, so the whole file needs tilelang even though nothing here calls it.
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        dsv4_attention.dsv4_sparse_attn is None,
+        reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
+    ),
+]
 
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
@@ -26,7 +34,9 @@ MODEL = dict(
     hidden_size=128,
     moe_intermediate_size=64,
     num_hidden_layers=5,
-    num_attention_heads=4,
+    # The smallest head count `DeepseekV4Attention.__init__` accepts: the kernel's tiler pads the
+    # head axis to a power of two and its backward GEMM needs 32 rows.
+    num_attention_heads=32,
     num_key_value_heads=1,
     head_dim=32,
     q_lora_rank=64,
@@ -128,29 +138,30 @@ def _randomize(module: nn.Module) -> None:
                 buffer.copy_(_tid2eid(buffer.shape[0], router.num_experts, router.top_k))
 
 
-def _prime_config(attn_impl: str = "eager") -> DeepseekV4Config:
-    """The toy config. It defaults to eager because the kernel cannot tile 4 attention heads."""
-    return DeepseekV4Config(**MODEL, _attn_impl=attn_impl)
+def _prime_config() -> DeepseekV4Config:
+    return DeepseekV4Config(**MODEL)
 
 
-def get_prime_model(dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
+def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config(attn_impl))
+        model = DeepseekV4ForCausalLM._from_config(_prime_config())
     _randomize(model)
+    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
 
-def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
+def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """One attention layer of the same config the whole-model tests use.
 
     `DeepseekV4Attention` reads no MoE or hyper-connection field, so the layer this builds is
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_prime_config(attn_impl), layer_idx=layer_idx)
+        module = DeepseekV4Attention(_prime_config(), layer_idx=layer_idx)
     _randomize(module)
+    eager_reference.use_eager_attention(module)
     return module
 
 
@@ -215,6 +226,7 @@ def test_deepseek_v4_backward():
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = DeepseekV4ForCausalLM(prime_config)
     _randomize(model)
+    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, MODEL["vocab_size"], (BATCH, MODEL_SEQ), device="cuda")
@@ -674,19 +686,19 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     `sliding_window` packed positions whatever document they belong to, which at the production
     `sliding_window = 128` against 77-token rollouts spans roughly two neighbours on all 43 layers.
 
-    Captured from the mask the model actually applies rather than by calling the builder, so it
-    keeps holding if the masking ever moves.
+    Captured from the dense mask the reference consumer applies to production's own
+    `window_indices`, rather than by calling the builder, so it keeps holding if the masking moves.
     """
     recorded = []
-    real_attention = dsv4_attention.eager_attention_with_sinks
+    real_attention = eager_reference.eager_attention_with_sinks
 
     def record(query, key, value, sinks, attention_mask, **kwargs):
         recorded.append(attention_mask)
         return real_attention(query, key, value, sinks, attention_mask, **kwargs)
 
-    monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
+    monkeypatch.setattr(eager_reference, "eager_attention_with_sinks", record)
 
-    # The dense mask is an eager-path artifact; the count below is one call per layer.
+    # The dense mask is a reference-path artifact; the count below is one call per layer.
     prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)

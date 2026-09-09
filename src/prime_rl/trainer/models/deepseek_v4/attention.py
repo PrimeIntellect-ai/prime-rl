@@ -125,7 +125,6 @@ import torch
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
-from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
@@ -637,56 +636,14 @@ class DeepseekV4Attention(nn.Module):
         )
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
         self.sinks = nn.Parameter(torch.zeros(self.num_heads))
-        self.attn_impl = config._attn_impl
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        blocker = _kernel_blocker(self.num_heads, self.head_dim) if self.attn_impl == "kernel" else None
+        blocker = _kernel_blocker(self.num_heads, self.head_dim)
         if blocker is not None:
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
+        assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
-
-    def _eager(self, q: Tensor, kv: Tensor, attention_mask: Tensor) -> Tensor:
-        return eager_attention_with_sinks(
-            q,
-            kv,
-            kv,
-            self.sinks,
-            attention_mask,
-            scaling=self.scaling,
-            dropout=self.attention_dropout,
-            training=self.training,
-        )
-
-    def _attend(self, q: Tensor, kv: Tensor, compressed: tuple[Tensor, Tensor] | None, packed: PackedContext) -> Tensor:
-        """Attend `q` (b, h, t, d) over the local KV `kv` (b, 1, t, d), plus any compressed entries.
-
-        Returns (b, t, h, d). A sliding layer sees only its window and passes `compressed` as
-        `None`; a compressed layer reaches further through its compressor's output, the entries
-        paired with the per-query indices selecting among them.
-
-        Every layer lays its slots out once, in `SparseAttnInputs`, and then differs only in the
-        attention core it hands them to, so the eager consumer is an oracle for the kernel rather
-        than a second answer to which keys a query reads.
-        """
-        compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
-        inputs = SparseAttnInputs.build(
-            kv=kv,
-            compressed_kv=compressed_kv,
-            top_k_indices=top_k_indices,
-            window_indices=packed.window_indices,
-        )
-        if self.attn_impl == "eager":
-            n_positions = inputs.kv_buf.shape[1]
-            attention_mask = dense_mask_from_indices(inputs.indices, n_positions, q.dtype)
-            return self._eager(q, inputs.kv_buf.transpose(1, 2), attention_mask)
-
-        # `eager_attention_with_sinks` drops attention weights and the kernel does not, so the
-        # two only agree at zero. The default is 0.0 but a config may set it.
-        assert self.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
-        q = q.transpose(1, 2).contiguous()  # the kernel asserts contiguity
-        out, _ = dsv4_sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks, self.scaling)
-        return out
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
@@ -715,7 +672,20 @@ class DeepseekV4Attention(nn.Module):
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
         compressed = self.compressor(hidden_states, q_residual, packed) if self.compressor is not None else None
-        attn_output = self._attend(q, kv, compressed, packed)  # (b, t, h, d)
+        compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+        inputs = SparseAttnInputs.build(
+            kv=kv,
+            compressed_kv=compressed_kv,
+            top_k_indices=top_k_indices,
+            window_indices=packed.window_indices,
+        )
+        attn_output, _ = dsv4_sparse_attn(
+            q.transpose(1, 2).contiguous(),
+            inputs.kv_buf,
+            inputs.indices,
+            self.sinks,
+            self.scaling,
+        )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
@@ -742,6 +712,4 @@ __all__ = [
     "DeepseekV4Indexer",
     "PackedContext",
     "SparseAttnInputs",
-    "dense_mask_from_indices",
-    "eager_attention_with_sinks",
 ]
