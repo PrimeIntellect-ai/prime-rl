@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 
@@ -9,6 +11,10 @@ def apply_shared_vllm_patches():
     load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
     """
+    if os.environ.get("PRIME_TOTAL_ROUTER_RECALL") == "1":
+        from prime_rl.inference.total_router_recall import enable_total_router_capture
+
+        enable_total_router_capture()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()

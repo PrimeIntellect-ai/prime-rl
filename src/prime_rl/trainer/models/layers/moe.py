@@ -3,7 +3,7 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -247,6 +247,13 @@ class TokenChoiceTopKRouter(nn.Module):
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
         """
+        if os.environ.get("PRIME_TOTAL_ROUTER_RECALL") == "1":
+            from prime_rl.trainer.rl.total_router_recall import replay_router
+
+            return replay_router(self, x, routed_experts, TokenChoiceTopKRouter.live_forward)
+        return self.live_forward(x, routed_experts)
+
+    def live_forward(self, x, routed_experts=None):
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
