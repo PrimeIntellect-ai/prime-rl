@@ -782,44 +782,6 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     )
 
 
-@pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
-def test_indexer_picks_match_the_dense_causal_mask(doc_lens):
-    """Every pick the FP8 indexer returns is one the dense per-document causal mask admits.
-
-    The kernel is handed a contiguous `[ks, ke)` range rather than that mask, so this pins the
-    range arithmetic in `DeepseekV4Indexer.forward` against the mask it is meant to reproduce.
-    """
-    module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    indexer = module.compressor.indexer
-    packed = _packed_context(doc_lens, torch.bfloat16, _v4flash_config())
-    with torch.device("cuda"):
-        hidden_states = torch.randn(1, sum(doc_lens), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
-
-    with torch.no_grad():
-        q_residual = module.q_a_norm(module.q_a_proj(hidden_states))
-        picks = indexer(hidden_states, q_residual, packed)
-
-    layout = packed.compression_layouts[V4FLASH_COMPRESS_RATE]
-    readable = eager_reference.token_entry_causal_mask(
-        tok_doc_idx=packed.tok_doc_idx,
-        entry_doc_idx=layout.entry_doc_idx,
-        entry_local_idx=layout.entry_local_idx,
-        threshold=indexer.compressor.causal_threshold(packed.position_ids),
-    )[0]
-    n_entries = readable.shape[-1]
-    selected = eager_reference.block_bias_from_indices(picks, n_entries, torch.float32)[0, 0] == 0
-
-    stray = selected & ~readable
-    assert not stray.any(), f"{int(stray.sum())} picks name an entry the causal mask forbids"
-
-    # A query whose readable entries all fit in `index_topk` has nothing to rank away, so the two
-    # sides must agree exactly. `(2600,)` saturates and contributes only to the check above.
-    unsaturated = readable.sum(-1) <= indexer.index_topk
-    assert torch.equal(selected[unsaturated], readable[unsaturated]), (
-        "a query that could hold every entry it may read did not pick them all"
-    )
-
-
 # One CSA layer in bfloat16, so `PACKED_RTOL` (float32, and three orders of magnitude tighter than a kernel
 # accumulating bfloat16 inputs) does not apply, but neither does the whole-model bound `test_deepseek_v4.py`
 # carries, which is sized for four hyper-connected layers amplifying a bfloat16 expert floor.

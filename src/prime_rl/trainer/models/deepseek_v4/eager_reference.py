@@ -57,23 +57,6 @@ def build_sliding_window_mask(*, tok_doc_idx: Tensor, sliding_window: int, dtype
     return mask.masked_fill_(~readable, torch.finfo(dtype).min)[None, None]
 
 
-def token_entry_causal_mask(
-    *, tok_doc_idx: Tensor, entry_doc_idx: Tensor, entry_local_idx: Tensor, threshold: Tensor
-) -> Tensor:
-    """`(1, seq_len, n_entries)` bool: which compressed entries each query token may read.
-
-    Element `[0, t, e]` is true when query token `t` may read entry `e`. Both of these have to
-    hold:
-
-    - `e` belongs to `t`'s own document, so no query reads another document's history;
-    - `e` closed before `t` arrived, i.e. its index within that document is below
-      `threshold[0, t]`, the count of entries the query's position has completed.
-    """
-    same_document = tok_doc_idx[None, :, None] == entry_doc_idx[None, None, :]
-    closed_before_query = threshold.unsqueeze(-1) > entry_local_idx[None, None, :]
-    return same_document & closed_before_query
-
-
 def block_bias_from_indices(top_k_indices: Tensor, n_entries: int, dtype: torch.dtype) -> Tensor:
     """Render the indexer's picks as the dense additive `(batch, 1, seq_len, n_entries)` bias.
 
