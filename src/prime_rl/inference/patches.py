@@ -22,6 +22,37 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepep_v2_empty_decode_metadata()
     monkey_patch_engine_handshake_timeout()
+    monkey_patch_deepep_first_dispatch_barrier()
+
+
+def monkey_patch_deepep_first_dispatch_barrier():
+    """Keep warm ranks out of DeepEP while peers compile their first forward."""
+    import os
+
+    if os.environ.get("PRIME_DEEPEP_FIRST_DISPATCH_BARRIER") != "1":
+        return
+
+    from functools import wraps
+
+    from deep_ep import Buffer
+    from vllm.logger import init_logger
+
+    original = Buffer.low_latency_dispatch
+    if getattr(original, "_prime_first_dispatch_barrier", False):
+        return
+    logger = init_logger(__name__)
+
+    @wraps(original)
+    def dispatch(self, *args, **kwargs):
+        if not getattr(self, "_prime_first_dispatch_ready", False):
+            logger.info("Waiting for DeepEP first dispatch peers: rank %s", self.rank)
+            torch.distributed.barrier(group=self.group)
+            self._prime_first_dispatch_ready = True
+            logger.info("DeepEP first dispatch peers ready: rank %s", self.rank)
+        return original(self, *args, **kwargs)
+
+    dispatch._prime_first_dispatch_barrier = True
+    Buffer.low_latency_dispatch = dispatch
 
 
 def monkey_patch_engine_handshake_timeout():
