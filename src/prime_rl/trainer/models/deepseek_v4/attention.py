@@ -691,8 +691,8 @@ class DeepseekV4Attention(nn.Module):
     types additionally own a `compressor` whose output is concatenated onto the local KV,
     which is how a layer sees past the window.
 
-    Under context parallelism this rank holds the queries of one contiguous shard of the row and
-    all-gathers the key side, which every query needs in full. What crosses the wire is the
+    Under context parallelism this rank holds the queries of one contiguous shard of the sequence
+    and all-gathers the key side, which every query needs in full. What crosses the wire is the
     narrowest thing that suffices: `kv_proj`'s single `head_dim`-wide vector per token, and the
     compressor's own per-token projections, never the `hidden_size`-wide stream they came from.
     """
@@ -770,9 +770,6 @@ class DeepseekV4Attention(nn.Module):
         q = self.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)  # (b, h, t, d)
         q = apply_rotary_pos_emb_interleaved(self.q_b_norm(q), cos, sin)
 
-        # Both the norm and the rotation are per-token, so both run on this rank's shard and the
-        # collective carries keys already in their final form. The gather is on the sequence axis,
-        # which is why the rotation runs in the query layout rather than after the transpose.
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)

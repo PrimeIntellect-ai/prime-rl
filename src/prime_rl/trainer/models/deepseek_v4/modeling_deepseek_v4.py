@@ -52,11 +52,6 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         self.ffn_hc = DeepseekV4HyperConnection(config)
 
     def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        """Hook `setup_sparse_mla_cp` calls on every layer to publish the CP topology.
-
-        Attention is the only sublayer that needs it; the layer keeps its own copy because the
-        model reads the topology back off its first layer.
-        """
         self._cp_group = cp_group
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
