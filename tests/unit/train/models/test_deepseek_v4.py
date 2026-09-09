@@ -933,9 +933,9 @@ def test_deepseek_v4_context_parallel_setup_reaches_every_layer():
     The hook walks `model.model.layers` and skips anything without the attribute, so a layer that
     lost the hook would leave that layer's attention running with `cp_world_size = 1`: it would
     skip its gathers, attend its shard's queries against its shard's keys alone, and return a
-    finite, wrong answer rather than raise. `DeepseekV4Model._context_parallel_state` reads the
-    topology off the first layer only, which is what the model's own `PackedContext` is built
-    from, so it is checked against what was set rather than assumed to agree.
+    finite, wrong answer rather than raise. `DeepseekV4Model._cp_rank_and_world_size` reads the
+    shard off the first layer only, and that pair is what the model's own `PackedContext` is
+    built from, so it is checked against what was set rather than assumed to agree.
     """
     model = get_prime_model()
     cp_group = MagicMock()
@@ -949,7 +949,7 @@ def test_deepseek_v4_context_parallel_setup_reaches_every_layer():
         assert layer.self_attn._cp_group is cp_group
         assert (layer.self_attn._cp_rank, layer.self_attn._cp_world_size) == (1, 2)
         assert layer.self_attn.cp_enabled
-    assert model.model._context_parallel_state() == (cp_group, 1, 2)
+    assert model.model._cp_rank_and_world_size() == (1, 2)
 
 
 @pytest.mark.parametrize("cp_world_size", [1, 2], ids=["cp-off", "cp-on"])

@@ -207,16 +207,18 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         self.post_init()
 
-    def _context_parallel_state(self) -> tuple[dist.ProcessGroup | None, int, int]:
-        """The topology `setup_sparse_mla_cp` published to the layers, or the single-rank default.
+    def _cp_rank_and_world_size(self) -> tuple[int, int]:
+        """This rank's place in the query sharding, or the single-rank default.
 
-        Every layer got the same one, so the first is representative.
+        `setup_sparse_mla_cp` published the same pair to every layer, so the first is
+        representative. The process group is not read back here, since attention gathers off its
+        own copy of it.
         """
         if len(self.layers) == 0:
-            return None, 0, 1
+            return 0, 1
 
         layer = self.layers[0]
-        return getattr(layer, "_cp_group", None), getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
+        return getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
 
     def forward(
         self,
@@ -260,7 +262,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        _, cp_rank, cp_world_size = self._context_parallel_state()
+        cp_rank, cp_world_size = self._cp_rank_and_world_size()
         if seq_lens_are_pre_shard != (cp_world_size > 1):
             raise ValueError(
                 f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size="
