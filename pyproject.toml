@@ -92,9 +92,6 @@ disagg = [
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
     "vllm-router ; sys_platform == 'linux'",
 ]
-gpt-oss = [
-    "kernels ; sys_platform == 'linux'",
-]
 quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
 ]

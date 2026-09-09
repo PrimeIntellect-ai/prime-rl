@@ -34,9 +34,12 @@ impl = "custom"        # or "hf" to force the HF path
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
-| GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
+| GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 
 Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
+
+GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
+and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
 
 ### Low-precision training
 

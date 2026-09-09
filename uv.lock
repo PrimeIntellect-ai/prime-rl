@@ -2992,34 +2992,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kernels"
-version = "0.14.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "kernels-data" },
-    { name = "packaging" },
-    { name = "pyyaml" },
-    { name = "tomlkit" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cd/16/d9c473289d72d07a5c8e00367e5de9326bf0135e65ba74a235e2eb2510f2/kernels-0.14.1.tar.gz", hash = "sha256:ba21b7b509b7a0c2d2c7a0efd546e9dda2b1022ed5ff2b8fde8e94d7637754d3", size = 62800, upload-time = "2026-05-14T06:42:36.234Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/94/fb8cbf1427af4b520ad08a458b6696f1958732761bc284b55273fa3aa684/kernels-0.14.1-py3-none-any.whl", hash = "sha256:be1a91116e14be1e012fc8f47afb51173ee052586a570fba3d594ef0d1b38920", size = 57977, upload-time = "2026-05-14T06:42:35.002Z" },
-]
-
-[[package]]
-name = "kernels-data"
-version = "0.14.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/29/15/b071356425b50d8b49d01152b344222d18b4a535cbc352f7d00267dd4ceb/kernels_data-0.14.1.tar.gz", hash = "sha256:35c7d46da843decc1f12f098ca781b8453f21ecbabb4e18b9266c0e0b113fc82", size = 41008, upload-time = "2026-05-14T06:41:15.534Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/6d/dc1c2095d858b62dbfe8ccf4bd05ff304450601bef42e4c5e971e3550deb/kernels_data-0.14.1-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d6446304de3bec9d72da88e64717e37ad4ec8bc8b096e0f73a5c5d5e6ae4f153", size = 1162253, upload-time = "2026-05-14T06:40:27.196Z" },
-    { url = "https://files.pythonhosted.org/packages/4e/b5/cabd476a1bdaad270509b48427a4f06a62a717d3aa67a6279ef134e7de60/kernels_data-0.14.1-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:71178b60a4e65791d5421cdf4844e0be4cd0fb4f341051a491cfbe94afc765f0", size = 1176707, upload-time = "2026-05-14T06:40:49.605Z" },
-    { url = "https://files.pythonhosted.org/packages/3b/28/a3b063047af38c17c13e5938cbe1979e2daaaa094a2f44cfc21ac7b7fc19/kernels_data-0.14.1-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:f432b770b22039fa357be6252889ed823b72e753ced9d543ba514b4fe8601e0b", size = 1338286, upload-time = "2026-05-14T06:41:02.1Z" },
-    { url = "https://files.pythonhosted.org/packages/87/ea/fe955e157094d93fe20919441dc709ba7afbcf933de5896b546d5c217938/kernels_data-0.14.1-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ec694ae26ed8569f613e5cd4269222210cb57b1c16cf8b0c5acbf0082324804f", size = 1414055, upload-time = "2026-05-14T06:41:14.424Z" },
-]
-
-[[package]]
 name = "kimina"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/lean/kimina" }
@@ -5109,9 +5081,6 @@ flash-attn-3 = [
 flash-attn-cute = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
 ]
-gpt-oss = [
-    { name = "kernels", marker = "sys_platform == 'linux'" },
-]
 gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
@@ -5174,7 +5143,6 @@ requires-dist = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
-    { name = "kernels", marker = "sys_platform == 'linux' and extra == 'gpt-oss'" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
@@ -5234,7 +5202,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "kernels", "all"]
+provides-extras = ["gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "quack", "kernels", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -7265,15 +7233,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184, upload-time = "2025-01-15T12:07:24.262Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675, upload-time = "2025-01-15T12:07:22.074Z" },
-]
-
-[[package]]
-name = "tomlkit"
-version = "0.14.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c3/af/14b24e41977adb296d6bd1fb59402cf7d60ce364f90c890bd2ec65c43b5a/tomlkit-0.14.0.tar.gz", hash = "sha256:cf00efca415dbd57575befb1f6634c4f42d2d87dbba376128adb42c121b87064", size = 187167, upload-time = "2026-01-13T01:14:53.304Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/11/87d6d29fb5d237229d67973a6c9e06e048f01cf4994dee194ab0ea841814/tomlkit-0.14.0-py3-none-any.whl", hash = "sha256:592064ed85b40fa213469f81ac584f67a4f2992509a7c3ea2d632208623a3680", size = 39310, upload-time = "2026-01-13T01:14:51.965Z" },
 ]
 
 [[package]]

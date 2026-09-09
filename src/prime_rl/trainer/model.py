@@ -4,9 +4,8 @@ import time
 from pathlib import Path
 from typing import cast
 
-# Disable transformers hub kernel interception by default. The `kernels` package, when installed,
-# causes transformers to auto-replace modules (e.g. mamba-ssm) with hub kernel versions that may
-# have incompatible CUDA requirements. We only enable it explicitly for models that need it (GPT-OSS).
+# Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
+# modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
@@ -566,20 +565,6 @@ def get_model(
             raise ValueError(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
-
-    # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    HOPPER_MAJOR = 9
-    if getattr(model_config, "model_type", "") == "gpt_oss":
-        major, minor = torch.cuda.get_device_capability()
-        if major != HOPPER_MAJOR:
-            raise ValueError(
-                f"GPT-OSS requires Hopper (SM 90) for flash attention, detected SM {major}{minor}. "
-                f"GPT-OSS is not supported on non-Hopper GPUs."
-            )
-        # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
-        import transformers.integrations.hub_kernels as _hub_kernels
-
-        _hub_kernels._kernels_enabled = True
 
     # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
     if getattr(model_config, "model_type", "").startswith("qwen3_5"):
