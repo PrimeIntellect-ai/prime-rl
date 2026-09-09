@@ -101,11 +101,6 @@ Then land it in prime-rl as a submodule bump.
 
 ## Bumping the pin
 
-For an isolated probe of a Python-only kernel under development, the kernel
-checkout root may be placed on `PYTHONPATH`. This exercises the source registry
-without editing an installed virtual environment. It does not update the
-installed wheel or a release pin; record that distinction in experiment artifacts.
-
 Kernel sources are pinned by the submodule commit, so picking up any kernel change — yours
 or someone else's — is a bump:
 

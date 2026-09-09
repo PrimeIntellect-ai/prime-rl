@@ -1,6 +1,0 @@
-{
-  "steps": 3,
-  "microbatches_per_step": 2,
-  "masters_and_adam_moments_bitwise_equal": true,
-  "router_update_probe_detected_all_steps": true
-}

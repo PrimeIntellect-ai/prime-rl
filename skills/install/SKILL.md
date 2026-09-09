@@ -37,17 +37,6 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ## Optional extras
 
-If `uv sync` times out acquiring a shared distribution-cache lock, do not delete
-another process's lock or alter its environment. A verified existing runtime can
-be used read-only with `UV_PROJECT_ENVIRONMENT=/path/to/venv uv run --no-sync ...`;
-set `UV_NO_SYNC=1` for child `uv run` commands too. When using another checkout's
-runtime, explicitly put this checkout's `src`, `packages/prime-rl-configs/src`,
-and local dependency source directories on `PYTHONPATH`, and verify module
-paths and package versions before launching. SLURM templates explicitly run
-`uv sync` and activate `.venv`; `--no-sync` on the submitting command does not
-disable those steps. Review an adapted generated job script before submitting
-with a borrowed runtime, and retain it with the run artifacts.
-
 ### CUDA kernels
 
 Prebuilt wheels, pinned at a release in `[tool.uv.sources]`:

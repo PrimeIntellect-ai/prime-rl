@@ -1,9 +1,0 @@
-{
-  "base_commit": "3fb83eb",
-  "patch_applies_to_clean_base": true,
-  "files_match_tested_kernel_checkout": true,
-  "files": [
-    "prime_kernels/kernels.toml",
-    "prime_kernels/mismatch_router/__init__.py"
-  ]
-}

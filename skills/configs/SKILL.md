@@ -40,15 +40,7 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 
 **No inline tables** — checked-in configs use `[section]` headers or dotted keys, never `key = { ... }`.
 
-Activation offloading is a nested model: use a `[trainer.model.ac_offloading]`
-table (empty selects defaults), or `ac_offloading = "None"` to disable it.
-Unlike full optimizer offload, it does not accept a boolean `true`.
-
 **Sources are one block** — inside a `[[...source]]` entry, write nested sub-configs as dotted keys in the same block (`env.taskset.id = "..."`, `env.agent.harness.id = "..."`), not one subsection header per nested config. Nested arrays of tables (e.g. `[[orchestrator.train.source.env.taskset.task.judges]]`) keep full-path headers — they attach to the preceding `[[...source]]` entry.
-
-Taskset-specific parameters are direct fields, for example
-`env.taskset.dataset_name = "/path/to/local-parquet-dataset"` for reverse text
-or `env.taskset.split = "train"` for GSM8K.
 
 **Booleans** — CLI `--flag` / `--no-flag`; TOML must be explicit (`enforce_eager = true`).
 
@@ -76,13 +68,6 @@ CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestra
 The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server), e.g. `--eval.source.0.env.taskset.id reverse-text`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
-
-**Training renderer versus evaluation chat template** — RL training uses the renderer
-client, while evaluation uses OpenAI chat completions. `[orchestrator.renderer]`
-options do not configure evaluation's chat template. For Qwen3 or GLM evaluation
-without thinking, explicitly set
-`[orchestrator.eval.sampling.extra_body.chat_template_kwargs] enable_thinking = false`.
-Confirm the selected model's chat template supports the option.
 
 **vLLM pass-through** — `[inference.vllm]` uses vLLM's own argument names (`model`, `tensor_parallel_size`, `data_parallel_size`, `max_model_len`, ...) and forwards *any* key to the vLLM server, typed by prime-rl or not: `[inference.vllm] max_num_seqs = 256`, or `--inference.vllm.max-num-seqs 256` on the CLI. CLI values are JSON-coerced, so dict-valued vLLM args work as `--inference.vllm.compilation-config '{"cudagraph_mode": "NONE"}'`. Non-vLLM knobs (router, deployment, weight broadcast, kv-cache offload, env vars) stay on `[inference]` itself.
 
