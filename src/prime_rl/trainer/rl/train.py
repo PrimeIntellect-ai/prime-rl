@@ -9,7 +9,11 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import (
+    prune_broadcasts_beyond,
+    reclaim_memory_for_broadcast,
+    setup_weight_sender,
+)
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -187,6 +191,7 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
@@ -605,19 +610,14 @@ def train(config: TrainerConfig):
         # broadcast keeps inference synchronized with the completed trainer.
         if weight_sender is None:
             broadcast_weights_time = 0
+            reclaim_metrics = {}
+            broadcast_metrics = {}
         else:
             broadcast_weights_start_time = time.perf_counter()
-            # The per-layer gather + fp8 conversion peaks ~50 GiB above the
-            # resident weights; release cached blocks (incl. offload-stream
-            # pools) so the broadcast gets the full headroom. Drain all
-            # pending work first: empty_cache returns blocks to the driver,
-            # so a still-running kernel holding a cached block (e.g. the
-            # optimizer step's tail) faults with an illegal memory access
-            # once its block is freed under it.
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            weight_sender.broadcast(model, step=progress.step)
+            reclaim_metrics = reclaim_memory_for_broadcast(config.weight_broadcast)
+            broadcast_timings = weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+            broadcast_metrics = {f"time/broadcast/{stage}": value for stage, value in broadcast_timings.items()}
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (
@@ -711,6 +711,8 @@ def train(config: TrainerConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
+            **reclaim_metrics,
+            **broadcast_metrics,
         }
         asyncio.run(monitors.log(time_metrics, step=progress.step))
 

@@ -565,6 +565,12 @@ class DataLoaderConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    reclaim_memory: Literal["always", "if_needed"] = "always"
+    """When to empty the CUDA allocator cache before broadcasting weights."""
+
+    reclaim_headroom_gb: float = Field(64.0, gt=0)
+    """Required free and cached CUDA memory when reclaiming only if needed."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
@@ -576,6 +582,12 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
     """Number of inference workers."""
+
+    reclaim_memory: Literal["always", "if_needed"] = "always"
+    """When to empty the CUDA allocator cache before broadcasting weights."""
+
+    reclaim_headroom_gb: float = Field(64.0, gt=0)
+    """Required free and cached CUDA memory when reclaiming only if needed."""
 
 
 class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
@@ -601,8 +613,21 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
 
 
+class MXRefitWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    run_uid: str
+    """Namespace for this run's ModelExpress weight versions."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | MXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
