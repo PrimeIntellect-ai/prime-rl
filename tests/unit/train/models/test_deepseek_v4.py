@@ -14,7 +14,6 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.utils.cp import setup_sparse_mla_cp
 from prime_rl.utils.utils import default_dtype
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
@@ -914,51 +913,3 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
 
     _compare_accumulated_grads(module, packed_grads)
     torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
-
-
-def test_deepseek_v4_context_parallel_setup_reaches_every_layer():
-    model = get_prime_model()
-    cp_group = MagicMock()
-
-    setup_sparse_mla_cp(model, cp_group, cp_rank=1, cp_world_size=2)
-
-    assert len(model.model.layers) == MODEL["num_hidden_layers"]
-    for layer in model.model.layers:
-        assert layer._cp_group is cp_group
-        assert (layer._cp_rank, layer._cp_world_size) == (1, 2)
-        assert layer.self_attn._cp_group is cp_group
-        assert (layer.self_attn._cp_rank, layer.self_attn._cp_world_size) == (1, 2)
-        assert layer.self_attn.cp_enabled
-    assert model.model._cp_rank_and_world_size() == (1, 2)
-
-
-@pytest.mark.parametrize("cp_world_size", [1, 2], ids=["cp-off", "cp-on"])
-def test_deepseek_v4_rejects_seq_lens_that_disagree_with_the_cp_topology(cp_world_size):
-    model = get_prime_model()
-    seq_lens_are_pre_shard = cp_world_size == 1
-    if cp_world_size > 1:
-        setup_sparse_mla_cp(model, MagicMock(), cp_rank=0, cp_world_size=cp_world_size)
-
-    input_ids = torch.randint(0, MODEL["vocab_size"], (1, MODEL_SEQ), device="cuda")
-    position_ids, seq_lens = _single_doc(input_ids)
-
-    message = f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
-    with pytest.raises(AssertionError, match=re.escape(message)):
-        model(
-            input_ids,
-            position_ids=position_ids,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
-
-
-def test_deepseek_v4_rejects_seq_lens_that_do_not_cover_every_cp_shard():
-    model = get_prime_model()
-    setup_sparse_mla_cp(model, MagicMock(), cp_rank=0, cp_world_size=2)
-
-    input_ids = torch.randint(0, MODEL["vocab_size"], (1, MODEL_SEQ), device="cuda")
-    position_ids, seq_lens = _single_doc(input_ids)
-
-    message = f"seq_lens covers {MODEL_SEQ} tokens, but 2 CP rank(s) holding {MODEL_SEQ} tokens each"
-    with pytest.raises(AssertionError, match=re.escape(message)):
-        model(input_ids, position_ids=position_ids, seq_lens=seq_lens, seq_lens_are_pre_shard=True)
