@@ -2,12 +2,10 @@ import torch
 import torch.distributed as dist
 
 from prime_rl.trainer.distributed.comet_moe.buffers import CometMoEBuffers, init_comet_moe_buffers
-from prime_rl.trainer.distributed.comet_moe.differentiable_ffn import differentiable_expert_ffn
 from prime_rl.trainer.distributed.comet_moe.metadata import (
     TileList,
     build_schedule,
     compute_backward_aux,
-    padded_expert_offsets,
 )
 from prime_rl.trainer.models.layers.activations import Activation, Silu
 
@@ -53,7 +51,7 @@ def _run_fused_kernel_dispatch_and_ffn(
     *,
     block_m: int,
     n_blocks: int,
-) -> tuple[list[torch.Tensor], torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     n_producer_blocks = max(1, n_blocks // 8)
     n_consumer_blocks = max(1, n_blocks - n_producer_blocks)
     is_gated = gate_proj is not None
@@ -61,7 +59,7 @@ def _run_fused_kernel_dispatch_and_ffn(
     intermediate_dim = up_proj.shape[1]
     device = bufs.dispatch_hidden.local.device
 
-    expert_out_fast = torch.empty(schedule.recv_capacity, hidden_dim, dtype=torch.bfloat16, device=device)
+    expert_out = torch.empty(schedule.recv_capacity, hidden_dim, dtype=torch.bfloat16, device=device)
     act_scratch = torch.empty(n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device)
     gate_scratch = (
         torch.empty(n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device)
@@ -72,42 +70,34 @@ def _run_fused_kernel_dispatch_and_ffn(
     block_end_clock = torch.empty_like(block_start_clock)
 
     dispatch_tiles = schedule.dispatch_tiles
-    with torch.no_grad():
-        comet_scatter.fused_dispatch_ffn(
-            schedule.routed_input,
-            bufs.dispatch_hidden.peer_ptrs,
-            bufs.dispatch_flags.peer_ptrs,
-            dispatch_tiles.peer_rank,
-            dispatch_tiles.local_row_start,
-            dispatch_tiles.peer_row_start,
-            dispatch_tiles.valid_rows,
-            dispatch_tiles.flag_index,
-            bufs.dispatch_hidden.local,
-            bufs.dispatch_flags.local,
-            schedule.recv_tile_valid,
-            schedule.recv_tile_to_local_expert,
-            gate_proj,
-            up_proj,
-            down_proj,
-            expert_out_fast,
-            act_scratch,
-            gate_scratch,
-            block_start_clock,
-            block_end_clock,
-            block_m,
-            n_producer_blocks,
-            n_consumer_blocks,
-        )
-        hidden_shadow = bufs.dispatch_hidden.local[: schedule.recv_capacity].clone()
-    hidden_shadow.requires_grad_(True)
+    comet_scatter.fused_dispatch_ffn(
+        schedule.routed_input,
+        bufs.dispatch_hidden.peer_ptrs,
+        bufs.dispatch_flags.peer_ptrs,
+        dispatch_tiles.peer_rank,
+        dispatch_tiles.local_row_start,
+        dispatch_tiles.peer_row_start,
+        dispatch_tiles.valid_rows,
+        dispatch_tiles.flag_index,
+        bufs.dispatch_hidden.local,
+        bufs.dispatch_flags.local,
+        schedule.recv_tile_valid,
+        schedule.recv_tile_to_local_expert,
+        gate_proj,
+        up_proj,
+        down_proj,
+        expert_out,
+        act_scratch,
+        gate_scratch,
+        block_start_clock,
+        block_end_clock,
+        block_m,
+        n_producer_blocks,
+        n_consumer_blocks,
+    )
+    hidden_shadow = bufs.dispatch_hidden.local[: schedule.recv_capacity].clone()
 
-    offs = padded_expert_offsets(schedule.recv_expert_row_offsets, schedule.recv_capacity)
-    with torch.enable_grad():
-        expert_out_graph = differentiable_expert_ffn(hidden_shadow, offs, up_proj, down_proj, Silu, gate_proj)
-    with torch.no_grad():
-        expert_out_graph.copy_(expert_out_fast)
-
-    return [hidden_shadow], expert_out_graph
+    return hidden_shadow, expert_out
 
 
 class CometMoELayerFunction(torch.autograd.Function):
@@ -166,7 +156,7 @@ class CometMoELayerFunction(torch.autograd.Function):
                 "comet_scatter.fused_dispatch_ffn only supports Silu (gated or ungated) -- "
                 "other activations aren't implemented."
             )
-        hidden_chunks, expert_out = _run_fused_kernel_dispatch_and_ffn(
+        hidden_shadow, expert_out = _run_fused_kernel_dispatch_and_ffn(
             comet_scatter,
             bufs,
             schedule,
@@ -207,7 +197,6 @@ class CometMoELayerFunction(torch.autograd.Function):
         bufs.barrier()
 
         ctx.save_for_backward(
-            expert_out,
             up_proj,
             down_proj,
             gate_proj if is_gated else up_proj,
@@ -227,9 +216,9 @@ class CometMoELayerFunction(torch.autograd.Function):
             combine_tiles.valid_rows,
             combine_tiles.flag_index,
             schedule.recv_tile_valid,
-            *hidden_chunks,
+            schedule.recv_tile_to_local_expert,
+            hidden_shadow,
         )
-        ctx.n_chunks = len(hidden_chunks)
         ctx.is_gated = is_gated
         ctx.grad_recv = grad_recv
         ctx.grad_combine = grad_combine
@@ -249,10 +238,7 @@ class CometMoELayerFunction(torch.autograd.Function):
 
         comet_scatter = prime_kernels.load("comet_scatter")
 
-        n_chunks = ctx.n_chunks
-        fixed_tensors, hidden_chunks = ctx.saved_tensors[:-n_chunks], list(ctx.saved_tensors[-n_chunks:])
         (
-            expert_out,
             up_proj,
             down_proj,
             gate_proj_or_placeholder,
@@ -272,7 +258,9 @@ class CometMoELayerFunction(torch.autograd.Function):
             c_valid_rows,
             c_flag_index,
             recv_tile_valid,
-        ) = fixed_tensors
+            recv_tile_to_local_expert,
+            hidden_shadow,
+        ) = ctx.saved_tensors
         is_gated = ctx.is_gated
         gate_proj = gate_proj_or_placeholder if is_gated else None
 
@@ -316,7 +304,43 @@ class CometMoELayerFunction(torch.autograd.Function):
         grad_routed_scores = (grad_weighted_routed_out.float() * combine_hidden_at_r.float()).sum(-1)
         grad_recv.reset()
         grad_recv.barrier()
-        comet_scatter.scatter_tiles(
+
+        # Fused backward kernel: scatters grad_combine_hidden into this rank's dispatch-hidden
+        # symmetric-memory buffer (mirroring forward's dispatch, role-swapped) and, per received
+        # tile, recomputes up/gate from the saved hidden_shadow and computes BOTH the FFN's input
+        # gradient (grad_dispatch_hidden) and its weight gradients (grad_up_proj/grad_down_proj/
+        # grad_gate_proj, atomic-accumulated in fp32 since one expert's tokens span multiple
+        # tiles) via real WMMA GEMMs -- replacing the old scatter_tiles+wait_tiles+
+        # torch.autograd.grad-through-the-shadow-graph path entirely.
+        n_producer_blocks = max(1, n_blocks // 8)
+        n_consumer_blocks = max(1, n_blocks - n_producer_blocks)
+        intermediate_dim = up_proj.shape[1]
+        num_local_experts = up_proj.shape[0]
+
+        up_scratch = torch.empty(n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device)
+        gate_scratch = (
+            torch.empty(n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device)
+            if is_gated
+            else None
+        )
+        grad_act_scratch = torch.empty(
+            n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device
+        )
+        act_scratch = torch.empty(n_consumer_blocks, block_m, intermediate_dim, dtype=torch.bfloat16, device=device)
+        grad_dispatch_hidden = torch.empty(recv_capacity, hidden_dim, dtype=torch.bfloat16, device=device)
+        grad_up_proj_fp32 = torch.zeros(
+            num_local_experts, intermediate_dim, hidden_dim, dtype=torch.float32, device=device
+        )
+        grad_down_proj_fp32 = torch.zeros(
+            num_local_experts, hidden_dim, intermediate_dim, dtype=torch.float32, device=device
+        )
+        grad_gate_proj_fp32 = (
+            torch.zeros(num_local_experts, intermediate_dim, hidden_dim, dtype=torch.float32, device=device)
+            if is_gated
+            else None
+        )
+
+        comet_scatter.fused_grad_combine_ffn(
             grad_combine_hidden,
             grad_recv.dispatch_hidden.peer_ptrs,
             grad_recv.dispatch_flags.peer_ptrs,
@@ -325,25 +349,31 @@ class CometMoELayerFunction(torch.autograd.Function):
             dispatch_tiles.peer_row_start,
             dispatch_tiles.valid_rows,
             dispatch_tiles.flag_index,
-            n_blocks,
+            grad_recv.dispatch_hidden.local,
+            grad_recv.dispatch_flags.local,
+            recv_tile_valid,
+            recv_tile_to_local_expert,
+            hidden_shadow,
+            gate_proj,
+            up_proj,
+            down_proj,
+            grad_dispatch_hidden,
+            up_scratch,
+            gate_scratch,
+            grad_act_scratch,
+            act_scratch,
+            grad_up_proj_fp32,
+            grad_down_proj_fp32,
+            grad_gate_proj_fp32,
+            block_m,
+            n_producer_blocks,
+            n_consumer_blocks,
         )
-        comet_scatter.wait_tiles(grad_recv.dispatch_flags.local, recv_tile_valid)
-        grad_expert_out = grad_recv.dispatch_hidden.local[:recv_capacity]
         grad_recv.barrier()
 
-        ffn_inputs = hidden_chunks + [up_proj, down_proj] + ([gate_proj] if is_gated else [])
-        ffn_grads = torch.autograd.grad(
-            expert_out,
-            ffn_inputs,
-            grad_outputs=grad_expert_out.to(expert_out.dtype),
-        )
-        grad_hidden_chunks, grad_up_proj, grad_down_proj = (
-            ffn_grads[:n_chunks],
-            ffn_grads[n_chunks],
-            ffn_grads[n_chunks + 1],
-        )
-        grad_gate_proj = ffn_grads[n_chunks + 2] if is_gated else None
-        grad_dispatch_hidden = torch.cat(grad_hidden_chunks, dim=0)
+        grad_up_proj = grad_up_proj_fp32.to(up_proj.dtype)
+        grad_down_proj = grad_down_proj_fp32.to(down_proj.dtype)
+        grad_gate_proj = grad_gate_proj_fp32.to(gate_proj.dtype) if is_gated else None
 
         grad_combine.reset()
         grad_combine.barrier()
