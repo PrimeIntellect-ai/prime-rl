@@ -41,6 +41,11 @@ requires_datacenter_gpu = pytest.mark.skipif(
     reason="the fused sparse attention kernels need the shared memory of a datacenter Hopper or Blackwell GPU",
 )
 
+requires_fp8_indexer = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+)
+
 
 @pytest.fixture(autouse=True)
 def _seed_rng():
@@ -1210,18 +1215,22 @@ def _fake_gather_for_cp(
     return gather, pending
 
 
+@requires_sparse_attn_kernel
 @pytest.mark.parametrize("doc_lens", CP_DOC_LENS, ids=CP_DOC_IDS)
 @pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
-@pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
+@pytest.mark.parametrize(
+    "layer_idx",
+    [pytest.param(V4FLASH_CSA_LAYER, marks=requires_fp8_indexer), V4FLASH_HCA_LAYER, V4FLASH_SLIDING_LAYER],
+    ids=V4FLASH_LAYER_IDS,
+)
 def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_size, doc_lens, monkeypatch):
-    module = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
-    config = _v4flash_config("eager")
+    module = v4flash_attention(layer_idx, dtype=torch.float32, eager=True)
     seq_len = sum(doc_lens)
     with torch.device("cuda"):
         hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"]).requires_grad_(True)
         cotangent = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"])
 
-    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, torch.float32, config))
+    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
     (out_full * cotangent).sum().backward()
     reference_out = out_full.detach()
     reference_input_grad = hidden_full.grad.clone()
@@ -1231,13 +1240,13 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     # Views of the one leaf, so every rank's backward accumulates into the same buffers.
     chunks = hidden_full.chunk(cp_world_size, dim=1)
     n_queries = seq_len // cp_world_size
-    projections = _cp_gathered_projections(module, doc_lens, torch.float32, config, cp_world_size)
+    projections = _cp_gathered_projections(module, doc_lens, torch.float32, V4FLASH_CONFIG, cp_world_size)
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
         module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
 
-        packed = _packed_context(doc_lens, torch.float32, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
         out_rank, _ = module(chunk, packed=packed)
         assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
 
@@ -1259,23 +1268,24 @@ CP_KERNEL_RTOL = 1e-2
 @pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
 def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, monkeypatch):
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    config = _v4flash_config()
     seq_len = sum(KERNEL_DOC_LENS)
     with torch.device("cuda"):
         hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
 
     with torch.no_grad():
-        reference_out, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, config))
+        reference_out, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG))
 
     chunks = hidden_full.chunk(cp_world_size, dim=1)
     n_queries = seq_len // cp_world_size
-    projections = _cp_gathered_projections(module, KERNEL_DOC_LENS, torch.bfloat16, config, cp_world_size)
+    projections = _cp_gathered_projections(module, KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG, cp_world_size)
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
         module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
 
-        packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        packed = _packed_context(
+            KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size
+        )
         with torch.no_grad():
             out_rank, _ = module(chunk, packed=packed)
         assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
