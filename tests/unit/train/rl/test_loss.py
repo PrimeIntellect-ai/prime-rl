@@ -15,7 +15,7 @@ def test_grpo_loss():
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
-    loss, _ = compute_loss(
+    loss, _, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -40,7 +40,7 @@ def test_gspo_loss():
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
-    loss, _ = compute_loss(
+    loss, _, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -94,7 +94,7 @@ def test_ce_component_matches_masked_nll():
     ce_weights = [torch.tensor([1.0, 0.0, 1.0], dtype=torch.float32).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
-    loss, metrics = compute_loss(
+    loss, metrics, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         ref_logprobs=None,
@@ -125,7 +125,7 @@ def test_ce_component_applies_weights():
     ce_weights = [torch.tensor([0.1, 0.0, 0.1], dtype=torch.float32).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
-    loss, _ = compute_loss(
+    loss, _, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         ref_logprobs=None,
@@ -166,8 +166,8 @@ def test_explicit_rl_weights_match_absent_stream():
         ce_scale=1,
         ref_kl_scale=1,
     )
-    loss_absent, _ = compute_loss(rl_weights=None, **kwargs)
-    loss_explicit, _ = compute_loss(rl_weights=[torch.ones(50, dtype=torch.float32).cuda()], **kwargs)
+    loss_absent, _, _ = compute_loss(rl_weights=None, **kwargs)
+    loss_explicit, _, _ = compute_loss(rl_weights=[torch.ones(50, dtype=torch.float32).cuda()], **kwargs)
 
     assert torch.equal(loss_absent, loss_explicit)
 
@@ -189,7 +189,7 @@ def test_disjoint_components_in_one_sequence():
     ref_kl_weights[8:] = 1.0
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
-    loss, metrics = compute_loss(
+    loss, metrics, token_annotations = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         ref_logprobs=ref_logprobs,
@@ -208,6 +208,8 @@ def test_disjoint_components_in_one_sequence():
     assert "nll" in metrics
     assert "ref_kl" in metrics
     assert "is_masked" in metrics
+    assert torch.equal(token_annotations["is_masked"][:4], torch.zeros(4, dtype=torch.int8, device="cuda"))
+    assert torch.equal(token_annotations["is_masked"][4:], torch.full((8,), -1, dtype=torch.int8, device="cuda"))
 
 
 def test_empty_components_keep_backward_valid():
@@ -221,7 +223,7 @@ def test_empty_components_keep_backward_valid():
     ce_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
-    loss, _ = compute_loss(
+    loss, _, token_annotations = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         ref_logprobs=None,
@@ -237,6 +239,7 @@ def test_empty_components_keep_backward_valid():
     )
 
     assert torch.equal(loss, torch.zeros_like(loss))
+    assert token_annotations == {}
     loss.backward()
     assert trainer_logprobs[0].grad is not None
     assert torch.equal(trainer_logprobs[0].grad, torch.zeros_like(trainer_logprobs[0].grad))
@@ -267,9 +270,11 @@ def test_overlapping_components_sum():
         ce_scale=8,
         ref_kl_scale=1,
     )
-    rl_only, _ = compute_loss(rl_weights=None, ce_weights=None, **kwargs)
-    ce_only, _ = compute_loss(rl_weights=[torch.zeros(n, dtype=torch.float32).cuda()], ce_weights=ce_weights, **kwargs)
-    both, _ = compute_loss(rl_weights=None, ce_weights=ce_weights, **kwargs)
+    rl_only, _, _ = compute_loss(rl_weights=None, ce_weights=None, **kwargs)
+    ce_only, _, _ = compute_loss(
+        rl_weights=[torch.zeros(n, dtype=torch.float32).cuda()], ce_weights=ce_weights, **kwargs
+    )
+    both, _, _ = compute_loss(rl_weights=None, ce_weights=ce_weights, **kwargs)
 
     assert torch.isclose(both, rl_only + ce_only, atol=1e-6)
 

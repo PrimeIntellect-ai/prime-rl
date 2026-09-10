@@ -235,6 +235,7 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
         metrics={
             "clip_frac": (ratio != clipped)[inputs.loss_mask].float().mean(),
         },
+        token_annotations={"is_masked": ratio != clipped},
     )
 ```
 
@@ -265,9 +266,12 @@ class LossInputs:
 class LossOutputs:
     loss: Float[Tensor, ""]
     metrics: dict[str, Tensor]
+    token_annotations: dict[str, Tensor]  # optional, aligned with the input sequence
 ```
 
-Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
+Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics. Set the
+optional `is_masked` token annotation when the loss drops or clips individual tokens; the file monitor records the
+decision on each trained trace and the dashboard's policy-mask overlay displays it.
 
 ## Advantage
 

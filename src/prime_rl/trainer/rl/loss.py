@@ -35,6 +35,8 @@ class LossOutputs:
 
     loss: Float[Tensor, ""]
     metrics: dict[str, Tensor]
+    token_annotations: dict[str, Tensor] = field(default_factory=dict)
+    """Per-token decisions made by the loss, aligned with its inputs."""
 
 
 LossFn = Callable[..., LossOutputs]
@@ -161,7 +163,7 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
         "is_masked": _safe_mean(is_masked, loss_mask),
     }
 
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, metrics=metrics, token_annotations={"is_masked": is_masked})
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -208,7 +210,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         "ref_kl": _safe_mean(ref_kl, loss_mask),
     }
 
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, metrics=metrics, token_annotations={"ref_kl/is_masked": is_masked})
 
 
 def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -259,7 +261,7 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
-) -> tuple[Float[Tensor, ""], dict[str, Any]]:
+) -> tuple[Float[Tensor, ""], dict[str, Any], dict[str, Tensor]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
@@ -292,9 +294,12 @@ def compute_loss(
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
 
     Returns:
-        Tuple of (scaled_loss, aggregated_metrics)
+        Tuple of (scaled_loss, aggregated_metrics, token_annotations). Each
+        annotation is aligned with the packed input and uses -1 where its loss
+        component did not apply, 0 for false, and 1 for true.
     """
     all_metrics: dict[str, list[Tensor]] = {}
+    all_token_annotations: dict[str, list[Tensor]] = {}
 
     n = len(trainer_logprobs)
     if ref_logprobs is None:
@@ -306,10 +311,21 @@ def compute_loss(
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
 
-    def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
+    def run_loss_fn(loss_fn: LossFn, inputs: LossInputs, sequence_index: int) -> Tensor:
         result = loss_fn(inputs)
         for k, v in result.metrics.items():
             all_metrics.setdefault(k, []).append(v)
+        for key, values in result.token_annotations.items():
+            if values.shape != inputs.loss_mask.shape:
+                raise ValueError(
+                    f"token annotation {key!r} has shape {tuple(values.shape)}, "
+                    f"expected {tuple(inputs.loss_mask.shape)}"
+                )
+            rows = all_token_annotations.setdefault(
+                key,
+                [torch.full_like(mask, -1, dtype=torch.int8) for mask in loss_mask],
+            )
+            rows[sequence_index][inputs.loss_mask] = values[inputs.loss_mask].to(torch.int8)
         return result.loss
 
     # Graph anchor: a micro batch whose components are all empty (e.g. a fully
@@ -319,15 +335,17 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
-        trainer_logprobs,
-        inference_logprobs,
-        ref_logprobs,
-        advantages,
-        loss_mask,
-        rl_weights,
-        ce_weights,
-        ref_kl_weights,
+    for sequence_index, (t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w) in enumerate(
+        zip(
+            trainer_logprobs,
+            inference_logprobs,
+            ref_logprobs,
+            advantages,
+            loss_mask,
+            rl_weights,
+            ce_weights,
+            ref_kl_weights,
+        )
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -341,19 +359,21 @@ def compute_loss(
             )
 
         if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None), sequence_index)
         else:
             rl_mask = mask & (rl_w != 0)
             if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w), sequence_index)
         if ce_w is not None:
             ce_mask = ce_w != 0
             if bool(ce_mask.any()):
-                ce_loss = ce_loss + run_loss_fn(ce_loss_fn, make_inputs(ce_mask, ce_w))
+                ce_loss = ce_loss + run_loss_fn(ce_loss_fn, make_inputs(ce_mask, ce_w), sequence_index)
         if ref_kl_w is not None:
             ref_kl_mask = ref_kl_w != 0
             if bool(ref_kl_mask.any()):
-                ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
+                ref_kl_loss = ref_kl_loss + run_loss_fn(
+                    ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w), sequence_index
+                )
 
     scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
 
@@ -364,4 +384,5 @@ def compute_loss(
         else:
             aggregated[k] = torch.cat(v)
 
-    return scaled_loss, aggregated
+    token_annotations = {key: torch.cat(rows) for key, rows in all_token_annotations.items()}
+    return scaled_loss, aggregated, token_annotations

@@ -2548,7 +2548,7 @@ const SIGNAL_LABELS = {
   advantage: "Advantage",
   entropy: "Entropy",
   mismatch_kl: "Mismatch",
-  stable_mask: "The stable mask",
+  stable_mask: "The policy mask",
   mask: "The loss mask",
   is_content: "The content mask",
 };
@@ -2567,6 +2567,8 @@ function paintedCount(node, signal, scales, limit = Infinity) {
   if (signal === "is_content") return count((i) => node.is_content?.[i] || null);
   if (signal === "advantage") return scales.maxAbsAdv > 0 ? count(alignedSignal(node, node.advantages)) : 0;
   if (signal === "entropy") return scales.maxEntropy > 0 ? count(alignedSignal(node, node.entropies)) : 0;
+  if (signal === "stable_mask" && Array.isArray(node.is_masked))
+    return count(alignedSignal(node, node.is_masked));
   if (signal === "mismatch_kl" && !(scales.maxKl > 0)) return 0;
   // the mismatch and the stable mask both read the trainer against the sampler
   const trainerAt = alignedSignal(node, node.trainer_logprobs);
@@ -2655,10 +2657,12 @@ function renderTokenNode(node, signal, scales) {
   const advantageAt = alignedSignal(node, node.advantages);
   const trainerLpAt = alignedSignal(node, node.trainer_logprobs);
   const entropyAt = alignedSignal(node, node.entropies);
+  const isMaskedAt = alignedSignal(node, node.is_masked);
   const spans = ids.map((id, i) => {
     const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
     const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
+    const isMasked = isMaskedAt(i);
     const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
     const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
     const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
@@ -2670,11 +2674,11 @@ function renderTokenNode(node, signal, scales) {
       bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
     } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
       bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
-    } else if (signal === "stable_mask" && probDelta != null) {
-      // the IPO mask: a token whose probability moved further than eps is dropped
-      bg =
-        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
-        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
+    } else if (signal === "stable_mask" && (isMasked != null || probDelta != null)) {
+      // New traces carry the loss's exact decision. Reconstruct the IPO mask for old traces.
+      bg = isMasked != null
+        ? isMasked ? "background:rgba(255,69,57,0.35)" : "background:rgba(74,158,255,0.15)"
+        : Math.abs(probDelta) > scales.eps ? "background:rgba(255,69,57,0.35)"
         : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
@@ -2686,11 +2690,16 @@ function renderTokenNode(node, signal, scales) {
     else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
     else if (signal === "mismatch_kl" && kl != null)
       tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} kl=${kl.toFixed(6)}`;
-    // the mask reads in probabilities, since eps is a probability distance
+    else if (signal === "stable_mask" && isMasked != null)
+      tip += ` ${isMasked ? "masked" : "kept"}` +
+        (probDelta != null
+          ? ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)} Δp=${probDelta.toFixed(4)}`
+          : "");
+    // Older traces predate persisted loss decisions, so only IPO can be reconstructed.
     else if (signal === "stable_mask" && probDelta != null)
       tip +=
         ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)}` +
-        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? `masked ${probDelta > 0 ? "high" : "low"}` : "kept"}`;
+        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? "masked" : "kept"}`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;

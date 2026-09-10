@@ -12,8 +12,8 @@ from prime_rl.monitors.file.traces.update import make_update
 
 
 class AnnotationWriter:
-    """Collects the trainer's per-token streams (recomputed logprobs, entropies) during
-    a step and logs them as trace updates — one record per trained sequence, keyed by
+    """Collects the trainer's per-token streams (recomputed logprobs, entropies, and
+    loss decisions) during a step and logs them as trace updates — one record per trained sequence, keyed by
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix
     so readers can fold them onto trace nodes without knowing the trainer's loss mask;
     positions outside that mask hold null, since a fold keeps sampled tokens only and a
@@ -29,7 +29,12 @@ class AnnotationWriter:
         self.is_duplicate_rank = parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0
         self._pending: list[dict[str, Any]] = []
 
-    def export(self, micro_batch: Mapping[str, Any], model_output: Mapping[str, Tensor]) -> None:
+    def export(
+        self,
+        micro_batch: Mapping[str, Any],
+        model_output: Mapping[str, Tensor],
+        loss_annotations: Mapping[str, Tensor],
+    ) -> None:
         if self.is_duplicate_rank:
             return
         trace_ids = micro_batch["trace_ids"]
@@ -41,6 +46,7 @@ class AnnotationWriter:
         env_names = micro_batch["env_names"]
         trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
         entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
+        is_masked = _tensor_to_optional_bools(loss_annotations.get("is_masked"))
 
         start = 0
         for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
@@ -56,15 +62,15 @@ class AnnotationWriter:
             trained = loss_mask[span_start:end]
             logprob_span = [v if m else None for v, m in zip(trainer_logprobs[span_start:end], trained)]
             entropy_span = [v if m else None for v, m in zip(entropies[span_start:end], trained)]
+            is_masked_span = is_masked[span_start:end] if is_masked is not None else None
             # After the right shift, a sample's first value crosses the packing boundary.
             logprob_span[0] = None
             entropy_span[0] = None
-            self._pending.append(
-                make_update(
-                    trace_id,
-                    branches={branch_index: {"trainer_logprobs": logprob_span, "entropies": entropy_span}},
-                )
-            )
+            streams = {"trainer_logprobs": logprob_span, "entropies": entropy_span}
+            if is_masked_span is not None:
+                is_masked_span[0] = None
+                streams["is_masked"] = is_masked_span
+            self._pending.append(make_update(trace_id, branches={branch_index: streams}))
 
     def flush(self) -> None:
         """Gather the step's records to rank 0 and log them; collective, so every rank
@@ -88,3 +94,9 @@ def _tensor_to_floats(tensor: Tensor, decimals: int | None) -> list[float | None
     if decimals is None:
         return [value if math.isfinite(value) else None for value in values]
     return [round(value, decimals) if math.isfinite(value) else None for value in values]
+
+
+def _tensor_to_optional_bools(tensor: Tensor | None) -> list[bool | None] | None:
+    if tensor is None:
+        return None
+    return [None if value < 0 else bool(value) for value in tensor.detach().to(device="cpu").reshape(-1).tolist()]

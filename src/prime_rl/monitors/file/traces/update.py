@@ -14,7 +14,7 @@ from typing import Any
 
 UPDATE_VERSION = 1
 
-STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
+STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies", "is_masked")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
 
 
@@ -70,8 +70,9 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
     Merges each ``info`` and projects every branch stream onto the branch's nodes,
     compact over each node's mask like the node's own ``logprobs``. A node takes a
     stream only when it is fully covered with non-null values at every sampled
-    position, so a truncated stream leaves the tail nodes untouched. Returns how many
-    nodes carry trainer logprobs afterwards."""
+    position, so a truncated stream leaves the tail nodes untouched. ``is_masked``
+    keeps nulls because mixed-component batches intentionally leave non-RL tokens
+    unannotated. Returns how many nodes carry trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
     paths = branch_node_paths(nodes)
     for update in updates:
@@ -94,7 +95,9 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
                     if len(span) < len(token_ids):
                         break
                     values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
-                    if not values or any(v is None for v in values):
+                    if not values or (field == "is_masked" and all(v is None for v in values)):
+                        continue
+                    if field != "is_masked" and any(v is None for v in values):
                         continue
                     node[field] = values
     return sum(1 for node in nodes if node.get("trainer_logprobs"))
