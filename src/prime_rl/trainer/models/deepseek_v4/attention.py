@@ -108,7 +108,7 @@ constructed. It runs once per model forward.
 Context parallelism splits the queries across ranks and leaves everything else alone: every field
 above has one entry per query token and so covers this rank's `n_queries` tokens, while
 `compression_layouts` covers all `total_tokens` of the sequence. Token indices always count from
-the start of the whole sequence. 
+the start of the whole sequence.
 
 [The Index Contract]
 
