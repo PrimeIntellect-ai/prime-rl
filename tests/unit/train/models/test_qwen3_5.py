@@ -20,7 +20,7 @@ from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
 from prime_rl.utils.cp import setup_model_cp
 
 
-def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig:
+def get_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig:
     config = Qwen3_5TextConfig(
         vocab_size=128,
         hidden_size=64,
@@ -41,8 +41,8 @@ def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig
     return config
 
 
-def _tiny_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
-    text_config = _tiny_text_config(attn_impl)
+def get_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
+    text_config = get_text_config(attn_impl)
     vision_config = Qwen3_5VisionConfig(
         depth=1,
         hidden_size=64,
@@ -63,7 +63,7 @@ def _tiny_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
 
 
 def test_qwen3_5_full_attention_uses_custom_class():
-    config = _tiny_text_config(attn_impl="flash_attention_3")
+    config = get_text_config(attn_impl="flash_attention_3")
     with torch.device("meta"):
         model = Qwen3_5Model(config)
 
@@ -73,7 +73,7 @@ def test_qwen3_5_full_attention_uses_custom_class():
 
 
 def test_qwen3_5_norms_remain_zero_centered_after_model_init():
-    model = Qwen3_5ForCausalLM(_tiny_text_config())
+    model = Qwen3_5ForCausalLM(get_text_config())
 
     norms = [module for module in model.modules() if isinstance(module, Qwen3_5RMSNorm)]
     assert norms
@@ -83,7 +83,7 @@ def test_qwen3_5_norms_remain_zero_centered_after_model_init():
 def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     cp_group = MagicMock()
 
-    text_model = Qwen3_5ForCausalLM(_tiny_text_config())
+    text_model = Qwen3_5ForCausalLM(get_text_config())
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
     setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
@@ -92,7 +92,7 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     assert text_model.model.context_parallel_world_size == 2
     assert linear_layer.linear_attn.context_parallel_group is cp_group
 
-    vlm_config = _tiny_vlm_config()
+    vlm_config = get_vlm_config()
     with torch.device("meta"):
         vlm_model = Qwen3_5ForCausalLM(vlm_config)
     assert vlm_model.model.language_model.layers[1].self_attn._flash_attn_version == 2
@@ -113,7 +113,7 @@ def test_qwen3_5_gated_delta_net_context_parallel():
 
     try:
         torch.manual_seed(0)
-        config = _tiny_text_config()
+        config = get_text_config()
         config.linear_key_head_dim = 128
         config.linear_value_head_dim = 128
         config.linear_num_key_heads = 16

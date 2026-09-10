@@ -1,28 +1,9 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
-
-
-def _tiny_config() -> Qwen3_5MoeTextConfig:
-    return Qwen3_5MoeTextConfig(
-        vocab_size=128,
-        hidden_size=128,
-        num_attention_heads=2,
-        num_key_value_heads=1,
-        head_dim=64,
-        num_hidden_layers=1,
-        rope_parameters={
-            "rope_type": "default",
-            "rope_theta": 10000000,
-            "partial_rotary_factor": 0.25,
-            "mrope_section": [3, 3, 2],
-            "mrope_interleaved": True,
-        },
-    )
 
 
 def test_qwen35_mrope_text_only_positions():

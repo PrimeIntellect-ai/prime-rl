@@ -14,7 +14,7 @@ from prime_rl.utils.utils import default_dtype
 pytestmark = [pytest.mark.gpu]
 
 
-def _tiny_vlm_config():
+def get_vlm_config():
     return Qwen3_5MoeConfig(
         text_config=Qwen3_5MoeTextConfig(
             vocab_size=256,
@@ -56,7 +56,7 @@ def _tiny_vlm_config():
     )
 
 
-def _make_image_inputs(config, device="cuda", dtype=torch.bfloat16):
+def get_image_inputs(config, device="cuda", dtype=torch.bfloat16):
     """Create minimal image inputs matching the vision config."""
     vc = config.vision_config
     patch_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
@@ -67,19 +67,19 @@ def _make_image_inputs(config, device="cuda", dtype=torch.bfloat16):
     return pixel_values, image_grid_thw, num_image_tokens
 
 
-def _make_mm_token_type_ids(input_ids, image_token_id):
+def get_mm_token_type_ids(input_ids, image_token_id):
     mm_token_type_ids = torch.zeros_like(input_ids)
     mm_token_type_ids[input_ids == image_token_id] = 1
     return mm_token_type_ids
 
 
-def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
+def get_seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
     return torch.tensor([input_ids.shape[1]], device=input_ids.device)
 
 
 def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
-    config = _tiny_vlm_config()
+    config = get_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
@@ -89,45 +89,45 @@ def test_vlm_forward():
     # Text-only (avoid special token range 250-253)
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
     position_ids = torch.arange(1, 21, device="cuda").unsqueeze(0)
-    out_text = model(input_ids=input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
+    out_text = model(input_ids=input_ids, position_ids=position_ids, seq_lens=get_seq_lens(input_ids))
     assert out_text["logits"].shape == (1, 20, vocab)
 
     # Multimodal
-    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids_mm = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
-    mm_token_type_ids = _make_mm_token_type_ids(input_ids_mm, config.image_token_id)
+    mm_token_type_ids = get_mm_token_type_ids(input_ids_mm, config.image_token_id)
 
     out_mm = model(
         input_ids=input_ids_mm,
         pixel_values=pixel_values,
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
-        seq_lens=_seq_lens(input_ids_mm),
+        seq_lens=get_seq_lens(input_ids_mm),
     )
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
 
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
-    config = _tiny_vlm_config()
+    config = get_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
 
-    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
-    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
+    mm_token_type_ids = get_mm_token_type_ids(input_ids, config.image_token_id)
 
     out = model(
         input_ids=input_ids,
         pixel_values=pixel_values,
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
-        seq_lens=_seq_lens(input_ids),
+        seq_lens=get_seq_lens(input_ids),
     )
     out["logits"].sum().backward()
 
@@ -137,17 +137,17 @@ def test_vlm_backward():
 
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
-    config = _tiny_vlm_config()
+    config = get_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
 
     vocab = config.text_config.vocab_size
-    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
-    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
+    mm_token_type_ids = get_mm_token_type_ids(input_ids, config.image_token_id)
     seq_len = input_ids.shape[1]
 
     num_layers = config.text_config.num_hidden_layers
@@ -160,7 +160,7 @@ def test_vlm_router_replay():
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
         routed_experts=routed_experts,
-        seq_lens=_seq_lens(input_ids),
+        seq_lens=get_seq_lens(input_ids),
     )
     assert out["logits"].shape == (1, seq_len, vocab)
 
@@ -170,7 +170,7 @@ def test_vlm_router_replay():
 
 def test_vlm_meta_device_and_buffer_reinit():
     """Model can be created on meta device and buffers reinitialized."""
-    config = _tiny_vlm_config()
+    config = get_vlm_config()
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
 
