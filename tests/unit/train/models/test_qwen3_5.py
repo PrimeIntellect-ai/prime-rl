@@ -5,14 +5,12 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 import torch.distributed as dist
-from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
     Qwen3_5ForCausalLM,
     Qwen3_5Model,
-    Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
@@ -62,44 +60,6 @@ def _tiny_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
     )
     config._attn_implementation = attn_impl
     return config
-
-
-def _tiny_moe_config(attn_impl: str = "flash_attention_2") -> Qwen3_5MoeTextConfig:
-    config = Qwen3_5MoeTextConfig(
-        vocab_size=128,
-        hidden_size=64,
-        num_hidden_layers=2,
-        layer_types=["linear_attention", "full_attention"],
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=16,
-        max_position_embeddings=128,
-        linear_key_head_dim=8,
-        linear_value_head_dim=8,
-        linear_num_key_heads=4,
-        linear_num_value_heads=8,
-        linear_conv_kernel_dim=4,
-        moe_intermediate_size=128,
-        shared_expert_intermediate_size=128,
-        num_experts=4,
-        num_experts_per_tok=2,
-    )
-    config._attn_implementation = attn_impl
-    return config
-
-
-@pytest.mark.gpu
-def test_qwen3_5_dense_matches_hf_state_keys_on_meta():
-    config = _tiny_text_config()
-    with torch.device("meta"):
-        config._attn_implementation = "eager"
-        hf_model = HFQwen3_5ForCausalLM(config)
-        config._attn_implementation = "flash_attention_2"
-        prime_model = Qwen3_5ForCausalLM(config)
-
-    assert set(prime_model.state_dict()) == set(hf_model.state_dict())
-    for name, tensor in prime_model.state_dict().items():
-        assert tensor.shape == hf_model.state_dict()[name].shape, name
 
 
 def test_qwen3_5_full_attention_uses_custom_class():

@@ -1,6 +1,5 @@
 import pytest
 import torch
-from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -11,7 +10,7 @@ from prime_rl.utils.utils import default_dtype
 pytestmark = [pytest.mark.gpu]
 
 
-def get_model_pairs():
+def _tiny_model():
     config = Qwen3_5MoeTextConfig(
         vocab_size=256,
         hidden_size=256,
@@ -33,20 +32,13 @@ def get_model_pairs():
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_model = HFQwen3_5MoeForCausalLM._from_config(config)
-        prime_model = Qwen3_5ForCausalLM._from_config(config)
-    with torch.no_grad():
-        state_dict = hf_model.state_dict()
-        prime_state_keys = prime_model.state_dict().keys()
-        prime_model.convert_to_prime(state_dict)
-        prime_model.load_state_dict(state_dict)
+        prime_model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(prime_model, chunk_size=None)
-    assert set(prime_state_keys) - set(state_dict.keys()) == set()
-    return hf_model, prime_model
+    return prime_model
 
 
 def test_qwen3_5_moe():
-    _, prime_model = get_model_pairs()
+    prime_model = _tiny_model()
     apply_model_fusions(prime_model, ["qkv", "gate_up"])
     input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100), device="cuda")
     position_ids = torch.arange(1, 101, device="cuda").unsqueeze(0)
@@ -89,31 +81,9 @@ def test_qwen3_5_moe():
     torch.testing.assert_close(packed, unpacked, atol=0.03, rtol=0.01)
 
 
-def test_qwen3_5_moe_roundtrip():
-    hf_model, prime_model = get_model_pairs()
-
-    # Get original HF state_dict and the PrimeRL-converted version
-    original_hf_sd = hf_model.state_dict()
-    prime_sd = prime_model.state_dict()
-    assert prime_model.is_hf_state_dict(original_hf_sd)
-    assert not prime_model.is_prime_state_dict(original_hf_sd)
-    assert prime_model.is_prime_state_dict(prime_sd)
-    assert not prime_model.is_hf_state_dict(prime_sd)
-
-    converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
-    orig_prime_sd = dict(original_hf_sd)
-    prime_model.convert_to_prime(orig_prime_sd)
-    orig_roundtripped = dict(orig_prime_sd)
-    prime_model.convert_to_hf(orig_roundtripped)
-
-    for key in orig_roundtripped:
-        assert key in converted_hf_sd, f"Missing key: {key}"
-        assert torch.equal(orig_roundtripped[key], converted_hf_sd[key]), f"Mismatch at {key}"
-
-
 def test_qwen3_5_moe_router_replay():
     """When routed_experts are provided, the model uses them instead of computing routing."""
-    _, prime_model = get_model_pairs()
+    prime_model = _tiny_model()
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))

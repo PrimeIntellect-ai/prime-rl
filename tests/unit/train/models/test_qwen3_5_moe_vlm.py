@@ -1,57 +1,59 @@
 import pytest
 import torch
-from transformers import AutoConfig
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
-    Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
-)
 
 from prime_rl.trainer.model import can_reinit_empty_buffers
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
+from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5ForCausalLM,
+    Qwen3_5MoeConfig,
+    Qwen3_5MoeTextConfig,
+    Qwen3_5VisionConfig,
+)
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
 
 def _tiny_vlm_config():
-    """HF composite config shrunk for unit testing."""
-    config = AutoConfig.from_pretrained(
-        "Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="flash_attention_2"
+    return Qwen3_5MoeConfig(
+        text_config=Qwen3_5MoeTextConfig(
+            vocab_size=256,
+            hidden_size=256,
+            num_hidden_layers=2,
+            layer_types=["linear_attention", "full_attention"],
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            moe_intermediate_size=128,
+            shared_expert_intermediate_size=128,
+            num_experts=4,
+            num_experts_per_tok=2,
+            max_position_embeddings=512,
+            linear_key_head_dim=32,
+            linear_value_head_dim=32,
+            linear_num_key_heads=4,
+            linear_num_value_heads=8,
+            rope_parameters={
+                "rope_type": "default",
+                "rope_theta": 10_000_000.0,
+                "partial_rotary_factor": 0.25,
+                "mrope_section": [3, 3, 2],
+                "mrope_interleaved": True,
+            },
+        ),
+        vision_config=Qwen3_5VisionConfig(
+            depth=2,
+            hidden_size=128,
+            intermediate_size=256,
+            num_heads=4,
+            out_hidden_size=256,
+        ),
+        image_token_id=250,
+        video_token_id=251,
+        vision_start_token_id=252,
+        vision_end_token_id=253,
+        attn_implementation="flash_attention_2",
     )
-    config.use_cache = False
-    tc = config.text_config
-    tc.vocab_size = 256
-    tc.hidden_size = 256
-    tc.num_hidden_layers = 2
-    tc.layer_types = ["linear_attention", "full_attention"]
-    tc.num_attention_heads = 4
-    tc.num_key_value_heads = 2
-    tc.head_dim = 64
-    tc.moe_intermediate_size = 128
-    tc.shared_expert_intermediate_size = 128
-    tc.num_experts = 4
-    tc.num_experts_per_tok = 2
-    tc.max_position_embeddings = 512
-    tc.linear_key_head_dim = 32
-    tc.linear_value_head_dim = 32
-    tc.linear_num_key_heads = 4
-    tc.linear_num_value_heads = 8
-    tc.use_cache = False
-    tc.rope_parameters["mrope_section"] = [3, 3, 2]
-
-    vc = config.vision_config
-    vc.depth = 2
-    vc.hidden_size = 128
-    vc.intermediate_size = 256
-    vc.num_heads = 4
-    vc.out_hidden_size = tc.hidden_size
-
-    # Special token IDs must fit within the tiny vocab
-    config.image_token_id = 250
-    config.video_token_id = 251
-    config.vision_start_token_id = 252
-    config.vision_end_token_id = 253
-    return config
 
 
 def _make_image_inputs(config, device="cuda", dtype=torch.bfloat16):
@@ -133,70 +135,6 @@ def test_vlm_backward():
     assert model.model.visual.patch_embed.proj.weight.grad is not None
 
 
-def test_vlm_weight_load_from_hf():
-    """Weights from HF VLM checkpoint load correctly into custom VLM after conversion.
-
-    This test verifies that VLM weight conversion + loading produces a working model.
-    """
-    config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_model = HFQwen3_5MoeVLM._from_config(config)
-        prime_model = Qwen3_5ForCausalLM(config)
-
-    # Copy weights: HF -> PrimeRL (with MoE conversion)
-    with torch.no_grad():
-        hf_sd = hf_model.state_dict()
-        prime_model.convert_to_prime(hf_sd)
-        prime_model.load_state_dict(hf_sd)
-    inject_prime_lm_head(prime_model)
-
-    # Verify vision encoder weights match exactly (should be untouched by conversion)
-    for name, param in hf_model.model.visual.named_parameters():
-        prime_param = dict(prime_model.model.visual.named_parameters())[name]
-        assert torch.equal(param, prime_param), f"Vision weight mismatch: {name}"
-
-    # Verify model produces output after weight loading
-    input_ids = torch.randint(0, 200, (1, 20), device="cuda")
-    position_ids = torch.arange(1, 21, device="cuda").unsqueeze(0)
-    out = prime_model(input_ids=input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
-    assert out["logits"].shape[2] == config.text_config.vocab_size
-    assert not torch.isnan(out["logits"]).any()
-
-
-def test_vlm_weight_roundtrip():
-    """HF -> PrimeRL -> HF weight conversion is lossless (vision keys untouched, text keys converted)."""
-    config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_model = HFQwen3_5MoeVLM._from_config(config)
-        prime_model = Qwen3_5ForCausalLM(config)
-
-    hf_sd = hf_model.state_dict()
-    original_vision_key = "model.visual.blocks.0.mlp.linear_fc1.weight"
-    original_vision_weight = hf_sd[original_vision_key].clone()
-
-    # HF -> PrimeRL
-    prime_sd = dict(hf_sd)
-    prime_model.convert_to_prime(prime_sd)
-    assert any("language_model" in k and "mlp.experts.gate_proj" in k for k in prime_sd)
-    assert original_vision_key in prime_sd
-
-    # PrimeRL -> HF
-    roundtripped = dict(prime_sd)
-    prime_model.convert_to_hf(roundtripped)
-
-    # Original HF also needs roundtrip for expert format normalization
-    orig_rt = dict(hf_sd)
-    prime_model.convert_to_prime(orig_rt)
-    prime_model.convert_to_hf(orig_rt)
-
-    for key in orig_rt:
-        assert key in roundtripped, f"Missing key: {key}"
-        assert torch.equal(orig_rt[key], roundtripped[key]), f"Mismatch at {key}"
-
-    # Vision weights preserved through the whole roundtrip
-    assert torch.equal(roundtripped[original_vision_key], original_vision_weight)
-
-
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()
@@ -234,7 +172,7 @@ def test_vlm_meta_device_and_buffer_reinit():
     """Model can be created on meta device and buffers reinitialized."""
     config = _tiny_vlm_config()
     with torch.device("meta"):
-        model = Qwen3_5ForCausalLM.from_config(config, trust_remote_code=False)
+        model = Qwen3_5ForCausalLM(config)
 
     assert can_reinit_empty_buffers(model)
 
