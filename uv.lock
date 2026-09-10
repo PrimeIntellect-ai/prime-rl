@@ -22,6 +22,7 @@ deep-gemm = false
 dion = false
 fastokens = false
 flash-attn-3 = false
+flashinfer-python = false
 harbor = "2026-08-11T00:00:00Z"
 nixl-cu13 = false
 prime = false
@@ -1900,7 +1901,7 @@ dependencies = [
 
 [[package]]
 name = "flashinfer-python"
-version = "0.6.16.post3"
+version = "0.6.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi" },
@@ -1920,9 +1921,9 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/46/17045cb47b7b93fcb4e5303e398e6b129b86239930ac0875942a83d8b962/flashinfer_python-0.6.16.post3.tar.gz", hash = "sha256:9b146cfcc1454c80f3f99444db48013b3eadaeb32f2a399bd76c9471ecb72f04", size = 11076656, upload-time = "2026-08-08T01:14:16.408Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/72/12066c5f42a49e7eabe6ec445ac73c59785480bba1b763bd7e0a512f13c1/flashinfer_python-0.6.18.tar.gz", hash = "sha256:70a2074d78cb17ed39c98e5ed47f626c6e8bb29015cf028c49cbf8f2629405a1", size = 13286160, upload-time = "2026-08-29T02:09:18.376Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/dc/5367cb601fc9190cc75b4c141f5f7e9a224d1c26a1e983151823e02a25b3/flashinfer_python-0.6.16.post3-py3-none-any.whl", hash = "sha256:caf686b9b079abe1c9d65ab505698bd325e8072de40afd822f2c74f2ac3bc601", size = 15836034, upload-time = "2026-08-08T01:14:13.709Z" },
+    { url = "https://files.pythonhosted.org/packages/31/7d/3dae45fc293cd5f16cefe4dcf59683d964ca8faf2303ed7fff54f4bca490/flashinfer_python-0.6.18-py3-none-any.whl", hash = "sha256:d5d26edb48f8def0bf28b2c94415aef7f0754e2cd9e3cb3d6e7081262d068aad", size = 18347767, upload-time = "2026-08-29T02:09:15.868Z" },
 ]
 
 [[package]]
@@ -2726,6 +2727,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "instanttensor"
+version = "0.1.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/69/a4dc4e0f0018a0e558b716e90bcb19cb6a8c7506f68e89a1493608cf5e62/instanttensor-0.1.9.tar.gz", hash = "sha256:d8692b97991c1a5fb2db7905b9a6ae90a7f967c7ddd853d35e41caa146750c02", size = 9618304, upload-time = "2026-05-27T21:33:46.45Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/01/667438b2c7b9caad3be48fe1363032574bb4a85d8d90b7a6e3ddf9979f53/instanttensor-0.1.9-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0d957728161ec0d22a74bad3c0feb8fb9105736ab2585b48a0a0da8d330c6ff3", size = 5903991, upload-time = "2026-05-27T21:33:38.634Z" },
 ]
 
 [[package]]
@@ -5055,8 +5068,8 @@ all = [
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
@@ -5105,8 +5118,8 @@ gpu = [
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
     { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5201,9 +5214,9 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
-    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.28.0" },
-    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm-router", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
@@ -7914,8 +7927,8 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.28.0"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl" }
+version = "0.28.1rc1.dev588+gc7e9816c6"
+source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -7937,6 +7950,7 @@ dependencies = [
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" } },
     { name = "humming-kernels", extra = ["cu13"] },
     { name = "ijson" },
+    { name = "instanttensor" },
     { name = "jsonschema" },
     { name = "lark" },
     { name = "llguidance" },
@@ -7996,7 +8010,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:817b8181f7f61b4a62dc1d5d9ab39f2bfb60a6cb86c29879a78a147b85756787" },
+    { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:9e46ac272b51feac947f4e7081f9ee9be25907f7b925f4cb0f34d4402cbac841" },
 ]
 
 [package.metadata]
@@ -8005,7 +8019,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.71.0" },
     { name = "apache-tvm-ffi", specifier = "==0.1.11" },
     { name = "av", marker = "extra == 'audio'" },
-    { name = "b12x", marker = "extra == 'b12x'", specifier = "==1.2.4" },
+    { name = "b12x", marker = "extra == 'b12x'", specifier = "==1.3.0" },
     { name = "blake3" },
     { name = "cachetools" },
     { name = "cbor2" },
@@ -8018,18 +8032,19 @@ requires-dist = [
     { name = "fastsafetensors", specifier = ">=0.3.3" },
     { name = "fastsafetensors", marker = "extra == 'fastsafetensors'", specifier = ">=0.3.3" },
     { name = "filelock", specifier = ">=3.16.1" },
-    { name = "flashinfer-python", specifier = "==0.6.16.post3" },
+    { name = "flashinfer-python", specifier = "==0.6.18" },
     { name = "helion", marker = "extra == 'helion'", specifier = "==1.4.0" },
-    { name = "huggingface-hub", specifier = ">=1.27.0" },
+    { name = "huggingface-hub", specifier = ">=1.28.0" },
     { name = "humming-kernels", extras = ["cu13"], specifier = "==0.1.12" },
     { name = "ijson" },
+    { name = "instanttensor", specifier = ">=0.1.9" },
     { name = "instanttensor", marker = "extra == 'instanttensor'", specifier = ">=0.1.9" },
     { name = "jsonschema", specifier = ">=4.23.0" },
     { name = "lark", specifier = "==1.2.2" },
     { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=1.7.0,<1.8.0" },
     { name = "lm-format-enforcer", specifier = "==0.11.3" },
     { name = "matplotlib", marker = "extra == 'bench'" },
-    { name = "mcp" },
+    { name = "mcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
     { name = "mistral-common", extras = ["image"], specifier = ">=1.11.6" },
     { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
@@ -8041,7 +8056,7 @@ requires-dist = [
     { name = "nvidia-cutlass-dsl", extras = ["cu13"], specifier = "==4.6.2" },
     { name = "nvidia-deepstream-videodecode-cu13", marker = "extra == 'deepstream'", specifier = ">=9.0.2" },
     { name = "nvtx", specifier = "==0.2.15" },
-    { name = "openai", specifier = ">=2.0.0" },
+    { name = "openai", specifier = ">=2.25.0" },
     { name = "openai-harmony", specifier = ">=0.0.3" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
     { name = "opentelemetry-api", specifier = ">=1.27.0" },
@@ -8094,7 +8109,7 @@ requires-dist = [
     { name = "torchcodec", specifier = ">=0.14" },
     { name = "torchvision", specifier = "==0.28.0" },
     { name = "tqdm" },
-    { name = "transformers", specifier = ">=5.5.3" },
+    { name = "transformers", specifier = ">=5.10.4" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "vllm-gguf-plugin", marker = "extra == 'extra-quant'", specifier = ">=0.0.2" },
     { name = "watchfiles" },
@@ -8105,8 +8120,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm"
-version = "0.28.0"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.28.1rc1.dev588+gc7e9816c6"
+source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -8128,6 +8143,7 @@ dependencies = [
     { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" } },
     { name = "humming-kernels", extra = ["cu13"] },
     { name = "ijson" },
+    { name = "instanttensor" },
     { name = "jsonschema" },
     { name = "lark" },
     { name = "llguidance" },
@@ -8187,7 +8203,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:addb0ffdaafd8155d75e9b3f5ddb3da28fdee9e8a7097ede91f7db2e9e1a3889" },
+    { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:bedc5e5b491af548b7eb248c031d0d910eabf2dc93f2158ea8466edf9f21a5cd" },
 ]
 
 [package.metadata]
@@ -8196,7 +8212,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.71.0" },
     { name = "apache-tvm-ffi", specifier = "==0.1.11" },
     { name = "av", marker = "extra == 'audio'" },
-    { name = "b12x", marker = "extra == 'b12x'", specifier = "==1.2.4" },
+    { name = "b12x", marker = "extra == 'b12x'", specifier = "==1.3.0" },
     { name = "blake3" },
     { name = "cachetools" },
     { name = "cbor2" },
@@ -8209,18 +8225,19 @@ requires-dist = [
     { name = "fastsafetensors", specifier = ">=0.3.3" },
     { name = "fastsafetensors", marker = "extra == 'fastsafetensors'", specifier = ">=0.3.3" },
     { name = "filelock", specifier = ">=3.16.1" },
-    { name = "flashinfer-python", specifier = "==0.6.16.post3" },
+    { name = "flashinfer-python", specifier = "==0.6.18" },
     { name = "helion", marker = "extra == 'helion'", specifier = "==1.4.0" },
-    { name = "huggingface-hub", specifier = ">=1.27.0" },
+    { name = "huggingface-hub", specifier = ">=1.28.0" },
     { name = "humming-kernels", extras = ["cu13"], specifier = "==0.1.12" },
     { name = "ijson" },
+    { name = "instanttensor", specifier = ">=0.1.9" },
     { name = "instanttensor", marker = "extra == 'instanttensor'", specifier = ">=0.1.9" },
     { name = "jsonschema", specifier = ">=4.23.0" },
     { name = "lark", specifier = "==1.2.2" },
     { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=1.7.0,<1.8.0" },
     { name = "lm-format-enforcer", specifier = "==0.11.3" },
     { name = "matplotlib", marker = "extra == 'bench'" },
-    { name = "mcp" },
+    { name = "mcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
     { name = "mistral-common", extras = ["image"], specifier = ">=1.11.6" },
     { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
@@ -8232,7 +8249,7 @@ requires-dist = [
     { name = "nvidia-cutlass-dsl", extras = ["cu13"], specifier = "==4.6.2" },
     { name = "nvidia-deepstream-videodecode-cu13", marker = "extra == 'deepstream'", specifier = ">=9.0.2" },
     { name = "nvtx", specifier = "==0.2.15" },
-    { name = "openai", specifier = ">=2.0.0" },
+    { name = "openai", specifier = ">=2.25.0" },
     { name = "openai-harmony", specifier = ">=0.0.3" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
     { name = "opentelemetry-api", specifier = ">=1.27.0" },
@@ -8285,7 +8302,7 @@ requires-dist = [
     { name = "torchcodec", specifier = ">=0.14" },
     { name = "torchvision", specifier = "==0.28.0" },
     { name = "tqdm" },
-    { name = "transformers", specifier = ">=5.5.3" },
+    { name = "transformers", specifier = ">=5.10.4" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "vllm-gguf-plugin", marker = "extra == 'extra-quant'", specifier = ">=0.0.2" },
     { name = "watchfiles" },
