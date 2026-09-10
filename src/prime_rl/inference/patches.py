@@ -37,22 +37,25 @@ def monkey_patch_deepep_first_dispatch_barrier():
     from deep_ep import Buffer
     from vllm.logger import init_logger
 
-    original = Buffer.low_latency_dispatch
-    if getattr(original, "_prime_first_dispatch_barrier", False):
-        return
     logger = init_logger(__name__)
 
-    @wraps(original)
-    def dispatch(self, *args, **kwargs):
-        if not getattr(self, "_prime_first_dispatch_ready", False):
-            logger.info("Waiting for DeepEP first dispatch peers: rank %s", self.rank)
-            torch.distributed.barrier(group=self.group)
-            self._prime_first_dispatch_ready = True
-            logger.info("DeepEP first dispatch peers ready: rank %s", self.rank)
-        return original(self, *args, **kwargs)
+    def synchronize_first_dispatch(original):
+        @wraps(original)
+        def dispatch(self, *args, **kwargs):
+            if not getattr(self, "_prime_first_dispatch_ready", False):
+                logger.warning("Waiting for DeepEP first dispatch peers: rank %s", self.rank)
+                torch.distributed.barrier(group=self.group)
+                self._prime_first_dispatch_ready = True
+                logger.warning("DeepEP first dispatch peers ready: rank %s", self.rank)
+            return original(self, *args, **kwargs)
 
-    dispatch._prime_first_dispatch_barrier = True
-    Buffer.low_latency_dispatch = dispatch
+        dispatch._prime_first_dispatch_barrier = True
+        return dispatch
+
+    for name in ("dispatch", "low_latency_dispatch"):
+        original = getattr(Buffer, name)
+        if not getattr(original, "_prime_first_dispatch_barrier", False):
+            setattr(Buffer, name, synchronize_first_dispatch(original))
 
 
 def monkey_patch_engine_handshake_timeout():

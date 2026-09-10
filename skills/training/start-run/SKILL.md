@@ -102,7 +102,7 @@ override; all clients still share one cache pool. When diagnosing head-node
 failures, keep resource sampling active through the load ramp and verify GPU
 compute and cross-node communication before moving production traffic.
 
-For DeepEP low-latency startup with mixed cold and warm compilation caches,
+For DeepEP prefill and decode startup with mixed cold and warm compilation caches,
 `env_vars.PRIME_DEEPEP_FIRST_DISPATCH_BARRIER = "1"` synchronizes each buffer
 on its CPU process group before its first dispatch. This prevents warm ranks
 from entering the GPU communication kernel while peers are still compiling.
