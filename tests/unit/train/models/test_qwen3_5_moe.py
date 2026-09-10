@@ -1,6 +1,9 @@
 import pytest
 import torch
 
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import resolve_auto_attn
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5MoeTextConfig
@@ -10,7 +13,9 @@ from prime_rl.utils.utils import default_dtype
 pytestmark = [pytest.mark.gpu]
 
 
-def _tiny_model():
+def get_model():
+    runtime_config = ModelConfig()
+    resolve_auto_attn(runtime_config)
     config = Qwen3_5MoeTextConfig(
         vocab_size=256,
         hidden_size=256,
@@ -30,15 +35,16 @@ def _tiny_model():
         linear_num_key_heads=4,
         linear_num_value_heads=8,
     )
-    config._attn_implementation = "flash_attention_2"
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        prime_model = Qwen3_5ForCausalLM(config)
+    with torch.device("cuda"):
+        prime_model = AutoModelForCausalLMPrimeRL.from_config(
+            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
+        )
     inject_prime_lm_head(prime_model, chunk_size=None)
     return prime_model
 
 
 def test_qwen3_5_moe():
-    prime_model = _tiny_model()
+    prime_model = get_model()
     apply_model_fusions(prime_model, ["qkv", "gate_up"])
     input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100), device="cuda")
     position_ids = torch.arange(1, 101, device="cuda").unsqueeze(0)
@@ -83,7 +89,7 @@ def test_qwen3_5_moe():
 
 def test_qwen3_5_moe_router_replay():
     """When routed_experts are provided, the model uses them instead of computing routing."""
-    prime_model = _tiny_model()
+    prime_model = get_model()
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))
@@ -150,7 +156,6 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
         linear_num_key_heads=4,
         linear_num_value_heads=8,
     )
-    config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
 
