@@ -63,9 +63,9 @@ class _FakeOpenAI:
                     "token_ids": [50, 60, 151645],
                     "logprobs": {
                         "content": [
-                            {"token": "t1", "logprob": -0.1},
-                            {"token": "t2", "logprob": -0.2},
-                            {"token": "t3", "logprob": -0.3},
+                            {"token": "token_id:50", "logprob": -0.1},
+                            {"token": "token_id:60", "logprob": -0.2},
+                            {"token": "token_id:151645", "logprob": -0.3},
                         ]
                     },
                     "finish_reason": "stop",
