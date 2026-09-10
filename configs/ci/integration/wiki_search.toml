@@ -1,0 +1,26 @@
+max_steps = 5
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.env]]
+id = "wiki-search"
+args = { max_turns = 2 }
+
+[inference.model]
+tool_call_parser = "hermes"
