@@ -543,6 +543,7 @@ def train(config: TrainerConfig):
                     inference_logprobs,
                     loss_mask,
                     micro_batch,
+                    model.config,
                 )
 
             # Compute loss

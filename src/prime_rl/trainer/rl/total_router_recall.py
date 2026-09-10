@@ -20,6 +20,16 @@ def unpack_routing(payload, top_k):
     return ids, weights
 
 
+def routing_geometry(config):
+    if config.model_type not in {"glm4_moe", "qwen3_moe"}:
+        raise ValueError(f"Experimental TRR does not support {config.model_type}")
+    num_experts = getattr(config, "num_experts", None) or getattr(config, "n_routed_experts", None)
+    if num_experts is None:
+        raise ValueError("TRR model config is missing its routed expert count")
+    first_moe_layer = getattr(config, "first_k_dense_replace", 0)
+    return config.num_hidden_layers, first_moe_layer, num_experts
+
+
 @contextmanager
 def replay_mode(mode):
     global REPLAY_MODE
@@ -58,7 +68,7 @@ def shadow_forwards(forward, model, input_ids, position_ids, **kwargs):
 
 
 @torch.no_grad()
-def record_comparison(output_dir, step, micro_step, shadows, trr, inference, mask, micro_batch):
+def record_comparison(output_dir, step, micro_step, shadows, trr, inference, mask, micro_batch, model_config):
     # Trainer head scores the next token; rollout logprobs are aligned to the token itself.
     mask = mask.cpu()
     inference = inference.cpu()[mask]
@@ -67,17 +77,26 @@ def record_comparison(output_dir, step, micro_step, shadows, trr, inference, mas
     payload = micro_batch["routed_experts"]
     real = torch.tensor([bool(name) for name in micro_batch["env_names"]])
     layers, width = payload.shape[-2:]
+    expected_layers, first_moe_layer, num_experts = routing_geometry(model_config)
+    if layers != expected_layers:
+        raise ValueError(f"TRR payload has {layers} layers; model config requires {expected_layers}")
     ids, weights = unpack_routing(payload.reshape(-1, width), width // 2)
     weights = weights.reshape(1, -1, layers, width // 2)[:, real]
     ids = ids.reshape(1, -1, layers, width // 2)[:, real]
+    if first_moe_layer:
+        if payload.reshape(1, -1, layers, width)[:, real, :first_moe_layer].count_nonzero():
+            raise ValueError("Dense model layers unexpectedly contain routing payload")
+        weights = weights[:, :, first_moe_layer:]
+        ids = ids[:, :, first_moe_layer:]
     if not torch.isfinite(weights).all() or not (weights >= 0).all():
         raise ValueError("Nonfinite or negative routing weights after rollout transport")
-    if not ((weights.sum(-1) - 1).abs() < 2e-6).all():
+    route_scale = getattr(model_config, "routed_scaling_factor", 1.0)
+    if not ((weights.sum(-1) - route_scale).abs() < 2e-6).all():
         raise ValueError("Missing or non-normalized routing payload for a real token/layer")
-    if not ((ids >= 0) & (ids < 128)).all():
-        raise ValueError("Invalid Qwen3-30B expert ID after transport")
+    if not ((ids >= 0) & (ids < num_experts)).all():
+        raise ValueError("Invalid expert ID after routing transport")
     record = {
-        "routing_rows": int(real.sum()) * layers,
+        "routing_rows": int(real.sum()) * (layers - first_moe_layer),
         "routing_payload_bytes": payload.numel() * payload.element_size(),
         "step": step,
         "micro_step": micro_step,
