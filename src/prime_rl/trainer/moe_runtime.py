@@ -11,6 +11,7 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
+    NVFP4MoEComputeConfig,
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
@@ -24,6 +25,7 @@ from prime_rl.trainer.models.layers.grouped_gemm import (
     DeepGemmFP8GroupedGemm,
     GroupedGemm,
     MXFP8GroupedGemm,
+    NVFP4GroupedGemm,
 )
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -52,6 +54,18 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
+        )
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        import prime_kernels
+
+        if "nvfp4_moe" not in prime_kernels.KERNELS:
+            raise RuntimeError("NVFP4 requires a prime-kernels build containing nvfp4_moe.")
+        kernel = prime_kernels.load("nvfp4_moe")
+        return NVFP4GroupedGemm(
+            kernel=kernel,
+            backward=compute.backward,
+            token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
+            four_over_six=compute.four_over_six,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
@@ -84,6 +98,14 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     for moe in moe_layers:
         grouped_gemm = selected_grouped_gemm if moe in selected_moes else bf16_grouped_gemm
+        if isinstance(grouped_gemm, NVFP4GroupedGemm):
+            if moe.experts.gate_proj is not None:
+                raise ValueError("NVFP4 gated experts require the gate_up runtime fusion for shared weight scales.")
+            reason = grouped_gemm.kernel.unsupported_shape_reason(
+                moe.experts.down_proj.shape[-2], moe.experts.hidden_dim
+            )
+            if reason is not None:
+                raise ValueError(reason)
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."

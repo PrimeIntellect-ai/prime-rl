@@ -53,6 +53,14 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "bf16"` (default)
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
+- `type = "nvfp4"` (requires a `prime-kernels` build containing `nvfp4_moe` and SM100). `backward = "dequant_bf16"` uses reconstructed forward operands for BF16 gradient GEMMs; `backward = "bf16"` uses the original BF16 operands. Gated experts require the `gate_up` fusion. LoRA and full-graph compilation are unsupported; `compile.fullgraph` defaults to `false`.
+
+For NVFP4, `four_over_six = true` enables adaptive 4/6 quantization for expert
+weights and activations. It defaults to `false`. The enabled recipe matches
+FlashInfer's defaults: 448 normalization, MAE selection, strict error scoring,
+and default candidate arithmetic. Enable the matching sampler recipe with
+`FLASHINFER_NVFP4_4OVER6 = "1"` in `[inference.env_vars]`, leaving the other
+FlashInfer NVFP4 settings at their defaults.
 
 ```toml
 [trainer.model.quantization]
@@ -80,13 +88,23 @@ For example, this selects routed experts in Qwen3's first four model layers:
 
 ```toml
 [trainer.model.moe.compute]
-type = "mxfp8"
+type = "nvfp4"
 apply_to = [0, 1, 2, 3]
 ```
 
 Backend shape checks and token alignment apply only to the selected compute path.
 
-In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+Configure the same precision selection for rollouts using vLLM's native online quantization targets. For the Qwen3 example above:
+
+```toml
+[inference.vllm]
+quantization = "online"
+
+[inference.vllm.quantization_config.targets]
+"model.layers.[0-3].mlp.experts" = "nvfp4_per_token"
+```
+
+Inference targets use vLLM's module names, which can differ from the trainer's names on other architectures. They are configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs. Online quantization targets preserve the selection when weights are reloaded.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
