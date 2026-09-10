@@ -26,6 +26,11 @@ pytestmark = [
     ),
 ]
 
+requires_fp8_indexer = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+)
+
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
 # branches are what carries any long-range signal.
@@ -197,6 +202,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     )
 
 
+@requires_fp8_indexer
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     prime_model = get_prime_model()
@@ -220,6 +226,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     torch.testing.assert_close(counts[0][0], expected)
 
 
+@requires_fp8_indexer
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -672,6 +679,7 @@ def _compare_accumulated_grads(
         _assert_relative(param.grad, expected[name], rtol, name)
 
 
+@requires_fp8_indexer
 def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):  # noqa: F811
     """The local window stops at document boundaries, on every layer.
 
@@ -710,6 +718,7 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
+@requires_fp8_indexer
 def test_model_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
@@ -843,7 +852,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 @pytest.mark.parametrize(
     ("layer_idx", "doc_lens"),
     [
-        (CSA_LAYER, MID_WINDOW_DOCS),
+        pytest.param(CSA_LAYER, MID_WINDOW_DOCS, marks=requires_fp8_indexer),
         (HCA_LAYER, EXACT_MULTIPLE_DOCS),
         (SLIDING_LAYER, MID_WINDOW_DOCS),
     ],
