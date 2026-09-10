@@ -123,21 +123,9 @@ def _compare_accumulated_grads(
         _assert_relative(param.grad, expected[name], rtol, name)
 
 
-def _set_attn_impl(module: nn.Module, impl: str) -> None:
-    """Pin the CSA attention implementation on every attention layer `module` owns.
-
-    `modules()` yields `module` itself, so this covers a lone attention layer as well as a model
-    holding several of them.
-    """
-    for submodule in module.modules():
-        if isinstance(submodule, DeepseekV4Attention):
-            submodule.attn_impl = impl
-
-
 # The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
-# cache. This file runs these shapes and no others: the kernel does not tile smaller ones, and the
-# sparse path it serves only exists at this size. The MoE fields are shrunk to nothing, since
-# `DeepseekV4Attention` reads none of them.
+# cache. This file runs these shapes and no others: the sparse path the kernel serves only exists at
+# this size. The MoE fields are shrunk to nothing, since `DeepseekV4Attention` reads none of them.
 V4FLASH_MODEL = dict(
     vocab_size=64,
     hidden_size=4096,
@@ -179,6 +167,9 @@ V4FLASH_MODEL = dict(
         "type": "yarn",
     },
 )
+
+# Shared by every test here: `DeepseekV4Attention` and `PackedContext.build` only read it.
+V4FLASH_CONFIG = DeepseekV4Config(**V4FLASH_MODEL)
 
 # Read off `V4FLASH_MODEL` so the hand-built tensors below describe the same CSA layer it does.
 HEADS = V4FLASH_MODEL["num_attention_heads"]
@@ -523,15 +514,13 @@ V4FLASH_DOC_LENS = [(517, 1019), (3,), (300,), (3, 129, 1021), (2600,)]
 V4FLASH_DOC_IDS = ["two-docs", "no-entries", "one-short-doc", "three-docs", "saturated-topk"]
 
 
-def _v4flash_config(attn_impl: str = "kernel") -> DeepseekV4Config:
-    return DeepseekV4Config(**V4FLASH_MODEL, _attn_impl=attn_impl)
-
-
-def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, attn_impl: str = "kernel") -> nn.Module:
+def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, eager: bool = False) -> nn.Module:
     """One attention layer at the real DeepSeek V4 Flash shapes, 126M parameters of it."""
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_v4flash_config(attn_impl), layer_idx=layer_idx)
+        module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx=layer_idx)
     _randomize(module)
+    if eager:
+        eager_reference.use_eager_attention(module)
     return module
 
 
@@ -547,26 +536,19 @@ def _v4flash_hidden_states(seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
-    """Capture what each attention path is handed and what it returns, from real forwards.
+    """Capture what the kernel is handed and what it returns, from real forwards.
 
-    Both implementations are module-level functions the layer looks up by name, so patching them
+    `dsv4_sparse_attn` is a module-level function the layer looks up by name, so patching it
     records the call the layer actually made rather than a reconstruction of it.
     """
     recorded: dict[str, torch.Tensor] = {}
-    real_eager = dsv4_attention.eager_attention_with_sinks
     real_kernel = dsv4_attention.dsv4_sparse_attn
-
-    def eager(query, key, value, sinks, attention_mask, **kwargs):
-        recorded["mask"] = attention_mask
-        recorded["eager"] = real_eager(query, key, value, sinks, attention_mask, **kwargs)
-        return recorded["eager"]
 
     def kernel(q, kv_buf, indices, sinks, scale):
         recorded["kv_buf"], recorded["indices"] = kv_buf, indices
         recorded["kernel"] = real_kernel(q, kv_buf, indices, sinks, scale)
         return recorded["kernel"]
 
-    monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", eager)
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", kernel)
     return recorded
 
@@ -636,6 +618,14 @@ def _selected_positions(indices: torch.Tensor, n_positions: int) -> torch.Tensor
 
 
 @requires_sparse_attn_kernel
+def test_deepseek_v4_refuses_a_shape_the_kernel_cannot_tile():
+    """The constructor refuses a head count the kernels cannot tile, rather than the first forward."""
+    config = DeepseekV4Config(**{**V4FLASH_MODEL, "num_attention_heads": 16})
+    with pytest.raises(ValueError, match="cannot run the fused sparse-attention kernel"):
+        DeepseekV4Attention(config, layer_idx=V4FLASH_CSA_LAYER)
+
+
+@requires_sparse_attn_kernel
 @requires_datacenter_gpu
 @pytest.mark.parametrize("doc_lens", V4FLASH_DOC_LENS, ids=V4FLASH_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
@@ -660,7 +650,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
-    packed = _packed_context(doc_lens, torch.bfloat16, _v4flash_config())
+    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -709,7 +699,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
-    packed = _packed_context(doc_lens, torch.bfloat16, _v4flash_config())
+    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -757,7 +747,7 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     this asserts the contract directly.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(doc_lens, torch.bfloat16, _v4flash_config())
+    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -836,7 +826,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     seq_len = sum(doc_lens)
     kernel_module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     eager_module = copy.deepcopy(kernel_module).float()
-    _set_attn_impl(eager_module, "eager")
+    eager_reference.use_eager_attention(eager_module)
 
     with torch.device("cuda"):
         base = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
@@ -852,8 +842,8 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
-    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, torch.bfloat16, _v4flash_config()))
-    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, torch.float32, _v4flash_config()))
+    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG))
+    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
     assert calls == [seq_len], f"the forward never reached the kernel, calls={calls}"
     _assert_relative(kernel_output, eager_output, EAGER_KERNEL_RTOL, "attention output")
 
@@ -888,7 +878,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     a fallback would leave this test asserting a property of the gather reference instead.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, _v4flash_config())
+    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
     packed_input, alone_input = hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
@@ -912,7 +902,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     for index, length in enumerate(KERNEL_DOC_LENS):
         span = _doc_slice(KERNEL_DOC_LENS, index)
         alone_output, _ = module(
-            alone_input[:, span], packed=_packed_context((length,), torch.bfloat16, _v4flash_config())
+            alone_input[:, span], packed=_packed_context((length,), torch.bfloat16, V4FLASH_CONFIG)
         )
         _assert_relative(packed_output[:, span], alone_output, KERNEL_RTOL, f"document {index}")
         (alone_output * weight[:, span]).sum().backward()
@@ -928,8 +918,8 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     """Every parameter of a CSA layer that can train does, with the kernel in the path.
 
     `test_deepseek_v4_backward` makes this assertion through the assembled model, but only on the
-    gather path: the kernel does not tile the toy shapes that file runs. This is the same assertion
-    at module level and at the real Flash shapes, and it is not implied by its neighbour above, which
+    dense reference, which is what that whole file binds. This is the same assertion at module
+    level and at the real Flash shapes, and it is not implied by its neighbour above, which
     compares two runs of the same path and would pass unchanged if both left a parameter at zero.
 
     The call count is load-bearing rather than decoration: `dsv4_sparse_attn` raises today
@@ -937,7 +927,7 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     asserting a property of the gather reference.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, _v4flash_config())
+    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden_states = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
     hidden_states.requires_grad_(True)
@@ -983,6 +973,7 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
 V4FLASH_HCA_DOCS = (256, 512)
 
 
+@requires_sparse_attn_kernel
 def test_v4flash_hca_attention_packed_matches_unpacked():
     """An HCA layer at production shapes must answer each document as if it stood alone.
 
@@ -996,13 +987,13 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
     `test_attention_packed_matches_unpacked[hca]` asserts the same invariant at toy shapes and
     rate 8.
     """
-    module = v4flash_attention(V4FLASH_HCA_LAYER, dtype=torch.float32, attn_impl="eager")
+    module = v4flash_attention(V4FLASH_HCA_LAYER, dtype=torch.float32, eager=True)
     assert module.layer_type == "heavily_compressed_attention", (
         f"expected the Flash config's HCA layer, got {module.layer_type}"
     )
     seq_len = sum(V4FLASH_HCA_DOCS)
     packed_input, alone_input = _v4flash_hidden_states(seq_len)
-    packed = _packed_context(V4FLASH_HCA_DOCS, torch.float32, _v4flash_config())
+    packed = _packed_context(V4FLASH_HCA_DOCS, torch.float32, V4FLASH_CONFIG)
 
     q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
     _, picks = module.compressor(packed_input.detach(), q_residual, packed)
@@ -1019,9 +1010,7 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
 
     for index, length in enumerate(V4FLASH_HCA_DOCS):
         span = _doc_slice(V4FLASH_HCA_DOCS, index)
-        alone_output, _ = module(
-            alone_input[:, span], packed=_packed_context((length,), torch.float32, _v4flash_config())
-        )
+        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), torch.float32, V4FLASH_CONFIG))
         _assert_relative(packed_output[:, span], alone_output, PACKED_RTOL, f"document {index}")
         (alone_output * weight[:, span]).sum().backward()
 
@@ -1084,8 +1073,8 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     """The two consumers of one `SparseAttnInputs` must compute the same attention, and its gradient.
 
     They are handed the identical index tensor, so this is not about which keys a query reads,
-    which its neighbours settle on integers. What is at stake is the attention core the layer picks
-    between: the sink term in the softmax denominator, the scale, the value weighting and the
+    which its neighbours settle on integers. What is at stake is the attention core itself: the
+    sink term in the softmax denominator, the scale, the value weighting and the
     backward's scatter. A kernel that dropped the sink, weighted a head with another head's
     probabilities or lost a term in `dQ` would still hand back finite numbers of the right shape,
     and every packing test in this file would still pass, because both halves of those comparisons
@@ -1098,9 +1087,9 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     weights = module.state_dict()
-    eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, attn_impl="eager")
+    eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, eager=True)
     eager_bf16.load_state_dict(weights)
-    eager_fp32 = v4flash_attention(layer_idx, dtype=torch.float32, attn_impl="eager")
+    eager_fp32 = v4flash_attention(layer_idx, dtype=torch.float32, eager=True)
     eager_fp32.load_state_dict({name: tensor.float() for name, tensor in weights.items()})
 
     with torch.device("cuda"):
@@ -1114,7 +1103,7 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
         ("eager_fp32", eager_fp32, torch.float32),
     ):
         hidden_states = hidden.to(dtype).clone().requires_grad_(True)
-        packed = _packed_context(doc_lens, dtype, _v4flash_config())
+        packed = _packed_context(doc_lens, dtype, V4FLASH_CONFIG)
         with _SparseAttnCallCounter() as counter:
             output, _ = layer(hidden_states, packed=packed)
         assert counter.count == (1 if name == "kernel" else 0), f"{name} made {counter.count} kernel calls"

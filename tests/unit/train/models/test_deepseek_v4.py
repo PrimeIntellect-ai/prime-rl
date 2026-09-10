@@ -8,7 +8,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
@@ -16,7 +16,20 @@ from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
-pytestmark = [pytest.mark.gpu]
+# Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
+# the kernel it would dispatch to, so the whole file needs tilelang even though nothing here calls it.
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        dsv4_attention.dsv4_sparse_attn is None,
+        reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
+    ),
+]
+
+requires_fp8_indexer = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+)
 
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
@@ -26,7 +39,9 @@ MODEL = dict(
     hidden_size=128,
     moe_intermediate_size=64,
     num_hidden_layers=5,
-    num_attention_heads=4,
+    # The smallest head count `DeepseekV4Attention.__init__` accepts: the kernel's tiler pads the
+    # head axis to a power of two and its backward GEMM needs 32 rows.
+    num_attention_heads=32,
     num_key_value_heads=1,
     head_dim=32,
     q_lora_rank=64,
@@ -65,8 +80,13 @@ MODEL = dict(
     rms_norm_eps=1e-6,
 )
 
-MODEL_BATCH, MODEL_SEQ = 2, 32
-MODULE_BATCH = 2
+# Shared: model construction only writes transformers' private `_attn_implementation_internal`
+# and `_experts_implementation_internal`, idempotently, so deep-copy before any other mutation.
+MODEL_CONFIG = DeepseekV4Config(**MODEL)
+
+# The Lightning Indexer scores one packed row, which makes every batch axis here 1.
+BATCH = 1
+MODEL_SEQ = 32
 
 SLIDING_LAYER, CSA_LAYER, HCA_LAYER = 0, 1, 2
 COMPRESS_RATE = MODEL["compress_rates"]["compressed_sparse_attention"]
@@ -127,29 +147,26 @@ def _randomize(module: nn.Module) -> None:
                 buffer.copy_(_tid2eid(buffer.shape[0], router.num_experts, router.top_k))
 
 
-def _prime_config(attn_impl: str = "eager") -> DeepseekV4Config:
-    """The toy config. It defaults to eager because the kernel cannot tile 4 attention heads."""
-    return DeepseekV4Config(**MODEL, _attn_impl=attn_impl)
-
-
-def get_prime_model(dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
+def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config(attn_impl))
+        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
     _randomize(model)
+    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
 
 
-def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16, attn_impl: str = "eager") -> nn.Module:
+def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """One attention layer of the same config the whole-model tests use.
 
     `DeepseekV4Attention` reads no MoE or hyper-connection field, so the layer this builds is
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(_prime_config(attn_impl), layer_idx=layer_idx)
+        module = DeepseekV4Attention(MODEL_CONFIG, layer_idx=layer_idx)
     _randomize(module)
+    eager_reference.use_eager_attention(module)
     return module
 
 
@@ -176,7 +193,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     be the one the caller runs at.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        rotary = DeepseekV4RotaryEmbedding(_prime_config())
+        rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
@@ -185,6 +202,7 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     )
 
 
+@requires_fp8_indexer
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     prime_model = get_prime_model()
@@ -193,7 +211,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
 
     counts = []
     for token_id in (0, 1):
-        input_ids = torch.full((MODEL_BATCH, MODEL_SEQ), token_id, device="cuda", dtype=torch.long)
+        input_ids = torch.full((BATCH, MODEL_SEQ), token_id, device="cuda", dtype=torch.long)
         for layer in hash_layers:
             layer.mlp.tokens_per_expert.zero_()
         position_ids, seq_lens = _single_doc(input_ids)
@@ -204,19 +222,20 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     assert set(table[0].tolist()) != set(table[1].tolist()), "the two table rows must differ for this to bite"
     assert not torch.equal(counts[0], counts[1]), "a hash layer must route the two token ids to different experts"
     expected = torch.zeros_like(counts[0][0])
-    expected[table[0]] = MODEL_BATCH * MODEL_SEQ
+    expected[table[0]] = BATCH * MODEL_SEQ
     torch.testing.assert_close(counts[0][0], expected)
 
 
+@requires_fp8_indexer
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
-    prime_config = _prime_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = DeepseekV4ForCausalLM(prime_config)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     _randomize(model)
+    eager_reference.use_eager_attention(model)
     inject_prime_lm_head(model)
 
-    input_ids = torch.randint(0, MODEL["vocab_size"], (MODEL_BATCH, MODEL_SEQ), device="cuda")
+    input_ids = torch.randint(0, MODEL["vocab_size"], (BATCH, MODEL_SEQ), device="cuda")
     position_ids, seq_lens = _single_doc(input_ids)
     output = model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
     output["logits"].sum().backward()
@@ -240,8 +259,7 @@ def test_deepseek_v4_backward():
 
 
 def test_deepseek_v4_weight_conversion_roundtrip():
-    prime_config = _prime_config()
-    model = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    model = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     original = {name: tensor.clone() for name, tensor in model.state_dict().items()}
 
     state_dict = model.state_dict()
@@ -286,8 +304,7 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     so getting it to reset one buffer too many is an easy mistake with no symptom other than every
     bootstrap token routing to expert 0.
     """
-    prime_config = _prime_config()
-    model = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    model = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     tables = _fill_hash_tables(model)
 
     state_dict = model.convert_to_hf(dict(model.state_dict()))
@@ -299,15 +316,13 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
         assert torch.equal(state_dict[f"layers.{layer_idx}.ffn.gate.tid2eid"], table)
 
     model.convert_to_prime(state_dict)
-    reloaded = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    reloaded = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
     reloaded.load_state_dict(state_dict)
     for layer_idx, table in tables.items():
         assert torch.equal(reloaded.model.layers[layer_idx].mlp.router.tid2eid, table)
 
-    # And now the loading path itself, on a meta-device model, with the name `load_dcp_from_hf`
-    # asks the checkpoint for raising a `KeyError` in the stub below if the buffer ever moves.
     with torch.device("meta"):
-        meta_model = DeepseekV4ForCausalLM(prime_config)
+        meta_model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     expected = tables[0]
 
     def fake_dcp_load(state_dict, storage_reader=None):
@@ -393,7 +408,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(_prime_config())
+        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 
@@ -409,14 +424,13 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
 
 def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
     """Rotary tables are non-persistent and computed eagerly, so meta loading loses them."""
-    prime_config = _prime_config()
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM(prime_config)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     model.to_empty(device="cuda")
 
     model.init_buffers_post_meta()
 
-    reference = 1.0 / (prime_config.rope_theta ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
+    reference = 1.0 / (MODEL_CONFIG.rope_theta ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
     torch.testing.assert_close(model.model.rotary_emb.main_inv_freq, reference)
     compressors = [layer.self_attn.compressor for layer in model.model.layers if layer.self_attn.compressor]
     assert compressors, "config must contain a compressed attention layer"
@@ -638,7 +652,7 @@ def _entry_counts(doc_lens: tuple[int, ...], compress_rate: int) -> list[int]:
 def _fp32_hidden_states(seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Two leaves carrying identical values, one for the packed run and one for the lone runs."""
     with torch.device("cuda"):
-        hidden = torch.randn(MODULE_BATCH, seq_len, MODEL["hidden_size"])
+        hidden = torch.randn(BATCH, seq_len, MODEL["hidden_size"])
     return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
 
 
@@ -665,6 +679,7 @@ def _compare_accumulated_grads(
         _assert_relative(param.grad, expected[name], rtol, name)
 
 
+@requires_fp8_indexer
 def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):  # noqa: F811
     """The local window stops at document boundaries, on every layer.
 
@@ -673,19 +688,19 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     `sliding_window` packed positions whatever document they belong to, which at the production
     `sliding_window = 128` against 77-token rollouts spans roughly two neighbours on all 43 layers.
 
-    Captured from the mask the model actually applies rather than by calling the builder, so it
-    keeps holding if the masking ever moves.
+    Captured from the dense mask the reference consumer applies to production's own
+    `window_indices`, rather than by calling the builder, so it keeps holding if the masking moves.
     """
     recorded = []
-    real_attention = dsv4_attention.eager_attention_with_sinks
+    real_attention = eager_reference.eager_attention_with_sinks
 
     def record(query, key, value, sinks, attention_mask, **kwargs):
         recorded.append(attention_mask)
         return real_attention(query, key, value, sinks, attention_mask, **kwargs)
 
-    monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
+    monkeypatch.setattr(eager_reference, "eager_attention_with_sinks", record)
 
-    # The dense mask is an eager-path artifact; the count below is one call per layer.
+    # The dense mask is a reference-path artifact; the count below is one call per layer.
     prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
@@ -703,6 +718,7 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
+@requires_fp8_indexer
 def test_model_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
@@ -806,7 +822,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
 
     packed_entries = compressor.compress(packed_input, packed)
-    assert packed_entries.shape == (MODULE_BATCH, sum(counts), compressor.head_dim)
+    assert packed_entries.shape == (BATCH, sum(counts), compressor.head_dim)
 
     with torch.device("cuda"):
         weight = torch.randn_like(packed_entries)
@@ -819,9 +835,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
         alone = compressor.compress(
             alone_input[:, _doc_slice(doc_lens, index)], _packed_context((doc_lens[index],), torch.float32)
         )
-        assert alone.shape == (MODULE_BATCH, count, compressor.head_dim), (
-            f"document {index} compressed to the wrong count"
-        )
+        assert alone.shape == (BATCH, count, compressor.head_dim), f"document {index} compressed to the wrong count"
         torch.testing.assert_close(
             packed_entries[:, entries],
             alone,
@@ -838,7 +852,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 @pytest.mark.parametrize(
     ("layer_idx", "doc_lens"),
     [
-        (CSA_LAYER, MID_WINDOW_DOCS),
+        pytest.param(CSA_LAYER, MID_WINDOW_DOCS, marks=requires_fp8_indexer),
         (HCA_LAYER, EXACT_MULTIPLE_DOCS),
         (SLIDING_LAYER, MID_WINDOW_DOCS),
     ],

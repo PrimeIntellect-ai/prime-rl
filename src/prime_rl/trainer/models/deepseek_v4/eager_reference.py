@@ -1,13 +1,19 @@
 """Naive DeepSeek V4 attention reference.
 
 Nothing in the production path calls these. They exist for the tests, where a dense, obviously
-correct implementation is the standard the fused kernel is measured against. They take plain
-tensors, so this module imports nothing from `attention.py` and the dependency runs one way only.
+correct implementation is the standard the fused kernel is measured against, and where it is the
+only implementation that runs at shapes the kernel cannot tile. The dependency runs one way only:
+this module reads `attention.py`, which is kernel-only and never reads back.
 """
+
+import types
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
+from torch import Tensor, nn
+
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, SparseAttnInputs
+from prime_rl.trainer.models.deepseek_v4.rotary import apply_rotary_pos_emb_interleaved
 
 
 def eager_attention_with_sinks(
@@ -91,3 +97,61 @@ def dense_mask_from_indices(indices: Tensor, n_positions: int, dtype: torch.dtyp
     mask = torch.full((batch, 1, seq_len, n_positions + 1), float("-inf"), dtype=dtype, device=indices.device)
     mask.scatter_(-1, safe, 0.0)
     return mask[..., :n_positions].contiguous()
+
+
+def eager_attention_forward(
+    module: DeepseekV4Attention, hidden_states: Tensor, packed: PackedContext
+) -> tuple[Tensor, None]:
+    """`DeepseekV4Attention.forward` with a dense softmax where the fused kernel goes.
+
+    The projections and the RoPE are reimplemented rather than called through, so a change to that
+    method has to be mirrored here. The slot layout is not: both consumers read the same
+    `SparseAttnInputs`, which is what makes a disagreement between them one about attention math.
+    """
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, module.head_dim)
+    cos, sin = packed.position_embeddings[module.rope_layer_type]
+
+    q_residual = module.q_a_norm(module.q_a_proj(hidden_states))
+    q = module.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)
+    q = apply_rotary_pos_emb_interleaved(module.q_b_norm(q), cos, sin)
+
+    kv = module.kv_norm(module.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)
+    kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
+
+    compressed = module.compressor(hidden_states, q_residual, packed) if module.compressor is not None else None
+    compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+    inputs = SparseAttnInputs.build(
+        kv=kv,
+        compressed_kv=compressed_kv,
+        top_k_indices=top_k_indices,
+        window_indices=packed.window_indices,
+    )
+
+    attention_mask = dense_mask_from_indices(inputs.indices, inputs.kv_buf.shape[1], q.dtype)
+    keys = inputs.kv_buf.transpose(1, 2)
+    attn_output = eager_attention_with_sinks(
+        q,
+        keys,
+        keys,
+        module.sinks,
+        attention_mask,
+        scaling=module.scaling,
+        dropout=module.attention_dropout,
+        training=module.training,
+    )
+
+    attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
+    grouped = module.o_a_proj(attn_output.reshape(*input_shape, module.config.o_groups, -1)).flatten(2)
+    return module.o_b_proj(grouped), None
+
+
+def use_eager_attention(module: nn.Module) -> None:
+    """Rebind every `DeepseekV4Attention` under `module` to the dense reference consumer.
+
+    `modules()` yields `module` itself, so this covers a lone attention layer as well as a model
+    holding several of them.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, DeepseekV4Attention):
+            submodule.forward = types.MethodType(eager_attention_forward, submodule)
