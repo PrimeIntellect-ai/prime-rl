@@ -71,7 +71,7 @@ class Qwen3_5VisionAttention(nn.Module):
     FLASH_ATTENTION_FUNCTIONS = {
         "flash_attention_2": flash_attn_varlen_func,
         "flash_attention_3": flash_attn_3_varlen_func,
-        "flash_attention_4": flash_attn_4_varlen_func,
+        "flash_attention_4": torch.compiler.disable(flash_attn_4_varlen_func),
     }
 
     def __init__(self, config: Qwen3_5VisionConfig) -> None:
