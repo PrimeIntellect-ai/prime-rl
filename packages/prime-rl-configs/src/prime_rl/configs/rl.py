@@ -453,6 +453,14 @@ class RLConfig(BaseConfig):
         validate_shared_seq_len(self.trainer, self.orchestrator)
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
         validate_shared_wandb_config(self.trainer, self.orchestrator)
+        trainer_vlm = self.trainer.model.vlm
+        orchestrator_vlm = self.orchestrator.model.vlm
+        if (
+            trainer_vlm is not None
+            and not trainer_vlm.pack_samples
+            and (orchestrator_vlm is None or orchestrator_vlm.pack_samples)
+        ):
+            raise ValueError("model.vlm.pack_samples=false must be shared by the trainer and orchestrator")
         return self
 
     @model_validator(mode="after")

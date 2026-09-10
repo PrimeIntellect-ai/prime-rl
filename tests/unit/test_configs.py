@@ -863,6 +863,32 @@ def test_sft_rejects_generic_hf_vlm():
         )
 
 
+def test_rl_requires_unpacked_vlm_setting_to_be_shared():
+    with pytest.raises(
+        ValidationError,
+        match="model.vlm.pack_samples=false must be shared by the trainer and orchestrator",
+    ):
+        RLConfig.model_validate(
+            {
+                "trainer": {
+                    "model": {
+                        "impl": "hf",
+                        "attn": "flash_attention_2",
+                        "optimization_dtype": "bfloat16",
+                        "reduce_dtype": "bfloat16",
+                        "vlm": {
+                            "vision_encoder_attr": "model.visual",
+                            "language_model_attr": "model.language_model",
+                            "pack_samples": False,
+                        },
+                    }
+                },
+                "orchestrator": {},
+                "inference": {},
+            }
+        )
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
