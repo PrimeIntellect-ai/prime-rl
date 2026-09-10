@@ -578,6 +578,25 @@ class IPOLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
+class IcePopLossConfig(BaseConfig):
+    type: Literal["icepop"] = "icepop"
+
+    ratio_low: float = Field(0.2, gt=0)
+    """Lower accepted trainer-to-inference probability ratio."""
+
+    ratio_high: float = Field(5.0, gt=0)
+    """Upper accepted trainer-to-inference probability ratio."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    @model_validator(mode="after")
+    def validate_ratio_bounds(self):
+        if self.ratio_low > self.ratio_high:
+            raise ValueError("ratio_low must not exceed ratio_high")
+        return self
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -588,7 +607,7 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[IPOLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):

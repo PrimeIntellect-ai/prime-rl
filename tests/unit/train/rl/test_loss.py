@@ -1,8 +1,15 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig
-from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
+from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig
+from prime_rl.trainer.rl.loss import (
+    LossInputs,
+    LossOutputs,
+    compute_entropy,
+    compute_loss,
+    icepop_loss_fn,
+    setup_rl_loss_fn,
+)
 
 pytestmark = [pytest.mark.gpu]
 
@@ -83,6 +90,42 @@ def test_setup_rl_loss_fn_with_custom_config():
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
+
+
+def test_icepop_loss_masks_ratios_outside_inclusive_band():
+    ratios = torch.tensor([0.1, 0.2, 1.0, 5.0, 10.0], device="cuda")
+    trainer_logprobs = ratios.log().requires_grad_()
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.zeros_like(trainer_logprobs),
+        ref_logprobs=None,
+        advantages=torch.ones_like(trainer_logprobs),
+        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
+    )
+
+    result = setup_rl_loss_fn(IcePopLossConfig())(inputs)
+
+    assert torch.isclose(result.loss, torch.tensor(-6.2, device="cuda"))
+    assert torch.isclose(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
+    result.loss.backward()
+    assert torch.allclose(trainer_logprobs.grad, torch.tensor([0.0, -0.2, -1.0, -5.0, 0.0], device="cuda"))
+
+
+def test_icepop_loss_masks_extreme_ratio_without_nan():
+    trainer_logprobs = torch.tensor([100.0], device="cuda", requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.zeros_like(trainer_logprobs),
+        ref_logprobs=None,
+        advantages=torch.ones_like(trainer_logprobs),
+        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
+    )
+
+    result = icepop_loss_fn(inputs, IcePopLossConfig())
+
+    assert torch.equal(result.loss, torch.zeros_like(result.loss))
+    result.loss.backward()
+    assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
 
 
 def test_ce_component_matches_masked_nll():
