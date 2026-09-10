@@ -9,7 +9,7 @@ from pydantic_config import ConfigFileError
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.evals import EvalsConfig
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, VllmRouterConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -27,6 +27,33 @@ CONFIG_CLASSES = [
     EnvServerConfig,
     EvalsConfig,
 ]
+
+
+@pytest.mark.parametrize("timeout", [1800, 14400])
+def test_vllm_router_request_timeout_launch_paths(timeout, monkeypatch):
+    from jinja2 import Environment, FileSystemLoader
+
+    from prime_rl.entrypoints import inference
+
+    router = VllmRouterConfig(request_timeout_secs=timeout)
+    assert VllmRouterConfig().request_timeout_secs == 1800
+    config = InferenceConfig(router=router)
+    commands = []
+    monkeypatch.setattr(inference.subprocess, "Popen", lambda cmd: commands.append(cmd))
+    inference.start_router(config)
+    cmd = commands[0]
+    assert cmd[cmd.index("--request-timeout-secs") + 1] == str(timeout)
+
+    templates = Path(inference.__file__).parent.parent / "templates"
+    env = Environment(loader=FileSystemLoader(templates))
+    script = env.get_template("_launch_router.sh.j2").render(router=router)
+    assert f"--request-timeout-secs {timeout}" in script
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_vllm_router_request_timeout_rejects_nonpositive(timeout):
+    with pytest.raises(ValidationError, match="request_timeout_secs"):
+        VllmRouterConfig(request_timeout_secs=timeout)
 
 
 def get_config_files() -> list[Path]:

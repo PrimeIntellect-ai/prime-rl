@@ -306,6 +306,9 @@ class VllmRouterConfig(BaseConfig):
     policy: str = "consistent_hash"
     """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
 
+    request_timeout_secs: int = Field(default=1800, gt=0)
+    """Per-request router timeout. Long agentic generations may need this aligned with the rollout timeout."""
+
 
 class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""
