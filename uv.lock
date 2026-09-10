@@ -4954,8 +4954,8 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 
 [[package]]
 name = "prime-kernels"
-version = "0.1.0+cu130torch2.13.0.nvfp4.gd9a5ceb"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" }
+version = "0.1.0+cu130torch2.13.0.nvfp4.g436719d"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260910-436719d/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g436719d-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4963,7 +4963,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl", hash = "sha256:dc73e91ce1ae0dd0174618cb89c4a603b11232dce02a4978d81ac7e979bcb350" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260910-436719d/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g436719d-cp312-cp312-linux_aarch64.whl", hash = "sha256:e8311b13da602def10c4cc88ac6abad2c8d5090799d04a14a3c89421257a0d68" },
 ]
 
 [package.metadata]
@@ -5063,7 +5063,7 @@ all = [
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
     { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.1rc1.dev588+nvfp4.g54dd739.cu130", source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260909-54dd739/vllm-0.28.1rc1.dev588%2Bnvfp4.g54dd739.cu130-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+nvfp4.gbc4755a.cu130", source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260910-bc4755a/vllm-0.28.1rc1.dev588%2Bnvfp4.gbc4755a.cu130-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
@@ -5112,11 +5112,11 @@ gpu = [
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
     { name = "vllm", version = "0.28.1rc1.dev588+gc7e9816c6", source = { url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.28.1rc1.dev588+nvfp4.g54dd739.cu130", source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260909-54dd739/vllm-0.28.1rc1.dev588%2Bnvfp4.g54dd739.cu130-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.28.1rc1.dev588+nvfp4.gbc4755a.cu130", source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260910-bc4755a/vllm-0.28.1rc1.dev588%2Bnvfp4.gbc4755a.cu130-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
     { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0.nvfp4.gd9a5ceb", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0.nvfp4.g436719d", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260910-436719d/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g436719d-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5170,7 +5170,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "prime", specifier = ">=0.6.19" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260909-d9a5ceb/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.gd9a5ceb-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/nvfp4-20260910-436719d/prime_kernels-0.1.0%2Bcu130torch2.13.0.nvfp4.g436719d-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
     { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
@@ -5206,7 +5206,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
-    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260909-54dd739/vllm-0.28.1rc1.dev588%2Bnvfp4.g54dd739.cu130-cp312-cp312-linux_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260910-bc4755a/vllm-0.28.1rc1.dev588%2Bnvfp4.gbc4755a.cu130-cp312-cp312-linux_aarch64.whl" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.28.0" },
     { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://wheels.vllm.ai/c7e9816c6ab0731165a134fd0a9defed6ab1d748/vllm-0.28.1rc1.dev588%2Bgc7e9816c6-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
@@ -8107,8 +8107,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm"
-version = "0.28.1rc1.dev588+nvfp4.g54dd739.cu130"
-source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260909-54dd739/vllm-0.28.1rc1.dev588%2Bnvfp4.g54dd739.cu130-cp312-cp312-linux_aarch64.whl" }
+version = "0.28.1rc1.dev588+nvfp4.gbc4755a.cu130"
+source = { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260910-bc4755a/vllm-0.28.1rc1.dev588%2Bnvfp4.gbc4755a.cu130-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -8190,7 +8190,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260909-54dd739/vllm-0.28.1rc1.dev588%2Bnvfp4.g54dd739.cu130-cp312-cp312-linux_aarch64.whl", hash = "sha256:f78642c8bd1265568823db50d6015db19e43e16fcbd1035fb81f7fe4c93db70f" },
+    { url = "https://github.com/S1ro1/vllm/releases/download/nvfp4-20260910-bc4755a/vllm-0.28.1rc1.dev588%2Bnvfp4.gbc4755a.cu130-cp312-cp312-linux_aarch64.whl", hash = "sha256:ca54605dfb3c2e3a496eca3014fa3980b7bf3e03324905b42dff82875b67d7a5" },
 ]
 
 [package.metadata]

@@ -65,6 +65,7 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
             kernel=kernel,
             backward=compute.backward,
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
+            four_over_six=compute.four_over_six,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 

@@ -73,6 +73,7 @@ class NVFP4GroupedGemm:
     kernel: ModuleType
     backward: str
     token_group_alignment: int
+    four_over_six: bool = False
 
     def __call__(
         self,
@@ -81,4 +82,6 @@ class NVFP4GroupedGemm:
         *,
         offs: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel.grouped_gemm(x, weight_t, offs=offs, backward=self.backward)
+        return self.kernel.grouped_gemm(
+            x, weight_t, offs=offs, backward=self.backward, four_over_six=self.four_over_six
+        )

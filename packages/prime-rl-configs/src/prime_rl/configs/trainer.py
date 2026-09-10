@@ -234,6 +234,8 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["nvfp4"] = "nvfp4"
     backward: Literal["dequant_bf16", "bf16"] = "dequant_bf16"
     """Use dequantized forward operands or the original BF16 operands for backward."""
+    four_over_six: bool = False
+    """Use FlashInfer's default 4/6 recipe: 448 normalization and MAE scoring."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[

@@ -180,6 +180,7 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
         {"moe": {"compute": {"type": "nvfp4"}}},
         {"moe": {"compute": {"type": "nvfp4", "backward": "bf16"}}},
+        {"moe": {"compute": {"type": "nvfp4", "four_over_six": True}}},
         {"ep": 2, "moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "deepep"}}},
         {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
         {

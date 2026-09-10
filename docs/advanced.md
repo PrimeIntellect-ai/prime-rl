@@ -55,6 +55,13 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 - `type = "nvfp4"` (requires a `prime-kernels` build containing `nvfp4_moe` and SM100). `backward = "dequant_bf16"` uses reconstructed forward operands for BF16 gradient GEMMs; `backward = "bf16"` uses the original BF16 operands. Gated experts require the `gate_up` fusion. LoRA and full-graph compilation are unsupported; `compile.fullgraph` defaults to `false`.
 
+For NVFP4, `four_over_six = true` enables adaptive 4/6 quantization for expert
+weights and activations. It defaults to `false`. The enabled recipe matches
+FlashInfer's defaults: 448 normalization, MAE selection, strict error scoring,
+and default candidate arithmetic. Enable the matching sampler recipe with
+`FLASHINFER_NVFP4_4OVER6 = "1"` in `[inference.env_vars]`, leaving the other
+FlashInfer NVFP4 settings at their defaults.
+
 ```toml
 [trainer.model.quantization]
 type = "mxfp8"
