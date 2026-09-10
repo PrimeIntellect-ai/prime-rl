@@ -5,11 +5,13 @@ import torch
 from datasets import Dataset, interleave_datasets
 from renderers import create_renderer
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
+from renderers.deepseek_v4 import DeepSeekV4Renderer
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
+from prime_rl.utils.chat_template import deserialize_tool_calls
 
 _BOS_TOKEN_ID = 0
 _STOP_TOKEN_ID = 1
@@ -500,6 +502,18 @@ def test_deserialize_tool_calls_accepts_trace_shapes():
     assert first["id"] == "t1"
     assert first["function"] == {"name": "ipython", "arguments": {"code": "print(1)"}}
     assert second["function"] == {"name": "ipython", "arguments": {"code": "print(2)"}}
+
+
+def test_flat_trace_tool_call_renders_real_name_and_arguments():
+    flat = {"id": "t1", "name": "ipython", "arguments": '{"code": "print(1)"}'}
+    [message] = deserialize_tool_calls([{"role": "assistant", "content": "", "tool_calls": [flat]}])
+
+    rendered = DeepSeekV4Renderer._render_tool_call(message["tool_calls"][0])
+
+    assert 'invoke name="ipython"' in rendered
+    assert 'parameter name="code"' in rendered
+    assert "print(1)" in rendered
+    assert 'name="None"' not in rendered
 
 
 def test_skip_invalid_samples_knob(raising_renderer):
