@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
+from prime_rl.trainer.model import apply_fp32_moe_router
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -14,6 +15,23 @@ from prime_rl.trainer.models.layers.moe import (
 )
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+def test_fp32_router_parameters_keep_their_wire_dtype():
+    moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None).to(torch.bfloat16)
+    layer = torch.nn.Module()
+    layer.mlp = moe
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([layer])
+    model.keep_in_fp32_for_weight_transfer = lambda name: name.endswith("selection_bias")
+
+    apply_fp32_moe_router(model)
+
+    assert moe.router.gate.weight.dtype is torch.float32
+    assert model.keep_in_fp32_for_weight_transfer("model.layers.0.mlp.router.gate.weight")
+    assert model.keep_in_fp32_for_weight_transfer("model.layers.0.mlp.router.selection_bias")
+    assert not model.keep_in_fp32_for_weight_transfer("model.layers.0.mlp.experts.gate_proj")
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])
