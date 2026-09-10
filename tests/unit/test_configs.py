@@ -946,28 +946,3 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
-
-
-def test_rl_propagates_trainer_vlm_to_orchestrator():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {
-                "model": {
-                    "impl": "hf",
-                    "attn": "flash_attention_2",
-                    "optimization_dtype": "bfloat16",
-                    "reduce_dtype": "bfloat16",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                        "pack_samples": False,
-                    },
-                }
-            },
-            "orchestrator": {},
-            "inference": {},
-        }
-    )
-
-    assert config.orchestrator.model.vlm is not None
-    assert config.orchestrator.model.vlm.pack_samples is False

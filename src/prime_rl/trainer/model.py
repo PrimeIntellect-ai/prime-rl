@@ -550,15 +550,14 @@ def _validate_vlm_implementation(
     is_vlm_arch: bool,
     custom_vlm_available: bool,
     impl_to_use: str,
-    world_size: int,
 ) -> None:
     if config.vlm is None:
         return
     if impl_to_use == "hf":
-        if not is_vlm_arch or config.vlm.pack_samples or world_size != 1:
+        if not is_vlm_arch or config.vlm.pack_samples:
             raise ValueError(
                 f"Generic Hugging Face VLM training is not supported for {model_type!r} with this configuration; "
-                "it requires model.impl='hf', model.vlm.pack_samples=false, and one trainer process."
+                "the implementation must resolve to Hugging Face and model.vlm.pack_samples must be false."
             )
         return
     if not (is_vlm_arch and custom_vlm_available):
@@ -571,8 +570,6 @@ def get_model(
     config: ModelConfig,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.bfloat16,
-    *,
-    world_size: int = 1,
 ) -> nn.Module:
     logger = get_logger()
     logger.debug(
@@ -711,7 +708,6 @@ def get_model(
         is_vlm_arch=is_vlm_arch,
         custom_vlm_available=custom_vlm_cls is not None,
         impl_to_use=impl_to_use,
-        world_size=world_size,
     )
 
     with device:
@@ -1264,12 +1260,7 @@ def setup_model(
     logger = get_logger()
 
     # 1. We load to meta device by default
-    model = get_model(
-        config,
-        device=torch.device("meta"),
-        dtype=DTYPE_MAP[config.optimization_dtype],
-        world_size=parallel_dims.world_size,
-    )
+    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
@@ -1281,12 +1272,7 @@ def setup_model(
     # 1a. We load to CPU if we cannot reinit empty buffers
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
-        model = get_model(
-            config,
-            device=torch.device("cpu"),
-            dtype=DTYPE_MAP[config.optimization_dtype],
-            world_size=parallel_dims.world_size,
-        )
+        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

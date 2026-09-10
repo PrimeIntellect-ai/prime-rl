@@ -151,7 +151,7 @@ class VLMConfig(BaseConfig):
     """Freeze the vision encoder parameters during training."""
 
     pack_samples: bool = True
-    """Pack multiple multimodal samples into one sequence. Disable for generic Hugging Face VLMs that do not accept Prime's packed-document boundaries."""
+    """Pack multiple samples into one sequence. Disable all cross-sample packing for generic Hugging Face VLMs."""
 
 
 class BaseModelConfig(BaseConfig):

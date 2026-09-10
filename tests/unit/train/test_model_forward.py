@@ -20,7 +20,7 @@ class _CaptureModel(nn.Module):
         return {"logits": torch.zeros(*input_ids.shape, 4)}
 
 
-def test_generic_hf_vlm_rejects_multiple_trainers_when_custom_impl_exists():
+def test_generic_hf_vlm_allows_unpacked_samples():
     config = ModelConfig(
         impl="hf",
         attn="flash_attention_2",
@@ -31,14 +31,32 @@ def test_generic_hf_vlm_rejects_multiple_trainers_when_custom_impl_exists():
         },
     )
 
-    with pytest.raises(ValueError, match="one trainer process"):
+    _validate_vlm_implementation(
+        config,
+        model_type="qwen3_5",
+        is_vlm_arch=True,
+        custom_vlm_available=True,
+        impl_to_use="hf",
+    )
+
+
+def test_generic_hf_vlm_rejects_packed_samples():
+    config = ModelConfig(
+        impl="hf",
+        attn="flash_attention_2",
+        vlm={
+            "vision_encoder_attr": "model.visual",
+            "language_model_attr": "model.language_model",
+        },
+    )
+
+    with pytest.raises(ValueError, match="pack_samples must be false"):
         _validate_vlm_implementation(
             config,
             model_type="qwen3_5",
             is_vlm_arch=True,
             custom_vlm_available=True,
             impl_to_use="hf",
-            world_size=2,
         )
 
 
