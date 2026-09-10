@@ -1,0 +1,27 @@
+max_steps = 100
+seq_len = 2048
+
+[wandb]
+project = "ifbench-debug"
+name = "ifbench"
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+# Prime Intellect Lab environment discovered at:
+# https://app.primeintellect.ai/dashboard/environments/shashwat23/ifbench
+# The slash-qualified ID triggers `prime env install` in prime-rl before training.
+id = "shashwat23/ifbench"
+name = "ifbench"
+
+[trainer] # Default trainer config
+
+[inference] # Default inference config
