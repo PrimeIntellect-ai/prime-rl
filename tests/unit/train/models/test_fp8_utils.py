@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
@@ -7,6 +8,7 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     per_token_cast_to_fp8_tp_triton,
     per_token_cast_to_fp8_triton,
 )
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
 
 pytestmark = [
     pytest.mark.gpu,
@@ -47,3 +49,25 @@ def test_token_tp_cast_matches_materialized_transpose(rows, cols):
     assert tp_q.is_contiguous()
     assert torch.equal(tp_q.view(torch.uint8), ref_q.view(torch.uint8))
     assert torch.equal(tp_s, ref_s)
+
+
+@pytest.mark.parametrize("in_features,out_features", [(256, 256), (259, 196), (10944, 128)])
+def test_fp8_linear_ragged_dimensions_and_bias(in_features, out_features):
+    torch.manual_seed(1234)
+    layer = Float8BlockwiseLinear(in_features, out_features, bias=True, device="cuda")
+    x = torch.randn(29, in_features, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    weight_ref = layer.weight.detach().clone().requires_grad_(True)
+    bias_ref = layer.bias.detach().clone().requires_grad_(True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    actual = layer(x)
+    reference = F.linear(x_ref, weight_ref, bias_ref)
+    grad = torch.randn_like(actual)
+    actual.backward(grad)
+    reference.backward(grad)
+
+    for value, expected in ((actual, reference), (x.grad, x_ref.grad), (layer.weight.grad, weight_ref.grad)):
+        assert value.shape == expected.shape
+        assert torch.isfinite(value).all()
+        relative_error = (value.float() - expected.float()).norm() / expected.float().norm()
+        assert relative_error < 0.08
+    torch.testing.assert_close(layer.bias.grad, bias_ref.grad, rtol=0, atol=0)

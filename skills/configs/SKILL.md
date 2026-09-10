@@ -88,6 +88,44 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
+## GLM Air online blockwise FP8
+
+With unpatched vLLM 0.28.0, GLM-4.5-Air TP8 + EP cannot apply `fp8_per_block` to every
+linear layer: the dense MLP down projection consumes 1,368 values per TP rank,
+which violates the activation quantizer's 128-element group requirement.
+Shared-expert down projections also have a ragged 176-wide TP8 input.
+An inference-only smoke-tested workaround is `quantization = "fp8_per_block"`
+with `quantization_config.ignore` listing `model.layers.0.mlp.down_proj` and
+`model.layers.{1..45}.mlp.shared_experts.down_proj` (expand the numeric range into
+individual names). These layers remain BF16; other quantizable linear layers and
+routed experts use blockwise FP8. Alternatively, `quantization = "online"` with
+`quantization_config.moe = "fp8_per_block"` leaves all linear layers unquantized.
+Treat either as mixed precision. Validate actual generated outputs and finite
+log-probabilities; engine startup alone does not validate numerical correctness.
+The isolated padding implementation in `prime_rl.inference.fp8_padding`, enabled
+by `PRIME_RL_FP8_PAD_RAGGED=1`, instead zero-pads the weight/activation input tail
+and keeps these projections in FP8. Kernel selection sees the padded shape;
+checkpoint loading and logical dimensions retain the original shape. Do not
+remove the divisibility assertion or silently change the quantization recipe.
+The GLM Air kernel-transfer converter uses the GLM-5 quantization helper, fuses
+MHA Q/K/V, and preserves the padded FP8 shape. Its tested kernel-transfer path is
+TP1 + DeepGEMM on H200; do not assume TP-sharded kernel-format transfers or other
+backend layouts are interchangeable. For reload diagnostics, disable prefix
+caching or invalidate it before checking generation with updated weights.
+The TP1 H200 check includes CUDA graphs and two FP8 NCCL reloads with prefix
+caching disabled; it uses checkpoint weights converted by the trainer's helper,
+not a real optimizer update.
+Small inference checks do not establish long-context task quality or a full RL
+optimizer-step integration.
+Actual trainer FP8 compute is separate from FP8 weight transfer: enable
+`[trainer.model.quantization] type = "fp8"` for linear layers and
+`[trainer.model.moe.compute] type = "deepgemm_fp8"` for routed experts.
+`quantize_in_weight_transfer = true` alone leaves trainer compute unchanged.
+GLM Air requires preserving attention projection biases and zero-padding ragged
+linear dimensions in the trainer as well as inference. The isolated trainer
+implementation does both; its GPU forward/backward numerical checks remain
+pending until spare capacity is available.
+
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

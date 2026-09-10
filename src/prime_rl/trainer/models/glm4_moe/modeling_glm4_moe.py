@@ -155,6 +155,14 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config):
         return conversion_chain(config)
 
+    @classmethod
+    def convert_layer_to_vllm_kernel(
+        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
+    ) -> dict[str, Tensor]:
+        from prime_rl.trainer.models.glm4_moe.kernel_conversion import convert_glm4_layer_to_vllm_kernel
+
+        return convert_glm4_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8)
+
 
 @auto_docstring
 class Glm4MoeModel(Glm4MoePreTrainedModel):

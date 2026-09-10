@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 
@@ -17,6 +19,10 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    if os.environ.get("PRIME_RL_FP8_PAD_RAGGED") == "1":
+        from prime_rl.inference.fp8_padding import patch_online_fp8_input_padding
+
+        patch_online_fp8_input_padding()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()

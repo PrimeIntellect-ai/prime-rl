@@ -66,3 +66,36 @@ def test_convert_tt_layer_to_vllm_kernel_with_fp8():
     assert out["model.layers.0.mlp.experts.w13_weight_scale_inv"].dtype == torch.float32
     assert out["model.layers.0.mlp.experts.w2_weight"].dtype == torch.float8_e4m3fn
     assert out["model.layers.0.mlp.experts.w2_weight_scale_inv"].dtype == torch.float32
+
+
+def test_glm4_kernel_conversion_preserves_glm_quantization_and_pads_ragged_input():
+    from prime_rl.trainer.models.glm4_moe.kernel_conversion import convert_glm4_layer_to_vllm_kernel
+
+    torch.manual_seed(7)
+    prefix = "model.layers.0"
+    state = {
+        f"{prefix}.self_attn.{part}_proj.weight": torch.randn(rows, 128)
+        for part, rows in (("q", 256), ("k", 128), ("v", 128))
+    }
+    state.update(
+        {
+            f"{prefix}.self_attn.q_norm.weight": torch.randn(128),
+            f"{prefix}.self_attn.k_norm.weight": torch.randn(128),
+            f"{prefix}.self_attn.o_proj.weight": torch.randn(128, 256),
+            f"{prefix}.mlp.gate_proj.weight": torch.randn(176, 128),
+            f"{prefix}.mlp.up_proj.weight": torch.randn(176, 128),
+            f"{prefix}.mlp.down_proj.weight": torch.randn(128, 176),
+        }
+    )
+    expected = convert_tt_layer_to_vllm_kernel(state, 0, quantize_fp8=True)
+    actual = convert_glm4_layer_to_vllm_kernel(state, 0, quantize_fp8=True)
+    for name, reference in expected.items():
+        value = actual[name]
+        if value.ndim == 2 and value.shape != reference.shape:
+            assert value.shape == (128, 256)
+            assert torch.count_nonzero(value[:, 176:].float()) == 0
+            value = value[:, :176]
+        torch.testing.assert_close(value.float(), reference.float(), rtol=0, atol=0)
+    assert actual[f"{prefix}.self_attn.qkv_proj.weight"].shape == (512, 128)
+    assert actual[f"{prefix}.self_attn.qkv_proj.weight"].dtype == torch.float8_e4m3fn
+    torch.testing.assert_close(actual[f"{prefix}.self_attn.q_norm.weight"], state[f"{prefix}.self_attn.q_norm.weight"])
