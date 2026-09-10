@@ -60,11 +60,19 @@ def test_qwen3_5_moe():
     assert torch.isfinite(prime_model.model.embed_tokens.weight.grad).all()
 
     packed_position_ids = torch.arange(1, 51, device="cuda").repeat(2).unsqueeze(0)
+    # Keep expert selection fixed to isolate packed sequence boundaries.
+    config = prime_model.config
+    routed_experts = (
+        torch.rand(1, 100, config.num_hidden_layers, config.num_experts, device="cuda")
+        .topk(config.num_experts_per_tok, dim=-1)
+        .indices
+    )
     with torch.no_grad():
         packed = prime_model(
             input_ids,
             position_ids=packed_position_ids,
             seq_lens=torch.tensor([50, 50], device="cuda"),
+            routed_experts=routed_experts,
         )["logits"]
         unpacked = torch.cat(
             [
@@ -72,6 +80,7 @@ def test_qwen3_5_moe():
                     input_ids[:, start : start + 50],
                     position_ids=packed_position_ids[:, :50],
                     seq_lens=torch.tensor([50], device="cuda"),
+                    routed_experts=routed_experts[:, start : start + 50],
                 )["logits"]
                 for start in (0, 50)
             ],
