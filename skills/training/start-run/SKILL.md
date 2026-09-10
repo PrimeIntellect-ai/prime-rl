@@ -145,6 +145,19 @@ interval = 10        # completed task groups between cursor saves
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
 - Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
 
+### Colocating standalone evals with inference
+
+To run an eval coordinator on CPUs within an existing inference allocation, use
+`srun --jobid=<id> --overlap --exact --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=none --nodelist=<allocated-host> --job-name=swe-bash-edit`
+with explicit output and resume directories. Start the persistent `srun`
+launcher on that compute host, detached from SSH, so a login-node restart
+cannot kill it. Give the step shared-filesystem logs and a single-instance
+lock on the chosen host. Verify the step's `SrunHost` and node placement,
+checkpoint restoration, and actual episode admission after disconnecting.
+Test sandbox connectivity from the chosen host before moving an agentic run.
+The step shares the inference allocation's lifetime; an allocation restart
+requires checkpoint resumption.
+
 ## Exporting checkpoints
 
 Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). Convert to HF safetensors with `uv run python tools/convert_dcp_to_bf16.py <run_dir>/checkpoints/step_{n}` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run’s `configs/latest/resolved/trainer.json`/`sft.json`; multi-rank via `torchrun --nproc-per-node N`; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `tools/convert_bf16_to_fp8.py <dir>` (vLLM-native format), or straight from a checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (rank-parallel, writes only `<ckpt_dir>/weights-FP8`, no bf16 on disk); dequantize fp8-only releases with `tools/convert_fp8_to_bf16.py <dir>`. Caveat: on SM120 GPUs (RTX PRO 6000) vLLM 0.26 picks `CutlassFp8BlockScaledMMKernel` for blockwise-fp8 checkpoints and it silently degrades outputs — serve with `VLLM_DISABLED_KERNELS=CutlassFp8BlockScaledMMKernel,MarlinFP8ScaledMMLinearKernel` to fall back to the Triton kernel.
