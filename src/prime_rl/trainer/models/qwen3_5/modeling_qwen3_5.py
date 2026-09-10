@@ -320,16 +320,8 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         super().__init__(config)
         self.is_vlm = hasattr(config, "vision_config")
         text_config = config.text_config if self.is_vlm else config
-        attention_implementation = (
-            getattr(config, "_attn_implementation", None)
-            or getattr(text_config, "_attn_implementation", None)
-            or "flash_attention_3"
-        )
-        text_config._attn_implementation = attention_implementation
 
         if self.is_vlm:
-            if getattr(config.vision_config, "_attn_implementation_internal", None) is None:
-                config.vision_config._attn_implementation = attention_implementation
             self.model = Qwen3_5VLMModel(config)
         else:
             self.model = Qwen3_5Model(config)

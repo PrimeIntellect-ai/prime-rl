@@ -297,13 +297,6 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
 
-    if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses":
-        vision_config = getattr(model_config, "vision_config", None)
-        if vision_config is not None:
-            logger.info("Using SDPA for VLM vision encoder under CP")
-            vision_config._attn_implementation = "sdpa"
-            if hasattr(vision_config, "_attn_implementation_internal"):
-                vision_config._attn_implementation_internal = "sdpa"
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):

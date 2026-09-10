@@ -61,7 +61,6 @@ def _tiny_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
         vision_end_token_id=123,
     )
     config._attn_implementation = attn_impl
-    config.text_config._attn_implementation = attn_impl
     return config
 
 
@@ -134,10 +133,10 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     assert linear_layer.linear_attn.context_parallel_group is cp_group
 
     vlm_config = _tiny_vlm_config()
-    vlm_config.vision_config._attn_implementation = "sdpa"
-    vlm_config.vision_config._attn_implementation_internal = "sdpa"
     with torch.device("meta"):
         vlm_model = Qwen3_5ForCausalLM(vlm_config)
+    assert vlm_model.model.language_model.layers[1].self_attn._flash_attn_version == 2
+    assert vlm_model.model.visual.blocks[0].attn.attention_implementation == "flash_attention_2"
     setup_model_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
     assert vlm_model.model.language_model.context_parallel_group is cp_group
     assert vlm_model.model.language_model.layers[0].linear_attn.context_parallel_world_size == 2

@@ -80,11 +80,8 @@ class Qwen3_5VisionAttention(nn.Module):
         self.head_dim = config.hidden_size // config.num_heads
         self.qkv = nn.Linear(config.hidden_size, config.hidden_size * 3, bias=True)
         self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
-        attention_implementation = getattr(config, "_attn_implementation", None) or "flash_attention_3"
-        self.attention_implementation = attention_implementation
-        self.flash_attention = (
-            None if attention_implementation == "sdpa" else self.FLASH_ATTENTION_FUNCTIONS[attention_implementation]
-        )
+        self.attention_implementation = config._attn_implementation
+        self.flash_attention = self.FLASH_ATTENTION_FUNCTIONS[self.attention_implementation]
 
     def forward(
         self,
@@ -103,23 +100,7 @@ class Qwen3_5VisionAttention(nn.Module):
         query = ((query.float() * cos) + (rotate_half(query.float()) * sin)).to(query_dtype)
         key = ((key.float() * cos) + (rotate_half(key.float()) * sin)).to(query_dtype)
 
-        if self.attention_implementation == "sdpa":
-            lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-            outputs = []
-            for query_chunk, key_chunk, value_chunk in zip(
-                query.split(lengths),
-                key.split(lengths),
-                value.split(lengths),
-            ):
-                output = F.scaled_dot_product_attention(
-                    query_chunk.transpose(0, 1).unsqueeze(0),
-                    key_chunk.transpose(0, 1).unsqueeze(0),
-                    value_chunk.transpose(0, 1).unsqueeze(0),
-                    is_causal=False,
-                )
-                outputs.append(output.squeeze(0).transpose(0, 1))
-            attention_output = torch.cat(outputs, dim=0)
-        elif self.attention_implementation == "flash_attention_4":
+        if self.attention_implementation == "flash_attention_4":
             attention_output, _ = self.flash_attention(
                 query,
                 key,
