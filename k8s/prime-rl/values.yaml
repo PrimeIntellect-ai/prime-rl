@@ -20,6 +20,12 @@ storage:
     - ReadWriteMany
   size: 1Ti
   mountPath: /data
+  # When true, the PVC survives `helm uninstall` instead of being torn
+  # down with the rest of the release (see templates/pvc.yaml). Off by
+  # default -- most dedicated-run teardowns should still reclaim their
+  # PVC; the platform overrides this per-dispatch for full-finetuning
+  # runs, whose checkpoints need to stay browsable after the run ends.
+  retainOnUninstall: false
 
 # Orchestrator component
 orchestrator:

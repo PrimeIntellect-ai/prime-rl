@@ -6,6 +6,17 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "prime-rl.labels" . | nindent 4 }}
+  {{- if .Values.storage.retainOnUninstall }}
+  annotations:
+    # Tells Helm to leave this resource behind on `helm uninstall`
+    # instead of deleting it with the rest of the release -- opt-in,
+    # not the default, since most dedicated-run teardowns should still
+    # reclaim their PVC. Full-finetuning run storage is the one case
+    # that needs to survive the run's own compute lifecycle (checkpoints
+    # stay browsable after the run finalizes); the platform sets this
+    # value specifically for FFT dispatches.
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes:
     {{- toYaml .Values.storage.accessModes | nindent 4 }}
