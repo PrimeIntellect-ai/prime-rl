@@ -151,7 +151,7 @@ Two accepted layouts:
 
 If both columns are present, `messages` takes precedence.
 
-**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
+**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer. When both columns exist, a non-null `tools` value takes precedence; a null or absent `tools` value falls back to `tool_defs`. An explicit empty list in `tools` means no tools.
 
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
