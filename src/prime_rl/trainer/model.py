@@ -437,6 +437,10 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
     # No-op for non-MoE and HF-impl models: moe_router_dtype='float32' is the default,
     # so absence of custom-impl MoE routers is the common case, not an error.
     if num_routers > 0:
+        original_keep_fp32 = model.keep_in_fp32_for_weight_transfer
+        model.keep_in_fp32_for_weight_transfer = lambda name: (
+            name.endswith(("mlp.router.gate.weight", "mlp.router.gate.bias")) or original_keep_fp32(name)
+        )
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
