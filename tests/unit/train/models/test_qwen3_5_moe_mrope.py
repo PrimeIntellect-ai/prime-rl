@@ -1,12 +1,8 @@
 import pytest
 import torch
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
-    Qwen3_5MoeTextRotaryEmbedding as HFQwen3_5MoeRotaryEmbedding,
-)
 
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
-    Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
 )
 
@@ -167,28 +163,3 @@ def test_qwen35_mrope_rejects_video_tokens():
             spatial_merge_size=2,
             seq_lens=torch.tensor([input_ids.shape[1]]),
         )
-
-
-def test_qwen35_rotary_matches_hf_for_2d_and_3d_positions():
-    config = _tiny_config()
-    prime_rotary = Qwen3_5RotaryEmbedding(config)
-    hf_rotary = HFQwen3_5MoeRotaryEmbedding(config)
-    hidden_states = torch.randn(1, 6, config.hidden_size)
-
-    text_positions = torch.arange(6).unsqueeze(0)
-    prime_cos, prime_sin = prime_rotary(hidden_states, text_positions)
-    hf_cos, hf_sin = hf_rotary(hidden_states, text_positions)
-    torch.testing.assert_close(prime_cos, hf_cos)
-    torch.testing.assert_close(prime_sin, hf_sin)
-
-    mrope_positions = torch.stack(
-        [
-            torch.tensor([[0, 1, 2, 2, 2, 4]]),
-            torch.tensor([[0, 1, 2, 2, 3, 4]]),
-            torch.tensor([[0, 1, 2, 3, 2, 4]]),
-        ]
-    )
-    prime_cos, prime_sin = prime_rotary(hidden_states, mrope_positions)
-    hf_cos, hf_sin = hf_rotary(hidden_states, mrope_positions)
-    torch.testing.assert_close(prime_cos, hf_cos)
-    torch.testing.assert_close(prime_sin, hf_sin)

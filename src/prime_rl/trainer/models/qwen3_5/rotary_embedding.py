@@ -27,10 +27,6 @@ class Qwen3_5RotaryEmbedding(nn.Module):
         self.mrope_section = config.rope_parameters.get("mrope_section")
         if self.mrope_section is None:
             self.mrope_section = self.scaled_mrope_section(inv_freq.numel())
-        if not config.rope_parameters["mrope_interleaved"]:
-            raise ValueError("Qwen3.5 requires interleaved MRoPE")
-        if sum(self.mrope_section) != inv_freq.numel():
-            raise ValueError(f"mrope_section must contain {inv_freq.numel()} rotary pairs, got {self.mrope_section}")
 
     @staticmethod
     def scaled_mrope_section(num_rotary_pairs: int) -> list[int]:
@@ -68,8 +64,6 @@ class Qwen3_5RotaryEmbedding(nn.Module):
     def forward(self, hidden_states: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if position_ids.ndim == 2:
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
-        elif position_ids.ndim != 3:
-            raise ValueError(f"Qwen3.5 position_ids must be 2D or 3D, got {tuple(position_ids.shape)}")
 
         position_ids = position_ids.to(hidden_states.device)
         inv_freq = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
@@ -121,14 +115,7 @@ def build_qwen3_5_mrope_position_ids(
     spatial_merge_size: int,
     seq_lens: torch.Tensor,
 ) -> torch.LongTensor:
-    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
-        raise ValueError(f"Packed Qwen3.5 input_ids must have shape (1, tokens), got {tuple(input_ids.shape)}")
-    if mm_token_type_ids.shape != input_ids.shape:
-        raise ValueError("mm_token_type_ids must have the same shape as input_ids")
-
     seq_lens = seq_lens.to(device=input_ids.device, dtype=torch.long)
-    if seq_lens.ndim != 1 or bool((seq_lens <= 0).any()) or int(seq_lens.sum()) != input_ids.shape[1]:
-        raise ValueError("seq_lens must contain positive lengths summing to the packed sequence length")
 
     image_grids = iter(image_grid_thw) if image_grid_thw is not None else None
     position_ids = torch.empty(3, 1, input_ids.shape[1], dtype=input_ids.dtype, device=input_ids.device)

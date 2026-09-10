@@ -32,6 +32,7 @@ class Qwen3_5Attention(FlashAttention):
         self.num_key_value_heads = config.num_key_value_heads
         self.attn_output_gate = config.attn_output_gate
         q_output_size = self.num_heads * self.head_dim * (2 if self.attn_output_gate else 1)
+        self.qkv_sizes = (q_output_size, self.qkv_sizes[1], self.qkv_sizes[2])
         self.q_proj = nn.Linear(config.hidden_size, q_output_size, bias=config.attention_bias)
         self.q_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
@@ -45,7 +46,7 @@ class Qwen3_5Attention(FlashAttention):
     ) -> tuple[torch.Tensor, None]:
         batch_size, sequence_length, _ = hidden_states.shape
 
-        query_states = self.q_proj(hidden_states)
+        query_states, key_states, value_states = self.project_qkv(hidden_states)
         if self.attn_output_gate:
             query_states, output_gate = query_states.view(
                 batch_size, sequence_length, self.num_heads, self.head_dim * 2
@@ -55,12 +56,8 @@ class Qwen3_5Attention(FlashAttention):
             query_states = query_states.view(batch_size, sequence_length, self.num_heads, self.head_dim)
             output_gate = None
 
-        key_states = self.k_proj(hidden_states).view(
-            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
-        )
-        value_states = self.v_proj(hidden_states).view(
-            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
-        )
+        key_states = key_states.view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
+        value_states = value_states.view(batch_size, sequence_length, self.num_key_value_heads, self.head_dim)
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
 

@@ -4,25 +4,7 @@ from transformers.configuration_utils import PretrainedConfig
 class Qwen3_5TextConfig(PretrainedConfig):
     model_type = "qwen3_5_text"
     base_config_key = "text_config"
-    keys_to_ignore_at_inference = ["past_key_values"]
     ignore_keys_at_rope_validation = {"mrope_section", "mrope_interleaved"}
-
-    base_model_tp_plan = {
-        "layers.*.self_attn.q_proj": "colwise",
-        "layers.*.self_attn.k_proj": "colwise",
-        "layers.*.self_attn.v_proj": "colwise",
-        "layers.*.self_attn.o_proj": "rowwise",
-        "layers.*.self_attn.q_norm": "replicated_with_grad_allreduce",
-        "layers.*.self_attn.k_norm": "replicated_with_grad_allreduce",
-        "layers.*.mlp.gate_proj": "colwise",
-        "layers.*.mlp.up_proj": "colwise",
-        "layers.*.mlp.down_proj": "rowwise",
-    }
-    base_model_pp_plan = {
-        "embed_tokens": (["input_ids"], ["inputs_embeds"]),
-        "layers": (["hidden_states"], ["hidden_states"]),
-        "norm": (["hidden_states"], ["hidden_states"]),
-    }
 
     def __init__(
         self,
@@ -116,24 +98,6 @@ class Qwen3_5TextConfig(PretrainedConfig):
 class Qwen3_5MoeTextConfig(Qwen3_5TextConfig):
     model_type = "qwen3_5_moe_text"
 
-    base_model_tp_plan = {
-        **Qwen3_5TextConfig.base_model_tp_plan,
-        "layers.*.mlp.experts.gate_proj": "grouped_gemm",
-        "layers.*.mlp.experts.up_proj": "grouped_gemm",
-        "layers.*.mlp.experts.down_proj": "grouped_gemm",
-        "layers.*.mlp.experts": "moe_tp_experts",
-        "layers.*.mlp.shared_expert.gate_proj": "colwise",
-        "layers.*.mlp.shared_expert.up_proj": "colwise",
-        "layers.*.mlp.shared_expert.down_proj": "rowwise",
-    }
-    base_model_ep_plan = {
-        "layers.*.mlp.router": "ep_router",
-        "layers.*.mlp.experts.gate_proj": "grouped_gemm",
-        "layers.*.mlp.experts.up_proj": "grouped_gemm",
-        "layers.*.mlp.experts.down_proj": "grouped_gemm",
-        "layers.*.mlp.experts": "moe_tp_experts",
-    }
-
     def __init__(
         self,
         moe_intermediate_size: int = 512,
@@ -195,7 +159,6 @@ class Qwen3_5VisionConfig(PretrainedConfig):
 class Qwen3_5Config(PretrainedConfig):
     model_type = "qwen3_5"
     sub_configs = {"vision_config": Qwen3_5VisionConfig, "text_config": Qwen3_5TextConfig}
-    keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
         self,

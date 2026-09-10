@@ -85,8 +85,6 @@ class Qwen3_5VisionAttention(nn.Module):
         self.flash_attention = (
             None if attention_implementation == "sdpa" else self.FLASH_ATTENTION_FUNCTIONS[attention_implementation]
         )
-        if attention_implementation == "flash_attention_4":
-            self.flash_attention = torch.compiler.disable(self.flash_attention)
 
     def forward(
         self,
@@ -122,7 +120,7 @@ class Qwen3_5VisionAttention(nn.Module):
                 outputs.append(output.squeeze(0).transpose(0, 1))
             attention_output = torch.cat(outputs, dim=0)
         elif self.attention_implementation == "flash_attention_4":
-            attention_output = self.flash_attention(
+            attention_output, _ = self.flash_attention(
                 query,
                 key,
                 value,
@@ -142,8 +140,6 @@ class Qwen3_5VisionAttention(nn.Module):
                 max_sequence_length,
                 causal=False,
             )
-        if isinstance(attention_output, tuple):
-            attention_output = attention_output[0]
         return self.proj(attention_output.reshape(sequence_length, -1))
 
 

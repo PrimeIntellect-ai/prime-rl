@@ -172,7 +172,6 @@ def test_qwen3_5_gated_delta_net_context_parallel():
         expected = reference(
             reference_input,
             cu_seqlens,
-            cu_seqlens_are_pre_shard=False,
         )
         output_gradient = torch.randn_like(expected)
         dist.broadcast(output_gradient, src=0)
@@ -183,7 +182,6 @@ def test_qwen3_5_gated_delta_net_context_parallel():
         actual = context_parallel(
             local_input,
             cu_seqlens,
-            cu_seqlens_are_pre_shard=True,
         )
         actual.backward(output_gradient[:, local_slice])
 

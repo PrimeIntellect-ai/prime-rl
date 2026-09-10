@@ -50,8 +50,6 @@ class Qwen3_5DecoderLayer(nn.Module):
             self.linear_attn = Qwen3_5GatedDeltaNet(config)
         elif self.layer_type == "full_attention":
             self.self_attn = Qwen3_5Attention(config, config._attn_implementation)
-        else:
-            raise ValueError(f"Unsupported Qwen3.5 layer type: {self.layer_type}")
 
         if isinstance(config, Qwen3_5MoeTextConfig):
             router = TokenChoiceTopKRouter(
@@ -61,6 +59,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 score_func="softmax",
                 route_norm=True,
                 route_scale=1.0,
+                selection_bias=config.load_balance_coeff is not None,
             )
             experts = GroupedExperts(
                 dim=config.hidden_size,
@@ -95,8 +94,6 @@ class Qwen3_5DecoderLayer(nn.Module):
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
-        *,
-        cu_seqlens_are_pre_shard: bool,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -104,7 +101,6 @@ class Qwen3_5DecoderLayer(nn.Module):
             hidden_states = self.linear_attn(
                 hidden_states,
                 cu_seqlens,
-                cu_seqlens_are_pre_shard=cu_seqlens_are_pre_shard,
             )
         else:
             hidden_states, _ = self.self_attn(
@@ -122,14 +118,6 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5TextConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3_5DecoderLayer", "Qwen3_5VisionBlock"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _supports_attention_backend = True
-    _can_compile_fullgraph = False
 
     @classmethod
     def cp_support(cls, config) -> CPSupport:
@@ -138,9 +126,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
         if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
             return CPSupport(
                 frozenset({"ulysses"}),
-                "ring CP is a softmax-attention algorithm and cannot run this model's DeltaNet "
-                "layers, whereas ulysses' all-to-all on Q/K/V leaves the linear-attention kernel "
-                "unchanged",
+                "DeltaNet layers require Ulysses sequence sharding with FLA boundary-state exchange",
             )
         return CPSupport(ALL_CP_STYLES)
 
@@ -164,20 +150,12 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
 class Qwen3_5Model(Qwen3_5PreTrainedModel):
     def __init__(self, config: Qwen3_5TextConfig) -> None:
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
-        self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
             Qwen3_5DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
         self.norm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rotary_emb = Qwen3_5RotaryEmbedding(config)
-        self.gradient_checkpointing = False
-        self.post_init()
-        # Qwen stores RMSNorm weights as offsets from one, while post_init treats them as direct scales.
-        for module in self.modules():
-            if isinstance(module, Qwen3_5RMSNorm):
-                module.reset_parameters()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens
@@ -203,12 +181,8 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
-        if (input_ids is None) == (inputs_embeds is None):
-            raise ValueError("Specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        if inputs_embeds.shape[0] != 1:
-            raise ValueError(f"Qwen3.5 expects one packed row, got batch size {inputs_embeds.shape[0]}")
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
@@ -228,7 +202,6 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 cu_seqlens,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
-                cu_seqlens_are_pre_shard=seq_lens_are_pre_shard,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
@@ -343,10 +316,6 @@ class Qwen3_5VLMModel(nn.Module):
 
 
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
     def __init__(self, config) -> None:
         super().__init__(config)
         self.is_vlm = hasattr(config, "vision_config")
@@ -362,17 +331,11 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
             if getattr(config.vision_config, "_attn_implementation_internal", None) is None:
                 config.vision_config._attn_implementation = attention_implementation
             self.model = Qwen3_5VLMModel(config)
-            self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5Model(config)
 
         self.supports_packed_multimodal_training = self.is_vlm
-        self.vocab_size = text_config.vocab_size
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
-        if isinstance(text_config, Qwen3_5MoeTextConfig):
-            self.num_experts = text_config.num_experts
-            self.num_experts_per_tok = text_config.num_experts_per_tok
-        self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.model.get_input_embeddings()
@@ -389,8 +352,8 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.LongTensor | None = None,
-        logits_to_keep: int | torch.Tensor = 0,
         temperature: torch.Tensor | None = None,
+        sampling_mask: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
@@ -398,10 +361,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs,
     ) -> PrimeLmOutput:
-        if kwargs.get("use_cache") is not None or kwargs.get("past_key_values") is not None:
-            raise ValueError("Qwen3.5 custom training does not support KV caching")
         if self.is_vlm:
             outputs = self.model(
                 input_ids=input_ids,
@@ -423,14 +383,11 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
-        if isinstance(logits_to_keep, int):
-            slice_indices = slice(-logits_to_keep, None) if logits_to_keep > 0 else slice(None)
-        else:
-            slice_indices = logits_to_keep
         return self.lm_head(
-            outputs.last_hidden_state[:, slice_indices],
-            labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature[:, slice_indices] if temperature is not None else None,
+            outputs.last_hidden_state,
+            labels,
+            temperature=temperature,
+            sampling_mask=sampling_mask,
         )
 
     def init_buffers_post_meta(self) -> None:

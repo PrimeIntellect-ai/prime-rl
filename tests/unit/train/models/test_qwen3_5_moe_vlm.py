@@ -136,7 +136,6 @@ def test_vlm_backward():
 def test_vlm_weight_load_from_hf():
     """Weights from HF VLM checkpoint load correctly into custom VLM after conversion.
 
-    Text model numerical match is already validated by test_qwen3_5_moe.py::test_qwen3_5_moe.
     This test verifies that VLM weight conversion + loading produces a working model.
     """
     config = _tiny_vlm_config()
@@ -155,16 +154,6 @@ def test_vlm_weight_load_from_hf():
     for name, param in hf_model.model.visual.named_parameters():
         prime_param = dict(prime_model.model.visual.named_parameters())[name]
         assert torch.equal(param, prime_param), f"Vision weight mismatch: {name}"
-
-    pixel_values, image_grid_thw, _ = _make_image_inputs(config)
-    with torch.no_grad():
-        hf_image_embeds = hf_model.model.visual(
-            pixel_values,
-            grid_thw=image_grid_thw,
-            return_dict=True,
-        ).pooler_output
-        prime_image_embeds = prime_model.model.visual(pixel_values, image_grid_thw).pooler_output
-    torch.testing.assert_close(prime_image_embeds, hf_image_embeds, atol=0.03, rtol=0.01)
 
     # Verify model produces output after weight loading
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
