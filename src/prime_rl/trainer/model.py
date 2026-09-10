@@ -292,10 +292,6 @@ def get_model(
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
-        if config.optimization_dtype != "bfloat16" or config.reduce_dtype != "bfloat16":
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
 
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
