@@ -96,7 +96,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 # mount here: .git would bust the cache every commit.
 COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    uv sync --all-packages --extra gpu --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
+    uv sync --all-packages --extra gpu --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --extra kernels --group mamba-ssm --locked --no-dev \
         --no-install-workspace \
         --no-install-package prime-rl-configs \
         --no-install-package verifiers \
@@ -132,9 +132,9 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
     && \
-    uv sync --all-packages --extra gpu --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
+    uv sync --all-packages --extra gpu --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --extra kernels --group mamba-ssm --locked --no-dev \
     && \
-    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "quack-kernels", "vllm", "vllm-router")]'
+    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
@@ -198,9 +198,36 @@ RUN apt-get update && apt-get install -y \
     libibverbs1 \
     ibverbs-providers \
     librdmacm1 \
+    libhwloc15 \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# AWS EFA userspace stack: libfabric + the aws-ofi-nccl NCCL net plugin,
+# installed as one version-matched unit via AWS's official installer rather
+# than picking versions by hand. Do not substitute a host-mounted copy of
+# these libraries instead of building them in -- symbol-version mismatches
+# between a host's rdma-core and a container's can silently break the NCCL
+# plugin. Run directly in this stage (not a separate one COPY'd in after):
+# the installer's own apt-get/dpkg step upgrades system rdma-core packages
+# (libibverbs, ibverbs-providers, librdmacm) in place to versions libfabric
+# actually links against -- copying only /opt/amazon out of an isolated
+# stage leaves that system-wide upgrade behind, so libfabric ends up paired
+# with whatever older rdma-core this image's own apt install pulled in and
+# fails to load (symbol version mismatch on libefa.so.1). --skip-kmod:
+# containers share the host kernel and must never build/load a kernel
+# module themselves; the EFA driver is expected to already be present on
+# the host. --skip-limit-conf: ulimits config doesn't apply inside a build.
+ARG EFA_INSTALLER_VERSION=1.47.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tar gzip \
+    && curl -fsSL "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+        -o /tmp/aws-efa-installer.tar.gz \
+    && tar -xzf /tmp/aws-efa-installer.tar.gz -C /tmp \
+    && cd /tmp/aws-efa-installer \
+    && ./efa_installer.sh -y --skip-kmod --skip-limit-conf \
+    && cd / && rm -rf /tmp/aws-efa-installer.tar.gz /tmp/aws-efa-installer \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/*
 
 # CUDA 13.0 toolkit (TileLang's runtime nvcc JIT)
 COPY --from=cuda-trim /usr/local/cuda-13.0 /usr/local/cuda-13.0

@@ -1,7 +1,8 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``).
+on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
+``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -364,6 +365,32 @@ class SFTAlgoConfig(BaseAlgoConfig):
         return self
 
 
+class DebugAlgoConfig(BaseAlgoConfig):
+    type: Literal["debug"] = "debug"
+    """Debugging algorithm for infra work: every sampled token of every clean
+    trainable trace gets the same constant ``advantage`` (default 1.0),
+    ignoring rewards entirely. Every admitted rollout is trainable and every
+    action token carries gradient signal, so the full RL path (advantage
+    transport, importance ratios, trust region, optimizer, weight update)
+    can be exercised regardless of the reward function. Not a real training
+    signal — a policy pushed by it drifts monotonically."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    advantage: float = Field(1.0, allow_inf_nan=False)
+    """The constant per-token advantage. Must be nonzero: a zero advantage
+    makes nothing trainable, the exact failure this debug tool exists to
+    rule out."""
+
+    @model_validator(mode="after")
+    def require_nonzero_advantage(self):
+        if self.advantage == 0.0:
+            raise ValueError(
+                "the 'debug' algorithm needs a nonzero advantage — a zero advantage leaves nothing trainable."
+            )
+        return self
+
+
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | EchoAlgoConfig
@@ -372,7 +399,8 @@ AlgoConfig: TypeAlias = Annotated[
     | HierarchicalGRPOAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
-    | SFTAlgoConfig,
+    | SFTAlgoConfig
+    | DebugAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -387,6 +415,8 @@ its class defaults are the vetted setting.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
+- ``debug`` — the same constant advantage on every sampled token, ignoring
+  rewards. Debugging only: for infra work that needs every token trainable.
 
 A new credit-assignment scheme is a new named algorithm in code (subclass
 ``Algorithm``, register it), not a config that points at an import path.

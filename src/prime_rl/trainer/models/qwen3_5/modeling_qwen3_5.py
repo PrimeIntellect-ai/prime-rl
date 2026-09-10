@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -130,6 +130,19 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        # VLM configs nest the layer schedule under `text_config`.
+        text_config = getattr(config, "text_config", config)
+        if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
+            return CPSupport(
+                frozenset({"ulysses"}),
+                "ring CP is a softmax-attention algorithm and cannot run this model's DeltaNet "
+                "layers, whereas ulysses' all-to-all on Q/K/V leaves the linear-attention kernel "
+                "unchanged",
+            )
+        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

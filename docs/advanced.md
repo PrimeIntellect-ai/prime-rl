@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
+  - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
@@ -33,9 +34,12 @@ impl = "custom"        # or "hf" to force the HF path
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
-| GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
+| GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 
 Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
+
+GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
+and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
 
 ### Low-precision training
 
@@ -64,6 +68,26 @@ type = "torch"
 transport = "mxfp8"
 ```
 
+All MoE compute backends accept `apply_to`:
+
+- `"all"` (default) applies the backend to all expert groups.
+- `"85%"` applies it to the first 85% of model layers, rounded down. For a 48-layer model, this selects layers 0–39.
+- `[0, 1, 2, 3]` selects explicit zero-based model layer indices; `[]` selects none.
+
+Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks in hybrid models count toward layer indices and percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use BF16 compute and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
+
+For example, this selects routed experts in Qwen3's first four model layers:
+
+```toml
+[trainer.model.moe.compute]
+type = "mxfp8"
+apply_to = [0, 1, 2, 3]
+```
+
+Backend shape checks and token alignment apply only to the selected compute path.
+
+In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends
@@ -81,6 +105,24 @@ token_chunk_size = 4096
 ```
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
+
+### Runtime Fusions
+
+`model.fusions` packs parameters that are always computed together into one tensor, turning several GEMMs into one. Both fusions are on by default:
+
+- `gate_up` — each gated MoE expert's `gate_proj` and `up_proj` become one `[num_experts, 2 * intermediate_size, hidden_size]` weight, halving the routed-expert grouped GEMMs.
+- `qkv` — an attention layer's `q_proj`, `k_proj` and `v_proj` (and their biases) become one linear layer.
+
+```toml
+[trainer.model.fusions]
+enabled = ["gate_up", "qkv"]   # [] disables
+```
+
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning, or fails at startup with `raise_on_fail = true`. Fusions are skipped when LoRA is enabled.
+
+Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
+
+The experimental `shard_fused_on_dim1 = true` shards fused 2-D weights along dim 1 under FSDP, which makes weight loading and checkpointing zero-copy: fused weights and their optimizer state are read and written in place rather than assembled into a full copy on each rank first. It requires `hidden_size` to be divisible by the FSDP shard mesh size.
 
 ## Multimodal Training
 

@@ -4,9 +4,8 @@ import time
 from pathlib import Path
 from typing import cast
 
-# Disable transformers hub kernel interception by default. The `kernels` package, when installed,
-# causes transformers to auto-replace modules (e.g. mamba-ssm) with hub kernel versions that may
-# have incompatible CUDA requirements. We only enable it explicitly for models that need it (GPT-OSS).
+# Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
+# modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
@@ -38,8 +37,15 @@ from prime_rl.trainer.models import (
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
+)
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.fusions import (
+    apply_model_fusions,
+    get_fsdp_shard_placement_fn,
+    write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
@@ -183,20 +189,22 @@ def get_full_offload_dtype_policy(
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
-    """Freeze DSA sparse-attention indexer parameters.
+    """Freeze sparse-attention indexer parameters.
 
-    The indexer's `compute_sparse_indices` forward runs under `torch.no_grad()`, so its
-    params never receive a gradient and cannot be trained. Left with requires_grad=True
-    they stay stateless in the optimizer, which breaks strict checkpoint resume: DCP
-    materializes optimizer state for every requires_grad param at load time, but the
-    stateless params were never saved -> "Missing key in checkpoint state_dict". Freezing
-    them keeps the saved and loaded optimizer state symmetric.
+    An indexer forward runs under `torch.no_grad()`, so its params never receive a gradient
+    and cannot be trained. Left with requires_grad=True they stay stateless in the optimizer,
+    which breaks strict checkpoint resume: DCP materializes optimizer state for every
+    requires_grad param at load time, but the stateless params were never saved -> "Missing
+    key in checkpoint state_dict". Freezing them keeps the saved and loaded optimizer state
+    symmetric.
     """
+    # TODO: no model here trains its indexer. DeepSeek's auxiliary KL objective, which supervises
+    # the top-k selection, is unimplemented, so these params are frozen rather than learned.
     logger = get_logger()
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, Indexer):
+        if isinstance(module, (Indexer, DeepseekV4Indexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -289,20 +297,6 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
 
-    # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    HOPPER_MAJOR = 9
-    if getattr(model_config, "model_type", "") == "gpt_oss":
-        major, minor = torch.cuda.get_device_capability()
-        if major != HOPPER_MAJOR:
-            raise ValueError(
-                f"GPT-OSS requires Hopper (SM 90) for flash attention, detected SM {major}{minor}. "
-                f"GPT-OSS is not supported on non-Hopper GPUs."
-            )
-        # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
-        import transformers.integrations.hub_kernels as _hub_kernels
-
-        _hub_kernels._kernels_enabled = True
-
     if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses":
         vision_config = getattr(model_config, "vision_config", None)
         if vision_config is not None:
@@ -362,15 +356,6 @@ def get_model(
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
-    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
-    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
-    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
-    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
-    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
-    # to keep model init offline-safe.
-    if getattr(model_config, "model_type", "") == "nemotron_h":
-        model_config.use_mamba_kernels = False
-
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
         target_config = getattr(model_config, "text_config", model_config)
@@ -402,6 +387,18 @@ def get_model(
             "Context parallelism with model.impl='auto' requires a supported custom PrimeRL implementation, "
             "but this architecture resolved to model.impl='hf'."
         )
+
+    # Past the check above, cp > 1 implies impl_to_use == "custom", so the model class always
+    # resolves. Queried here so a misconfigured job dies at setup rather than at the first forward.
+    if config.cp > 1:
+        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        support = cp_model_cls.cp_support(model_config)
+        if config.cp_style not in support.styles:
+            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
+            raise ValueError(
+                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
+                f"({support.reason}); {supported}."
+            )
 
     if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
         raise ValueError(
@@ -484,10 +481,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
+    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
+        "shard_placement_fn": shard_placement_fn,
     }
 
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -529,6 +528,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
                 offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
+                shard_placement_fn=shard_placement_fn,
             )
 
         fully_shard(
@@ -554,6 +554,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mp_policy=mp_policy,
             offload_policy=offload_policy,
             reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
         )
     else:
         get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
@@ -564,6 +565,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        shard_placement_fn=shard_placement_fn,
     )
 
     if not parallel_dims.ep_enabled:
@@ -716,6 +718,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    write_back_loaded_packed_parameters(model, state_dict)
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
@@ -967,6 +970,12 @@ def setup_model(
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
+    if config.fusions.enabled and config.lora is not None:
+        logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
+    elif config.fusions.enabled:
+        applied = apply_model_fusions(model, config.fusions.enabled, raise_on_fail=config.fusions.raise_on_fail)
+        logger.info(f"Applied runtime model fusions: {applied}")
+
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
@@ -983,9 +992,9 @@ def setup_model(
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
 
-    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
-    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
-    # save/resume. No-op for models without a sparse indexer.
+    # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
+    # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
+    # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
     if config.debug.force_balanced_routing:
@@ -1051,6 +1060,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
@@ -1067,6 +1077,11 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+
+    # Sampling masks are consumed by the injected prime lm_head; HF
+    # forwards don't know the kwarg, so only pass it when present.
+    if sampling_mask is not None:
+        kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the

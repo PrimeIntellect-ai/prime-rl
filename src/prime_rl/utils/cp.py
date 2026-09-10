@@ -3,7 +3,7 @@ from __future__ import annotations
 # ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
 import prime_rl._compat  # noqa: F401
 
-from typing import Literal
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -13,7 +13,10 @@ from ring_flash_attn import update_ring_flash_attn_params
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
-CPStyle = Literal["ring", "ulysses"]
+if TYPE_CHECKING:
+    # `prime_rl.trainer.models` imports this module, so importing the model base eagerly would
+    # cycle. `from __future__ import annotations` keeps CPStyle out of the runtime path.
+    from prime_rl.trainer.models.base import CPStyle
 
 
 def _has_linear_attn_layer(model: nn.Module) -> bool:
@@ -33,24 +36,6 @@ def _has_linear_attn_layer(model: nn.Module) -> bool:
         if hasattr(layer, "mamba"):
             return True
     return False
-
-
-def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
-    """Refuse `cp_style='ring'` on models that have linear/SSM attention layers.
-
-    Ring CP is a softmax-attention algorithm (sequence ring all-gather of K/V).
-    For non-softmax layers (DeltaNet, Mamba) we'd need a fundamentally different
-    CP scheme, which is not implemented. Use `cp_style='ulysses'` for those:
-    ulysses' all-to-all is purely on Q/K/V tensors, so the linear/SSM kernel
-    runs unchanged on a sequence shard.
-    """
-    if cp_style == "ring" and _has_linear_attn_layer(model):
-        raise ValueError(
-            "cp_style='ring' is not supported for models with linear-attention "
-            "or Mamba/SSM layers (e.g. Qwen3.5 hybrid, NemotronH). Use "
-            "cp_style='ulysses' instead — its all-to-all on Q/K/V works "
-            "out-of-the-box with non-softmax kernels."
-        )
 
 
 def setup_model_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:

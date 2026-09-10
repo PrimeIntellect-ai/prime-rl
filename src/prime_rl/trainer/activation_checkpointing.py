@@ -64,6 +64,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::convolution",
         "aten::linear",
         "aten::mm",
+        "prime_rl::dsv4_sparse_attn",
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",

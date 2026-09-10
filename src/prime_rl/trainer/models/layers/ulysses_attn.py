@@ -15,9 +15,8 @@ Ulysses is the simpler alternative to ring attention for context parallelism:
     [S/cp, H,    D]  ◀── all-to-all ──   [S, H/cp, D]
                          (seq ↔ heads)
 
-Key benefit: the attention kernel itself does not need to be CP-aware. The
-all-to-all is purely on Q/K/V tensors, so this works out of the box with
-softmax flash-attn, linear attention, mamba, etc., without rewriting kernels.
+The softmax-attention kernel itself does not need to be CP-aware. Hybrid models
+use the same sequence/head redistribution in their owned recurrent modules.
 
 GQA models with fewer KV heads than cp_size (e.g. NemotronH: 32 query heads, 2
 KV heads) are handled by replicating each KV head cp_size / num_key_value_heads
@@ -120,6 +119,7 @@ def ulysses_flash_attn_varlen_func(
     softmax_scale: float | None = None,
     dropout_p: float = 0.0,
     deterministic: bool | None = None,
+    learnable_sink: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run varlen flash attention under Ulysses CP.
 
@@ -146,17 +146,20 @@ def ulysses_flash_attn_varlen_func(
         kwargs["dropout_p"] = dropout_p
     if deterministic is not None:
         kwargs["deterministic"] = deterministic
+    if learnable_sink is not None:
+        local_heads = q.shape[1]
+        rank = dist.get_rank(cp_group)
+        kwargs["learnable_sink"] = learnable_sink[rank * local_heads : (rank + 1) * local_heads]
 
     if flash_attn_version == 4:
         # FA4 takes cu_seqlens as keyword args (qv positional collides otherwise).
         kwargs["cu_seqlens_q"] = cu_seqlens_q
         kwargs["cu_seqlens_k"] = cu_seqlens_k
-        out = flash_fn(q, k, v, **kwargs)
+        kwargs["max_seqlen_q"] = max_seqlen_q
+        kwargs["max_seqlen_k"] = max_seqlen_k
+        out, _ = flash_fn(q, k, v, **kwargs)
     else:
         out = flash_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs)
-    if isinstance(out, tuple):
-        out = out[0]
-
     return _all_to_all_head_to_seq(out, cp_size, cp_group)
 
 
@@ -176,7 +179,6 @@ def substitute_ulysses_attn(
         from flash_attn.cute import flash_attn_varlen_func as flash_fn
 
         flash_attn_version = 4
-        flash_fn = torch._dynamo.disable(flash_fn)
     elif attn_impl == "flash_attention_3":
         from flash_attn_interface import flash_attn_varlen_func as flash_fn
 
@@ -220,6 +222,10 @@ def substitute_ulysses_attn(
     from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
 
     AfmoeFlashAttention._compute_attention = _ulysses_compute_attention
+
+    from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ulysses_attention
+
+    substitute_gpt_oss_ulysses_attention(process_group)
 
 
 def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:

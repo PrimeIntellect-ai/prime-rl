@@ -11,6 +11,9 @@ class GptOssExperts(ConvOp):
 
     def hf_to_prime(self, state_dict: dict[str, Tensor]) -> None:
         gate_up_name = f"{self.prefix}.gate_up_proj"
+        if gate_up_name not in state_dict:
+            return
+
         gate_up = state_dict.pop(gate_up_name)
         gate_up_bias = state_dict.pop(f"{self.prefix}.gate_up_proj_bias")
         state_dict[f"{self.prefix}.gate_proj"] = gate_up[..., ::2].transpose(-2, -1)
@@ -21,6 +24,9 @@ class GptOssExperts(ConvOp):
 
     def prime_to_hf(self, state_dict: dict[str, Tensor]) -> None:
         gate_name = f"{self.prefix}.gate_proj"
+        if gate_name not in state_dict:
+            return
+
         gate = state_dict.pop(gate_name).transpose(-2, -1)
         up = state_dict.pop(f"{self.prefix}.up_proj").transpose(-2, -1)
         gate_bias = state_dict.pop(f"{self.prefix}.gate_proj_bias")
@@ -37,7 +43,7 @@ class GptOssExperts(ConvOp):
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any("mlp.experts.gate_up_proj" in name for name in state_dict)
+    return any(name.endswith("mlp.experts.gate_up_proj") for name in state_dict)
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:

@@ -11,6 +11,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
@@ -32,8 +33,10 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalL
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
+AutoConfig.register("deepseek_v4", DeepseekV4Config, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
+AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
@@ -43,7 +46,6 @@ AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_moe", Qwen3_5MoeConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeTextConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_vision", Qwen3_5VisionConfig, exist_ok=True)
-# GptOssConfig is just HF's class - already registered by transformers, no override needed.
 
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
 _CUSTOM_CAUSAL_LM_MODELS: tuple[
@@ -53,6 +55,7 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (LlamaConfig, LlamaForCausalLM),
     (Qwen3Config, Qwen3ForCausalLM),
     (AfmoeConfig, AfmoeForCausalLM),
+    (DeepseekV4Config, DeepseekV4ForCausalLM),
     (Glm4MoeConfig, Glm4MoeForCausalLM),
     (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
     (LagunaConfig, LagunaForCausalLM),

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -188,7 +189,46 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     ],
 )
 def test_supported_moe_runtime_configs(model):
-    TrainerModelConfig.model_validate(model)
+    config = TrainerModelConfig.model_validate(model)
+    assert config.moe.compute.resolve_layers(43) == set(range(43))
+
+
+@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
+@pytest.mark.parametrize(
+    ("selection", "num_layers", "selected"),
+    [
+        ("all", 10, set(range(10))),
+        ("85%", 48, set(range(40))),
+        ("100%", 3, {0, 1, 2}),
+        ("0%", 3, set()),
+        ("33.3%", 10, {0, 1, 2}),
+        ([], 10, set()),
+        ([2, 0], 10, {0, 2}),
+        ([0, 2, 2], 3, {0, 2}),
+    ],
+)
+def test_moe_compute_apply_to(backend, selection, num_layers, selected):
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": selection}}})
+    config = TrainerModelConfig.model_validate_json(config.model_dump_json())
+    assert config.moe.compute.resolve_layers(num_layers) == selected
+
+
+@pytest.mark.parametrize("selection", ["*", "model.layers.*", "", "101%", "-1%", "nan%", [-1], [1.5], [True]])
+def test_moe_compute_rejects_invalid_apply_to(selection):
+    with pytest.raises(ValidationError, match="apply_to"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+
+
+def test_moe_compute_rejects_out_of_range_layer():
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [3]}}})
+    with pytest.raises(ValueError, match="out of range"):
+        config.moe.compute.resolve_layers(3)
+
+
+@pytest.mark.parametrize(("selection", "selected"), [("all", {0, 1, 2}), ("50%", {0}), ("[0, 2]", {0, 2})])
+def test_moe_compute_apply_to_cli(selection, selected):
+    config = cli(TrainerModelConfig, args=["--moe.compute.type", "mxfp8", "--moe.compute.apply-to", selection])
+    assert config.moe.compute.resolve_layers(3) == selected
 
 
 @pytest.mark.parametrize(
@@ -356,9 +396,52 @@ def test_env_algo_overrides_top_level():
         )
 
 
-def test_trainer_enable_token_export_cli_flag():
-    assert not cli(TrainerConfig, args=[]).enable_token_export
-    assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
+def test_policy_sources_accept_different_top_p_values():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        config = OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "top-p-95",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.95},
+                        },
+                        {
+                            "name": "top-p-97",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.97},
+                        },
+                    ]
+                },
+            }
+        )
+
+    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+
+
+def test_policy_sources_reject_mixed_top_k_capture():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
+            OrchestratorConfig.model_validate(
+                {
+                    "renderer": {"name": "qwen3"},
+                    "train": {
+                        "source": [
+                            {
+                                "name": "truncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                                "sampling": {"top_p": 0.95},
+                            },
+                            {
+                                "name": "untruncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                            },
+                        ]
+                    },
+                }
+            )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():
@@ -827,3 +910,19 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_combined_replay_uses_v2_runner(monkeypatch):
+    from prime_rl.inference.server import setup_vllm_env
+
+    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    config = InferenceConfig(
+        enable_return_sampling_mask=True,
+        vllm={"enable_return_routed_experts": True},
+    )
+
+    setup_vllm_env(config)
+
+    assert config.enable_return_sampling_mask is True
+    assert config.vllm.enable_return_routed_experts is True
+    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
