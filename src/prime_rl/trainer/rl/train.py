@@ -1,3 +1,5 @@
+import os
+
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
@@ -466,6 +468,27 @@ def train(config: TrainerConfig):
                     f"labels shape {tuple(labels.shape)}"
                 )
 
+            trr_shadows = None
+            if os.environ.get("PRIME_TRR_COMPARE") == "1":
+                from prime_rl.trainer.rl.total_router_recall import shadow_forwards
+
+                if cp_enabled:
+                    raise ValueError("Paired TRR experiment requires CP1")
+                trr_shadows = shadow_forwards(
+                    forward,
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=labels,
+                    temperature=temperatures,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                    routed_experts=routed_experts,
+                    sampling_mask=sampling_mask,
+                )
+
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
@@ -507,6 +530,21 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+
+            if trr_shadows is not None:
+                from prime_rl.trainer.rl.total_router_recall import record_comparison
+
+                record_comparison(
+                    config.output_dir,
+                    progress.step,
+                    micro_step,
+                    trr_shadows,
+                    out["logprobs"],
+                    inference_logprobs,
+                    loss_mask,
+                    micro_batch,
+                    model.config,
+                )
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]

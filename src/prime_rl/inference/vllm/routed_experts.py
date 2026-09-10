@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,8 +16,12 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     array = np.asarray(routed_experts)
     assert array.ndim == 3
     assert np.issubdtype(array.dtype, np.integer)
-    dtype = np.uint8
-    if array.size:
+    total_recall = os.environ.get("PRIME_TOTAL_ROUTER_RECALL") == "1"
+    dtype = np.int32 if total_recall else np.uint8
+    if total_recall:
+        if array.dtype != np.int32 or array.shape[-1] % 2:
+            raise ValueError("TRR export requires int32 IDs and FP32 weight bits")
+    elif array.size:
         assert array.min() >= 0
         if array.max() > np.iinfo(np.uint8).max:
             # Models with >256 experts (e.g. NemotronH Super/Ultra: 512) need wider
