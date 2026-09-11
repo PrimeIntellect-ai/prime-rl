@@ -468,14 +468,6 @@ class DeepseekV4Compressor(nn.Module):
         cp_world_size: int = 1,
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`.
-
-        The layout at this compressor's own rate decides which source tokens each entry pools.
-
-        Under context parallelism `hidden_states` holds this rank's tokens while the layout
-        addresses the whole row, so the projections are gathered first. Both are per-token
-        linears and the pooling gather is the first thing here that reads across tokens, which
-        makes this the only seam the collective fits in. The concatenation is on the channel axis
-        and the gather on the sequence axis, so the split recovers both from one collective.
         """
         batch = hidden_states.shape[0]
         layout = packed.compression_layouts[self.compress_rate]
@@ -661,11 +653,6 @@ class DeepseekV4Attention(nn.Module):
     Every layer type runs that same core over its local sliding window. The two compressed
     types additionally own a `compressor` whose output is concatenated onto the local KV,
     which is how a layer sees past the window.
-
-    Under context parallelism this rank holds the queries of one contiguous shard of the sequence
-    and all-gathers the key side, which every query needs in full. What crosses the wire is the
-    narrowest thing that suffices: `kv_proj`'s single `head_dim`-wide vector per token, and the
-    compressor's own per-token projections, never the `hidden_size`-wide stream they came from.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int):
