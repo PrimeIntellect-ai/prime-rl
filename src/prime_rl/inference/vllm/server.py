@@ -230,7 +230,7 @@ def server(config: InferenceConfig):
     validate_parsed_serve_args(args)
 
     # vLLM uses an empty string when no extension is configured
-    if not getattr(args, "worker_extension_cls", None):
+    if not args.worker_extension_cls:
         args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
     if args.headless or args.api_server_count < 1:
