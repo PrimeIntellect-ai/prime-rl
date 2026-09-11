@@ -37,6 +37,39 @@ post-packing group token counts on trainer microbatches, and accounts for
 context-parallel replication during loss normalization. CE and reference-KL
 losses retain their upstream token-mean reductions.
 
+### Research basis: prompt-level loss averaging
+
+This option implements the group/token averaging structure called `prompt_mean`
+in [Mercor and SkyRL's training guide, Step 4](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/)
+(September 1, 2026). They report a 3.9-point improvement over `token_mean` in
+their Qwen3.6-35B-A3B ablation. This is evidence from their experiment, not a
+measured gain for this fork.
+
+The paper reference is [ScaleRL: The Art of Scaling Reinforcement Learning
+Compute for LLMs, Section 3.2 (Loss Aggregation) and Section 4](https://arxiv.org/html/2510.13786v1#S3.SS2).
+It distinguishes sample, prompt, and global-token averaging and adopts prompt
+averaging. [DAPO, Section 3.3, Equation 12](https://arxiv.org/html/2503.14476v1#S3.SS3)
+also normalizes the summed token objective by the total completion length
+within a prompt's rollout group, inside the expectation over prompts.
+
+For this fork, let `A_g` be the retained tokens in rollout group `g` with an
+active loss mask and nonzero RL weight; `N_g = len(A_g)`, and `K` is the number
+of groups with `N_g > 0`. The reduction is:
+
+```text
+group_token_mean = (1 / K) * sum_g [sum_{t in A_g} weighted_rl_loss_t / N_g]
+token_mean       = sum_g sum_{t in A_g} weighted_rl_loss_t / sum_g N_g
+```
+
+Thus groups receive equal outer weight; longer sequences still contribute more
+tokens within their group. The correspondence assumes a rollout group denotes
+the samples for one prompt. This fork uses the active tokens and group members
+actually retained in the training batch, including incomplete groups, rather
+than assuming all originally sampled completions survive. These citations
+support the aggregation structure, not equivalence to the full DAPO, ScaleRL,
+or Mercor recipe: clipping, advantages, filtering, and other loss terms are
+separate choices. CE and reference-KL retain their existing reductions.
+
 ### AdamW epsilon
 
 The fork exposes AdamW's numerical-stability epsilon:
