@@ -1,6 +1,8 @@
 import logging
 import os
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import cast
 
@@ -952,15 +954,22 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = convert_dir / "prime"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_prime(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                (snapshot_path / ".prime-v1").touch()
-                del snapshot_state_dict
+            if get_world().is_master:
+                marker_path = snapshot_path / ".prime-v1"
+                if snapshot_path.exists() and not marker_path.is_file():
+                    logger.warning(f"Removing incomplete PrimeRL conversion cache at {snapshot_path}")
+                    shutil.rmtree(snapshot_path)
+                if not snapshot_path.exists():
+                    staging_path = convert_dir / f".prime-{uuid.uuid4().hex}.tmp"
+                    logger.debug(
+                        f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                    )
+                    snapshot_state_dict = load_state_dict(source_path)
+                    model.convert_to_prime(snapshot_state_dict)
+                    save_state_dict(snapshot_state_dict, staging_path)
+                    (staging_path / ".prime-v1").touch()
+                    staging_path.rename(snapshot_path)
+                    del snapshot_state_dict
 
         elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
             logger.warning(
