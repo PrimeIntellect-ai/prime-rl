@@ -240,10 +240,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source .venv/bin/activate
-    # The environment was synchronized once above. Every component starts via
-    # `uv run`; without this, each process may independently re-resolve and
-    # contend on the shared distribution-cache locks across all nodes.
-    export UV_NO_SYNC=1
+    # Do not sync to avoid conflicts with lockfile
 
     # Higher ulimit
     ulimit -n 65536
