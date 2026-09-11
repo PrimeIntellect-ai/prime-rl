@@ -218,9 +218,11 @@ Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify
 ### IcePop Loss
 
 IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
-importance ratio falls outside a fixed acceptance band. Accepted tokens retain
-the importance-weighted policy-gradient term, and there is no separate KL
-penalty:
+importance ratio falls outside a fixed acceptance band, introduced to stabilize
+MoE RL in [Every Step Evolves: Scaling Reinforcement Learning for Trillion-Scale
+Mixture-of-Experts Reasoning Models](https://arxiv.org/abs/2510.18855). Accepted
+tokens retain the importance-weighted policy-gradient term, and there is no
+separate KL penalty:
 
 $$
 \mathcal{L}(\theta) = -\frac{1}{N}\sum_t

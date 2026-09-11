@@ -3,11 +3,11 @@ import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig
 from prime_rl.trainer.rl.loss import (
+    IcePopLoss,
     LossInputs,
     LossOutputs,
     compute_entropy,
     compute_loss,
-    icepop_loss_fn,
     setup_rl_loss_fn,
 )
 
@@ -121,7 +121,7 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
         loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
     )
 
-    result = icepop_loss_fn(inputs, IcePopLossConfig())
+    result = IcePopLoss(IcePopLossConfig())(inputs)
 
     assert torch.equal(result.loss, torch.zeros_like(result.loss))
     result.loss.backward()
