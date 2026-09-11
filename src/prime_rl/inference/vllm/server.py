@@ -229,8 +229,7 @@ def server(config: InferenceConfig):
     assert args is not None
     validate_parsed_serve_args(args)
 
-    # Custom extensions must preserve the selected backend's weight-transfer methods.
-    # vLLM uses an empty string when no extension is configured.
+    # vLLM uses an empty string when no extension is configured
     if not getattr(args, "worker_extension_cls", None):
         args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
