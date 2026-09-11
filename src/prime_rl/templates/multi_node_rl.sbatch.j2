@@ -245,18 +245,6 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # contend on the shared distribution-cache locks across all nodes.
     export UV_NO_SYNC=1
 
-    # DeepGEMM JIT-compiles kernels on first use. Its default cache resolves
-    # under $HOME, which is shared NFS on the cluster: concurrent trainer and
-    # inference ranks can then observe each other's partially-written cubins
-    # and fail with `jit/compiler.hpp: runtime != nullptr`. Keep the cache
-    # node-local by default. An explicitly configured path still takes
-    # precedence for deployments that manage a dedicated cache themselves.
-    if [ -z "${DG_JIT_CACHE_DIR:-}" ]; then
-        export DG_JIT_CACHE_DIR="/tmp/.prime_rl_deep_gemm"
-    fi
-    mkdir -p "$DG_JIT_CACHE_DIR"
-    echo "DG_JIT_CACHE_DIR=$DG_JIT_CACHE_DIR"
-
     # Higher ulimit
     ulimit -n 65536
 
