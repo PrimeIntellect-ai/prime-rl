@@ -18,6 +18,15 @@ class ClampedSwiglu(Activation):
         return (up + 1) * gate * torch.sigmoid(gate * 1.702)
 
 
+class GlmClampedSwiglu(Activation):
+    @staticmethod
+    def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
+        assert gate is not None
+        gate = gate.clamp(max=10.0)
+        up = up.clamp(min=-10.0, max=10.0)
+        return gate * torch.sigmoid(gate) * up
+
+
 class Relu2(Activation):
     @staticmethod
     def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
@@ -34,10 +43,11 @@ class Silu(Activation):
         return F.silu(gate) * up
 
 
-ActivationType = Literal["silu", "relu2", "clamped_swiglu"]
+ActivationType = Literal["silu", "relu2", "clamped_swiglu", "glm_clamped_swiglu"]
 
 ActivationDispatch: dict[ActivationType, type[Activation]] = {
     "clamped_swiglu": ClampedSwiglu,
+    "glm_clamped_swiglu": GlmClampedSwiglu,
     "silu": Silu,
     "relu2": Relu2,
 }

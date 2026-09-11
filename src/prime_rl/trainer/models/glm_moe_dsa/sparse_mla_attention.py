@@ -37,6 +37,8 @@ class SparseMlaAttentionArgs:
 def apply_rope_interleave_single(
     t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
 ) -> torch.Tensor:
+    if t.shape[-1] == 0:
+        return t
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     b, h, s, d = t.shape
@@ -240,7 +242,7 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
+        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling, d_v=self.v_head_dim)
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
         batch_size, total_tokens = out.shape[:2]
         out = out.reshape(batch_size, total_tokens, -1)
