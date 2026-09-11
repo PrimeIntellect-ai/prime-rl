@@ -201,7 +201,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         self.post_init()
 
-    def _cp_rank_and_world_size(self) -> tuple[int, int]:
+    def get_cp_rank_and_world_size(self) -> tuple[int, int]:
         if len(self.layers) == 0:
             return 0, 1
 
@@ -249,7 +249,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         """
         assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
 
-        cp_rank, cp_world_size = self._cp_rank_and_world_size()
+        cp_rank, cp_world_size = self.get_cp_rank_and_world_size()
         assert seq_lens_are_pre_shard == (cp_world_size > 1), (
             f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
         )
