@@ -467,8 +467,7 @@ class DeepseekV4Compressor(nn.Module):
         cp_group: dist.ProcessGroup | None = None,
         cp_world_size: int = 1,
     ) -> torch.Tensor:
-        """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`.
-        """
+        """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         batch = hidden_states.shape[0]
         layout = packed.compression_layouts[self.compress_rate]
 
