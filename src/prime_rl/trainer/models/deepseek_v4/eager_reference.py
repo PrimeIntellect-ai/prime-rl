@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, SparseAttnInputs
 from prime_rl.trainer.models.deepseek_v4.rotary import apply_rotary_pos_emb_interleaved
 
@@ -116,10 +117,20 @@ def eager_attention_forward(
     q = module.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)
     q = apply_rotary_pos_emb_interleaved(module.q_b_norm(q), cos, sin)
 
-    kv = module.kv_norm(module.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)
-    kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
+    kv = module.kv_norm(module.kv_proj(hidden_states))
+    kv = kv.view(*kv.shape[:2], 1, module.head_dim)
+    kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+    if module.cp_enabled:
+        kv = dsv4_attention.gather_for_cp(kv, module._cp_group)
+    kv = kv.transpose(1, 2)
 
-    compressed = module.compressor(hidden_states, q_residual, packed) if module.compressor is not None else None
+    compressed = (
+        module.compressor(
+            hidden_states, q_residual, packed, cp_group=module._cp_group, cp_world_size=module._cp_world_size
+        )
+        if module.compressor is not None
+        else None
+    )
     compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
     inputs = SparseAttnInputs.build(
         kv=kv,
