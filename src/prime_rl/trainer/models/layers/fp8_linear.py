@@ -125,29 +125,16 @@ class Float8BlockwiseLinear(nn.Linear):
     Requires:
     - SM90 (Hopper) or SM100 (Blackwell) GPU
     - bfloat16 inputs/weights
-
-    Ragged input/output dimensions are zero-padded for DeepGEMM. Padding is
-    outside the custom autograd operation so gradients retain logical shapes.
+    - No bias
+    - in_features and out_features divisible by 128
     """
 
     def __init__(self, *args, block_size: int = 128, dtype=torch.bfloat16, **kwargs):
-        super().__init__(*args, dtype=dtype, **kwargs)
+        super().__init__(*args, **kwargs)
         self.block_size = block_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_padding = (-self.in_features) % self.block_size
-        output_padding = (-self.out_features) % self.block_size
-        weight = self.weight
-        if input_padding:
-            x = torch.nn.functional.pad(x, (0, input_padding))
-        if input_padding or output_padding:
-            weight = torch.nn.functional.pad(weight, (0, input_padding, 0, output_padding))
-        output = _fp8_blockwise_mm(x, weight, self.block_size)
-        if output_padding:
-            output = output[..., : self.out_features]
-        # GLM Air's Q/K/V projections are biased; dropping their bias changes
-        # the policy even when weight quantization and transfer are correct.
-        return output if self.bias is None else output + self.bias
+        return _fp8_blockwise_mm(x, self.weight, self.block_size)
 
     @classmethod
     def from_linear(cls, mod: nn.Linear) -> "Float8BlockwiseLinear":
@@ -174,8 +161,11 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     - GLM-5.1 MTP head (eh_proj)
     - hybrid-Mamba projections (in_proj_a, in_proj_b)
 
-    Ragged dimensions are padded by Float8BlockwiseLinear, including GLM Air's
-    10,944-wide dense MLP. They do not silently fall back to BF16.
+    Independently of the name-based ignore list, we also skip any nn.Linear
+    whose in_features or out_features is not a multiple of 128. Float8BlockwiseLinear
+    documents that requirement and DeepGEMM's fp8_gemm_nt crashes at runtime
+    on unaligned dims — better to keep them in BF16 with a clear log line than
+    silently break in the kernel.
 
     Conv1d, layer norms, and embedding tables are not nn.Linear and are
     skipped automatically by the type check; we don't need to list them.
@@ -184,12 +174,16 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
     replaced_modules = []
     skipped_modules = []
+    skipped_unaligned: list[str] = []
     named_modules = dict(model.named_modules())
     for name, module in named_modules.items():
         if not isinstance(module, nn.Linear):
             continue
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
+            continue
+        if module.in_features % 128 != 0 or module.out_features % 128 != 0:
+            skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -198,7 +192,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
 
     logger.info(
         f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear "
-        f"(skipped {len(skipped_modules)} by name); "
+        f"(skipped {len(skipped_modules)} by name, "
+        f"{len(skipped_unaligned)} by 128-divisibility); "
         f"first replaced={replaced_modules[:3]}, "
-        f"first skipped(name)={skipped_modules[:3]}"
+        f"first skipped(name)={skipped_modules[:3]}, "
+        f"first skipped(unaligned)={skipped_unaligned[:3]}"
     )
