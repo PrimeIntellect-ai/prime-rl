@@ -81,6 +81,16 @@ eps = 1e-12
 
 The default is `1e-8`, matching the previous implicit optimizer default.
 
+### Research basis: configurable AdamW epsilon
+
+[Microsoft AI, *MAI-Thinking-1: Building a Hill-Climbing Machine*,
+Section 3.1.5, page 36](https://microsoft.ai/pdf/mai-thinking-1.pdf#page=36)
+reports AdamW epsilon `1e-15` for its RL climbs. This motivates exposing `eps`
+so published RL optimizer settings can be reproduced. The fork retains its
+`1e-8` default; its `1e-12` example is not the MAI setting. To select MAI's
+epsilon, set `[trainer.optim] eps = 1e-15`. This changes only epsilon, not the
+rest of MAI's optimizer recipe.
+
 ## Legacy rollout budget preservation
 
 Commit: `dc0c61dc7` (`fix(config): preserve legacy rollout token budgets`)
