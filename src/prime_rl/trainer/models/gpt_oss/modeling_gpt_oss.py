@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
@@ -92,10 +92,6 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _can_compile_fullgraph = False
     _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

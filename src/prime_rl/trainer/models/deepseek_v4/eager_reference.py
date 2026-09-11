@@ -121,12 +121,12 @@ def eager_attention_forward(
     kv = kv.view(*kv.shape[:2], 1, module.head_dim)
     kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
     if module.cp_enabled:
-        kv = dsv4_attention.gather_for_cp(kv, module._cp_group)
+        kv = dsv4_attention.gather_for_cp(kv, module.cp_group)
     kv = kv.transpose(1, 2)
 
     compressed = (
         module.compressor(
-            hidden_states, q_residual, packed, cp_group=module._cp_group, cp_world_size=module._cp_world_size
+            hidden_states, q_residual, packed, cp_group=module.cp_group, cp_world_size=module.cp_world_size
         )
         if module.compressor is not None
         else None

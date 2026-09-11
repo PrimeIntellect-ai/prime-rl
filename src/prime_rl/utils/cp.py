@@ -8,75 +8,49 @@ from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import update_ring_flash_attn_params
+from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 if TYPE_CHECKING:
     # `prime_rl.trainer.models` imports this module, so importing the model base eagerly would
     # cycle. `from __future__ import annotations` keeps CPStyle out of the runtime path.
+    from prime_rl.configs.trainer import ModelConfig
     from prime_rl.trainer.models.base import CPStyle
+    from prime_rl.trainer.parallel_dims import ParallelDims
 
 
-def _has_linear_attn_layer(model: nn.Module) -> bool:
-    """True if the model contains any non-softmax (linear/SSM) attention layer."""
-    inner = getattr(model, "model", model)
-    if hasattr(inner, "language_model"):
-        inner = inner.language_model
-    layers = getattr(inner, "layers", None)
-    if layers is None:
-        return False
-    layer_modules = layers.modules() if isinstance(layers, nn.Module) else layers
-    for layer in layer_modules:
-        # Qwen3.5 hybrid DeltaNet
-        if getattr(layer, "layer_type", None) == "linear_attention":
-            return True
-        # NemotronH Mamba
-        if hasattr(layer, "mamba"):
-            return True
-    return False
+def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    """Patch attention for the configured CP style, then hand the topology to the model.
 
-
-def setup_model_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Hand the CP topology to models whose layers need it (DeltaNet, Mamba).
-
-    Such models expose ``set_context_parallel_attributes`` at the top level and
-    own their layer wiring; softmax-only models don't and need nothing.
+    Assumes context parallelism is enabled; callers guard on ``parallel_dims.cp_enabled``.
     """
-    if hasattr(model, "set_context_parallel_attributes"):
-        model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-        from prime_rl.utils.logger import get_logger
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
-        get_logger().info("Configured model CP attributes")
-    elif _has_linear_attn_layer(model):
-        raise ValueError(
-            "Model has linear-attention/Mamba layers but does not implement "
-            "set_context_parallel_attributes; CP would silently misconfigure them"
-        )
+    cp_group = parallel_dims.world_mesh["cp"].get_group()
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
+    if config.cp_style == "ring":
+        # Delayed imports: both modules live under trainer.models, which imports back into
+        # prime_rl.utils — a top-level import would deadlock at startup.
+        from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 
-def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure GLM-5 sparse MLA modules for context-parallel gather/scatter."""
+        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.attn)
+    elif config.cp_style == "ulysses":
+        from prime_rl.trainer.models.layers.ulysses_attn import substitute_hf_ulysses_attn, substitute_ulysses_attn
 
-    count = 0
-    if not hasattr(model, "model"):
-        return
+        substitute_hf_ulysses_attn(cp_group)
+        substitute_ulysses_attn(cp_group, attn_impl=config.attn)
+    else:
+        raise ValueError(f"Unknown cp_style: {config.cp_style}")
 
-    if not hasattr(model.model, "layers"):
-        return
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.setup_context_parallel(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
 
-    for layer in model.model.layers:
-        if not hasattr(layer, "set_context_parallel_attributes"):
-            continue
-
-        layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-        count += 1
-
-    if count > 0:
-        from prime_rl.utils.logger import get_logger
-
-        get_logger().info(f"Configured sparse MLA CP on {count} DSA layers")
+    get_logger().info(f"Configured {config.cp_style} context parallelism (cp={parallel_dims.cp})")
 
 
 def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int = 1) -> torch.Tensor:
