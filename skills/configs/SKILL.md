@@ -101,3 +101,10 @@ Leave it unset for normal training. When enabled, it exports every sequence from
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs
+
+## Training nucleus sampling
+
+Set `top_p` directly under `[orchestrator.train.sampling]`, for example
+`top_p = 0.97`. The valid range is `(0, 1]`; the default is `1.0`.
+Do not put `top_p` in `sampling.extra_body`: renderer clients prioritize the
+explicit sampling fields. Configuration validation rejects that placement.

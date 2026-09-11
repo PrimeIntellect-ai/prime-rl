@@ -50,6 +50,9 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
+    top_p: float = Field(1.0, gt=0, le=1.0)
+    """Nucleus sampling threshold forwarded to training rollout inference."""
+
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
@@ -61,11 +64,17 @@ class TrainSamplingConfig(BaseConfig):
     extra_body: dict[str, Any] = {}
     """Extra body forwarded with each request to the inference server."""
 
+    @model_validator(mode="after")
+    def validate_sampling_location(self):
+        if "top_p" in self.extra_body:
+            raise ValueError("Set training top_p in sampling.top_p, not sampling.extra_body.top_p")
+        return self
+
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:

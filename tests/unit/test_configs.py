@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -672,3 +672,22 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+@pytest.mark.parametrize("top_p", [0.97, 1.0, 0.1])
+def test_training_top_p_reaches_sampling_args(top_p):
+    config = TrainSamplingConfig(top_p=top_p, extra_body={"chat_template_kwargs": {"enable_thinking": True}})
+    assert config.to_sampling_args()["top_p"] == top_p
+    assert "top_p" not in config.to_sampling_args()["extra_body"]
+    assert TrainSamplingConfig().to_sampling_args()["top_p"] == 1.0
+
+
+@pytest.mark.parametrize("top_p", [0, -0.1, 1.01, float("nan")])
+def test_training_top_p_rejects_invalid_threshold(top_p):
+    with pytest.raises(ValidationError):
+        TrainSamplingConfig(top_p=top_p)
+
+
+def test_training_top_p_rejects_shadowed_extra_body():
+    with pytest.raises(ValidationError, match="sampling.top_p"):
+        TrainSamplingConfig(extra_body={"top_p": 0.97})
