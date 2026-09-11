@@ -32,6 +32,11 @@ Each attempt also writes `configs/attempt_<n>/command.txt`. It records the
 shell-safe launch command, including CLI overrides. `configs/latest` points to
 the current attempt.
 
+Multi-node launchers synchronize the project environment before the distributed
+step, then set `UV_NO_SYNC=1` inside that step. Keep that separation: component
+processes use `uv run`, and allowing each process to re-sync can fan out dozens
+of concurrent resolvers that time out on shared wheel-cache locks.
+
 ## Validators
 
 Incompatible combinations (e.g. CP requires flash attention) must raise in a `model_validator` at resolve time, not at runtime. When renaming a field, remove the old spelling: no `validation_alias`, no auto-translating `mode="before"` validator. The old key then fails as an unknown key, which is the signal. An alias that stays forever is worse than a break — it never gets retired, and a key whose *meaning* changed silently misconfigures the run.
