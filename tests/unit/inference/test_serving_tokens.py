@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import numpy as np
 import pybase64
-from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
+from vllm.entrypoints.serve.engine.protocol import UsageInfo
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (

@@ -185,9 +185,7 @@ class Glm5NextTextConfig(PretrainedConfig):
         self.num_nextn_predict_layers = num_nextn_predict_layers
 
         self.glm5_layer_types = layer_types
-        self.layer_types = [
-            "linear_attention" if layer_type == "linear_attention" else "sparse" for layer_type in layer_types
-        ]
+        self.layer_types = layer_types
         self.mlp_layer_types = mlp_layer_types
         self.linear_head_dim = linear_head_dim
         self.linear_num_heads = linear_num_heads

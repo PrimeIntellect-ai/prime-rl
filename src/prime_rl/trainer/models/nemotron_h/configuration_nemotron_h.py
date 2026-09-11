@@ -129,6 +129,13 @@ class NemotronHConfig(PretrainedConfig):
     def layer_types(self) -> list[str]:
         return self.layers_block_type
 
+    @layer_types.setter
+    def layer_types(self, value: list[str]) -> None:
+        # Transformers validates attention layer types after initialization, but
+        # this config uses the property for its broader Mamba/MoE block pattern.
+        if not hasattr(self, "layers_block_type"):
+            self.layers_block_type = value
+
     @property
     def num_hidden_layers(self) -> int:
         return len(self.layers_block_type)

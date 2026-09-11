@@ -1,0 +1,112 @@
+max_steps = 3
+seq_len = 131072
+clean = true
+
+[run]
+name = "glm53-flash-swe-b54"
+
+[log]
+level = "debug"
+
+[monitors.file]
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = true
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 2
+gpus_per_node = 8
+orchestrator_on_inference = true
+
+[slurm]
+job_name = "glm53-flash-swe-b54"
+partition = "all"
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+name = "zai-org/GLM-5.3-Flash-BF16"
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 1024
+cp = 8
+ep = 8
+optim_cpu_offload = false
+full_offload = true
+
+[trainer.model.quantization]
+type = "fp8"
+
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+weight_decay = 0.0
+max_norm = "None"
+
+[orchestrator]
+batch_size = 54
+group_size = 6
+max_off_policy_steps = 1
+
+[orchestrator.concurrency]
+initial_inflight = 54
+max_inflight = 108
+
+[orchestrator.model]
+name = "zai-org/GLM-5.3-Flash"
+
+[orchestrator.renderer]
+name = "glm-5.1"
+clear_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[orchestrator.train.sampling.extra_body.chat_template_kwargs]
+clear_thinking = false
+
+[[orchestrator.train.source]]
+name = "r2e"
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "rlm"
+env.agent.runtime.labels = ["glm53-flash-swe-b54"]
+
+[inference]
+use_deep_gemm = true
+enable_fp32_lm_head = true
+
+[inference.env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.vllm]
+model = "zai-org/GLM-5.3-Flash"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+gpu_memory_utilization = 0.9
+data_parallel_size = 8
+data_parallel_size_local = 8
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"

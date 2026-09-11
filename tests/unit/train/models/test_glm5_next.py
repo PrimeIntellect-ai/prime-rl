@@ -45,7 +45,7 @@ def test_glm5_next_config_folds_composite_text_config() -> None:
     assert config.get_text_config().model_type == "glm5_next_text"
     assert config.hidden_size == 8
     assert config.glm5_layer_types[-1] == "deepseek_sparse_attention"
-    assert config.layer_types[-1] == "sparse"
+    assert config.layer_types[-1] == "deepseek_sparse_attention"
     assert config.num_experts_per_tok == 1
     assert config.mhc_num_residual_streams == 4
     assert config.mhc_sinkhorn_iterations == 20
