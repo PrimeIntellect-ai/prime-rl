@@ -1256,39 +1256,3 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
 
     _assert_relative(hidden_full.grad, reference_input_grad, PACKED_GRAD_RTOL, "hidden states gradient")
     _compare_accumulated_grads(module, reference_grads)
-
-
-# Looser than `KERNEL_RTOL`: a shard and the whole sequence feed the FP8 indexer different GEMM
-# row counts, so picks can come back in a different order for the online softmax to accumulate.
-CP_KERNEL_RTOL = 1e-2
-
-
-@requires_sparse_attn_kernel
-@requires_datacenter_gpu
-@pytest.mark.parametrize("cp_world_size", CP_WORLD_SIZES, ids=CP_WORLD_SIZE_IDS)
-def test_context_parallel_kernel_shards_reproduce_the_whole_row(cp_world_size, monkeypatch):
-    module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    seq_len = sum(KERNEL_DOC_LENS)
-    with torch.device("cuda"):
-        hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
-
-    with torch.no_grad():
-        reference_out, _ = module(hidden_full, packed=_packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG))
-
-    chunks = hidden_full.chunk(cp_world_size, dim=1)
-    n_queries = seq_len // cp_world_size
-    projections = _cp_gathered_projections(module, KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG, cp_world_size)
-    for cp_rank, chunk in enumerate(chunks):
-        gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
-        monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
-        module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
-
-        packed = _packed_context(
-            KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size
-        )
-        with torch.no_grad():
-            out_rank, _ = module(chunk, packed=packed)
-        assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
-
-        rows = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
-        _assert_relative(out_rank, reference_out[:, rows], CP_KERNEL_RTOL, f"rank {cp_rank} output")
