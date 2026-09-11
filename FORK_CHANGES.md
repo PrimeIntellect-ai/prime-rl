@@ -110,3 +110,57 @@ The original snapshot is preserved on
 `codex/datadev-training-extensions` at `227e38eea`. The review branch
 `feat/datadev-training-extensions` has the same source tree, split into the
 focused commits above plus this documentation commit.
+
+## Explicit training top-p
+
+Commit: `dc1972200` (`Honor explicit top-p during training rollout inference`)
+
+```toml
+[orchestrator.train.sampling]
+top_p = 0.97
+```
+
+`TrainSamplingConfig.to_sampling_args()` previously always emitted `top_p = 1.0`.
+Putting `top_p` in `extra_body` did not solve this: renderer clients prioritize
+the explicit sampling fields. The fork adds a validated `(0, 1]` field, forwards
+its value, and rejects the shadowed `extra_body.top_p` placement. The default
+remains `1.0`. Config tests cover forwarding, defaults, invalid thresholds, and
+misplaced overrides; `skills/configs/SKILL.md` documents the supported syntax.
+
+## Consolidated upstream review
+
+The aggregate review branch, `fix/primebeaker-consolidated-fixes`, preserves all
+eight commits through `dc1972200` and adds this documentation. It does not
+rebase, merge, or fast-forward the working `fix/training-top-p` branch. The
+runtime source and dependency pins remain those used by PrimeBeaker's maintained
+rebuild source.
+
+The changes span the `prime-rl` runtime, the `prime-rl-configs` package, and the
+`renderers` Git submodule. Neither `deps/verifiers` nor
+`deps/research-environments` changes relative to `2ffe374e0`. The renderer fix
+is an external dependency commit, not source vendored into Prime-RL; reviewers
+must also inspect `goncalorafaria/renderers@a2f6949`.
+
+At the upstream inspection on 2026-09-11, `PrimeIntellect-ai/prime-rl/main` was
+`43b4e2bd1334267208fb708e830b415a24f94acc`, 176 commits after the fork base.
+The aggregate branch has merge conflicts with that revision and is intended
+as a draft for reviewing the complete historical patch series.
+
+- Upstream PR #3431 (`84e7312f3`) already adds top-p/top-k training sampling
+  with native sampling replay. The fork's top-p commit is preserved to explain
+  its deployed behavior, not as a claim that current upstream lacks top-p.
+- Upstream PRs #3285 and #3309 introduce adaptive concurrency, including online
+  evaluation. The fork's fixed train/eval limits need reconciliation with that
+  implementation before a future upstream merge.
+- Upstream moved or removed client, optimizer, and transport implementation
+  files touched here. Resolving those changes is a separate porting task;
+  this review branch intentionally preserves the working version.
+- The renderer fork pin must be reconciled with upstream's current renderer
+  revision before merging. The container overlay also assumes a prebuilt
+  `prime-rl-v071dev83-qwen35-renderer-eval:latest` base; it is not a standalone
+  image build recipe.
+
+PrimeBeaker's image catalog distinguishes immutable deployed images from the
+maintained rebuild source: those images predate the cleaned-up Git history.
+The cataloged commit should not be described as the proven embedded revision
+of the historical images.
