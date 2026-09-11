@@ -14,7 +14,7 @@ level = "debug"
 type = "nccl"
 port = 29502
 timeout = 12000
-quantize_in_weight_transfer = true
+quantize_in_weight_transfer = false
 
 [deployment]
 type = "multi_node"
