@@ -177,6 +177,7 @@ async def custom_init_app_state(
         state.serving_tokens = prime_serving
 
 
+import vllm.entrypoints.launchers.api_server.entry
 import vllm.entrypoints.openai.api_server
 import vllm.v1.utils
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
@@ -204,6 +205,11 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
 
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
+# vLLM 0.28 moved the active server implementation to launcher modules. The
+# deprecated OpenAI module re-exports these functions, but patching its names
+# alone does not change the references used by the launcher.
+vllm.entrypoints.launchers.api_server.entry.init_app_state = custom_init_app_state
+vllm.entrypoints.launchers.api_server.entry.build_app = custom_build_app
 vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 
 
