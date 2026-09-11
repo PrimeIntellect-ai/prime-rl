@@ -105,6 +105,11 @@ an input, so a position that disagrees with a document boundary, a window slot t
 RoPE table evaluated at positions other than the ones the causal thresholds count in, cannot be
 constructed. It runs once per model forward.
 
+Context parallelism splits the queries across ranks and leaves everything else alone: every field
+above has one entry per query token and so covers this rank's `n_queries` tokens, while
+`compression_layouts` covers all `total_tokens` of the sequence. Token indices always count from
+the start of the whole sequence.
+
 [The Index Contract]
 
 All three layer types reach their keys the same way. `SparseAttnInputs` lays out one KV buffer,
@@ -122,6 +127,7 @@ surplus pick cost only their loads.
 from dataclasses import dataclass
 
 import torch
+import torch.distributed as dist
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -130,6 +136,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.cp import gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
@@ -234,25 +241,18 @@ class PackedContext:
     per-document `entry_local_idx` cannot be compared against, and a RoPE table evaluated at one
     set of positions rotates queries the thresholds were not counted at. `build` derives every
     field from one `seq_lens`, so none of those is reachable. It runs once per model forward.
+
+    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries
+    and a full copy of the keys, so every field but `compression_layouts` has one entry per query
+    token and covers this rank's run alone, while `compression_layouts` covers the whole sequence.
+    Token indices always count from the start of the whole sequence, never from this rank's run.
     """
 
-    position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
-    tok_doc_idx: Tensor  # (seq_len,) int64 - which document each packed token belongs to
-    position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type
-    window_indices: Tensor  # (seq_len, sliding_window) int32 - packed token per window slot, IGNORE_SLOT where unused
+    position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
+    tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
+    position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type, at `position_ids`
+    window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
-
-    def __post_init__(self) -> None:
-        # Only reachable by constructing the dataclass directly; `build` cannot violate it.
-        total_tokens = self.tok_doc_idx.shape[0]
-        if self.position_ids.shape[-1] != total_tokens:
-            raise ValueError(
-                f"position_ids covers {self.position_ids.shape[-1]} tokens, but the row has {total_tokens}"
-            )
-        if self.window_indices.shape[0] != total_tokens:
-            raise ValueError(
-                f"window_indices covers {self.window_indices.shape[0]} query rows, but the row has {total_tokens}"
-            )
 
     @classmethod
     def build(
@@ -262,28 +262,46 @@ class PackedContext:
         seq_lens: Tensor,
         dtype: torch.dtype,
         device: torch.device,
+        cp_rank: int = 0,
+        cp_world_size: int = 1,
     ) -> "PackedContext":
         """Derive every field from one `seq_lens`, ensuring mutual consistency.
 
         `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
         sliding window and the compress rates in use. Taking the config from it rather than
         alongside it keeps them from naming different architectures. `dtype` must be the dtype
-        attention runs at, since it types the RoPE tables. The row is as wide as `seq_lens` says,
+        attention runs at, since it types the RoPE tables. The sequence is as long as `seq_lens` says,
         padding included: both packers fold their padding into the last document.
+
+        `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
+        contiguous shard of it this rank holds the queries of; the keys, the entries and the index
+        values addressing them stay global, so only the query side narrows.
         """
         config = rotary_emb.config
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
         total_tokens = int(seq_lens.sum())
+        assert total_tokens % cp_world_size == 0, (
+            f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
+        )
+        n_queries = total_tokens // cp_world_size
+        q_start = cp_rank * n_queries
+
         cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device))
-        tok_idx = torch.arange(total_tokens, device=device)
-        tok_doc_idx = torch.searchsorted(cu_seqlens[1:].to(tok_idx.dtype), tok_idx, right=True)
-        # Document-local by construction: a token's position is its distance from its own
-        # document's start, which is what `causal_threshold` and the entry rotation count in.
-        position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
         compress_rates = {
             config.compress_rates[layer_type]
             for layer_type in set(config.layer_types)
             if layer_type in config.compress_rates
+        }
+
+        # These fields have one entry per query token, so they cover this rank's tokens only.
+        # `cu_seqlens` still spans the whole sequence, so document boundaries stay available.
+        tok_idx = torch.arange(q_start, q_start + n_queries, device=device)
+        tok_doc_idx = torch.searchsorted(cu_seqlens[1:].to(tok_idx.dtype), tok_idx, right=True)
+        # Document-local by construction: a token's position is its distance from its own
+        # document's start, which is what `causal_threshold` and the entry rotation count in.
+        position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
+        position_embeddings = {
+            rope_type: rotary_emb(position_ids, rope_type, dtype=dtype) for rope_type in rotary_emb.layer_types
         }
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
@@ -295,9 +313,7 @@ class PackedContext:
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
-            position_embeddings={
-                rope_type: rotary_emb(position_ids, rope_type, dtype=dtype) for rope_type in rotary_emb.layer_types
-            },
+            position_embeddings=position_embeddings,
             compression_layouts={
                 rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
             },
@@ -311,7 +327,9 @@ class PackedContext:
         caller's positions vanish there too. A padded micro-batch restarts `position_ids` at 0
         inside its last document, which this permits: padding sits mid-document, never at a start.
         A sequence-global `arange` over a packed row never restarts, and a 1-based one never
-        reaches zero at all; both are rejected.
+        reaches zero at all; both are rejected. Under CP the comparison is against this rank's
+        queries alone, which lines up because the trainer shards the caller's `position_ids` the
+        same way.
         """
         disagrees = (self.position_ids == 0) & (position_ids != 0)
         if disagrees.any():
@@ -338,51 +356,51 @@ class SparseAttnInputs:
 
     Every index must be a real key in `[0, n_positions)` or `IGNORE_SLOT` (-1), which marks an absent
     key, which `build` enforces.
+
+    Under context parallelism the token half of `kv_buf` is still the whole global stream, `S`
+    being every token of the packed row, while `indices` has one entry per query token this rank
+    holds.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
-    indices: Tensor  # (batch, seq_len, 1, n_slots) int32 into kv_buf's position axis
-
-    def __post_init__(self) -> None:
-        # Shape invariants only. Asserting on index values would read the device, and this runs
-        # once per layer per step.
-        if self.kv_buf.ndim != 4 or self.kv_buf.shape[2] != 1:
-            raise ValueError(f"kv_buf must be (batch, n_positions, 1, head_dim), got {tuple(self.kv_buf.shape)}")
-        if self.indices.ndim != 4 or self.indices.shape[2] != 1:
-            raise ValueError(f"indices must be (batch, seq_len, 1, n_slots), got {tuple(self.indices.shape)}")
-        if self.indices.shape[0] != self.kv_buf.shape[0]:
-            raise ValueError(f"kv_buf covers {self.kv_buf.shape[0]} batch entries and indices {self.indices.shape[0]}")
+    indices: Tensor  # (batch, n_queries, 1, n_slots) int32 into kv_buf's position axis
 
     @classmethod
     def build(
         cls,
         *,
-        kv: Tensor,  # (batch, 1, seq_len, head_dim), the rotated local token stream
+        kv: Tensor,  # (batch, 1, n_tokens, head_dim), the rotated token stream
         compressed_kv: Tensor | None = None,  # (batch, 1, n_entries, head_dim)
-        top_k_indices: Tensor | None = None,  # (batch, seq_len, n_picks) int64, IGNORE_SLOT (-1) marks a surplus pick
-        window_indices: Tensor,  # (seq_len, sliding_window) int32, IGNORE_SLOT marks an invalid slot
+        top_k_indices: Tensor | None = None,  # (batch, n_queries, n_picks) int64, IGNORE_SLOT (-1) marks a surplus pick
+        window_indices: Tensor,  # (n_queries, sliding_window) int32, IGNORE_SLOT marks an invalid slot
     ) -> "SparseAttnInputs":
         """Lay out one layer's gather slots: the local window first, then any compressed picks.
 
         A layer with no entries passes neither `compressed_kv` nor `top_k_indices`, receiving only
         the local sliding window.
         """
-        if (compressed_kv is None) != (top_k_indices is None):
-            raise ValueError("compressed_kv and top_k_indices describe the same entries: pass both or neither")
-        batch, _, seq_len, _ = kv.shape
+        assert (compressed_kv is None) == (top_k_indices is None), (
+            "compressed_kv and top_k_indices describe the same entries: pass both or neither"
+        )
+        # The two counts differ under CP: the keys are global and the queries are this rank's.
+        batch, _, n_tokens, _ = kv.shape
+        n_queries = window_indices.shape[0]
+        assert top_k_indices is None or top_k_indices.shape[1] == n_queries, (
+            f"top_k_indices covers {top_k_indices.shape[1]} query tokens and window_indices {n_queries}"
+        )
 
         positions = kv if compressed_kv is None else torch.cat([kv, compressed_kv], dim=2)
         kv_buf = positions.transpose(1, 2).contiguous()  # (b, S + E, 1, d)
 
-        window = window_indices[None, :, None, :].expand(batch, seq_len, 1, -1)
+        window = window_indices[None, :, None, :].expand(batch, n_queries, 1, -1)
         if top_k_indices is None:
             return cls(kv_buf=kv_buf, indices=window.contiguous())
 
         # A surplus pick is `IGNORE_SLOT` (-1) and stays `IGNORE_SLOT`; a real one names an entry,
-        # which sits past the token stream in `kv_buf`, hence the shift by `seq_len`.
+        # which sits past the token stream in `kv_buf`, hence the shift by `n_tokens`.
         # NOTE: the attention kernel recompiles for every unique `indices.shape[-1]` value. If
         # recompilation becomes a bottleneck, consider padding to fixed length with `IGNORE_SLOT` values.
-        picks = torch.where(top_k_indices >= 0, top_k_indices + seq_len, IGNORE_SLOT)
+        picks = torch.where(top_k_indices >= 0, top_k_indices + n_tokens, IGNORE_SLOT)
         indices = torch.cat([window, picks[:, :, None, :].to(torch.int32)], dim=-1)
         return cls(kv_buf=kv_buf, indices=indices)
 
@@ -442,16 +460,25 @@ class DeepseekV4Compressor(nn.Module):
             torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2),
         )
 
-    def compress(self, hidden_states: torch.Tensor, packed: PackedContext) -> torch.Tensor:
-        """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`.
-
-        The layout at this compressor's own rate decides which source tokens each entry pools.
-        """
+    def compress(
+        self,
+        hidden_states: torch.Tensor,
+        packed: PackedContext,
+        cp_group: dist.ProcessGroup | None = None,
+        cp_world_size: int = 1,
+    ) -> torch.Tensor:
+        """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         batch = hidden_states.shape[0]
         layout = packed.compression_layouts[self.compress_rate]
 
-        kv = self.kv_proj(hidden_states)[:, layout.entry_tok_idx]
-        gate = self.gate_proj(hidden_states)[:, layout.entry_tok_idx] + self.position_bias
+        width = self.n_series * self.head_dim
+        proj = torch.cat([self.kv_proj(hidden_states), self.gate_proj(hidden_states)], dim=-1)
+        if cp_world_size > 1:
+            proj = gather_for_cp(proj, cp_group)
+        kv, gate = proj.split(width, dim=-1)
+
+        kv = kv[:, layout.entry_tok_idx]
+        gate = gate[:, layout.entry_tok_idx] + self.position_bias
         if self.n_series == 2:
             kv, gate = self._overlap_with_previous_window(kv, gate, layout)
 
@@ -499,10 +526,17 @@ class DeepseekV4Indexer(nn.Module):
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
 
     @torch.no_grad()  # Returns non-differentiable integer indices.
-    def forward(self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        packed: PackedContext,
+        cp_group: dist.ProcessGroup | None = None,
+        cp_world_size: int = 1,
+    ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         assert batch == 1, f"the indexer needs a packed batch of size 1, got {batch}"
-        compressed_kv = self.compressor.compress(hidden_states, packed)
+        compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
         n_entries = compressed_kv.shape[1]
 
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
@@ -540,12 +574,18 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
         self.indexer = DeepseekV4Indexer(config)
 
     def forward(
-        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        packed: PackedContext,
+        cp_group: dist.ProcessGroup | None = None,
+        cp_world_size: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        compressed_kv = self.compress(hidden_states, packed).unsqueeze(1)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
         # The indexer reads the same layout: it compresses the same source windows at a narrower
         # head dim, so its entry `e` and this compressor's entry `e` are the same window.
-        return compressed_kv, self.indexer(hidden_states, q_residual, packed)
+        picks = self.indexer(hidden_states, q_residual, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        return compressed_kv.unsqueeze(1), picks
 
     def init_weights(self, init_std: float) -> None:
         super().init_weights(init_std)
@@ -567,11 +607,16 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
         super().__init__(config, config.head_dim, config.compress_rates["heavily_compressed_attention"], n_series=1)
 
     def forward(
-        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, packed: PackedContext
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        packed: PackedContext,
+        cp_group: dist.ProcessGroup | None = None,
+        cp_world_size: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
         batch = hidden_states.shape[0]
-        compressed_kv = self.compress(hidden_states, packed).unsqueeze(1)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
 
         layout = packed.compression_layouts[self.compress_rate]
         # `threshold` counts entries within the query's own document, so it selects how far into
@@ -580,7 +625,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
         base = layout.first_entry_of_doc[packed.tok_doc_idx][None, :, None]  # (1, seq_len, 1)
         offsets = torch.arange(layout.max_entries_per_doc, device=hidden_states.device)
         picks = torch.where(offsets < threshold, base + offsets, IGNORE_SLOT)
-        return compressed_kv, picks.expand(batch, -1, -1)
+        return compressed_kv.unsqueeze(1), picks.expand(batch, -1, -1)
 
 
 COMPRESSOR_CLASSES = {
@@ -645,12 +690,26 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
+        self._cp_group: dist.ProcessGroup | None = None
+        self._cp_rank: int = 0
+        self._cp_world_size: int = 1
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self._cp_world_size > 1
+
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
         # Shape keys in the comments below:
         #
         # - `b`: batch
-        # - `t`: token in the packed row
+        # - `t`: token in this rank's query shard
+        # - `T`: token in the whole packed row, which is `t` unless CP is on
         # - `h`: attention head
         # - `d`: head_dim
         # - `e`: compressed entry
@@ -661,17 +720,27 @@ class DeepseekV4Attention(nn.Module):
         # `hidden_states` is (b, t, hidden_size).
 
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, -1, d): the -1 is h for q, 1 for kv
+        hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, h, d), the query view
         cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         q = self.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)  # (b, h, t, d)
         q = apply_rotary_pos_emb_interleaved(self.q_b_norm(q), cos, sin)
 
-        kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)  # (b, 1, t, d)
-        kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
+        kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
+        kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
+        kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+        if self.cp_enabled:
+            kv = gather_for_cp(kv, self._cp_group)  # (b, T, 1, d)
+        kv = kv.transpose(1, 2)  # (b, 1, T, d)
 
-        compressed = self.compressor(hidden_states, q_residual, packed) if self.compressor is not None else None
+        compressed = (
+            self.compressor(
+                hidden_states, q_residual, packed, cp_group=self._cp_group, cp_world_size=self._cp_world_size
+            )
+            if self.compressor is not None
+            else None
+        )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
         inputs = SparseAttnInputs.build(
             kv=kv,
