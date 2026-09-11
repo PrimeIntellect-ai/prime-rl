@@ -27,7 +27,7 @@ from prime_rl.transports.weights.nixl.agent import (
     make_agent_name,
     set_ucx_env_defaults,
 )
-from prime_rl.transports.weights.nixl.cuda_malloc_memory import use_cuda_malloc_pool
+from prime_rl.transports.weights.nixl.device_memory import use_registerable_pool
 from prime_rl.transports.weights.nixl.graph import (
     Destination,
     OperationChain,
@@ -307,7 +307,7 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_buffer_count: int,
     ) -> dict[torch.dtype, torch.Tensor]:
-        with use_cuda_malloc_pool():
+        with use_registerable_pool(self.device):
             receive_arenas = {
                 dtype: torch.empty(
                     receive_buffer_count * elements,
