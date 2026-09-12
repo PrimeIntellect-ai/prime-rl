@@ -52,7 +52,9 @@ static_resources:
       original_dst_lb_config:
         use_http_header: true
         http_header_name: x-gateway-destination-endpoint
-      connect_timeout: 5s
+      # Busy vLLM API processes can take longer than five seconds to accept a
+      # new upstream connection during a large agentic concurrency ramp.
+      connect_timeout: 60s
       # Default circuit breakers (~1024) overflow at high inflight concurrency (>=1536),
       # causing "reset reason: overflow" 500s. Raise far above the max concurrent rollouts.
       circuit_breakers:
