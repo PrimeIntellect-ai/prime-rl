@@ -235,7 +235,8 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
-    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    config = getattr(model.config, "text_config", model.config)
+    return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
 def get_load_balance_stats(

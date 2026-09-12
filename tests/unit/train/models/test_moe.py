@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
+from prime_rl.trainer.model import is_tt_moe_model
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -12,8 +13,30 @@ from prime_rl.trainer.models.layers.moe import (
     MoE,
     MoEArgs,
 )
+from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5Config,
+    Qwen3_5MoeConfig,
+    Qwen3_5MoeTextConfig,
+    Qwen3_5TextConfig,
+)
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "expected"),
+    [
+        (Qwen3_5TextConfig, False),
+        (Qwen3_5MoeTextConfig, True),
+        (Qwen3_5Config, False),
+        (Qwen3_5MoeConfig, True),
+    ],
+    ids=["dense-text", "moe-text", "dense-vlm", "moe-vlm"],
+)
+def test_moe_detection_for_text_and_vlm(config_cls, expected):
+    model = torch.nn.Module()
+    model.config = config_cls()
+    assert is_tt_moe_model(model) is expected
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])

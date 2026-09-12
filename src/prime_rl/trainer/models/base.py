@@ -46,7 +46,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
         """Public from_config that mirrors the Auto class API."""
-        del trust_remote_code
         return cls._from_config(config, **kwargs)
 
     @classmethod

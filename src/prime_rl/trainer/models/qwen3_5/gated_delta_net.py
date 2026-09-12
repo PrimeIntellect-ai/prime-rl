@@ -8,7 +8,9 @@ from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-# FLA's CP convolution uses an all-gather layout that Dynamo cannot trace.
+# Dynamo lowers all-gather to concatenation, then fails to copy the result into
+# FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
+# https://github.com/pytorch/pytorch/issues/155632
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
 
 
