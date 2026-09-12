@@ -29,7 +29,7 @@ importantly — the eager/compile split it requires, since that distinction is e
 
 Wrap the *pre-quantized* tensor in a `torch.Tensor` wrapper subclass. The cache dict lives on the instance
 and dies when it does — no `clear_cache()`, no version counters, unlike the weight cache (see
-`quant_weight_cache.md`).
+[`quant_weight_cache.md`](quant_weight_cache.md)).
 
 ```python
 class QuantCacheTensor(torch.Tensor):
