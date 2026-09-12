@@ -89,6 +89,14 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
         moe.experts.set_grouped_gemm(grouped_gemm)
+        if (
+            moe in selected_moes
+            and isinstance(config.moe.compute, BF16MoEComputeConfig)
+            and config.moe.compute.backend == "sonicmoe"
+        ):
+            from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
+
+            moe.experts.compute = SonicMoEExpertCompute()
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,

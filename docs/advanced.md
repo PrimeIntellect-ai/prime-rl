@@ -49,11 +49,29 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+).
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
 
-`[trainer.model.moe.compute]` selects routed-expert grouped GEMMs independently:
+`[trainer.model.moe.compute]` selects routed-expert compute independently:
 
-- `type = "bf16"` (default)
+- `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
+
+SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
+
+```toml
+[trainer.model]
+name = "Qwen/Qwen3-30B-A3B"
+ep = 2
+
+[trainer.model.fusions]
+enabled = ["gate_up"]
+
+[trainer.model.moe.compute]
+type = "bf16"
+backend = "sonicmoe"
+
+[trainer.model.moe.dispatch]
+type = "torch"
+```
 
 ```toml
 [trainer.model.quantization]

@@ -10,11 +10,11 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
+from prime_rl.trainer.models.layers.expert_compute import ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
@@ -67,21 +67,6 @@ class MoEArgs:
         ActivationDispatch[self.activation]
 
 
-def broadcast_expert_bias(
-    bias: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    target_rows: int,
-) -> torch.Tensor:
-    repeats = num_tokens_per_expert.to(torch.int64)
-    padding_rows = repeats.new_tensor(target_rows) - repeats.sum()
-    return torch.repeat_interleave(
-        torch.cat((bias, bias.new_zeros((1, bias.shape[1])))),
-        torch.cat((repeats, padding_rows.unsqueeze(0))),
-        dim=0,
-        output_size=target_rows,
-    )
-
-
 class GroupedExperts(nn.Module):
     supported_fusions = {"gate_up": fuse_gate_up_projections}
 
@@ -110,6 +95,7 @@ class GroupedExperts(nn.Module):
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
         self.grouped_gemm = grouped_gemm or BF16GroupedGemm()
+        self.compute: ExpertCompute = GroupedGemmExpertCompute()
         self.activation = ActivationDispatch[activation]
         if expert_type == "non_gated":
             self.supported_fusions = {}
@@ -126,42 +112,7 @@ class GroupedExperts(nn.Module):
         x: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
-        assert x.dim() == 2
-
-        def to_local(tensor: torch.Tensor) -> torch.Tensor:
-            return tensor.to_local() if isinstance(tensor, DTensor) else tensor
-
-        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-        x_bf16 = x.bfloat16()
-
-        if self.gate_up_proj is None:
-            up_proj = to_local(self.up_proj).transpose(-2, -1)
-            up = self.grouped_gemm(x_bf16, up_proj.bfloat16(), offs=offsets)
-
-            gate = None
-            if self.gate_proj is not None:
-                gate_proj = to_local(self.gate_proj).transpose(-2, -1)
-                gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
-        else:
-            gate_up_proj = to_local(self.gate_up_proj).transpose(-2, -1)
-            gate_up = self.grouped_gemm(x_bf16, gate_up_proj.bfloat16(), offs=offsets)
-            gate, up = gate_up.chunk(2, dim=-1)
-
-        if self.up_proj_bias is not None:
-            up_proj_bias = to_local(self.up_proj_bias)
-            up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
-
-        if gate is not None and self.gate_proj_bias is not None:
-            gate_proj_bias = to_local(self.gate_proj_bias)
-            gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
-
-        hidden = self.activation.apply(gate, up)
-        down_proj = to_local(self.down_proj).transpose(-2, -1)
-        output = self.grouped_gemm(hidden, down_proj.bfloat16(), offs=offsets)
-        if self.down_proj_bias is not None:
-            down_proj_bias = to_local(self.down_proj_bias)
-            output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
-        return output.type_as(x)
+        return self.compute(self, x, num_tokens_per_expert)
 
     def init_weights(self, init_std: float):
         if self.gate_up_proj is None:
