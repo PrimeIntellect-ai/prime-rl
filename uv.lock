@@ -5106,12 +5106,12 @@ requires-dist = [
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "pyzstd", specifier = ">=0.16.2" },
-    { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", specifier = ">=0.4.1" },
+    { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", git = "https://github.com/S1ro1/quack?rev=f62009f" },
     { name = "renderers", extras = ["multimodal"], editable = "deps/renderers" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "sonic-moe", marker = "sys_platform == 'linux' and extra == 'sonic-moe'", git = "https://github.com/Dao-AILab/sonic-moe?rev=7396f3e" },
+    { name = "sonic-moe", marker = "sys_platform == 'linux' and extra == 'sonic-moe'", git = "https://github.com/S1ro1/sonic-moe?rev=0bf06ac" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu130" },
@@ -5897,17 +5897,13 @@ wheels = [
 [[package]]
 name = "quack-kernels"
 version = "0.6.5"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/S1ro1/quack?rev=f62009f#f62009fae5bf325c50d2a17adc7e3397be672dd6" }
 dependencies = [
     { name = "apache-tvm-ffi" },
     { name = "einops" },
     { name = "nvidia-cutlass-dsl" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "torch-c-dlpack-ext" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/18/6c2a20d00dff254f154fb3b951f4e5a0377a60122c17385e5f08d5f5b5e1/quack_kernels-0.6.5.tar.gz", hash = "sha256:dd9405a4a6fa35fc3a5a18fe35b46a14b0bf7e3ad9fe2451903e355047ac471d", size = 846876, upload-time = "2026-09-11T05:08:20.621Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/d8/f5e56c38b286308d115a171e3c5c44f24e9d03980c3cfd22588df40261fa/quack_kernels-0.6.5-py3-none-any.whl", hash = "sha256:df1ddd31366c82eb9692fe087c671209189dcbde53c909c81a865d4ee66b158d", size = 729615, upload-time = "2026-09-11T05:08:19.306Z" },
 ]
 
 [[package]]
@@ -6451,7 +6447,7 @@ wheels = [
 [[package]]
 name = "sonic-moe"
 version = "0.1.2.post1"
-source = { git = "https://github.com/Dao-AILab/sonic-moe?rev=7396f3e#7396f3e604827d8186c2e16e64b28ee33d3defd0" }
+source = { git = "https://github.com/S1ro1/sonic-moe?rev=0bf06ac#0bf06ac7bf5b0800a7202743c1fb5722ed004350" }
 dependencies = [
     { name = "quack-kernels" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
