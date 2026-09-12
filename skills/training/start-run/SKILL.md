@@ -56,6 +56,19 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   --package prime-rl --package <env>` (one) — they're auto-discovered, no
   `pyproject.toml` edit needed. Keep `--all-extras` for training so a targeted
   package sync does not prune accelerator dependencies from the environment.
+- Node-local compiler and model cache roots must be unique per user and SLURM job.
+  Fixed paths under `/tmp` can be left owned by another container user and make
+  vLLM or FlashInfer fail at startup. Values in `inference.env_vars` are emitted
+  inside double-quoted shell exports, so paths such as
+  `/tmp/prime-rl-$USER/$SLURM_JOB_ID/flashinfer` expand on each allocated node. The
+  multi-node launcher appends a per-rank directory to `VLLM_CACHE_ROOT`,
+  `TRITON_CACHE_DIR`, and `FLASHINFER_WORKSPACE_BASE`; this also prevents concurrent
+  DeepGEMM JIT builds from racing in a shared `deep_gemm/tmp` directory. It marks the
+  environment as launcher-prepared so the inference entrypoint preserves those
+  per-rank overrides when it applies the resolved inference config.
+- Multi-node SLURM component commands use `uv run --no-sync`. Sync the environment
+  before submission; compute ranks must not contend on uv package-metadata locks
+  while starting concurrently from a shared cache.
 
 ## `sft` — SFT training
 

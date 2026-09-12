@@ -94,9 +94,9 @@ use_deep_gemm = true
 enable_fp32_lm_head = true
 
 [inference.env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+TRITON_CACHE_DIR = "/tmp/prime-rl-$USER/$SLURM_JOB_ID/triton"
+VLLM_CACHE_ROOT = "/tmp/prime-rl-$USER/$SLURM_JOB_ID/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/prime-rl-$USER/$SLURM_JOB_ID/flashinfer"
 
 [inference.vllm]
 model = "zai-org/GLM-5.3-Flash"

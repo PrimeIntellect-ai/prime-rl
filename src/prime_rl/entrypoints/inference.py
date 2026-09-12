@@ -26,6 +26,7 @@ from prime_rl.utils.process import (
 
 INFERENCE_CONFIG = "inference.json"
 INFERENCE_SBATCH = "inference.sbatch"
+INFERENCE_ENV_PRESET = "PRIME_RL_INFERENCE_ENV_PRESET"
 
 
 def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
@@ -202,10 +203,12 @@ def inference_local(config: InferenceConfig):
     host = config.server.host or "0.0.0.0"
     port = config.server.port
 
-    # Apply the inference env (defaults + [inference.env_vars]) in-process so a standalone
-    # `uv run inference` gets the same environment the rl/SLURM launchers inject into the
-    # server subprocess. config.env_vars wins over the defaults; existing os.environ loses.
-    os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
+    inference_env = {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars}
+    if os.environ.pop(INFERENCE_ENV_PRESET, None) == "1":
+        for key, value in inference_env.items():
+            os.environ.setdefault(key, value)
+    else:
+        os.environ.update(inference_env)
 
     setup_vllm_env(config)
 
