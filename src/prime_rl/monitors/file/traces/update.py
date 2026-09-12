@@ -14,8 +14,12 @@ from typing import Any
 
 UPDATE_VERSION = 1
 
-STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
+STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies", "is_masked", "mismatch_kl")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
+
+PARTIAL_STREAM_FIELDS = frozenset({"is_masked", "mismatch_kl"})
+"""Streams a node takes with nulls inside: mixed-component batches only annotate the
+tokens their component applies to."""
 
 
 def update_index_row(update: dict[str, Any], chunk: int, offset: int) -> dict[str, Any]:
@@ -70,7 +74,9 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
     Merges each ``info`` and projects every branch stream onto the branch's nodes,
     compact over each node's mask like the node's own ``logprobs``. A node takes a
     stream only when it is fully covered with non-null values at every sampled
-    position, so a truncated stream leaves the tail nodes untouched. Returns how many
+    position, so a truncated stream leaves the tail nodes untouched. The partial
+    streams (``PARTIAL_STREAM_FIELDS``) keep their nulls — mixed-component batches
+    intentionally leave other components' tokens unannotated. Returns how many
     nodes carry trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
     paths = branch_node_paths(nodes)
@@ -94,7 +100,12 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
                     if len(span) < len(token_ids):
                         break
                     values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
-                    if not values or any(v is None for v in values):
+                    if not values:
                         continue
+                    if any(v is None for v in values):
+                        # A partial stream keeps its nulls, but a node still needs one
+                        # known value; other streams need full coverage.
+                        if field not in PARTIAL_STREAM_FIELDS or all(v is None for v in values):
+                            continue
                     node[field] = values
     return sum(1 for node in nodes if node.get("trainer_logprobs"))

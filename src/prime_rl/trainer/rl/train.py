@@ -497,7 +497,7 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
-            loss, loss_tensors = compute_loss(
+            loss, loss_tensors, loss_annotations = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
                 ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
@@ -558,7 +558,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            annotation_writer.export(micro_batch, out)
+            annotation_writer.export(micro_batch, out, loss_annotations)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

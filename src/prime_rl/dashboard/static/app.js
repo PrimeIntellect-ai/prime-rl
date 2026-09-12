@@ -2244,7 +2244,7 @@ function clearSemanticTranscriptOrigin() {
 }
 let replay = null;
 
-const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "stable_mask"]);
+const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "mismatch_kl_recomputed", "stable_mask"]);
 
 const SORT_SVG =
   '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
@@ -2526,6 +2526,21 @@ function alignedSignal(node, values) {
   return (i) => (index[i] == null ? null : values[index[i]]);
 }
 
+/* the mismatch overlay's per-token KL: the trainer's persisted stream when the node
+   carries one, else the same estimate rebuilt from the two logprob streams. ``force``
+   skips the stream, to check a recomputation against what the trainer recorded */
+function mismatchKlAt(node, force) {
+  if (!force && Array.isArray(node.mismatch_kl)) return alignedSignal(node, node.mismatch_kl);
+  const trainerAt = alignedSignal(node, node.trainer_logprobs);
+  const logprobAt = alignedSignal(node, node.logprobs);
+  return (i) => {
+    const trainer = trainerAt(i), logprob = logprobAt(i);
+    if (trainer == null || logprob == null) return null;
+    const dlp = trainer - logprob;
+    return Math.exp(dlp) - dlp - 1;
+  };
+}
+
 /* per-episode normalization constants for the token-signal overlays, plus the
    run's IPO eps for the stable mask (server-stamped on annotated traces) */
 function episodeSignalScales(trace) {
@@ -2533,6 +2548,7 @@ function episodeSignalScales(trace) {
   for (const node of trace.nodes || []) {
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
     for (const h of node.entropies || []) if (h != null) maxEntropy = Math.max(maxEntropy, h);
+    if (Array.isArray(node.mismatch_kl)) for (const k of node.mismatch_kl) if (k != null) maxKl = Math.max(maxKl, k);
     const trainer = node.trainer_logprobs, inference = node.logprobs;
     if (Array.isArray(trainer) && Array.isArray(inference) && trainer.length === inference.length)
       for (let j = 0; j < trainer.length; j++) {
@@ -2548,7 +2564,8 @@ const SIGNAL_LABELS = {
   advantage: "Advantage",
   entropy: "Entropy",
   mismatch_kl: "Mismatch",
-  stable_mask: "The stable mask",
+  mismatch_kl_recomputed: "Mismatch (recomputed)",
+  stable_mask: "The policy mask",
   mask: "The loss mask",
   is_content: "The content mask",
 };
@@ -2567,8 +2584,13 @@ function paintedCount(node, signal, scales, limit = Infinity) {
   if (signal === "is_content") return count((i) => node.is_content?.[i] || null);
   if (signal === "advantage") return scales.maxAbsAdv > 0 ? count(alignedSignal(node, node.advantages)) : 0;
   if (signal === "entropy") return scales.maxEntropy > 0 ? count(alignedSignal(node, node.entropies)) : 0;
-  if (signal === "mismatch_kl" && !(scales.maxKl > 0)) return 0;
-  // the mismatch and the stable mask both read the trainer against the sampler
+  if (signal === "stable_mask" && Array.isArray(node.is_masked))
+    return count(alignedSignal(node, node.is_masked));
+  if (signal === "mismatch_kl" || signal === "mismatch_kl_recomputed") {
+    if (!(scales.maxKl > 0)) return 0;
+    return count(mismatchKlAt(node, signal === "mismatch_kl_recomputed"));
+  }
+  // the stable mask reads the trainer against the sampler
   const trainerAt = alignedSignal(node, node.trainer_logprobs);
   const logprobAt = alignedSignal(node, node.logprobs);
   return count((i) => (trainerAt(i) != null && logprobAt(i) != null ? 1 : null));
@@ -2655,12 +2677,15 @@ function renderTokenNode(node, signal, scales) {
   const advantageAt = alignedSignal(node, node.advantages);
   const trainerLpAt = alignedSignal(node, node.trainer_logprobs);
   const entropyAt = alignedSignal(node, node.entropies);
+  const isMaskedAt = alignedSignal(node, node.is_masked);
+  const klAt = mismatchKlAt(node, signal === "mismatch_kl_recomputed");
   const spans = ids.map((id, i) => {
     const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
     const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
+    const isMasked = isMaskedAt(i);
     const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
-    const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
+    const kl = signal === "mismatch_kl" || signal === "mismatch_kl_recomputed" ? klAt(i) : null;
     const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
     let bg = "";
     if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
@@ -2668,13 +2693,13 @@ function renderTokenNode(node, signal, scales) {
       bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
     } else if (signal === "entropy" && entropy != null && scales.maxEntropy > 0) {
       bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
-    } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
+    } else if ((signal === "mismatch_kl" || signal === "mismatch_kl_recomputed") && kl != null && scales.maxKl > 0) {
       bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
-    } else if (signal === "stable_mask" && probDelta != null) {
-      // the IPO mask: a token whose probability moved further than eps is dropped
-      bg =
-        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
-        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
+    } else if (signal === "stable_mask" && (isMasked != null || probDelta != null)) {
+      // New traces carry the loss's exact decision. Reconstruct the IPO mask for old traces.
+      bg = isMasked != null
+        ? isMasked ? "background:rgba(255,69,57,0.35)" : "background:rgba(74,158,255,0.15)"
+        : Math.abs(probDelta) > scales.eps ? "background:rgba(255,69,57,0.35)"
         : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
@@ -2684,13 +2709,20 @@ function renderTokenNode(node, signal, scales) {
     let tip = `#${i} id=${id}`;
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
     else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
-    else if (signal === "mismatch_kl" && kl != null)
-      tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} kl=${kl.toFixed(6)}`;
-    // the mask reads in probabilities, since eps is a probability distance
+    else if ((signal === "mismatch_kl" || signal === "mismatch_kl_recomputed") && kl != null)
+      tip +=
+        (dlp != null ? ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)}` : "") +
+        ` kl=${kl.toFixed(6)}`;
+    else if (signal === "stable_mask" && isMasked != null)
+      tip += ` ${isMasked ? "masked" : "kept"}` +
+        (probDelta != null
+          ? ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)} Δp=${probDelta.toFixed(4)}`
+          : "");
+    // Older traces predate persisted loss decisions, so only IPO can be reconstructed.
     else if (signal === "stable_mask" && probDelta != null)
       tip +=
         ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)}` +
-        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? `masked ${probDelta > 0 ? "high" : "low"}` : "kept"}`;
+        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? "masked" : "kept"}`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
