@@ -92,7 +92,7 @@ class Evals:
         self.last_step = (config.online.resume_step if config.online is not None else None) or 0
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.ckpt_manager = CheckpointManager(config.output_dir)
-        self.last_saved_cursor = 0
+        self.last_saved_completed = 0
         self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
@@ -168,8 +168,11 @@ class Evals:
                 self.eval_source,
                 path=resume_path,
             )
-            self.last_saved_cursor = self.eval_source.cursor
-            get_logger().info(f"Resuming evals from task cursor {self.eval_source.cursor}")
+            self.last_saved_completed = self.eval_source.num_completed
+            get_logger().info(
+                f"Resuming evals from task cursor {self.eval_source.cursor} "
+                f"({self.eval_source.num_completed} completed groups, including out-of-order completions)"
+            )
         self.policy = Policy(version=0, model_name=config.model)
 
         # Pessimistic per-episode token cost for the controller's starting cap,
@@ -493,13 +496,13 @@ class Evals:
     def maybe_save_checkpoint(self, *, force: bool = False) -> None:
         if self.config.ckpt is None:
             return
-        cursor = self.eval_source.cursor
-        if cursor <= 0 or cursor == self.last_saved_cursor:
+        completed = self.eval_source.num_completed
+        if completed <= 0 or completed == self.last_saved_completed:
             return
-        if not force and cursor - self.last_saved_cursor < self.config.ckpt.interval:
+        if not force and completed - self.last_saved_completed < self.config.ckpt.interval:
             return
         self.ckpt_manager.save(self.eval_source)
-        self.last_saved_cursor = cursor
+        self.last_saved_completed = completed
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the

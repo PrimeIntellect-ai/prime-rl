@@ -6,10 +6,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.cli.serve import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.api_server import init_app_state
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
-from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+from vllm.entrypoints.openai.models.serving import ErrorResponse, OpenAIServingModels
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -209,6 +208,14 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
 vllm.entrypoints.openai.api_server.init_app_state = custom_init_app_state
 vllm.entrypoints.openai.api_server.build_app = custom_build_app
 vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
+
+# Newer vLLM builds retain openai.api_server only as a re-export shim.
+# Patch the functions where the actual launcher looks them up as well.
+if init_app_state.__module__ == "vllm.entrypoints.launchers.api_server.app_state":
+    from vllm.entrypoints.launchers.api_server import entry as api_server_entry
+
+    api_server_entry.init_app_state = custom_init_app_state
+    api_server_entry.build_app = custom_build_app
 
 
 # Adapted from vllm/entrypoints/cli/serve.py

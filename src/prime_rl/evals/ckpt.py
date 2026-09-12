@@ -1,4 +1,4 @@
-"""Checkpoint standalone eval progress cursor."""
+"""Checkpoint the standalone eval prefix and out-of-order completed groups."""
 
 from __future__ import annotations
 

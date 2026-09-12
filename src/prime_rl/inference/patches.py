@@ -22,6 +22,35 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepep_v2_empty_decode_metadata()
     monkey_patch_engine_handshake_timeout()
+    monkey_patch_dflash_own_rope_layout()
+
+
+def monkey_patch_dflash_own_rope_layout():
+    """Opt-in backport of https://github.com/vllm-project/vllm/pull/54373.
+
+    Both DFlash loaders consult this helper before constructing the drafter.
+    Returning None prevents them from overwriting its own RoPE convention with
+    the target's. The draft decoder then uses its config's is_neox_style value
+    (default True), as upstream does after removing target-layout inference.
+    """
+    import os
+
+    if os.environ.get("PRIME_RL_DFLASH_OWN_ROPE") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.models import qwen3_dflash
+
+    original = getattr(qwen3_dflash, "dflash_target_rope_is_neox_style", None)
+    if original is None or getattr(original, "_prime_rl_draft_owns_rope", False):
+        return
+
+    def no_target_layout_inference(target_model):
+        return None
+
+    no_target_layout_inference._prime_rl_draft_owns_rope = True
+    qwen3_dflash.dflash_target_rope_is_neox_style = no_target_layout_inference
+    init_logger(__name__).warning("Applied vLLM PR #54373 compatibility patch: DFlash uses its own RoPE layout.")
 
 
 def monkey_patch_engine_handshake_timeout():
@@ -113,9 +142,7 @@ def monkey_patch_deepep_v2_empty_decode_metadata():
 
     _receiver._prime_rl_handles_empty_decode_metadata = True
     DeepEPV2PrepareAndFinalize._receiver = _receiver
-    init_logger(__name__).warning(
-        "Patched vLLM 0.28 DeepEP v2 empty decode expert metadata."
-    )
+    init_logger(__name__).warning("Patched vLLM 0.28 DeepEP v2 empty decode expert metadata.")
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -888,8 +915,10 @@ def monkey_patch_fp32_lm_head():
         if self._fp32_lm_head_enabled:
             logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
 
-    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias, skip_gather=None):
         if not getattr(self, "_fp32_lm_head_enabled", False):
+            if skip_gather is not None:
+                return _original_get_logits(self, hidden_states, lm_head, embedding_bias, skip_gather=skip_gather)
             return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
 
         # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
@@ -902,6 +931,8 @@ def monkey_patch_fp32_lm_head():
         if hidden_states.dim() > 2:
             logits = logits.reshape(*hidden_states.shape[:-1], -1)
 
+        if skip_gather:
+            return logits
         logits = self._gather_logits(logits)
         if logits is not None:
             logits = logits[..., : self.org_vocab_size]

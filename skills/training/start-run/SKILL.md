@@ -9,6 +9,11 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 
 SLURM launches write generated scripts and coordination files under `<run_dir>/launcher/`, with batch logs under `launcher/logs/`. Local launches do not create this directory. Every launch writes configs and `command.txt` under `configs/attempt_<n>/`. `configs/latest` points to the current attempt. The command uses shell-safe quoting.
 
+Submit generated scripts from the project directory used for the dry run (or
+pass that directory with `sbatch --chdir`). Relative Slurm stdout paths resolve
+against the submission working directory, even if the script later changes
+directory. Discover live batch logs from `scontrol show job`'s `StdOut` field.
+
 ## Run directories
 
 `output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, broadcasts, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--resume`, or `--resume.step N`, reuses the named run directory; without `[ckpt]` it loads but saves no new checkpoints). Launching into a run directory that already contains artifacts fails unless resuming or `--clean` is set (which wipes only that run directory).
@@ -94,10 +99,29 @@ curl http://localhost:8000/v1/chat/completions \
 - Config: `InferenceConfig` (`packages/prime-rl-configs/src/prime_rl/configs/inference.py`)
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
+- Standalone `inference` does not accept `--no-dashboard`; omit that flag.
+- DFlash with an interleaved-RoPE target (such as GLM-5.3): on vLLM builds missing
+  upstream #54373, set `[env_vars] PRIME_RL_DFLASH_OWN_ROPE = "1"`. This enables
+  prime-rl's worker-local compatibility patch; do not edit the shared `.venv`.
+  Confirm its startup log on the workers before interpreting draft acceptance.
+- For a user-supplied experimental wheel, use a separate runtime overlay and
+  select it through the benchmark's `env_vars.PYTHONPATH`; never install into
+  the shared `.venv`. Use `uv --no-config pip install --target <overlay>` when
+  project dependency overrides would otherwise replace the requested version.
+  Check effective versions and worker imports before accepting benchmark results.
+  New vLLM launcher builds move CLI arguments to `entrypoints.launchers`;
+  prime-rl imports them through `entrypoints.cli.serve` and patches the actual
+  launcher module as well as the legacy API-server re-export shim.
+  The lm-head compatibility wrapper must forward the newer `skip_gather`
+  argument even when FP32 lm_head is disabled; otherwise profiling fails.
+  For experimental KV-offload builds, inspect generated text after the resident
+  GPU cache fills. Healthy endpoints, high TPS and zero preemptions do not prove
+  output correctness. A reduced-cache pressure test can diagnose the transition
+  faster, but does not replace a full-cache, realistic-context throughput test.
 
 ## `evals` — multi-env evals
 
-Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
+Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts all completed task groups) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; checkpoint step N names the completed prefix cursor. Checkpoints also retain completed indices beyond that prefix, but not episode records. Partial groups and completions not yet checkpointed are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
@@ -131,6 +155,38 @@ interval = 10        # completed task groups between cursor saves
 - External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
 - Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
+
+When splitting a resumed standalone eval into separate source subsets, use distinct
+output directories and project the old round-robin cursor and any sparse completed
+indices into each subset's order.
+Do not copy the same cursor unchanged into both runs. Verify disjoint remaining
+task sets whose union matches the original remainder before launch. Keep the
+original outputs. Checkpoints retain `cursor` plus sorted `completed` source
+indices beyond the prefix; checkpoint frequency counts all completed groups,
+even when an earlier long-running group holds the cursor in place. `step_N`
+still names the prefix cursor, so the same file is atomically refreshed when
+only sparse progress changes. Cursor-only checkpoints remain loadable, but
+lack those out-of-order completions. Before restarting a legacy run with a
+stalled cursor, recover complete groups from its saved traces, validate task
+identity and original round-robin positions, and retry partial groups. Do not
+infer completed tasks from the directory name or a count of individual episodes.
+When validating task identity against saved episodes, serialize TaskData with
+`exclude_none=True`, as the episode serializer does; otherwise empty resource or
+timeout dictionaries can look like dataset drift. Use the job's actual HF_HOME
+for offline recovery, and preserve filtered task order rather than treating raw
+dataset row IDs as contiguous source positions.
+
+For a CPU eval colocated inside a live inference allocation, use a separately
+identified Slurm step, keep its concurrency unchanged during migration, and
+verify the actual cgroup limits before stopping the original worker. On clusters
+where `--mem` does not set `memory.max`, the resource request alone is not OOM
+isolation. Apply any additional limits only to the new numeric worker step,
+never the parent inference job or node. Preserve and hash-check traces and the
+checkpoint before resume; confirm new completions and checkpoint advancement.
+Give colocated steps distinct local cache paths and check for port conflicts.
+Monitoring must query step IDs without `sacct -X`, which hides steps. A step
+shares the inference allocation's lifetime; a head-hosted `srun` controller is
+not equivalent to an independently restartable batch job after a head outage.
 
 ## Exporting checkpoints
 

@@ -90,6 +90,8 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## Key files
 
+For external clients assigning whole inference replicas to workload pools, use the actual `HOSTNAMES=` order written to the inference batch log. Slurm display nodelists may be sorted differently from the launcher's rank order; grouping the displayed order can split EP replicas between pools. Monitoring must use the same ordering.
+
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs

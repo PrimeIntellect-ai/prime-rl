@@ -72,7 +72,7 @@ class EvalSource:
                     continue
                 source_index = self._next_index
                 self._next_index += 1
-                if source_index < self.cursor:
+                if source_index < self.cursor or source_index in self._completed:
                     continue
                 self.queue.append(TaskRequest(env_name=env_name, task=task, step=step, source_index=source_index))
                 queued_counts[env_name] += 1
@@ -84,27 +84,37 @@ class EvalSource:
         return self._triggered_task_counts.get((env_name, step), 0)
 
     def mark_completed(self, source_index: int) -> bool:
-        """Advance the durable cursor only across a fully completed prefix."""
-        if source_index < self.cursor:
+        """Record a newly completed group, including completions beyond the prefix."""
+        if source_index < self.cursor or source_index in self._completed:
             return False
         self._completed.add(source_index)
-        previous = self.cursor
         while self.cursor in self._completed:
             self._completed.remove(self.cursor)
             self.cursor += 1
-        return self.cursor != previous
+        return True
+
+    @property
+    def num_completed(self) -> int:
+        return self.cursor + len(self._completed)
 
     def state_dict(self) -> dict:
-        return {"cursor": self.cursor}
+        return {"cursor": self.cursor, "completed": sorted(self._completed)}
 
     def load_state_dict(self, state_dict: dict) -> None:
-        if set(state_dict) != {"cursor"}:
-            raise ValueError("Eval source checkpoint must contain only a cursor")
+        if set(state_dict) not in ({"cursor"}, {"cursor", "completed"}):
+            raise ValueError("Eval source checkpoint must contain a cursor and optional completed indices")
         cursor = state_dict["cursor"]
         if type(cursor) is not int or cursor < 0:
             raise ValueError(f"Eval source checkpoint cursor must be a non-negative integer, got {cursor!r}")
+        completed = state_dict.get("completed", [])
+        if (
+            not isinstance(completed, list)
+            or any(type(index) is not int or index <= cursor for index in completed)
+            or len(completed) != len(set(completed))
+        ):
+            raise ValueError("Completed indices must be unique integers greater than the cursor")
         self.cursor = cursor
-        self._completed.clear()
+        self._completed = set(completed)
 
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty."""

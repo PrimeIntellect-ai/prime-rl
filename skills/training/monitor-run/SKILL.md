@@ -221,6 +221,7 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
+- **Monitoring host interruption**: a detached tmux client still disappears if its host container restarts, while a Slurm inference allocation can remain healthy and idle. Check process liveness, metric timestamps, and all endpoints before treating stale samples as progress. A failed `squeue` connection is not evidence that the allocation ended; use bounded retries. For authorized long-running benchmark workflows, place the client on a stable compute host, bind its lifecycle to its owned allocation, and preserve interrupted attempts separately. Do not count a partial context warm-up as a completed throughput result.
 
 ### Process tree
 
