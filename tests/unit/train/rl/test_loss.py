@@ -86,7 +86,7 @@ def test_setup_rl_loss_fn_with_custom_config():
         loss_mask=torch.ones(50, dtype=torch.bool).cuda(),
     )
 
-    result = rl_loss_fn(inputs)
+    result = rl_loss_fn.loss(inputs)
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
@@ -103,7 +103,7 @@ def test_icepop_loss_masks_ratios_outside_inclusive_band():
         loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
     )
 
-    result = setup_rl_loss_fn(IcePopLossConfig())(inputs)
+    result = setup_rl_loss_fn(IcePopLossConfig()).loss(inputs)
 
     assert torch.isclose(result.loss, torch.tensor(-6.2, device="cuda"))
     assert torch.isclose(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
@@ -121,7 +121,7 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
         loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
     )
 
-    result = IcePopLoss(IcePopLossConfig())(inputs)
+    result = IcePopLoss(IcePopLossConfig()).loss(inputs)
 
     assert torch.equal(result.loss, torch.zeros_like(result.loss))
     result.loss.backward()

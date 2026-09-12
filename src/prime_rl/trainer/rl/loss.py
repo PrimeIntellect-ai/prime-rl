@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import torch
 from beartype import beartype as typechecker
@@ -37,9 +37,16 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 
 
+class Loss(Protocol):
+    """Interface for the config-initialized rl loss objects built by
+    ``setup_rl_loss_fn``: ``IPOLoss``, ``IcePopLoss`` and ``CustomLoss``."""
+
+    def loss(self, inputs: LossInputs) -> LossOutputs: ...
+
+
 LossFn = Callable[..., LossOutputs]
-"""Type for a per-sample loss: a built-in loss object from ``setup_rl_loss_fn``
-or the imported function from ``CustomLossConfig``.
+"""Type for a per-sample loss function, as opposed to a ``Loss`` object: the
+fixed ce / ref_kl losses and the function imported from ``CustomLossConfig``.
 
 Expected signature for a custom loss:
     def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
@@ -138,7 +145,7 @@ class IPOLoss:
     def __init__(self, config: IPOLossConfig):
         self.config = config
 
-    def __call__(self, inputs: LossInputs) -> LossOutputs:
+    def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
         trainer_logprobs = inputs.trainer_logprobs
         inference_logprobs = inputs.inference_logprobs
@@ -178,7 +185,7 @@ class IcePopLoss:
     def __init__(self, config: IcePopLossConfig):
         self.config = config
 
-    def __call__(self, inputs: LossInputs) -> LossOutputs:
+    def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
         log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
             inputs.trainer_logprobs, inputs.inference_logprobs
@@ -275,22 +282,24 @@ class CustomLoss:
 
     def __init__(self, config: CustomLossConfig):
         self.config = config
-        self.fn = import_object(config.import_path)
+        self.fn: LossFn = import_object(config.import_path)
 
-    def __call__(self, inputs: LossInputs) -> LossOutputs:
+    def loss(self, inputs: LossInputs) -> LossOutputs:
         return self.fn(inputs, **self.config.kwargs)
 
 
-def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
+def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
     """Build the loss object for the rl component from ``trainer.loss``.
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
-    if isinstance(loss_config, CustomLossConfig):
-        return CustomLoss(loss_config)
-    if isinstance(loss_config, IPOLossConfig):
-        return IPOLoss(loss_config)
-    if isinstance(loss_config, IcePopLossConfig):
-        return IcePopLoss(loss_config)
-    raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
+    match loss_config:
+        case CustomLossConfig():
+            return CustomLoss(loss_config)
+        case IPOLossConfig():
+            return IPOLoss(loss_config)
+        case IcePopLossConfig():
+            return IcePopLoss(loss_config)
+        case _:
+            raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
 
 def compute_loss(
@@ -302,7 +311,7 @@ def compute_loss(
     rl_weights: list[Float[Tensor, " seq_i"]] | None,
     ce_weights: list[Float[Tensor, " seq_i"]] | None,
     ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
-    rl_loss_fn: LossFn,
+    rl_loss_fn: Loss,
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
@@ -333,7 +342,7 @@ def compute_loss(
         rl_weights: Per-token rl weights for each sequence, or None (1.0 on the loss mask)
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
-        rl_loss_fn: Loss fn for the rl component from setup_rl_loss_fn()
+        rl_loss_fn: RL loss object built by setup_rl_loss_fn()
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
@@ -388,11 +397,11 @@ def compute_loss(
             )
 
         if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+            rl_loss = rl_loss + run_loss_fn(rl_loss_fn.loss, make_inputs(mask, None))
         else:
             rl_mask = mask & (rl_w != 0)
             if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+                rl_loss = rl_loss + run_loss_fn(rl_loss_fn.loss, make_inputs(rl_mask, rl_w))
         if ce_w is not None:
             ce_mask = ce_w != 0
             if bool(ce_mask.any()):
