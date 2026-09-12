@@ -23,12 +23,6 @@ if TYPE_CHECKING:
 
 
 def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
-    """Patch attention for the configured CP style, then hand the topology to the model.
-
-    Assumes context parallelism is enabled; callers guard on ``parallel_dims.cp_enabled``.
-    """
-    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-
     cp_group = parallel_dims.world_mesh["cp"].get_group()
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
@@ -47,8 +41,9 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")
 
-    if isinstance(model, PreTrainedModelPrimeRL):
-        model.setup_context_parallel(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
+    for module in model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
 
     get_logger().info(f"Configured {config.cp_style} context parallelism (cp={parallel_dims.cp})")
 

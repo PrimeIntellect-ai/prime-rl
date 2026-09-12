@@ -113,7 +113,10 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     model.model.layers[0] = torch.nn.Sequential(mamba_layer)
 
     cp_group = MagicMock()
-    model.setup_context_parallel(cp_group, 1, 2, "ulysses")
+
+    for module in model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
 
     assert mamba_layer.mamba.cp_group is cp_group
     assert mamba_layer.mamba.cp_rank == 1

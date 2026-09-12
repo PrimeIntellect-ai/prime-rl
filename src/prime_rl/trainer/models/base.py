@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch.distributed as dist
-import torch.nn as nn
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
@@ -39,12 +38,10 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     def setup_context_parallel(
         self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
     ) -> None:
-        """Hand the CP topology to this module and to every module below it that consumes it."""
         self.cp_group = cp_group
         self.cp_rank = cp_rank
         self.cp_world_size = cp_world_size
         self.cp_style = cp_style
-        _setup_context_parallel_children(self, cp_group, cp_rank, cp_world_size, cp_style)
 
     @classmethod
     def cp_support(cls, config) -> CPSupport:
@@ -188,16 +185,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         This is called after loading the model from a checkpoint with meta device.
         """
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
-
-
-def _setup_context_parallel_children(
-    module: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
-) -> None:
-    for child in module.children():
-        if hasattr(child, "setup_context_parallel"):
-            child.setup_context_parallel(cp_group, cp_rank, cp_world_size, cp_style)
-        else:
-            _setup_context_parallel_children(child, cp_group, cp_rank, cp_world_size, cp_style)
 
 
 __all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]

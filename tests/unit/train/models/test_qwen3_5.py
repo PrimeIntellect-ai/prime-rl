@@ -122,7 +122,10 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     text_model = Qwen3_5ForCausalLM(_tiny_text_config())
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
-    text_model.setup_context_parallel(cp_group, 1, 2, "ulysses")
+
+    for module in text_model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
     assert text_model.model.cp_group is cp_group
     assert text_model.model.cp_rank == 1
     assert text_model.model.cp_world_size == 2
@@ -134,7 +137,9 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     vlm_config.vision_config._attn_implementation_internal = "sdpa"
     with torch.device("meta"):
         vlm_model = Qwen3_5ForCausalLM(vlm_config)
-    vlm_model.setup_context_parallel(cp_group, 0, 2, "ulysses")
+    for module in vlm_model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 0, 2, "ulysses")
     assert vlm_model.model.language_model.cp_group is cp_group
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_world_size == 2
 

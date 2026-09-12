@@ -178,7 +178,10 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
     linear_layer = model.model.layers[0]
     model.model.layers[0] = torch.nn.Sequential(linear_layer)
     cp_group = MagicMock()
-    model.setup_context_parallel(cp_group, 1, 2, "ulysses")
+
+    for module in model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
 
     assert model.model.cp_group is cp_group
     assert model.model.cp_rank == 1
