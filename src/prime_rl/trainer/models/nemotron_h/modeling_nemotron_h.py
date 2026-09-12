@@ -1,5 +1,4 @@
 import torch
-import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -175,16 +174,6 @@ class NemotronHModel(NemotronHPreTrainedModel):
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
 
-    def set_context_parallel_attributes(
-        self,
-        process_group: dist.ProcessGroup,
-        rank: int,
-        world_size: int,
-    ) -> None:
-        for module in self.layers.modules():
-            if isinstance(module, NemotronHMamba2):
-                module.set_context_parallel_attributes(process_group, rank, world_size)
-
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -218,14 +207,6 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         super().__init__(config)
         self.model = NemotronHModel(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-
-    def set_context_parallel_attributes(
-        self,
-        process_group: dist.ProcessGroup,
-        rank: int,
-        world_size: int,
-    ) -> None:
-        self.model.set_context_parallel_attributes(process_group, rank, world_size)
 
     def forward(
         self,

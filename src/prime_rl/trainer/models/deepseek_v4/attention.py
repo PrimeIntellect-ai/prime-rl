@@ -130,6 +130,7 @@ import torch
 import torch.distributed as dist
 from torch import Tensor, nn
 
+from prime_rl.trainer.models.base import CPStyle
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
@@ -690,18 +691,22 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
-        self._cp_group: dist.ProcessGroup | None = None
-        self._cp_rank: int = 0
-        self._cp_world_size: int = 1
+        self.cp_group: dist.ProcessGroup | None = None
+        self.cp_rank: int = 0
+        self.cp_world_size: int = 1
+        self.cp_style: CPStyle | None = None
 
-    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
+    def setup_context_parallel(
+        self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
+    ) -> None:
+        self.cp_group = cp_group
+        self.cp_rank = cp_rank
+        self.cp_world_size = cp_world_size
+        self.cp_style = cp_style
 
     @property
     def cp_enabled(self) -> bool:
-        return self._cp_world_size > 1
+        return self.cp_world_size > 1
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
@@ -731,13 +736,11 @@ class DeepseekV4Attention(nn.Module):
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
         if self.cp_enabled:
-            kv = gather_for_cp(kv, self._cp_group)  # (b, T, 1, d)
+            kv = gather_for_cp(kv, self.cp_group)  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
 
         compressed = (
-            self.compressor(
-                hidden_states, q_residual, packed, cp_group=self._cp_group, cp_world_size=self._cp_world_size
-            )
+            self.compressor(hidden_states, q_residual, packed, cp_group=self.cp_group, cp_world_size=self.cp_world_size)
             if self.compressor is not None
             else None
         )

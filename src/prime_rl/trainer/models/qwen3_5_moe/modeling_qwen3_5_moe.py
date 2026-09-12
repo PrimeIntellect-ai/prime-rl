@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
 from fla.modules.conv import causal_conv1d as fla_causal_conv1d
@@ -19,7 +20,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisio
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
-from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import ALL_CP_STYLES, CPStyle, CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_3_varlen_func,
     flash_attn_4_varlen_func,
@@ -127,6 +128,19 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
         self.in_proj_a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
 
+        self.cp_group: dist.ProcessGroup | None = None
+        self.cp_rank: int = 0
+        self.cp_world_size: int = 1
+        self.cp_style: CPStyle | None = None
+
+    def setup_context_parallel(
+        self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
+    ) -> None:
+        self.cp_group = cp_group
+        self.cp_rank = cp_rank
+        self.cp_world_size = cp_world_size
+        self.cp_style = cp_style
+
     def _build_cp_context(
         self,
         device: torch.device,
@@ -134,15 +148,14 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         cu_seqlens_are_pre_shard: bool = False,
     ) -> "FLACPContext | None":
         """Build the FLA CP context from full pre-shard sequence boundaries."""
-        cp_group = getattr(self, "cp_group", None)
-        if cp_group is None:
+        if self.cp_group is None:
             return None
         if cu_seqlens is None or not cu_seqlens_are_pre_shard:
             raise ValueError("Qwen3.5 context parallelism requires full pre-shard sequence boundaries")
         global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
-            group=cp_group,
+            group=self.cp_group,
             conv1d_kernel_size=self.conv_kernel_size,
         )
 
@@ -662,16 +675,6 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-        for layer in self.layers.modules():
-            if getattr(layer, "layer_type", None) == "linear_attention":
-                layer.linear_attn.cp_group = cp_group
-                layer.linear_attn.cp_rank = cp_rank
-                layer.linear_attn.cp_world_size = cp_world_size
-
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -749,9 +752,6 @@ class Qwen3_5MoeVLMModel(nn.Module):
 
     def set_input_embeddings(self, value):
         self.language_model.set_input_embeddings(value)
-
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Smallest valid vision input: a single merged token (grid [1, m, m])."""
@@ -832,11 +832,14 @@ class Qwen3_5MoeVLMModel(nn.Module):
             seq_lens=seq_lens,
         )
 
-        cp_group = getattr(self.language_model, "_cp_group", None)
-        if image_grid_thw is not None and cp_group is not None:
-            cp_rank = self.language_model._cp_rank
-            cp_world_size = self.language_model._cp_world_size
-            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
+        if image_grid_thw is not None and self.language_model.cp_enabled:
+            cp_rank, cp_world_size = self.language_model.cp_rank, self.language_model.cp_world_size
+            setup_cp_attention_params(
+                position_ids,
+                cp_group=self.language_model.cp_group,
+                cp_style=self.language_model.cp_style,
+                seq_lens=seq_lens,
+            )
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
             if routed_experts is not None:
@@ -897,9 +900,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
-
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     # ------------------------------------------------------------------
     # State dict detection & conversion (handles both text-only and VLM)

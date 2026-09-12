@@ -5,7 +5,6 @@ from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
-from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -179,11 +178,14 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
     linear_layer = model.model.layers[0]
     model.model.layers[0] = torch.nn.Sequential(linear_layer)
     cp_group = MagicMock()
-    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
-    assert model.model._cp_group is cp_group
-    assert model.model._cp_rank == 1
-    assert model.model._cp_world_size == 2
+    for module in model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
+
+    assert model.model.cp_group is cp_group
+    assert model.model.cp_rank == 1
+    assert model.model.cp_world_size == 2
     assert linear_layer.linear_attn.cp_group is cp_group
     assert linear_layer.linear_attn.cp_world_size == 2
 

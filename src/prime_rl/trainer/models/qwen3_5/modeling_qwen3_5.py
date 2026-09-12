@@ -216,16 +216,6 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-        for layer in self.layers.modules():
-            if getattr(layer, "layer_type", None) == "linear_attention":
-                layer.linear_attn.cp_group = cp_group
-                layer.linear_attn.cp_rank = cp_rank
-                layer.linear_attn.cp_world_size = cp_world_size
-
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -281,9 +271,6 @@ class Qwen3_5VLMModel(nn.Module):
 
     def set_input_embeddings(self, value):
         self.language_model.set_input_embeddings(value)
-
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         vcfg = self.config.vision_config
@@ -357,11 +344,14 @@ class Qwen3_5VLMModel(nn.Module):
             seq_lens=seq_lens,
         )
 
-        cp_group = getattr(self.language_model, "_cp_group", None)
-        if image_grid_thw is not None and cp_group is not None:
-            cp_rank = self.language_model._cp_rank
-            cp_world_size = self.language_model._cp_world_size
-            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
+        if image_grid_thw is not None and self.language_model.cp_enabled:
+            cp_rank, cp_world_size = self.language_model.cp_rank, self.language_model.cp_world_size
+            setup_cp_attention_params(
+                position_ids,
+                cp_group=self.language_model.cp_group,
+                cp_style=self.language_model.cp_style,
+                seq_lens=seq_lens,
+            )
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
             seq_lens_are_pre_shard = True
@@ -410,9 +400,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
-
-    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
-        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def forward(
         self,

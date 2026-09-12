@@ -5,6 +5,7 @@
 - **Minimal try/except**: let errors propagate — silent failures hide bugs. Only catch exceptions for intentional fault tolerance (retries, robustness).
 - **Don't touch `optimization_dtype` / `reduce_dtype`**: never change these model config fields (or their defaults in `trainer.py`) unless the user explicitly asks. They're load-bearing numerical knobs — flipping bfloat16/float32 silently changes training dynamics.
 - **Targeted comments**: don't explain your work process or reference old code. Use targeted comments sparingly to clarify ambiguous logic.
+- **Context parallelism**: a module that needs CP state implements `setup_context_parallel(cp_group, cp_rank, cp_world_size, cp_style)` and stores exactly those four names; `PreTrainedModelPrimeRL` supplies a default that does that. `setup_context_parallel` in `utils/cp.py` calls it on every module that defines it, so each module sets only itself and never walks its children. It iterates `model.modules()`: depth-first pre-order, so a module comes before its descendants and each subtree finishes before the next sibling.
 - **Zen of Python**: remember the Zen of Python when writing code.
 ```
 Beautiful is better than ugly.

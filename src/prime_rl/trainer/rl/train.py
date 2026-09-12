@@ -8,7 +8,6 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
@@ -22,6 +21,7 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
+    setup_context_parallel,
     setup_cp_params,
     shard_for_cp,
 )
@@ -69,7 +69,6 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
-from ring_flash_attn import substitute_hf_flash_attn
 
 
 @clean_exit
@@ -192,27 +191,7 @@ def train(config: TrainerConfig):
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
     if parallel_dims.cp_enabled:
-        cp_group = parallel_dims.world_mesh["cp"].get_group()
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        if config.model.cp_style == "ring":
-            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        else:
-            from prime_rl.trainer.models.layers.ulysses_attn import (
-                substitute_hf_ulysses_attn,
-                substitute_ulysses_attn,
-            )
-
-            substitute_hf_ulysses_attn(cp_group)
-            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
-
-        # sparse MLA is softmax (works with both ring and ulysses).
-        setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
-        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
-        if config.model.cp_style == "ulysses":
-            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_context_parallel(model, config.model, parallel_dims)
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
     # carries no adapter weights); a checkpoint resume below overwrites it.

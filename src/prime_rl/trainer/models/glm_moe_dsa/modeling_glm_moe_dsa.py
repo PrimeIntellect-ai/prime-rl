@@ -12,7 +12,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     conversion_chain,
@@ -90,12 +90,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-        self.self_attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
@@ -142,6 +136,14 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
     def _init_weights(self, module):
         super()._init_weights(module)
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset({"ring"}),
+            "currently only supporting the minimal ring strategy where all keys, or tensors "
+            "required to form the keys are all-gathered in the CP region.",
+        )
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -192,13 +194,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 
         self.post_init()
 
-    def _context_parallel_state(self) -> tuple[dist.ProcessGroup | None, int, int]:
-        if len(self.layers) == 0:
-            return None, 0, 1
-
-        layer = self.layers[0]
-        return getattr(layer, "_cp_group", None), getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
-
     def _gather_position_ids_for_cp(
         self,
         position_ids: torch.LongTensor,
@@ -234,9 +229,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        cp_group, cp_rank, cp_world_size = self._context_parallel_state()
-        if cp_group is not None and cp_world_size > 1:
-            position_ids_full = self._gather_position_ids_for_cp(position_ids, cp_group, cp_world_size)
+        cp_rank, cp_world_size = self.cp_rank, self.cp_world_size
+        if self.cp_enabled:
+            position_ids_full = self._gather_position_ids_for_cp(position_ids, self.cp_group, cp_world_size)
         else:
             position_ids_full = position_ids
 
