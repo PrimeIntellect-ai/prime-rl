@@ -22,8 +22,6 @@ num_infer_replicas = 4
 project = "nemotron-3-super"
 name = "nemotron-3-super-swe"
 
-[monitors.prime]
-
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
