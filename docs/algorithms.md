@@ -143,7 +143,7 @@ At runtime, each env's resolved config builds two objects: a `GenerationSource` 
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
-| `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
+| `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty and length-weighted baseline) |
 | `echo` | `EchoAlgorithm` | `score_episode`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
@@ -275,7 +275,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 
 | Type | Component | Effect |
 |---|---|---|
-| `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
+| `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty and length-weighted baseline. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
 | `hierarchical_grpo` | `rl` | GRPO for proposer-solver envs: solvers are compared within one proposed problem, while proposers are compared across proposals. |
@@ -298,6 +298,14 @@ type = "grpo"
 
 [orchestrator.algo.length_penalty]
 type = "linear"
+```
+
+A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms, off by default) replaces the group-mean baseline $\bar{s}$ with the length-weighted group baseline $b = \frac{\sum_i s_i L_i}{\sum_i L_i}$, where $L_i$ is rollout $i$'s trainable-token count — SWE-2's baseline ([cognition.com/blog/swe-2](https://cognition.com/blog/swe-2)). The variance-optimal REINFORCE baseline weights each rollout by its score-gradient norm, and that norm is empirically correlated with rollout length, so weighting by trainable tokens approximates it at no extra cost; SWE-2's ablations credit it with more stable training and lower inference–training KL. Like the group mean, it is estimated from the sampled group, so its bias decays as $1/\text{group\_size}$. Its advantages no longer sum to zero over the group's rollouts — instead the trainable-token-weighted sum is zero, so longer rollouts carry proportionally smaller credit. It applies to the rewards after the optional length penalty, so both can be combined.
+
+```toml
+[orchestrator.algo]
+type = "grpo"
+length_weighted_baseline = true
 ```
 
 ### Hierarchical GRPO
