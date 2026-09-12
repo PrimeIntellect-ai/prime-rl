@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
+from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
@@ -29,26 +29,19 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
 
     configure_moe_runtime(model, config, dims)
 
-    assert isinstance(moe.experts.grouped_gemm, BF16GroupedGemm)
+    assert isinstance(moe.experts.compute, BF16ExpertCompute)
     assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
-    assert moe.token_dispatcher.token_group_alignment == moe.experts.grouped_gemm.token_group_alignment
+    assert moe.token_dispatcher.token_group_alignment == moe.experts.compute.token_group_alignment
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
-def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     outputs = []
     start = 0
     for expert, end in enumerate(offs.tolist()):
         outputs.append(x[start:end] @ weights[expert])
         start = end
     return torch.cat(outputs)
-
-
-class ReferenceGroupedGemm:
-    token_group_alignment = 1
-
-    def __call__(self, x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
-        return _grouped_mm_reference(x, weights, offs=offs)
 
 
 def _scaled_square_experts(x: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -127,7 +120,7 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         expert_type=expert_type,
         activation=activation,
         bias=True,
-        grouped_gemm=ReferenceGroupedGemm(),
+        compute=GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1),
     )
     experts.init_weights(0.02)
 
