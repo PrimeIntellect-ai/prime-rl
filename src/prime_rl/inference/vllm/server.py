@@ -60,6 +60,7 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "mx_refit": "prime_rl.inference.vllm.worker.mx_refit.MXRefitUpdateWorker",
 }
 
 
@@ -79,7 +80,12 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    args = (
+        (data.get("weight_dir"), data["version_uid"])
+        if data.get("version_uid") is not None
+        else (data.get("weight_dir"),)
+    )
+    await engine_client(request).collective_rpc("update_weights_from_path", args=args)
     return {"status": "ok"}
 
 
