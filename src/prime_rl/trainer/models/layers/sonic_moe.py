@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
 
 class SonicMoEExpertCompute(ExpertCompute):
+    token_group_alignment = 8
+
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         gate_up = experts.gate_up_proj
         down = experts.down_proj
