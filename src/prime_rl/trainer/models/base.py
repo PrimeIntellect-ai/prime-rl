@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+import torch.distributed as dist
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
@@ -24,6 +25,23 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
     after loading with meta device.
     """
+
+    cp_group: dist.ProcessGroup | None = None
+    cp_rank: int = 0
+    cp_world_size: int = 1
+    cp_style: CPStyle | None = None
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self.cp_world_size > 1
+
+    def setup_context_parallel(
+        self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
+    ) -> None:
+        self.cp_group = cp_group
+        self.cp_rank = cp_rank
+        self.cp_world_size = cp_world_size
+        self.cp_style = cp_style
 
     @classmethod
     def cp_support(cls, config) -> CPSupport:

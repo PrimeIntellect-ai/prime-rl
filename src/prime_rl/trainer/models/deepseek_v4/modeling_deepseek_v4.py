@@ -9,7 +9,6 @@ embedding all the way to `hc_head`, which collapses them back before the final n
 from __future__ import annotations
 
 import torch
-import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -50,12 +49,6 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.attn_hc = DeepseekV4HyperConnection(config)
         self.ffn_hc = DeepseekV4HyperConnection(config)
-
-    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-        self.self_attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def forward(
         self,
@@ -201,13 +194,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         self.post_init()
 
-    def get_cp_rank_and_world_size(self) -> tuple[int, int]:
-        if len(self.layers) == 0:
-            return 0, 1
-
-        layer = self.layers[0]
-        return getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
-
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -249,7 +235,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         """
         assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
 
-        cp_rank, cp_world_size = self.get_cp_rank_and_world_size()
+        cp_rank, cp_world_size = self.cp_rank, self.cp_world_size
         assert seq_lens_are_pre_shard == (cp_world_size > 1), (
             f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
         )

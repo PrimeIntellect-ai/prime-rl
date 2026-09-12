@@ -17,7 +17,6 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
-from prime_rl.utils.cp import setup_model_cp
 
 
 def get_text_config(config_cls=Qwen3_5TextConfig) -> Qwen3_5TextConfig:
@@ -90,36 +89,27 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     text_model = get_model(text_config, device="meta")
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
-    setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
-    assert text_model.model.context_parallel_group is cp_group
-    assert text_model.model.context_parallel_rank == 1
-    assert text_model.model.context_parallel_world_size == 2
-    assert linear_layer.linear_attn.context_parallel_group is cp_group
-    assert linear_layer.linear_attn.context_parallel_world_size == 2
+
+    for module in text_model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
+
+    assert text_model.model.cp_group is cp_group
+    assert text_model.model.cp_rank == 1
+    assert text_model.model.cp_world_size == 2
+    assert text_model.model.cp_style == "ulysses"
+    assert linear_layer.linear_attn.cp_group is cp_group
+    assert linear_layer.linear_attn.cp_world_size == 2
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
-    setup_model_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
-    assert vlm_model.model.language_model.context_parallel_group is cp_group
-    assert vlm_model.model.language_model.layers[0].linear_attn.context_parallel_world_size == 2
 
+    for module in vlm_model.modules():
+        if hasattr(module, "setup_context_parallel"):
+            module.setup_context_parallel(cp_group, 0, 2, "ulysses")
 
-def test_setup_model_cp_requires_hook_only_for_hybrid_models():
-    class HybridLayer(torch.nn.Module):
-        layer_type = "linear_attention"
-
-    class Inner:
-        layers = torch.nn.Sequential(torch.nn.Sequential(HybridLayer()))
-
-    class HybridNoHookModel:
-        model = Inner()
-
-    with pytest.raises(ValueError, match="set_context_parallel_attributes"):
-        setup_model_cp(HybridNoHookModel(), MagicMock(), cp_rank=0, cp_world_size=2)
-
-    class SoftmaxOnlyModel:
-        pass
-
-    setup_model_cp(SoftmaxOnlyModel(), MagicMock(), cp_rank=0, cp_world_size=2)
+    assert vlm_model.model.language_model.cp_group is cp_group
+    assert vlm_model.model.language_model.cp_style == "ulysses"
+    assert vlm_model.model.language_model.layers[0].linear_attn.cp_world_size == 2
 
 
 def test_ring_patches_flash_attention():
