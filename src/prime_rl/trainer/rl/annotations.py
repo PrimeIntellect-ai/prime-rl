@@ -12,8 +12,9 @@ from prime_rl.monitors.file.traces.update import make_update
 
 
 class AnnotationWriter:
-    """Collects the trainer's per-token streams (recomputed logprobs, entropies, and
-    loss decisions) during a step and logs them as trace updates — one record per trained sequence, keyed by
+    """Collects the trainer's per-token streams (recomputed logprobs, entropies, the
+    trainer-vs-sampler KL, and loss decisions) during a step and logs them as trace
+    updates — one record per trained sequence, keyed by
     ``(trace_id, branch_index)``. Streams are full-length over the sample's token prefix
     so readers can fold them onto trace nodes without knowing the trainer's loss mask;
     positions outside that mask hold null, since a fold keeps sampled tokens only and a
@@ -47,6 +48,11 @@ class AnnotationWriter:
         trainer_logprobs = _tensor_to_floats(model_output["logprobs"], self.float_decimals)
         entropies = _tensor_to_floats(model_output["entropy"], self.float_decimals)
         is_masked = _tensor_to_optional_bools(loss_annotations.get("is_masked"))
+        # The KL is a tiny difference of exponentials, so its stream rounds finer than
+        # the logprobs — float_decimals digits would flatten most of them to zero.
+        kl_decimals = None if self.float_decimals is None else max(self.float_decimals, 6)
+        sampled = _sampled_positions(loss_mask, micro_batch["rl_weights"], micro_batch["ref_kl_weights"])
+        mismatch_kl = _mismatch_kl(model_output["logprobs"], micro_batch["inference_logprobs"], sampled, kl_decimals)
 
         start = 0
         for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
@@ -63,10 +69,12 @@ class AnnotationWriter:
             logprob_span = [v if m else None for v, m in zip(trainer_logprobs[span_start:end], trained)]
             entropy_span = [v if m else None for v, m in zip(entropies[span_start:end], trained)]
             is_masked_span = is_masked[span_start:end] if is_masked is not None else None
+            kl_span = [v if m else None for v, m in zip(mismatch_kl[span_start:end], sampled[span_start:end])]
             # After the right shift, a sample's first value crosses the packing boundary.
             logprob_span[0] = None
             entropy_span[0] = None
-            streams = {"trainer_logprobs": logprob_span, "entropies": entropy_span}
+            kl_span[0] = None
+            streams = {"trainer_logprobs": logprob_span, "entropies": entropy_span, "mismatch_kl": kl_span}
             if is_masked_span is not None:
                 is_masked_span[0] = None
                 streams["is_masked"] = is_masked_span
@@ -94,6 +102,31 @@ def _tensor_to_floats(tensor: Tensor, decimals: int | None) -> list[float | None
     if decimals is None:
         return [value if math.isfinite(value) else None for value in values]
     return [round(value, decimals) if math.isfinite(value) else None for value in values]
+
+
+def _sampled_positions(loss_mask: list[bool], rl_weights: Tensor | None, ref_kl_weights: Tensor | None) -> list[bool]:
+    """Loss-mask positions whose action the policy sampled, mirroring the trainer's
+    own mismatch metric: a ce token is a frozen model's action, so the sampler logprob
+    beside it is that model's and the trainer-vs-sampler KL is meaningless there."""
+    if rl_weights is None and ref_kl_weights is None:
+        return loss_mask
+    sampled = [v != 0 for v in rl_weights.detach().cpu().reshape(-1).tolist()] if rl_weights is not None else loss_mask
+    if ref_kl_weights is not None:
+        for i, v in enumerate(ref_kl_weights.detach().cpu().reshape(-1).tolist()):
+            sampled[i] = sampled[i] or v != 0
+    return [m and s for m, s in zip(loss_mask, sampled)]
+
+
+def _mismatch_kl(
+    trainer_logprobs: Tensor, inference_logprobs: Tensor, sampled: list[bool], decimals: int | None
+) -> list[float | None]:
+    """The trainer-vs-sampler KL per token — the same estimate the trainer's own
+    mismatch metric logs. Null where the policy did not sample the action, and where
+    the estimate overflowed (non-finite values read as null downstream)."""
+    log_ratio = trainer_logprobs.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
+    log_ratio = log_ratio - inference_logprobs.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
+    values = _tensor_to_floats(torch.exp(log_ratio) - log_ratio - 1, decimals)
+    return [v if m else None for v, m in zip(values, sampled)]
 
 
 def _tensor_to_optional_bools(tensor: Tensor | None) -> list[bool | None] | None:
