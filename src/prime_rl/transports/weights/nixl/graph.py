@@ -326,6 +326,8 @@ class LazyWeight(torch.Tensor):
         return func(*args, **kwargs)
 
 
+# Cat places sources in separate parts of the logical output. Later layout
+# operations must transform those parts as well as each source's operation chain.
 def destination_coordinates(copy: RecordedCopy, shape: tuple[int, ...]) -> tuple[int, ...]:
     """Locate a copy in a contiguous logical output before binding physical strides."""
     strides = torch.empty(shape, device="meta").stride()
@@ -348,7 +350,7 @@ def place_copy(
 def slice_copies(
     copies: list[RecordedCopy], shape: tuple[int, ...], index, output_shape: tuple[int, ...]
 ) -> list[RecordedCopy]:
-    """Intersect a slice with each copy and translate it into source-local indexing."""
+    """Intersect copies with basic indexing, narrow/select, or a selected chunk/split/unbind output."""
     indices = list(index if isinstance(index, tuple) else (index,))
     consumed_dimensions = sum(item is not None and item is not Ellipsis for item in indices)
     expanded = []
@@ -403,7 +405,7 @@ def slice_copies(
 
 
 def split_flat_interval(start: int, length: int, shape: tuple[int, ...]):
-    """Partition a flat interval into contiguous rectangular output slices."""
+    """Partition a flat interval into rectangular output slices for reshape_copies."""
     if not shape:
         yield (), (), 1
         return
@@ -424,7 +426,7 @@ def split_flat_interval(start: int, length: int, shape: tuple[int, ...]):
 def reshape_copies(
     copies: list[RecordedCopy], old_shape: tuple[int, ...], new_shape: tuple[int, ...]
 ) -> list[RecordedCopy]:
-    """Split copies where reshaping makes their logical destination slices nonrectangular."""
+    """Handle view/reshape/flatten/unsqueeze/squeeze, splitting nonrectangular contributions into copies."""
     if prod(new_shape) == 0:
         return []
     if old_shape == new_shape:
@@ -476,7 +478,7 @@ def map_operation_copies(
     result: torch.Tensor | tuple[torch.Tensor, ...],
     source_ops: OperationChain,
 ) -> list[RecordedCopy]:
-    """Update source chains and destination layouts using an operation's evaluated metadata."""
+    """Dispatch cat, indexing, and shape changes; handle transpose/t/permute and casts/contiguous here."""
     operation = source_ops[0]
     name, args, kwargs = operation.name, operation.args, operation.kwargs
     shape = tuple(meta.shape)
@@ -490,6 +492,7 @@ def map_operation_copies(
     mapped = []
     partial = []
     for copy in copies:
+        # A copy covering the whole input keeps the original operation unchanged.
         if copy.destination_offset == 0 and copy.destination_shape == shape:
             mapped.append(
                 place_copy(
@@ -564,7 +567,7 @@ def concatenate_copies(
     result: torch.Tensor,
     operation: TensorOperation,
 ) -> list[RecordedCopy]:
-    """Place the current graph and each additional input into the concatenated output."""
+    """Handle cat by placing each input's copies into its slice of the concatenated output."""
     (other_inputs,) = operation.args
     dimension = operation.kwargs["dim"] % result.ndim
     inputs = [(copies, first)]
@@ -593,7 +596,7 @@ def concatenate_copies(
 
 
 def lower_graph(weight: LazyWeight, destination: RecordedCopy) -> list[RecordedCopy]:
-    """Interpret a graph from its source and bind all contributions to the destination."""
+    """Walk all operations for one or many sources, then bind copies to the destination's physical strides."""
     root = torch.empty(weight._source_shape, dtype=weight._source_dtype, device="meta")
     source = replace(destination, source_name=weight._source_name, ops=())
     copies = [place_copy(source, (0,) * root.ndim, tuple(root.shape), tuple(root.shape))]
