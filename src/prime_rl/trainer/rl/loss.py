@@ -1,12 +1,12 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import torch
 from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -37,10 +37,18 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 
 
-LossFn = Callable[..., LossOutputs]
-"""Type for a per-sample loss function.
+class Loss(Protocol):
+    """Interface for the config-initialized rl loss objects built by
+    ``setup_rl_loss_fn``: ``IPOLoss``, ``IcePopLoss`` and ``CustomLoss``."""
 
-Expected signature:
+    def loss(self, inputs: LossInputs) -> LossOutputs: ...
+
+
+LossFn = Callable[..., LossOutputs]
+"""Type for a per-sample loss function, as opposed to a ``Loss`` object: the
+fixed ce / ref_kl losses and the function imported from ``CustomLossConfig``.
+
+Expected signature for a custom loss:
     def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
         ...
 """
@@ -129,39 +137,80 @@ def compute_importance_ratio_and_mismatch_kl(
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
-def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
+class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
     the importance ratio, and a squared-log-ratio KL regularizer."""
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    advantages = inputs.advantages
-    loss_mask = inputs.loss_mask
 
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
+    def __init__(self, config: IPOLossConfig):
+        self.config = config
 
-    abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        loss_config = self.config
+        trainer_logprobs = inputs.trainer_logprobs
+        inference_logprobs = inputs.inference_logprobs
+        advantages = inputs.advantages
+        loss_mask = inputs.loss_mask
 
-    is_masked = abs_probs_diff > loss_config.eps
-    keep_mask = loss_mask & ~is_masked
+        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            trainer_logprobs, inference_logprobs
+        )
 
-    advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
+        abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
 
-    metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-        "is_masked": _safe_mean(is_masked, loss_mask),
-    }
+        is_masked = abs_probs_diff > loss_config.eps
+        keep_mask = loss_mask & ~is_masked
 
-    return LossOutputs(loss=loss, metrics=metrics)
+        advantages = loss_config.adv_tau * advantages
+        pg_loss = keep_mask * advantages * importance_ratio
+        kl_loss = loss_mask * log_importance_ratio**2
+        per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+        loss = per_token_loss.sum()
+
+        metrics = {
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+            "is_masked": _safe_mean(is_masked, loss_mask),
+        }
+
+        return LossOutputs(loss=loss, metrics=metrics)
+
+
+class IcePopLoss:
+    """IcePop loss type: policy gradient with a fixed importance-ratio
+    acceptance band."""
+
+    def __init__(self, config: IcePopLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        loss_config = self.config
+        log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            inputs.trainer_logprobs, inputs.inference_logprobs
+        )
+
+        log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
+        log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
+        detached_log_ratio = log_importance_ratio.detach()
+        is_masked = (detached_log_ratio < log_ratio_low) | (detached_log_ratio > log_ratio_high)
+        keep_mask = inputs.loss_mask & ~is_masked
+
+        # Mask before exponentiation so rejected extreme ratios cannot produce
+        # 0 * inf = NaN in the loss or its gradient.
+        safe_log_ratio = torch.where(keep_mask, log_importance_ratio, torch.zeros_like(log_importance_ratio))
+        importance_ratio = torch.exp(safe_log_ratio)
+        per_token_loss = -(keep_mask * loss_config.adv_tau * inputs.advantages * importance_ratio)
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+
+        metrics = {
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask & is_masked),
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            "is_masked": _safe_mean(is_masked, inputs.loss_mask),
+        }
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -227,23 +276,30 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
-    """Build the loss fn for the rl component from ``trainer.loss``:
-    ``ipo_loss_fn`` (``IPOLossConfig``) or the imported function
-    (``CustomLossConfig``).
+class CustomLoss:
+    """Custom loss type: the loss function imported from ``import_path``,
+    called with ``kwargs``."""
+
+    def __init__(self, config: CustomLossConfig):
+        self.config = config
+        self.fn: LossFn = import_object(config.import_path)
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        return self.fn(inputs, **self.config.kwargs)
+
+
+def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
+    """Build the loss object for the rl component from ``trainer.loss``.
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
-    if isinstance(loss_config, CustomLossConfig):
-        custom_fn = import_object(loss_config.import_path)
-        kwargs = loss_config.kwargs
-
-        def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return custom_fn(inputs, **kwargs)
-    else:
-
-        def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return ipo_loss_fn(inputs, loss_config)
-
-    return rl_fn
+    match loss_config:
+        case CustomLossConfig():
+            return CustomLoss(loss_config)
+        case IPOLossConfig():
+            return IPOLoss(loss_config)
+        case IcePopLossConfig():
+            return IcePopLoss(loss_config)
+        case _:
+            raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
 
 def compute_loss(
@@ -255,7 +311,7 @@ def compute_loss(
     rl_weights: list[Float[Tensor, " seq_i"]] | None,
     ce_weights: list[Float[Tensor, " seq_i"]] | None,
     ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
-    rl_loss_fn: LossFn,
+    rl_loss_fn: Loss,
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
@@ -286,7 +342,7 @@ def compute_loss(
         rl_weights: Per-token rl weights for each sequence, or None (1.0 on the loss mask)
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
-        rl_loss_fn: Loss fn for the rl component from setup_rl_loss_fn()
+        rl_loss_fn: RL loss object built by setup_rl_loss_fn()
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
@@ -341,11 +397,11 @@ def compute_loss(
             )
 
         if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+            rl_loss = rl_loss + run_loss_fn(rl_loss_fn.loss, make_inputs(mask, None))
         else:
             rl_mask = mask & (rl_w != 0)
             if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+                rl_loss = rl_loss + run_loss_fn(rl_loss_fn.loss, make_inputs(rl_mask, rl_w))
         if ce_w is not None:
             ce_mask = ce_w != 0
             if bool(ce_mask.any()):

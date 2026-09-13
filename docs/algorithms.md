@@ -184,7 +184,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -214,6 +214,36 @@ The knobs under `[trainer.loss]` are:
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+### IcePop Loss
+
+IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
+importance ratio falls outside a fixed acceptance band, introduced to stabilize
+MoE RL in [Every Step Evolves: Scaling Reinforcement Learning for Trillion-Scale
+Mixture-of-Experts Reasoning Models](https://arxiv.org/abs/2510.18855). Accepted
+tokens retain the importance-weighted policy-gradient term, and there is no
+separate KL penalty:
+
+$$
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
+\mathbb{1}\!\left(\alpha \le \frac{\pi(y_t)}{\mu(y_t)} \le \beta\right)
+\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}.
+$$
+
+Enable it explicitly:
+
+```toml
+[trainer.loss]
+type = "icepop"
+ratio_low = 0.2
+ratio_high = 5.0
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
+| `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 ### Custom Loss
 

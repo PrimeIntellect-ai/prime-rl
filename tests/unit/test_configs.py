@@ -164,6 +164,19 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
+    default_config = TrainerConfig()
+    assert default_config.loss.type == "ipo"
+
+    config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
+    assert config.loss.type == "icepop"
+    assert config.loss.ratio_low == 0.2
+    assert config.loss.ratio_high == 5.0
+
+    with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
+
+
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
 
