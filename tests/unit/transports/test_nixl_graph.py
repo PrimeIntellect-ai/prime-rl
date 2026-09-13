@@ -168,6 +168,8 @@ def test_lazy_concatenation_replay(dim, operation):
     lazy = torch.cat(
         [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()], dim=dim
     )
+    assert lazy._ops[0].name == "cat"
+    assert len(lazy._ops[0].args[0]) == 2
     expected = torch.cat(list(sources.values()), dim=dim)
     if operation == "narrow":
         slice_length = expected.shape[dim] - 2
@@ -188,22 +190,27 @@ def test_lazy_concatenation_replay(dim, operation):
         lazy = lazy.narrow(dim, lazy.shape[dim], 0)
         expected = expected.narrow(dim, expected.shape[dim], 0)
 
-    destination = torch.full(expected.shape, -1, dtype=expected.dtype)
-    recorder.active_destination = Destination(object(), "weight", destination)
+    storage = torch.full(tuple(2 * size + 2 for size in expected.shape), -1, dtype=expected.dtype)
+    destination_index = tuple(slice(1, 1 + 2 * size, 2) for size in expected.shape)
+    destination = storage[destination_index]
+    recorder.active_destination = Destination(object(), "weight", storage)
     destination[...] = lazy
-    torch.testing.assert_close(destination, torch.full_like(destination, -1))
+    torch.testing.assert_close(storage, torch.full_like(storage, -1))
     for copy in recorder.copies:
         source = sources[copy.source_name]
         plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
         received = source.as_strided(plan.source_shape, plan.source_stride, plan.source_offset).clone()
-        destination.as_strided(copy.destination_shape, copy.destination_stride, copy.destination_offset).copy_(
+        storage.as_strided(copy.destination_shape, copy.destination_stride, copy.destination_offset).copy_(
             apply_chain(received, plan.replay_ops)
         )
-    torch.testing.assert_close(destination, expected, rtol=0, atol=0)
+    expected_storage = torch.full_like(storage, -1)
+    expected_storage[destination_index] = expected
+    torch.testing.assert_close(storage, expected_storage, rtol=0, atol=0)
 
 
-def replay_recorded_regions(recorder, sources, destination, expected):
+def replay_recorded_copies(recorder, sources, destination, expected):
     for copy in recorder.copies:
+        assert all(operation.name != "cat" for operation in copy.ops)
         source = sources[copy.source_name]
         plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
         received = source.as_strided(plan.source_shape, plan.source_stride, plan.source_offset).clone()
@@ -249,7 +256,7 @@ def test_composed_concatenation_replay(dimension, operation):
     destination.copy_(lazy)
 
     torch.testing.assert_close(destination, torch.full_like(destination, -1))
-    replay_recorded_regions(recorder, sources, destination, expected)
+    replay_recorded_copies(recorder, sources, destination, expected)
 
 
 @pytest.mark.parametrize("concat", [torch.cat, torch.concat, torch.concatenate])
@@ -269,7 +276,7 @@ def test_nested_concatenation_replay(concat):
     destination = torch.full_like(expected, -1)
     recorder.active_destination = Destination(object(), "weight", destination)
     destination.copy_(lazy)
-    replay_recorded_regions(recorder, sources, destination, expected)
+    replay_recorded_copies(recorder, sources, destination, expected)
 
 
 def test_concatenation_transpose_and_cast_stay_two_copies():
@@ -308,4 +315,4 @@ def test_concatenation_casts_preserve_rounding_and_existing_replay_behavior():
         plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
         assert plan.source_offset == 0
         assert plan.source_shape == tuple(source.shape)
-    replay_recorded_regions(recorder, sources, destination, expected)
+    replay_recorded_copies(recorder, sources, destination, expected)

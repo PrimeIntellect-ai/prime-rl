@@ -7,13 +7,12 @@ from typing import Any, Callable, Iterable
 
 import torch
 
-from prime_rl.transports.weights.nixl.copy_regions import CopyRegion, transform_regions
 from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 
 
 @dataclass(frozen=True)
 class TensorOperation:
-    """One replayable tensor method invocation."""
+    """One recorded tensor operation and its arguments."""
 
     name: str
     args: tuple[Any, ...] = ()
@@ -61,13 +60,17 @@ class UnsupportedOpError(NotImplementedError):
 
 
 def apply_chain(value: Any, ops: OperationChain) -> torch.Tensor:
-    """Replay a recorded chain, including deferred dtype conversions."""
-    # Invariant: LazyWeight records only operations from SUPPORTED_OPS and
-    # follows tuple-returning methods with tuple_getitem, so every chain ends
-    # in a tensor.
+    """Evaluate recorded tensor operations; cat is evaluated only on metadata."""
+    # Tuple-returning methods are followed by tuple_getitem. Cat is evaluated
+    # only on metadata and is split into independent copies before replay.
     result = value
     for operation in ops:
-        if operation.name == "tuple_getitem":
+        if operation.name == "cat":
+            if not result.is_meta:
+                raise UnsupportedOpError("concatenation must be lowered to independent copies before replay")
+            (inputs,) = operation.args
+            result = torch.cat([weight._meta() for weight in inputs], **operation.kwargs)
+        elif operation.name == "tuple_getitem":
             result = result[operation.args[0]]
         elif operation.name == "__getitem__":
             result = result[operation.args[0]]
@@ -121,7 +124,7 @@ def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: Operatio
 
 @dataclass
 class RecordedCopy:
-    source_name: str
+    source_name: str | None
     ops: OperationChain
     destination_module: Any
     destination_name: str
@@ -181,8 +184,6 @@ class LazyWeight(torch.Tensor):
         device: torch.device,
         recorder: WeightLoadRecorder,
         ops: OperationChain = (),
-        *,
-        source_operation: TensorOperation | None = None,
     ) -> "LazyWeight":
         meta = apply_chain(torch.empty(source_shape, dtype=source_dtype, device="meta"), ops)
         value = torch.Tensor._make_wrapper_subclass(
@@ -195,7 +196,6 @@ class LazyWeight(torch.Tensor):
             requires_grad=False,
         )
         value._source_name = source_name
-        value._source_operation = source_operation
         value._source_shape = torch.Size(source_shape)
         value._source_dtype = source_dtype
         value._ops = tuple(ops)
@@ -220,7 +220,6 @@ class LazyWeight(torch.Tensor):
             self.device,
             self._recorder,
             self._ops + ops,
-            source_operation=self._source_operation,
         )
 
     @classmethod
@@ -234,50 +233,18 @@ class LazyWeight(torch.Tensor):
             if input_weight.device != first_input.device or input_weight._recorder is not first_input._recorder:
                 raise UnsupportedOpError("lazy concatenation requires matching device and recorder")
 
-        concatenated_meta = torch.cat([weight._meta() for weight in inputs], dim=dim)
-        concat_dimension = dim % concatenated_meta.ndim
         return cls(
             None,
-            concatenated_meta.shape,
-            concatenated_meta.dtype,
+            first_input._source_shape,
+            first_input._source_dtype,
             first_input.device,
             first_input._recorder,
-            source_operation=TensorOperation("cat", args=(inputs,), kwargs={"dim": concat_dimension}),
+            ops=(TensorOperation("cat", args=(inputs,), kwargs={"dim": dim}),),
         )
 
-    def _resolve_copy_regions(self) -> list[CopyRegion]:
-        """Lower the composed graph to independent sources and destination regions."""
-        if self._source_operation is None:
-            return [CopyRegion(self, (0,) * self.ndim)]
-
-        (input_weights,) = self._source_operation.args
-        concat_dimension = self._source_operation.kwargs["dim"]
-        regions = []
-        concat_offset = 0
-        for input_weight in input_weights:
-            if input_weight.numel() == 0:
-                continue
-            for region in input_weight._resolve_copy_regions():
-                offsets = list(region.offsets)
-                offsets[concat_dimension] += concat_offset
-                value = region.value
-                if value.dtype != self._source_dtype:
-                    value = value.to(dtype=self._source_dtype)
-                regions.append(CopyRegion(value, tuple(offsets)))
-            concat_offset += input_weight.shape[concat_dimension]
-
-        meta = torch.empty(self._source_shape, dtype=self._source_dtype, device="meta")
-        operations = iter(self._ops)
-        for operation in operations:
-            output_index = None
-            if operation.name in ("chunk", "split", "unbind"):
-                selection = next(operations)
-                assert selection.name == "tuple_getitem"
-                output_index = selection.args[0]
-            regions, meta = transform_regions(regions, meta, operation, output_index)
-        return regions
-
     def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
+        from prime_rl.transports.weights.nixl.copy_lowering import split_concatenated_copy
+
         if isinstance(destination, LazyWeight):
             raise UnsupportedOpError("copy_ between lazy graph tensors is not supported")
         if tuple(destination.shape) != tuple(self.shape):
@@ -290,28 +257,22 @@ class LazyWeight(torch.Tensor):
                 f"source={self.dtype}, destination={destination.dtype} for {self._source_name!r}"
             )
 
-        # Indexed assignment enters through ATen with __torch_function__ disabled.
-        with torch._C._EnableTorchFunction():
-            for region in self._resolve_copy_regions():
-                destination_slice = destination
-                for dimension, (offset, size) in enumerate(zip(region.offsets, region.value.shape, strict=True)):
-                    destination_slice = destination_slice.narrow(dimension, offset, size)
-                resolved_destination = self._recorder.resolve_destination(destination_slice)
-                if resolved_destination is None:
-                    continue
-                owner, destination_offset = resolved_destination
-                self._recorder.copies.append(
-                    RecordedCopy(
-                        source_name=region.value._source_name,
-                        ops=region.value._ops,
-                        destination_module=owner.module,
-                        destination_name=owner.name,
-                        destination_offset=destination_offset,
-                        destination_shape=tuple(destination_slice.shape),
-                        destination_stride=tuple(destination_slice.stride()),
-                        is_persistent=not destination_slice.is_meta,
-                    )
-                )
+        resolved_destination = self._recorder.resolve_destination(destination)
+        if resolved_destination is not None:
+            owner, destination_offset = resolved_destination
+            copy = RecordedCopy(
+                source_name=self._source_name,
+                ops=self._ops,
+                destination_module=owner.module,
+                destination_name=owner.name,
+                destination_offset=destination_offset,
+                destination_shape=tuple(destination.shape),
+                destination_stride=tuple(destination.stride()),
+                is_persistent=not destination.is_meta,
+            )
+            # Indexed assignment enters through ATen with __torch_function__ disabled.
+            with torch._C._EnableTorchFunction():
+                self._recorder.copies.extend(split_concatenated_copy(copy))
         # Loaders use copy_ for its side effect; the trace must never mutate
         # live kernel storage or attempt a meta-to-device copy.
         return destination
