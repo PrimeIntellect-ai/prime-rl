@@ -10,10 +10,13 @@ End-to-end usage examples for prime-rl, referenced from the top-level [README](.
   - `wordle` — multi-turn (~6-turn games)
   - `hendrycks-sanity` — single-turn math, long-running
   - `dynamo` — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
+  - [`vlm/`](basic/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
 - **[`advanced/`](advanced)** — larger, mostly multi-node runs on frontier models, one folder
-  per model: `qwen3-30b-a3b` (math/swe/tool), [`glm-4.5-air`](advanced/glm-4.5-air/README.md)
-  (search/swe/terminal), [`glm-5.2`](advanced/glm-5.2/README.md) (large-scale + PD-disaggregated
-  inference), `minimax-m2.5` (swe), `nemotron-3-super` (swe),
-  `intellect-3.1` (swe), `deepseek-v4-flash` (sft + a standalone vLLM serving pre-flight).
+  per model, each with a launch README: [`qwen3-30b-a3b`](advanced/qwen3-30b-a3b/README.md)
+  (math/swe/tool), [`glm-4.5-air`](advanced/glm-4.5-air/README.md) (search/swe/terminal),
+  [`glm-5.2`](advanced/glm-5.2/README.md) (large-scale + PD-disaggregated inference),
+  `intellect-3.1` (swe).
 
-Dev-sized (2-GPU) counterparts of `basic/` live in [`configs/basic/`](../configs/basic).
+Frontier-model configs without launch walkthroughs (`minimax-m2.5`, `nemotron-3-super`,
+`deepseek-v4-flash`) live in [`configs/advanced/`](../configs/advanced). Dev-sized (2-GPU)
+counterparts of `basic/` live in [`configs/basic/`](../configs/basic).
