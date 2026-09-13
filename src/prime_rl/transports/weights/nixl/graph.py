@@ -301,6 +301,10 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        # Indexed assignment lowers to a native copy without calling Tensor.copy_.
+        if func is torch.ops.aten.copy_.default and isinstance(args[1], cls):
+            return args[1]._record_copy(args[0])
+
         for value in (*args, *kwargs.values()):
             if isinstance(value, cls):
                 raise UnsupportedOpError(
