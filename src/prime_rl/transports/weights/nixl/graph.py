@@ -290,31 +290,28 @@ class LazyWeight(torch.Tensor):
                 f"source={self.dtype}, destination={destination.dtype} for {self._source_name!r}"
             )
 
-        if self._source_operation is not None:
-            # Indexed assignment enters through ATen with __torch_function__ disabled.
-            with torch._C._EnableTorchFunction():
-                for region in self._resolve_copy_regions():
-                    destination_slice = destination
-                    for dimension, (offset, size) in enumerate(zip(region.offsets, region.value.shape, strict=True)):
-                        destination_slice = destination_slice.narrow(dimension, offset, size)
-                    region.value._record_copy(destination_slice)
-            return destination
-
-        resolved_destination = self._recorder.resolve_destination(destination)
-        if resolved_destination is not None:
-            owner, destination_offset = resolved_destination
-            self._recorder.copies.append(
-                RecordedCopy(
-                    source_name=self._source_name,
-                    ops=self._ops,
-                    destination_module=owner.module,
-                    destination_name=owner.name,
-                    destination_offset=destination_offset,
-                    destination_shape=tuple(destination.shape),
-                    destination_stride=tuple(destination.stride()),
-                    is_persistent=not destination.is_meta,
+        # Indexed assignment enters through ATen with __torch_function__ disabled.
+        with torch._C._EnableTorchFunction():
+            for region in self._resolve_copy_regions():
+                destination_slice = destination
+                for dimension, (offset, size) in enumerate(zip(region.offsets, region.value.shape, strict=True)):
+                    destination_slice = destination_slice.narrow(dimension, offset, size)
+                resolved_destination = self._recorder.resolve_destination(destination_slice)
+                if resolved_destination is None:
+                    continue
+                owner, destination_offset = resolved_destination
+                self._recorder.copies.append(
+                    RecordedCopy(
+                        source_name=region.value._source_name,
+                        ops=region.value._ops,
+                        destination_module=owner.module,
+                        destination_name=owner.name,
+                        destination_offset=destination_offset,
+                        destination_shape=tuple(destination_slice.shape),
+                        destination_stride=tuple(destination_slice.stride()),
+                        is_persistent=not destination_slice.is_meta,
+                    )
                 )
-            )
         # Loaders use copy_ for its side effect; the trace must never mutate
         # live kernel storage or attempt a meta-to-device copy.
         return destination
