@@ -23,20 +23,24 @@ def route_sharded_tensor(
     source: TrainerTensor,
     destination: torch.Tensor,
 ) -> list[TensorRoute]:
-    """Route a strided trainer view into a contiguous destination tensor."""
+    """Route trainer views into destination slices, coalescing runs contiguous on both sides."""
     numel = 1
     for size in plan.source_shape:
         numel *= size
     if numel == 0:
         return []
 
-    dims = [(size, step) for size, step in zip(plan.source_shape, plan.source_stride) if size != 1]
-    if any(step < 0 for _, step in dims):
+    dims = [
+        (size, source_step, destination_step)
+        for size, source_step, destination_step in zip(plan.source_shape, plan.source_stride, destination.stride())
+        if size != 1
+    ]
+    if any(source_step < 0 for _, source_step, _ in dims):
         raise NotImplementedError("negative strides are not supported")
 
     run_elements = 1
     split_at = len(dims)
-    while split_at and dims[split_at - 1][1] == run_elements:
+    while split_at and dims[split_at - 1][1] == dims[split_at - 1][2] == run_elements:
         run_elements *= dims[split_at - 1][0]
         split_at -= 1
     outer_dims = dims[:split_at]
@@ -44,10 +48,8 @@ def route_sharded_tensor(
     routes: list[TensorRoute] = []
     itemsize = destination.element_size()
     destination_addr = destination.data_ptr()
-    destination_offset = 0
 
-    def route_run(element_offset: int, element_count: int) -> None:
-        nonlocal destination_offset
+    def route_run(element_offset: int, destination_offset: int, element_count: int) -> None:
         position = element_offset
         remaining = element_count
         while remaining:
@@ -63,21 +65,23 @@ def route_sharded_tensor(
                 TensorRoute(
                     agent=shard.agent,
                     source_addr=shard.addr + (position - shard.offset) * itemsize,
-                    destination_addr=destination_addr + destination_offset,
+                    destination_addr=destination_addr + destination_offset * itemsize,
                     nbytes=nbytes,
                 )
             )
             position += take
             remaining -= take
-            destination_offset += nbytes
+            destination_offset += take
 
-    def route_dimension(dim: int, element_offset: int) -> None:
+    def route_dimension(dim: int, element_offset: int, destination_offset: int) -> None:
         if dim == len(outer_dims):
-            route_run(element_offset, run_elements)
+            route_run(element_offset, destination_offset, run_elements)
             return
-        size, step = outer_dims[dim]
+        size, source_step, destination_step = outer_dims[dim]
         for index in range(size):
-            route_dimension(dim + 1, element_offset + index * step)
+            route_dimension(
+                dim + 1, element_offset + index * source_step, destination_offset + index * destination_step
+            )
 
-    route_dimension(0, plan.source_offset)
+    route_dimension(0, plan.source_offset, 0)
     return routes
