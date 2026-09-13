@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import torch
 
@@ -174,12 +174,14 @@ class LazyWeight(torch.Tensor):
     @staticmethod
     def __new__(
         cls,
-        source_name: str,
+        source_name: str | None,
         source_shape: torch.Size,
         source_dtype: torch.dtype,
         device: torch.device,
         recorder: WeightLoadRecorder,
         ops: OperationChain = (),
+        *,
+        source_operation: TensorOperation | None = None,
     ) -> "LazyWeight":
         meta = apply_chain(torch.empty(source_shape, dtype=source_dtype, device="meta"), ops)
         value = torch.Tensor._make_wrapper_subclass(
@@ -192,6 +194,7 @@ class LazyWeight(torch.Tensor):
             requires_grad=False,
         )
         value._source_name = source_name
+        value._source_operation = source_operation
         value._source_shape = torch.Size(source_shape)
         value._source_dtype = source_dtype
         value._ops = tuple(ops)
@@ -216,7 +219,69 @@ class LazyWeight(torch.Tensor):
             self.device,
             self._recorder,
             self._ops + ops,
+            source_operation=self._source_operation,
         )
+
+    @classmethod
+    def _record_concatenation(cls, tensors: Iterable["LazyWeight"], dim: int = 0) -> "LazyWeight":
+        """Record a cat node while keeping every trainer input independent."""
+        inputs = tuple(tensors)
+        if not inputs or not all(isinstance(weight, cls) for weight in inputs):
+            raise UnsupportedOpError("lazy concatenation requires only lazy weight sources")
+        first_input = inputs[0]
+        for input_weight in inputs:
+            if (
+                input_weight.dtype != first_input.dtype
+                or input_weight.device != first_input.device
+                or input_weight._recorder is not first_input._recorder
+            ):
+                raise UnsupportedOpError("lazy concatenation requires matching dtype, device, and recorder")
+
+        concatenated_meta = torch.cat([weight._meta() for weight in inputs], dim=dim)
+        if len(inputs) == 1:
+            return first_input
+        concat_dimension = dim % concatenated_meta.ndim
+        return cls(
+            None,
+            concatenated_meta.shape,
+            concatenated_meta.dtype,
+            first_input.device,
+            first_input._recorder,
+            source_operation=TensorOperation("cat", args=(inputs,), kwargs={"dim": concat_dimension}),
+        )
+
+    def _slice_concatenation_inputs(self, dim: int, start: int, length: int) -> "LazyWeight":
+        """Replace a slice of a cat node with the input slices it overlaps."""
+        # Validate the range with PyTorch before translating it to input offsets.
+        self._meta().narrow(dim, start, length)
+        dim %= self.ndim
+        if start < 0:
+            start += self.shape[dim]
+        (input_weights,) = self._source_operation.args
+        concat_dimension = self._source_operation.kwargs["dim"]
+        if dim != concat_dimension:
+            sliced_inputs = [weight.narrow(dim, start, length) for weight in input_weights]
+            return self._record_concatenation(sliced_inputs, concat_dimension)
+
+        slice_end = start + length
+        sliced_inputs = []
+        input_start = 0
+        for input_weight in input_weights:
+            input_end = input_start + input_weight.shape[dim]
+            overlap_start = max(start, input_start)
+            overlap_end = min(slice_end, input_end)
+            if overlap_start < overlap_end:
+                if overlap_start == input_start and overlap_end == input_end:
+                    sliced_inputs.append(input_weight)
+                else:
+                    local_start = overlap_start - input_start
+                    local_length = overlap_end - overlap_start
+                    sliced_inputs.append(input_weight.narrow(dim, local_start, local_length))
+            input_start = input_end
+
+        if not sliced_inputs:
+            return input_weights[0].narrow(dim, 0, 0)
+        return self._record_concatenation(sliced_inputs, dim)
 
     def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
         if isinstance(destination, LazyWeight):
@@ -230,6 +295,19 @@ class LazyWeight(torch.Tensor):
                 f"NIXL lazy copies only support BF16/FP32 values, got "
                 f"source={self.dtype}, destination={destination.dtype} for {self._source_name!r}"
             )
+
+        if self._source_operation is not None:
+            if self._ops:
+                raise UnsupportedOpError(f"cannot lower a multi-source weight through {self._ops!r}")
+            (input_weights,) = self._source_operation.args
+            concat_dimension = self._source_operation.kwargs["dim"]
+            destination_offset = 0
+            for input_weight in input_weights:
+                input_width = input_weight.shape[concat_dimension]
+                destination_slice = destination.narrow(concat_dimension, destination_offset, input_width)
+                input_weight._record_copy(destination_slice)
+                destination_offset += input_width
+            return destination
 
         resolved_destination = self._recorder.resolve_destination(destination)
         if resolved_destination is not None:
@@ -253,6 +331,8 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        if func is torch.cat:
+            return cls._record_concatenation(*args, **kwargs)
         if func is torch.Tensor.copy_:
             destination = args[0]
             source = args[1] if len(args) > 1 else kwargs.get("src")
@@ -278,6 +358,24 @@ class LazyWeight(torch.Tensor):
         meta = source._meta()
         with torch._C.DisableTorchFunctionSubclass():
             result = func(meta, *args, **kwargs)
+        # Resolve slices of a multi-input node before emitting replay chains.
+        if source._source_operation is not None and not source._ops:
+            if op_name == "narrow":
+                return source._slice_concatenation_inputs(*args, **kwargs)
+            if op_name in ("chunk", "split"):
+                if "dim" in kwargs:
+                    split_dimension = kwargs["dim"]
+                elif len(args) > 1:
+                    split_dimension = args[1]
+                else:
+                    split_dimension = 0
+                split_weights = []
+                split_start = 0
+                for split_meta in result:
+                    split_length = split_meta.shape[split_dimension]
+                    split_weights.append(source._slice_concatenation_inputs(split_dimension, split_start, split_length))
+                    split_start += split_length
+                return tuple(split_weights)
         operation = TensorOperation(name=op_name, args=args, kwargs=dict(kwargs))
         if isinstance(result, torch.Tensor):
             if result.dtype not in _SUPPORTED_DTYPES:
@@ -301,6 +399,10 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        # Indexed assignment lowers to a native copy without calling Tensor.copy_.
+        if func is torch.ops.aten.copy_.default and isinstance(args[1], cls):
+            return args[1]._record_copy(args[0])
+
         for value in (*args, *kwargs.values()):
             if isinstance(value, cls):
                 raise UnsupportedOpError(
