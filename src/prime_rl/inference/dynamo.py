@@ -26,6 +26,7 @@ from prime_rl.utils.logger import get_logger
 class DynamoWorker(BaseModel):
     admin_base_url: str
     instance_id: int = Field(ge=0, strict=True)
+    world_size: int = Field(gt=0, strict=True)
 
 
 class DynamoSnapshot(BaseModel):
@@ -52,8 +53,6 @@ def parse_dynamo_worker(
             raise DynamoDiscoveryPending("Dynamo worker is not ready")
         if raw_worker.get("admin_base_url") is None:
             raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url")
-        if type(raw_worker.get("world_size")) is not int or raw_worker["world_size"] != 1:
-            raise ValueError("Dynamo RL currently supports exactly one inference rank")
         worker = DynamoWorker.model_validate(raw_worker)
         try:
             admin_url = httpx.URL(worker.admin_base_url)
@@ -82,8 +81,8 @@ def parse_dynamo_worker(
     return matching_workers[0]
 
 
-def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str]:
-    return worker.instance_id, str(httpx.URL(worker.admin_base_url))
+def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str, int]:
+    return worker.instance_id, str(httpx.URL(worker.admin_base_url)), worker.world_size
 
 
 def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
@@ -171,7 +170,7 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
-        self._fingerprint: tuple[int, str] | None = None
+        self._fingerprint: tuple[int, str, int] | None = None
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()
 
@@ -187,6 +186,11 @@ class DynamoAdminPlane(AdminPlane):
 
     def _terminalize_nccl(self) -> None:
         self._nccl_initialization_state = "terminal"
+
+    def _bound_world_size(self) -> int:
+        if self._fingerprint is None:
+            raise RuntimeError("Dynamo topology has not been pinned")
+        return self._fingerprint[2]
 
     async def _discover(self) -> DynamoWorker:
         return await discover_dynamo_worker(
@@ -211,7 +215,7 @@ class DynamoAdminPlane(AdminPlane):
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
-        previous_fingerprint: tuple[int, str] | None = None
+        previous_fingerprint: tuple[int, str, int] | None = None
         last_error: Exception | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             try:
@@ -263,7 +267,7 @@ class DynamoAdminPlane(AdminPlane):
     def _bind(
         self,
         worker: DynamoWorker,
-        fingerprint: tuple[int, str],
+        fingerprint: tuple[int, str, int],
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._fingerprint = fingerprint
@@ -274,7 +278,7 @@ class DynamoAdminPlane(AdminPlane):
             raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        previous_changed_fingerprint: tuple[int, str] | None = None
+        previous_changed_fingerprint: tuple[int, str, int] | None = None
         last_error: Exception | None = None
         deadline = time.monotonic() + self._timeout
         for attempt in range(3):
@@ -323,7 +327,14 @@ class DynamoAdminPlane(AdminPlane):
             )
             response.raise_for_status()
             payload = response.json()
-        if payload != {"results": [None]}:
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or len(payload) != 1
+            or not isinstance(results, list)
+            or len(results) != self._bound_world_size()
+            or any(result is not None for result in results)
+        ):
             raise ValueError("Dynamo worker returned an invalid collective RPC response")
 
     async def update_weights(
@@ -394,12 +405,16 @@ class DynamoAdminPlane(AdminPlane):
     ) -> None:
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
-            if inference_world_size != 1:
-                raise ValueError("Dynamo RL currently supports exactly one inference rank")
+            discovered_world_size = self._bound_world_size()
+            if inference_world_size != discovered_world_size:
+                raise ValueError(
+                    f"Configured inference world size {inference_world_size} does not match discovered world size "
+                    f"{discovered_world_size}"
+                )
             self._nccl_initialization_state = "initializing"
             try:
                 await self.ensure_topology_current()
-                get_logger().info("Initializing Dynamo NCCL broadcast for one inference rank")
+                get_logger().info(f"Initializing Dynamo NCCL broadcast for {inference_world_size} inference ranks")
                 await self._collective_rpc(
                     self.clients[0],
                     method="init_broadcaster",
@@ -408,7 +423,7 @@ class DynamoAdminPlane(AdminPlane):
                         host,
                         port,
                         0,
-                        1,
+                        inference_world_size,
                         timeout,
                         "default",
                     ],

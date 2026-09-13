@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -24,11 +24,12 @@ def worker(
     *,
     admin_base_url: str | None = None,
     model: str = MODEL,
+    world_size: int = 1,
 ) -> dict:
     return {
         "instance_id": instance_id,
         "admin_base_url": admin_base_url or f"http://worker:{8200 + instance_id}",
-        "world_size": 1,
+        "world_size": world_size,
         "model": model,
     }
 
@@ -83,10 +84,10 @@ def test_parse_dynamo_worker_rejects_multiple_matching_workers():
     ("worker_update", "error", "match"),
     [
         ({"admin_base_url": None}, DynamoDiscoveryPending, "admin_base_url"),
-        ({"world_size": 2}, ValueError, "exactly one inference rank"),
+        ({"world_size": 0}, ValueError, "greater than 0"),
     ],
 )
-def test_parse_dynamo_worker_validates_required_singleton_metadata(worker_update, error, match):
+def test_parse_dynamo_worker_validates_required_metadata(worker_update, error, match):
     payload = {**worker(1), **worker_update}
     with pytest.raises(error, match=match):
         parse_dynamo_worker(snapshot(payload), MODEL, expected_admin_host="worker")
@@ -195,14 +196,14 @@ def test_dynamo_admin_plane_rejects_confirmed_topology_drift():
 
 
 def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
-    admin = admin_for(worker(3))
+    admin = admin_for(worker(3, world_size=4))
 
     with (
         patch.object(admin, "ensure_topology_current", new=AsyncMock()),
         patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
         patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
     ):
-        with pytest.raises(ValueError, match="exactly one inference rank"):
+        with pytest.raises(ValueError, match="does not match discovered world size"):
             asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=2))
         collective_rpc.assert_not_awaited()
         assert admin._nccl_initialization_state == "uninitialized"
@@ -210,14 +211,54 @@ def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
         with pytest.raises(RuntimeError, match="ready NCCL initialization"):
             asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
 
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
+        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=4))
         asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
 
-    assert collective_rpc.await_args_list[0].kwargs["args"] == ["trainer", 29501, 0, 1, 10, "default"]
+    assert collective_rpc.await_args_list[0].kwargs["args"] == ["trainer", 29501, 0, 4, 10, "default"]
     assert collective_rpc.await_args_list[1].kwargs["args"] == [(tmp_path / "step_1").as_posix()]
     assert [call.args[1] for call in post.await_args_list] == ["/pause", "/resume"]
     assert admin._nccl_initialization_state == "ready"
     asyncio.run(admin.aclose())
+
+
+def test_dynamo_collective_rpc_requires_one_result_per_inference_rank():
+    admin = admin_for(worker(3, world_size=4))
+    response = Mock()
+    response.json.return_value = {"results": [None, None, None, None]}
+    client = AsyncMock()
+    client.post.return_value = response
+
+    asyncio.run(admin._collective_rpc(client, method="init_broadcaster", timeout=10, args=[]))
+
+    response.raise_for_status.assert_called_once_with()
+    response.json.return_value = {"results": [None]}
+    with pytest.raises(ValueError, match="invalid collective RPC response"):
+        asyncio.run(admin._collective_rpc(client, method="init_broadcaster", timeout=10, args=[]))
+
+    response.json.return_value = {"results": [None, None, "unexpected", None]}
+    with pytest.raises(ValueError, match="invalid collective RPC response"):
+        asyncio.run(admin._collective_rpc(client, method="init_broadcaster", timeout=10, args=[]))
+
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_collective_rpc_rejects_huge_world_size_without_allocating():
+    admin = admin_for(worker(3, world_size=10**100))
+    response = Mock()
+    response.json.return_value = {"results": [None]}
+    client = AsyncMock()
+    client.post.return_value = response
+
+    with pytest.raises(ValueError, match="invalid collective RPC response"):
+        asyncio.run(admin._collective_rpc(client, method="init_broadcaster", timeout=10, args=[]))
+
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_topology_fingerprint_includes_world_size():
+    assert topology_fingerprint(parsed(worker(1, world_size=2))) != topology_fingerprint(
+        parsed(worker(1, world_size=4))
+    )
 
 
 def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
