@@ -13,11 +13,13 @@ Large-scale RL and serving for the GLM-5 family — `zai-org/GLM-5`, `GLM-5.1`, 
 
 - A Slurm cluster with 8-GPU nodes, a shared filesystem, and at least **32 nodes** (16 trainer + 16 inference) for the RL configs. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path. If you have fewer nodes, drop `seq_len`, lower `num_train_nodes`, and reduce `cp` (llm-d variant) accordingly.
 - InfiniBand/RDMA NICs for the Mooncake KV pool (llm-d variants).
-- A [Prime Intellect](https://app.primeintellect.ai) account: rollout and eval agents run in Prime sandboxes. Log the `prime` CLI in — it ships with prime-rl's dependencies:
+- **Sandboxes.** Rollout and eval agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, log the `prime` CLI in — it ships with prime-rl's dependencies:
 
 ```bash
 uv run prime login   # or: uv run prime config set-api-key <your-key>
 ```
+
+  To run on your own infrastructure instead, swap `env.agent.runtime` on each source for a runtime your environments support (e.g. a local Docker backend).
 
 - Environment variables, exported in the shell you launch from — the launcher passes its environment to every component:
 
@@ -69,15 +71,29 @@ uv run inference @ examples/advanced/glm-5.2/infer/pd.toml
 uv run inference @ examples/advanced/glm-5.2/infer/pd-llmd.toml
 ```
 
-## Monitor
+## Monitor with the dashboard
 
-From the head node:
+Start the local run dashboard on the head node — it only reads the run directories, so it is safe to point at a live run while the job is training:
 
 ```bash
-uv run dashboard /shared/outputs   # http://localhost:7788
+uv run dashboard /shared/outputs   # serves http://localhost:7788
 ```
 
-The dashboard reads metrics, resolved configs, rollout traces, and merged component logs straight from the run directory, so it is safe to point at a live run (pass several output directories to track parallel experiments). SLURM stdout/stderr and the generated sbatch script land in `<run_dir>/launcher/`; per-component logs in `<run_dir>/logs/`.
+If the head node is remote, forward the port from your laptop and open `http://localhost:7788` in a browser:
+
+```bash
+ssh -L 7788:localhost:7788 <head-node>
+```
+
+Pick the run and you get five views:
+
+- **Metrics** — the W&B-style overview, read from the run's `metrics.jsonl`. Watch `reward/{all,env}/mean` trend upward over steps, and `seq_len/*` + `is_truncated/*` for rollout health.
+- **Configs** — the launch TOML next to the merged, resolved per-process configs the run actually started with.
+- **Trace** — a per-episode rollout viewer with per-token overlays (advantage, entropy, sampling mismatch, loss/content masks), showing the transcript, a wall-clock timeline, a terminal replay of model and tool activity, and a semantic graph of the model-call chain.
+- **Logs** — the merged component logs (trainer, orchestrator, inference), also on disk under `<run_dir>/logs/`.
+- **Reports** — markdown reports written to `<run_dir>/reports/`, if any tooling produces them.
+
+Pass several output directories to track parallel experiments side by side (`uv run dashboard /shared/outputs/a /shared/outputs/b`); a taken port automatically bumps to the next free one. SLURM stdout/stderr and the generated sbatch script land in `<run_dir>/launcher/`.
 
 ## Checkpoint and resume
 
