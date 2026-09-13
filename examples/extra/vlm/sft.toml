@@ -29,5 +29,8 @@ batch_size = 1
 micro_batch_size = 1
 seq_len = 16384
 
+[data.loss_mask]
+assistant = true # only assistant turns contribute to the loss; system/user/tool default to false
+
 [optim]
 lr = 1e-5

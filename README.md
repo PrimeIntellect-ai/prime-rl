@@ -204,10 +204,7 @@ These guides are designed to be run from a Slurm cluster but can also be adapted
 
 1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
 2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**Nemotron-3-Super**](examples/advanced/nemotron-3-super/): Train the `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
-4. [**MiniMax-M2.5 SWE**](examples/advanced/minimax-m2.5/): Train `MiniMax-M2.5` on agentic SWE tasks.
-5. [**INTELLECT-3.1**](examples/advanced/intellect-3.1/): Reproduce our `INTELLECT-3.1` training run.
-6. [**High-throughput GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` inference with P/D disaggregation, the `llm-d` router, and FP8.
+3. [**GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` training with P/D disaggregation, the `llm-d` router, and FP8.
 
 ## Docs
 
