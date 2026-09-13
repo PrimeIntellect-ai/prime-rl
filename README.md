@@ -203,7 +203,8 @@ Follow this guide to train large models on hard reasoning and agentic tasks.
 These guides are designed to be run from a Slurm cluster but can also be adapted to k8s deployments.
 
 1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
-2. [**GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` training with P/D disaggregation, the `llm-d` router, and FP8.
+2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
+3. [**GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` training with P/D disaggregation, the `llm-d` router, and FP8.
 
 ## Docs
 
