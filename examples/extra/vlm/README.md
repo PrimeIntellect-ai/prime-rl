@@ -12,7 +12,7 @@ Multimodal (VLM) supervised fine-tuning configs, dense and MoE. VLM training req
 Point `data.name` at your multimodal chat dataset (HF dataset with a `messages` column — see [Training § Dataset Format](../../../docs/training.md#dataset-format)), then:
 
 ```bash
-uv run sft @ examples/basic/vlm/sft.toml
+uv run sft @ examples/extra/vlm/sft.toml
 ```
 
 Notes:

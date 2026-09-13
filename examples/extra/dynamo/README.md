@@ -67,7 +67,7 @@ discovery_url = "http://dynamo.example:9000"
 After both endpoint checks pass, run Prime-RL from the repository in a third terminal. With no managed `[inference]` section, Prime-RL assigns GPU 0 to its single trainer process and leaves the external Dynamo worker on GPU 1:
 
 ```bash
-uv run rl @ examples/basic/dynamo/rl.toml
+uv run rl @ examples/extra/dynamo/rl.toml
 ```
 
 The example stops after five optimizer steps. Outputs are written under `outputs/` unless `output_dir` is overridden.
