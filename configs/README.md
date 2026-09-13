@@ -10,6 +10,7 @@ Configurations for running prime-rl.
   `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft + a standalone
   vLLM serving pre-flight). For the tutorialized equivalents, see
   [`examples/advanced/`](../examples/advanced).
+- **`evals/`** — standalone eval configs, run with `uv run evals @ configs/evals/swe.toml`.
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
   (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), and `multi-env/`
