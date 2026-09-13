@@ -15,7 +15,6 @@ class CopyRegion:
 
     value: torch.Tensor
     offsets: tuple[int, ...]
-    cast_dtypes: tuple[torch.dtype, ...] = ()
 
 
 def slice_regions(regions: list[CopyRegion], shape: tuple[int, ...], index) -> list[CopyRegion]:
@@ -62,18 +61,14 @@ def slice_regions(regions: list[CopyRegion], shape: tuple[int, ...], index) -> l
                 raise NotImplementedError(f"unsupported region index {item!r}")
             dimension += 1
         else:
-            selected_regions.append(
-                CopyRegion(region.value[tuple(source_index)], tuple(output_offsets), region.cast_dtypes)
-            )
+            selected_regions.append(CopyRegion(region.value[tuple(source_index)], tuple(output_offsets)))
     return selected_regions
 
 
 def permute_regions(regions: list[CopyRegion], dimensions: tuple[int, ...]) -> list[CopyRegion]:
     """Permute source values and their output coordinates together."""
     return [
-        CopyRegion(
-            region.value.permute(dimensions), tuple(region.offsets[dim] for dim in dimensions), region.cast_dtypes
-        )
+        CopyRegion(region.value.permute(dimensions), tuple(region.offsets[dim] for dim in dimensions))
         for region in regions
     ]
 
@@ -133,7 +128,7 @@ def reshape_regions(
             for output_offsets, output_shape, length in split_flat_interval(flat_start, run_length, new_suffix):
                 source_slice = flattened_source.narrow(prefix_dimensions, source_offset, length)
                 source_value = source_slice.reshape(prefix_shape + output_shape)
-                reshaped_regions.append(CopyRegion(source_value, prefix_offsets + output_offsets, region.cast_dtypes))
+                reshaped_regions.append(CopyRegion(source_value, prefix_offsets + output_offsets))
                 source_offset += length
     return reshaped_regions
 
@@ -181,10 +176,6 @@ def transform_regions(regions: list[CopyRegion], meta: torch.Tensor, operation, 
         return permute_regions(regions, tuple(dimensions)), result
     if name in ("view", "reshape", "flatten", "unsqueeze", "squeeze"):
         return reshape_regions(regions, shape, tuple(result.shape)), result
-    if name == "contiguous":
-        return regions, result
-    if name in ("to", "float", "bfloat16"):
-        return [
-            CopyRegion(region.value, region.offsets, region.cast_dtypes + (result.dtype,)) for region in regions
-        ], result
+    if name in ("contiguous", "to", "float", "bfloat16"):
+        return [CopyRegion(getattr(region.value, name)(*args, **kwargs), region.offsets) for region in regions], result
     raise NotImplementedError(f"unsupported region operation {name!r}")

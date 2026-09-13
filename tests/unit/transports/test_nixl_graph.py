@@ -225,12 +225,12 @@ def replay_recorded_regions(recorder, sources, destination, expected):
         lambda value: value.unsqueeze(1).squeeze(1),
         lambda value: value.reshape(-1, 1).squeeze(),
         lambda value: value.flatten()[3].reshape(()),
-        lambda value: torch.chunk(input=value.float(), chunks=2, dim=-1)[0],
-        lambda value: torch.split(tensor=value.contiguous(), split_size_or_sections=1, dim=0)[0],
-        lambda value: torch.narrow(input=value.float(), dim=1, start=0, length=1),
-        lambda value: torch.permute(input=value, dims=(2, 0, 1)),
-        lambda value: torch.flatten(torch.transpose(value, 0, 2)),
-        lambda value: torch.unbind(torch.unsqueeze(value, dim=0), dim=0)[0],
+        lambda value: value.float().chunk(2, dim=-1)[0],
+        lambda value: value.contiguous().split(1, dim=0)[0],
+        lambda value: value.float().narrow(1, 0, 1),
+        lambda value: value.permute(2, 0, 1),
+        lambda value: value.transpose(0, 2).flatten(),
+        lambda value: value.unsqueeze(0).unbind(0)[0],
         lambda value: value.flatten()[:0].reshape(0, 1),
     ],
 )
@@ -286,7 +286,7 @@ def test_concatenation_transpose_and_cast_stay_two_copies():
     assert {copy.source_name for copy in recorder.copies} == {"gate", "up"}
 
 
-def test_concatenation_casts_preserve_rounding_and_transfer_only_selected_expert():
+def test_concatenation_casts_preserve_rounding_and_existing_replay_behavior():
     recorder = WeightLoadRecorder()
     sources = {
         name: torch.linspace(index + 0.001, index + 0.999, 24).reshape(2, 3, 4)
@@ -306,6 +306,6 @@ def test_concatenation_casts_preserve_rounding_and_transfer_only_selected_expert
     for copy in recorder.copies:
         source = sources[copy.source_name]
         plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
-        assert plan.source_offset == 12
-        assert plan.source_shape == (3, 4)
+        assert plan.source_offset == 0
+        assert plan.source_shape == tuple(source.shape)
     replay_recorded_regions(recorder, sources, destination, expected)

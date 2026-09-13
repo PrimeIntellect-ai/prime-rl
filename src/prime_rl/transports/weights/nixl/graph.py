@@ -53,21 +53,6 @@ SUPPORTED_OPS: dict[Any, str] = {
     torch.Tensor.float: "float",
     torch.Tensor.bfloat16: "bfloat16",
 }
-for operation_name in (
-    "narrow",
-    "select",
-    "reshape",
-    "unsqueeze",
-    "squeeze",
-    "transpose",
-    "t",
-    "permute",
-    "flatten",
-    "chunk",
-    "split",
-    "unbind",
-):
-    SUPPORTED_OPS[getattr(torch, operation_name)] = operation_name
 _SUPPORTED_DTYPES = (torch.bfloat16, torch.float32)
 
 
@@ -263,25 +248,23 @@ class LazyWeight(torch.Tensor):
     def _resolve_copy_regions(self) -> list[CopyRegion]:
         """Lower the composed graph to independent sources and destination regions."""
         if self._source_operation is None:
-            source = LazyWeight(self._source_name, self._source_shape, self._source_dtype, self.device, self._recorder)
-            regions = [CopyRegion(source, (0,) * len(self._source_shape))]
-        else:
-            (input_weights,) = self._source_operation.args
-            concat_dimension = self._source_operation.kwargs["dim"]
-            regions = []
-            concat_offset = 0
-            for input_weight in input_weights:
-                if input_weight.numel() == 0:
-                    continue
-                for region in input_weight._resolve_copy_regions():
-                    offsets = list(region.offsets)
-                    offsets[concat_dimension] += concat_offset
-                    cast_dtypes = region.cast_dtypes
-                    dtype = cast_dtypes[-1] if cast_dtypes else region.value.dtype
-                    if dtype != self._source_dtype:
-                        cast_dtypes += (self._source_dtype,)
-                    regions.append(CopyRegion(region.value, tuple(offsets), cast_dtypes))
-                concat_offset += input_weight.shape[concat_dimension]
+            return [CopyRegion(self, (0,) * self.ndim)]
+
+        (input_weights,) = self._source_operation.args
+        concat_dimension = self._source_operation.kwargs["dim"]
+        regions = []
+        concat_offset = 0
+        for input_weight in input_weights:
+            if input_weight.numel() == 0:
+                continue
+            for region in input_weight._resolve_copy_regions():
+                offsets = list(region.offsets)
+                offsets[concat_dimension] += concat_offset
+                value = region.value
+                if value.dtype != self._source_dtype:
+                    value = value.to(dtype=self._source_dtype)
+                regions.append(CopyRegion(value, tuple(offsets)))
+            concat_offset += input_weight.shape[concat_dimension]
 
         meta = torch.empty(self._source_shape, dtype=self._source_dtype, device="meta")
         operations = iter(self._ops)
@@ -314,10 +297,7 @@ class LazyWeight(torch.Tensor):
                     destination_slice = destination
                     for dimension, (offset, size) in enumerate(zip(region.offsets, region.value.shape, strict=True)):
                         destination_slice = destination_slice.narrow(dimension, offset, size)
-                    value = region.value
-                    for dtype in region.cast_dtypes:
-                        value = value.to(dtype=dtype)
-                    value._record_copy(destination_slice)
+                    region.value._record_copy(destination_slice)
             return destination
 
         resolved_destination = self._recorder.resolve_destination(destination)
@@ -351,20 +331,8 @@ class LazyWeight(torch.Tensor):
                 return source._record_copy(destination)
 
         op_name = SUPPORTED_OPS.get(func)
-        if op_name is not None:
-            if args:
-                source, operation_args = args[0], tuple(args[1:])
-            else:
-                kwargs = dict(kwargs)
-                source = kwargs.pop("input", None)
-                if source is None:
-                    source = kwargs.pop("tensor", None)
-                operation_args = ()
-            if isinstance(source, cls):
-                if op_name == "split" and "split_size_or_sections" in kwargs:
-                    kwargs = dict(kwargs)
-                    kwargs["split_size"] = kwargs.pop("split_size_or_sections")
-                return cls._intercept(source, getattr(torch.Tensor, op_name), op_name, operation_args, kwargs)
+        if op_name is not None and args and isinstance(args[0], cls):
+            return cls._intercept(args[0], func, op_name, tuple(args[1:]), kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
