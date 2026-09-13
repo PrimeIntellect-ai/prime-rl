@@ -220,7 +220,7 @@ class CPUOffloadTier(BaseConfig):
 
 class DiskOffloadTier(BaseConfig):
     path: Path
-    """Filesystem root for the disk tier. For ``native`` this is the ``fs_python`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
+    """Filesystem root for the disk tier. For ``native`` this is the ``fs`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
 
 
 class BaseKVCacheOffloadConfig(BaseConfig):
@@ -242,14 +242,14 @@ class BaseKVCacheOffloadConfig(BaseConfig):
 
 class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
-    """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs_python`` disk secondary). Fully self-contained — no external processes."""
+    """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs`` disk secondary). Fully self-contained — no external processes."""
 
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
         extra: dict[str, Any] = {"cpu_bytes_to_use": int(self.cpu.num_bytes)}
         if self.disk is not None:
             extra["spec_name"] = "TieringOffloadingSpec"
-            extra["secondary_tiers"] = [{"type": "fs_python", "root_dir": str(self.disk.path)}]
+            extra["secondary_tiers"] = [{"type": "fs", "root_dir": str(self.disk.path)}]
         return {
             "kv_connector": "OffloadingConnector",
             "kv_role": "kv_both",
