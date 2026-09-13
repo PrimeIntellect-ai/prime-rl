@@ -314,6 +314,98 @@ def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
     )
 
 
+def _whole_image_cut(mm_token_type_ids: list[int], tokens_per_image: list[int], seq_len: int) -> tuple[int, int]:
+    surviving = sum(1 for token_type in mm_token_type_ids[:seq_len] if token_type)
+    kept = accumulated = 0
+    for num_tokens in tokens_per_image:
+        if accumulated + num_tokens > surviving:
+            break
+        accumulated += num_tokens
+        kept += 1
+    if accumulated == surviving:
+        return seq_len, kept
+
+    seen = 0
+    for index, token_type in enumerate(mm_token_type_ids):
+        if token_type:
+            seen += 1
+            if seen == accumulated + 1:
+                return index, kept
+    return seq_len, kept
+
+
+def _decode_encoded(tensor: EncodedTensor) -> np.ndarray:
+    try:
+        dtype = np.dtype(tensor.dtype)
+    except TypeError as error:
+        raise ValueError(f"Unsupported encoded tensor dtype: {tensor.dtype!r}") from error
+    if dtype.kind not in "iuf":
+        raise ValueError(f"Encoded tensor dtype must be numeric, got {tensor.dtype!r}")
+    if any(not isinstance(dim, int) or isinstance(dim, bool) or dim < 0 for dim in tensor.shape):
+        raise ValueError("Encoded tensor dimensions must be non-negative integers")
+
+    element_count = 1
+    for dim in tensor.shape:
+        element_count *= dim
+    expected_bytes = element_count * dtype.itemsize
+    if len(tensor.data) != expected_bytes:
+        raise ValueError(
+            f"Encoded tensor byte count does not match dtype and shape: {len(tensor.data)} != {expected_bytes}"
+        )
+    return np.frombuffer(tensor.data, dtype=dtype).reshape(tensor.shape)
+
+
+def _truncate_nemotron_mm(
+    mm_token_type_ids: list[int], mm_kwargs: dict[str, EncodedTensor], seq_len: int
+) -> tuple[int, dict[str, EncodedTensor] | None]:
+    required = {"pixel_values", "imgs_sizes", "num_tokens", "num_patches"}
+    missing = required - mm_kwargs.keys()
+    if missing:
+        raise ValueError("Nemotron-H Omni multimodal wire is missing: " + ", ".join(sorted(missing)))
+
+    pixel_values = _decode_encoded(mm_kwargs["pixel_values"])
+    image_sizes = _decode_encoded(mm_kwargs["imgs_sizes"])
+    num_tokens = _decode_encoded(mm_kwargs["num_tokens"])
+    num_patches = _decode_encoded(mm_kwargs["num_patches"])
+    if pixel_values.dtype.kind != "f":
+        raise ValueError("Nemotron-H Omni pixel_values must use a floating-point dtype")
+    if pixel_values.ndim != 1:
+        raise ValueError("Nemotron-H Omni wire pixel_values must be flat")
+    if image_sizes.dtype.kind not in "iu":
+        raise ValueError("Nemotron-H Omni imgs_sizes must use an integer dtype")
+    if num_tokens.dtype.kind not in "iu":
+        raise ValueError("Nemotron-H Omni num_tokens must use an integer dtype")
+    if num_patches.dtype.kind not in "iu":
+        raise ValueError("Nemotron-H Omni num_patches must use an integer dtype")
+
+    num_images = image_sizes.shape[0] if image_sizes.ndim == 2 else 0
+    if image_sizes.shape != (num_images, 2) or num_images == 0:
+        raise ValueError("Nemotron-H Omni imgs_sizes must have shape (images, 2)")
+    if num_tokens.shape != (num_images,) or num_patches.shape != (num_images,):
+        raise ValueError("Nemotron-H Omni num_tokens and num_patches must match the image count")
+    if np.any(image_sizes <= 0) or np.any(num_tokens <= 0) or np.any(num_patches <= 0):
+        raise ValueError("Nemotron-H Omni image dimensions and token counts must be positive")
+    if np.any(num_patches != 1):
+        raise ValueError("Nemotron-H Omni image inputs require one patch group per image")
+    if int(num_tokens.sum()) != sum(bool(token_type) for token_type in mm_token_type_ids):
+        raise ValueError("Nemotron-H Omni num_tokens do not match image tokens")
+
+    total_area = sum(int(height) * int(width) for height, width in image_sizes)
+    channels, remainder = divmod(pixel_values.size, total_area)
+    if channels <= 0 or remainder:
+        raise ValueError("Nemotron-H Omni pixel_values element count does not match imgs_sizes")
+
+    tokens_per_image = num_tokens.tolist()
+    cut, kept = _whole_image_cut(mm_token_type_ids, tokens_per_image, seq_len)
+    if not kept:
+        return cut, None
+
+    kept_values = channels * sum(int(height) * int(width) for height, width in image_sizes[:kept])
+    return cut, {
+        key: _slice_encoded(value, kept_values if key == "pixel_values" else kept) for key, value in mm_kwargs.items()
+    }
+
+
 def _truncate_mm(
     mm_token_type_ids: list[int], mm_kwargs: dict[str, EncodedTensor], seq_len: int
 ) -> tuple[int, dict[str, EncodedTensor] | None]:
@@ -321,6 +413,14 @@ def _truncate_mm(
     token count no longer matches the image embeddings in `mm_kwargs`. Returns the cut point
     (<= seq_len, never inside an image block) and `mm_kwargs` sliced to the images whose
     placeholders fully survive (None if no image survives)."""
+    nemotron_keys = {"pixel_values", "imgs_sizes", "num_tokens", "num_patches"}
+    if nemotron_keys <= mm_kwargs.keys():
+        return _truncate_nemotron_mm(mm_token_type_ids, mm_kwargs, seq_len)
+    if "image_grid_thw" not in mm_kwargs:
+        raise ValueError(
+            "Unsupported multimodal wire format: expected image_grid_thw or Nemotron-H Omni image metadata"
+        )
+
     grid = np.frombuffer(bytearray(mm_kwargs["image_grid_thw"].data), dtype=mm_kwargs["image_grid_thw"].dtype).reshape(
         mm_kwargs["image_grid_thw"].shape
     )
@@ -329,25 +429,7 @@ def _truncate_mm(
     total_tokens = sum(1 for t in mm_token_type_ids if t)
     ppt = total_patches // total_tokens if total_tokens else 1  # patches per token (merge^2)
     tokens_per_image = [p // ppt for p in patches_per_image]
-
-    surviving = sum(1 for t in mm_token_type_ids[:seq_len] if t)
-    kept = acc = 0
-    for n in tokens_per_image:
-        if acc + n > surviving:
-            break
-        acc += n
-        kept += 1
-    if acc == surviving:
-        cut = seq_len  # surviving image tokens are exactly `kept` whole images
-    else:
-        # `surviving` lands inside image `kept`; cut to its first placeholder, dropping it.
-        seen, cut = 0, seq_len
-        for i, t in enumerate(mm_token_type_ids):
-            if t:
-                seen += 1
-                if seen == acc + 1:
-                    cut = i
-                    break
+    cut, kept = _whole_image_cut(mm_token_type_ids, tokens_per_image, seq_len)
     if not kept:
         return cut, None
     kept_patches = sum(patches_per_image[:kept])
@@ -362,8 +444,9 @@ def multimodal_sample_error(sample: TrainingSample) -> str | None:
             "mm_token_type_ids length must match token_ids length "
             f"({len(mm_token_type_ids)} != {len(sample.token_ids)})"
         )
-    if sample.mm_kwargs is not None and "image_grid_thw" in sample.mm_kwargs and mm_token_type_ids is None:
-        return "image_grid_thw multimodal samples require mm_token_type_ids"
+    requires_token_types = sample.mm_kwargs is not None and ({"image_grid_thw", "num_tokens"} & sample.mm_kwargs.keys())
+    if requires_token_types and mm_token_type_ids is None:
+        return "multimodal image samples require mm_token_type_ids"
     return None
 
 

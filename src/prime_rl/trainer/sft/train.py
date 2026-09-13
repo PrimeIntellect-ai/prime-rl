@@ -260,7 +260,9 @@ def train(config: SFTConfig):
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to seq_len; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
+                mm_kwargs is not None
+                and config.model.cp_style == "ulysses"
+                and ("image_grid_thw" in mm_kwargs or getattr(model.config, "model_type", None) == "nemotron_h_omni")
             )
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(

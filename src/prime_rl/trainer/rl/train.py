@@ -387,8 +387,10 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                # MRoPE batches must merge image embeddings before sharding.
-                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                # VLM batches must merge image embeddings before sequence sharding.
+                defer_vlm_cp_to_model = mm_kwargs is not None and (
+                    "image_grid_thw" in mm_kwargs or getattr(model.config, "model_type", None) == "nemotron_h_omni"
+                )
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,

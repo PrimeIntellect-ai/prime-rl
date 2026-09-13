@@ -485,3 +485,27 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+def test_flatten_nemotron_dynamic_resolution_images():
+    flattened = sft_data._flatten_mm_items(
+        {
+            "image": [
+                {
+                    "pixel_values": torch.zeros(1, 3, 2, 3),
+                    "imgs_sizes": [(2, 3)],
+                    "num_tokens": [1],
+                    "num_patches": [1],
+                },
+                {
+                    "pixel_values": torch.ones(1, 3, 3, 2),
+                    "imgs_sizes": [(3, 2)],
+                    "num_tokens": [1],
+                    "num_patches": [1],
+                },
+            ]
+        }
+    )
+
+    assert flattened["pixel_values"].shape == (36,)
+    assert flattened["imgs_sizes"].tolist() == [[2, 3], [3, 2]]

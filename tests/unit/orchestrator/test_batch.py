@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from prime_rl.orchestrator.trajectories import _encode_mm_kwargs
 from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
 from prime_rl.transports.batch.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
@@ -464,6 +465,139 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     kept = np.frombuffer(bytearray(mb.mm_kwargs["pixel_values"].data), dtype=np.float32)
     assert kept.tolist() == [1.0, 1.0]
     assert n_placeholders == mb.mm_kwargs["pixel_values"].shape[0]  # ppt == 1 here
+
+
+def test_encode_nemotron_dynamic_resolution_pixels_as_flat_wire_tensor():
+    encoded = _encode_mm_kwargs(
+        {
+            "image": [
+                {
+                    "pixel_values": np.zeros((1, 3, 2, 3), dtype=np.float32),
+                    "imgs_sizes": [(2, 3)],
+                    "num_tokens": [1],
+                    "num_patches": [1],
+                },
+                {
+                    "pixel_values": np.ones((1, 3, 3, 2), dtype=np.float32),
+                    "imgs_sizes": [(3, 2)],
+                    "num_tokens": [1],
+                    "num_patches": [1],
+                },
+            ]
+        }
+    )
+
+    assert encoded is not None
+    assert encoded["pixel_values"].shape == [36]
+    assert encoded["imgs_sizes"].shape == [2, 2]
+
+
+def test_prepare_sample_truncates_nemotron_at_image_boundary():
+    pixel_values = np.arange(36, dtype=np.float32)
+    sample = TrainingSample(
+        token_ids=[10, 18, 13, 18, 16],
+        mask=[False, False, False, True, True],
+        logprobs=[0.0] * 5,
+        temperatures=[1.0] * 5,
+        advantages=[0.0] * 4 + [1.0],
+        env_name="test-env",
+        mm_token_type_ids=[0, 1, 0, 1, 0],
+        mm_kwargs={
+            "pixel_values": _encoded(pixel_values),
+            "imgs_sizes": _encoded(np.array([[2, 3], [3, 2]], dtype=np.int64)),
+            "num_tokens": _encoded(np.array([1, 1], dtype=np.int64)),
+            "num_patches": _encoded(np.array([1, 1], dtype=np.int64)),
+        },
+    )
+
+    mb = prepare_sample(sample, seq_len=3)
+
+    assert mb.input_ids == [10, 18, 13]
+    assert mb.mm_kwargs["pixel_values"].shape == [18]
+    assert mb.mm_kwargs["imgs_sizes"].shape == [1, 2]
+    assert mb.mm_kwargs["num_tokens"].shape == [1]
+
+
+@pytest.mark.parametrize(
+    ("pixel_values", "imgs_sizes", "message"),
+    [
+        (np.zeros((1, 3, 2, 2), dtype=np.int64), [(2, 2)], "floating-point"),
+        (np.zeros((1, 3, 2, 2), dtype=np.float32), [(2, 3)], "element count"),
+    ],
+)
+def test_encode_nemotron_rejects_malformed_image_items(pixel_values, imgs_sizes, message):
+    with pytest.raises(ValueError, match=message):
+        _encode_mm_kwargs(
+            {
+                "image": [
+                    {
+                        "pixel_values": pixel_values,
+                        "imgs_sizes": imgs_sizes,
+                        "num_tokens": [1],
+                        "num_patches": [1],
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("replace_key", "replacement", "message"),
+    [
+        (
+            "pixel_values",
+            EncodedTensor(
+                data=np.arange(35, dtype=np.float32).tobytes(),
+                shape=[36],
+                dtype="float32",
+            ),
+            "byte count",
+        ),
+        ("pixel_values", _encoded(np.arange(36, dtype=np.int64)), "floating-point"),
+        ("imgs_sizes", _encoded(np.array([[2, -3], [3, 2]], dtype=np.int64)), "positive"),
+        ("num_tokens", _encoded(np.array([1, 2], dtype=np.int64)), "image tokens"),
+    ],
+)
+def test_prepare_sample_rejects_malformed_nemotron_wire(replace_key, replacement, message):
+    mm_kwargs = {
+        "pixel_values": _encoded(np.arange(36, dtype=np.float32)),
+        "imgs_sizes": _encoded(np.array([[2, 3], [3, 2]], dtype=np.int64)),
+        "num_tokens": _encoded(np.array([1, 1], dtype=np.int64)),
+        "num_patches": _encoded(np.array([1, 1], dtype=np.int64)),
+    }
+    mm_kwargs[replace_key] = replacement
+    sample = TrainingSample(
+        token_ids=[10, 18, 13, 18, 16],
+        mask=[False, False, False, True, True],
+        logprobs=[0.0] * 5,
+        temperatures=[1.0] * 5,
+        advantages=[0.0] * 4 + [1.0],
+        env_name="test-env",
+        mm_token_type_ids=[0, 1, 0, 1, 0],
+        mm_kwargs=mm_kwargs,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        prepare_sample(sample, seq_len=3)
+
+
+def test_prepare_sample_does_not_treat_unknown_wire_as_nemotron():
+    sample = TrainingSample(
+        token_ids=[10, 11, 12],
+        mask=[False, True, True],
+        logprobs=[0.0] * 3,
+        temperatures=[1.0] * 3,
+        advantages=[0.0, 1.0, 1.0],
+        env_name="test-env",
+        mm_token_type_ids=[0, 1, 0],
+        mm_kwargs={
+            "pixel_values": _encoded(np.zeros((1, 3, 2, 2), dtype=np.float32)),
+            "aspect_ratio_ids": _encoded(np.array([1], dtype=np.int64)),
+        },
+    )
+
+    with pytest.raises(ValueError, match="Unsupported multimodal wire format"):
+        prepare_sample(sample, seq_len=2)
 
 
 def test_prepare_batch_packs_multimodal_with_text():

@@ -14,16 +14,21 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
     )
 
 
-def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
+def conversion_chain(
+    config: NemotronHConfig,
+    *,
+    hf_prefix: str = "",
+    prime_prefix: str = "model",
+) -> list[ConvOp]:
     ops: list[ConvOp] = [
-        PrefixRename("backbone.", "model."),
-        Drop("mtp.", is_prefix=True),
-        Rename("model.embeddings.weight", "model.embed_tokens.weight"),
-        Rename("model.norm_f.weight", "model.norm.weight"),
+        PrefixRename(f"{hf_prefix}backbone.", f"{prime_prefix}."),
+        Drop(f"{hf_prefix}mtp.", is_prefix=True),
+        Rename(f"{prime_prefix}.embeddings.weight", f"{prime_prefix}.embed_tokens.weight"),
+        Rename(f"{prime_prefix}.norm_f.weight", f"{prime_prefix}.norm.weight"),
     ]
 
     for layer_idx, layer_type in enumerate(config.layer_types):
-        prefix = f"model.layers.{layer_idx}"
+        prefix = f"{prime_prefix}.layers.{layer_idx}"
         if layer_type == "mamba":
             ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba."))
         elif layer_type == "attention":
