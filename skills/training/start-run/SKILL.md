@@ -46,7 +46,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
-- NIXL on SLURM: the GPU extra includes NIXL. Build UCX with CUDA and InfiniBand support under `third_party/ucx` (the UCX stage of `scripts/install_nixl_from_source.sh`, or an equivalent custom build), and install ModelExpress with `scripts/install_modelexpress.sh`. Rebuilding NIXL is not required just to use the launcher's UCX library paths. The job checks for `cuda_copy` and `rc_verbs` on the allocated nodes and starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`. UCX builds need the `libibverbs-dev` and `librdmacm-dev` headers even when built on a head node without RDMA devices; otherwise configure can silently disable InfiniBand support.
+- NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
