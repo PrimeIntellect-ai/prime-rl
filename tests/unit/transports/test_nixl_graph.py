@@ -1,7 +1,14 @@
 import pytest
 import torch
+from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import (
+    Qwen3_5MoeConfig as UpstreamQwen3_5MoeConfig,
+)
+from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import (
+    Qwen3_5MoeTextConfig as UpstreamQwen3_5MoeTextConfig,
+)
 from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
 
+from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeConfig, Qwen3_5MoeTextConfig
 from prime_rl.transports.weights.nixl.graph import (
     Destination,
     LazyWeight,
@@ -110,15 +117,10 @@ def test_lazy_copy_strided_destination(entrypoint):
 @pytest.mark.parametrize("upstream", [False, True])
 @pytest.mark.parametrize("multimodal", [False, True])
 def test_qwen35_lazy_hf_export(upstream, multimodal):
-    if upstream:
-        from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeTextConfig
-    else:
-        from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeConfig, Qwen3_5MoeTextConfig
-
+    model_config_cls = UpstreamQwen3_5MoeConfig if upstream else Qwen3_5MoeConfig
+    text_config_cls = UpstreamQwen3_5MoeTextConfig if upstream else Qwen3_5MoeTextConfig
     config = (
-        Qwen3_5MoeConfig(text_config={"num_hidden_layers": 1})
-        if multimodal
-        else Qwen3_5MoeTextConfig(num_hidden_layers=1)
+        model_config_cls(text_config={"num_hidden_layers": 1}) if multimodal else text_config_cls(num_hidden_layers=1)
     )
     prefix = f"model{'.language_model' if multimodal else ''}.layers.0.mlp"
     shapes = {
@@ -169,7 +171,7 @@ def test_lazy_concatenation_replay(dim, operation):
         [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()], dim=dim
     )
     assert lazy._ops[0].name == "cat"
-    assert len(lazy._ops[0].args[0]) == 2
+    assert len(lazy._ops[0].args[0]) == 1
     expected = torch.cat(list(sources.values()), dim=dim)
     if operation == "narrow":
         slice_length = expected.shape[dim] - 2
@@ -221,6 +223,7 @@ def replay_recorded_copies(recorder, sources, destination, expected):
 
 
 @pytest.mark.parametrize("dimension", [0, 1, 2, -1])
+@pytest.mark.parametrize("source_count", [1, 2, 3])
 @pytest.mark.parametrize(
     "operation",
     [
@@ -241,15 +244,17 @@ def replay_recorded_copies(recorder, sources, destination, expected):
         lambda value: value.flatten()[:0].reshape(0, 1),
     ],
 )
-def test_composed_concatenation_replay(dimension, operation):
+def test_composed_concatenation_replay(dimension, source_count, operation):
     recorder = WeightLoadRecorder()
     sources = {
-        "a": torch.arange(24, dtype=torch.bfloat16).reshape(2, 3, 4),
-        "b": torch.arange(24, 48, dtype=torch.float32).reshape(2, 3, 4),
+        name: torch.arange(index * 24, (index + 1) * 24, dtype=torch.bfloat16 if index == 0 else torch.float32).reshape(
+            2, 3, 4
+        )
+        for index, name in enumerate("abc"[:source_count])
     }
     inputs = [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()]
-    lazy = operation(torch.cat(inputs, dimension))
-    expected = operation(torch.cat(list(sources.values()), dimension))
+    lazy = operation(inputs[0] if source_count == 1 else torch.cat(inputs, dimension))
+    expected = operation(sources["a"] if source_count == 1 else torch.cat(list(sources.values()), dimension))
     destination = torch.full(expected.shape, -1, dtype=expected.dtype)
     recorder.active_destination = Destination(object(), "weight", destination)
 
@@ -260,7 +265,8 @@ def test_composed_concatenation_replay(dimension, operation):
 
 
 @pytest.mark.parametrize("concat", [torch.cat, torch.concat, torch.concatenate])
-def test_nested_concatenation_replay(concat):
+@pytest.mark.parametrize("single_input_cat", [False, True])
+def test_nested_concatenation_replay(concat, single_input_cat):
     recorder = WeightLoadRecorder()
     sources = {
         name: torch.arange(index * 12, (index + 1) * 12, dtype=torch.float32).reshape(3, 4)
@@ -269,10 +275,15 @@ def test_nested_concatenation_replay(concat):
     inputs = [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()]
     a, b, c = inputs
     lazy = concat([concat([a, b], 1).t(), c.t()], 0)
+    assert [operation.name for operation in lazy._ops] == ["cat", "t", "cat"]
+    assert lazy._source_name == "a"
     real_a, real_b, real_c = sources.values()
     expected = concat([concat([real_a, real_b], 1).t(), real_c.t()], 0)
     lazy = lazy.reshape(3, 12)[:, 1::2].t()
     expected = expected.reshape(3, 12)[:, 1::2].t()
+    if single_input_cat:
+        lazy = concat([lazy]).view(-1)
+        expected = concat([expected]).view(-1)
     destination = torch.full_like(expected, -1)
     recorder.active_destination = Destination(object(), "weight", destination)
     destination.copy_(lazy)
