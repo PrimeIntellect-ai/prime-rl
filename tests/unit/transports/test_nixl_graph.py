@@ -146,13 +146,15 @@ def test_qwen35_lazy_hf_export(upstream, multimodal):
     assert combined.shape == (2, 6, 4)
     # vLLM deconcatenates the fused checkpoint before loading individual experts.
     for projection, part in zip(("gate", "up"), combined.chunk(2, dim=1), strict=True):
-        assert isinstance(part, LazyWeight)
-        assert part._source_name == f"{prefix}.experts.{projection}_proj"
-        assert part._ops == ()
         for expert, weight in enumerate(part.unbind()):
+            destination = torch.empty(weight.shape, dtype=weight.dtype)
+            recorder.active_destination = Destination(object(), "weight", destination)
+            recorder.copies.clear()
+            destination.copy_(weight)
+            (copy,) = recorder.copies
+            assert copy.source_name == f"{prefix}.experts.{projection}_proj"
             source = torch.arange(24, dtype=torch.bfloat16).reshape(2, 3, 4)
-            torch.testing.assert_close(apply_chain(source, weight._ops), source[expert])
-    assert recorder.copies == []
+            torch.testing.assert_close(apply_chain(source, copy.ops), source[expert])
 
 
 @pytest.mark.parametrize("dim", [0, 1, -1])
@@ -198,3 +200,112 @@ def test_lazy_concatenation_replay(dim, operation):
             apply_chain(received, plan.replay_ops)
         )
     torch.testing.assert_close(destination, expected, rtol=0, atol=0)
+
+
+def replay_recorded_regions(recorder, sources, destination, expected):
+    for copy in recorder.copies:
+        source = sources[copy.source_name]
+        plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
+        received = source.as_strided(plan.source_shape, plan.source_stride, plan.source_offset).clone()
+        destination.as_strided(copy.destination_shape, copy.destination_stride, copy.destination_offset).copy_(
+            apply_chain(received, plan.replay_ops)
+        )
+    torch.testing.assert_close(destination, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dimension", [0, 1, 2, -1])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda value: value.float().contiguous().transpose(0, 2),
+        lambda value: value[:, 1:, ::2],
+        lambda value: value[None, ..., -1],
+        lambda value: value.transpose(1, 2).reshape(3, -1),
+        lambda value: value.flatten().view(4, -1).t(),
+        lambda value: value.unsqueeze(1).squeeze(1),
+        lambda value: value.reshape(-1, 1).squeeze(),
+        lambda value: value.flatten()[3].reshape(()),
+        lambda value: torch.chunk(input=value.float(), chunks=2, dim=-1)[0],
+        lambda value: torch.split(tensor=value.contiguous(), split_size_or_sections=1, dim=0)[0],
+        lambda value: torch.narrow(input=value.float(), dim=1, start=0, length=1),
+        lambda value: torch.permute(input=value, dims=(2, 0, 1)),
+        lambda value: torch.flatten(torch.transpose(value, 0, 2)),
+        lambda value: torch.unbind(torch.unsqueeze(value, dim=0), dim=0)[0],
+        lambda value: value.flatten()[:0].reshape(0, 1),
+    ],
+)
+def test_composed_concatenation_replay(dimension, operation):
+    recorder = WeightLoadRecorder()
+    sources = {
+        "a": torch.arange(24, dtype=torch.bfloat16).reshape(2, 3, 4),
+        "b": torch.arange(24, 48, dtype=torch.float32).reshape(2, 3, 4),
+    }
+    inputs = [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()]
+    lazy = operation(torch.cat(inputs, dimension))
+    expected = operation(torch.cat(list(sources.values()), dimension))
+    destination = torch.full(expected.shape, -1, dtype=expected.dtype)
+    recorder.active_destination = Destination(object(), "weight", destination)
+
+    destination.copy_(lazy)
+
+    torch.testing.assert_close(destination, torch.full_like(destination, -1))
+    replay_recorded_regions(recorder, sources, destination, expected)
+
+
+@pytest.mark.parametrize("concat", [torch.cat, torch.concat, torch.concatenate])
+def test_nested_concatenation_replay(concat):
+    recorder = WeightLoadRecorder()
+    sources = {
+        name: torch.arange(index * 12, (index + 1) * 12, dtype=torch.float32).reshape(3, 4)
+        for index, name in enumerate("abc")
+    }
+    inputs = [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()]
+    a, b, c = inputs
+    lazy = concat([concat([a, b], 1).t(), c.t()], 0)
+    real_a, real_b, real_c = sources.values()
+    expected = concat([concat([real_a, real_b], 1).t(), real_c.t()], 0)
+    lazy = lazy.reshape(3, 12)[:, 1::2].t()
+    expected = expected.reshape(3, 12)[:, 1::2].t()
+    destination = torch.full_like(expected, -1)
+    recorder.active_destination = Destination(object(), "weight", destination)
+    destination.copy_(lazy)
+    replay_recorded_regions(recorder, sources, destination, expected)
+
+
+def test_concatenation_transpose_and_cast_stay_two_copies():
+    recorder = WeightLoadRecorder()
+    inputs = [
+        LazyWeight(name, torch.Size((256, 512, 2048)), torch.bfloat16, torch.device("cpu"), recorder)
+        for name in ("gate", "up")
+    ]
+    lazy = torch.cat(inputs, dim=1).transpose(1, 2).float().contiguous()
+    destination = torch.empty(lazy.shape, dtype=lazy.dtype, device="meta")
+    recorder.active_destination = Destination(object(), "weight", destination)
+    destination.copy_(lazy)
+    assert len(recorder.copies) == 2
+    assert {copy.source_name for copy in recorder.copies} == {"gate", "up"}
+
+
+def test_concatenation_casts_preserve_rounding_and_transfer_only_selected_expert():
+    recorder = WeightLoadRecorder()
+    sources = {
+        name: torch.linspace(index + 0.001, index + 0.999, 24).reshape(2, 3, 4)
+        for index, name in enumerate(("gate", "up"))
+    }
+    inputs = [LazyWeight(name, value.shape, value.dtype, value.device, recorder) for name, value in sources.items()]
+
+    def transform(values):
+        return torch.cat([value.bfloat16().float() for value in values], dim=1).bfloat16().float().unbind()[1]
+
+    lazy = transform(inputs)
+    expected = transform(list(sources.values()))
+    destination = torch.full_like(expected, -1)
+    recorder.active_destination = Destination(object(), "weight", destination)
+    destination.copy_(lazy)
+    assert len(recorder.copies) == 2
+    for copy in recorder.copies:
+        source = sources[copy.source_name]
+        plan = plan_tensor_replay(tuple(source.shape), source.dtype, copy.ops)
+        assert plan.source_offset == 12
+        assert plan.source_shape == (3, 4)
+    replay_recorded_regions(recorder, sources, destination, expected)

@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable
 
 import torch
 
+from prime_rl.transports.weights.nixl.copy_regions import CopyRegion, transform_regions
 from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 
 
@@ -52,6 +53,21 @@ SUPPORTED_OPS: dict[Any, str] = {
     torch.Tensor.float: "float",
     torch.Tensor.bfloat16: "bfloat16",
 }
+for operation_name in (
+    "narrow",
+    "select",
+    "reshape",
+    "unsqueeze",
+    "squeeze",
+    "transpose",
+    "t",
+    "permute",
+    "flatten",
+    "chunk",
+    "split",
+    "unbind",
+):
+    SUPPORTED_OPS[getattr(torch, operation_name)] = operation_name
 _SUPPORTED_DTYPES = (torch.bfloat16, torch.float32)
 
 
@@ -230,16 +246,10 @@ class LazyWeight(torch.Tensor):
             raise UnsupportedOpError("lazy concatenation requires only lazy weight sources")
         first_input = inputs[0]
         for input_weight in inputs:
-            if (
-                input_weight.dtype != first_input.dtype
-                or input_weight.device != first_input.device
-                or input_weight._recorder is not first_input._recorder
-            ):
-                raise UnsupportedOpError("lazy concatenation requires matching dtype, device, and recorder")
+            if input_weight.device != first_input.device or input_weight._recorder is not first_input._recorder:
+                raise UnsupportedOpError("lazy concatenation requires matching device and recorder")
 
         concatenated_meta = torch.cat([weight._meta() for weight in inputs], dim=dim)
-        if len(inputs) == 1:
-            return first_input
         concat_dimension = dim % concatenated_meta.ndim
         return cls(
             None,
@@ -250,38 +260,39 @@ class LazyWeight(torch.Tensor):
             source_operation=TensorOperation("cat", args=(inputs,), kwargs={"dim": concat_dimension}),
         )
 
-    def _slice_concatenation_inputs(self, dim: int, start: int, length: int) -> "LazyWeight":
-        """Replace a slice of a cat node with the input slices it overlaps."""
-        # Validate the range with PyTorch before translating it to input offsets.
-        self._meta().narrow(dim, start, length)
-        dim %= self.ndim
-        if start < 0:
-            start += self.shape[dim]
-        (input_weights,) = self._source_operation.args
-        concat_dimension = self._source_operation.kwargs["dim"]
-        if dim != concat_dimension:
-            sliced_inputs = [weight.narrow(dim, start, length) for weight in input_weights]
-            return self._record_concatenation(sliced_inputs, concat_dimension)
+    def _resolve_copy_regions(self) -> list[CopyRegion]:
+        """Lower the composed graph to independent sources and destination regions."""
+        if self._source_operation is None:
+            source = LazyWeight(self._source_name, self._source_shape, self._source_dtype, self.device, self._recorder)
+            regions = [CopyRegion(source, (0,) * len(self._source_shape))]
+        else:
+            (input_weights,) = self._source_operation.args
+            concat_dimension = self._source_operation.kwargs["dim"]
+            regions = []
+            concat_offset = 0
+            for input_weight in input_weights:
+                if input_weight.numel() == 0:
+                    continue
+                for region in input_weight._resolve_copy_regions():
+                    offsets = list(region.offsets)
+                    offsets[concat_dimension] += concat_offset
+                    cast_dtypes = region.cast_dtypes
+                    dtype = cast_dtypes[-1] if cast_dtypes else region.value.dtype
+                    if dtype != self._source_dtype:
+                        cast_dtypes += (self._source_dtype,)
+                    regions.append(CopyRegion(region.value, tuple(offsets), cast_dtypes))
+                concat_offset += input_weight.shape[concat_dimension]
 
-        slice_end = start + length
-        sliced_inputs = []
-        input_start = 0
-        for input_weight in input_weights:
-            input_end = input_start + input_weight.shape[dim]
-            overlap_start = max(start, input_start)
-            overlap_end = min(slice_end, input_end)
-            if overlap_start < overlap_end:
-                if overlap_start == input_start and overlap_end == input_end:
-                    sliced_inputs.append(input_weight)
-                else:
-                    local_start = overlap_start - input_start
-                    local_length = overlap_end - overlap_start
-                    sliced_inputs.append(input_weight.narrow(dim, local_start, local_length))
-            input_start = input_end
-
-        if not sliced_inputs:
-            return input_weights[0].narrow(dim, 0, 0)
-        return self._record_concatenation(sliced_inputs, dim)
+        meta = torch.empty(self._source_shape, dtype=self._source_dtype, device="meta")
+        operations = iter(self._ops)
+        for operation in operations:
+            output_index = None
+            if operation.name in ("chunk", "split", "unbind"):
+                selection = next(operations)
+                assert selection.name == "tuple_getitem"
+                output_index = selection.args[0]
+            regions, meta = transform_regions(regions, meta, operation, output_index)
+        return regions
 
     def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
         if isinstance(destination, LazyWeight):
@@ -297,16 +308,16 @@ class LazyWeight(torch.Tensor):
             )
 
         if self._source_operation is not None:
-            if self._ops:
-                raise UnsupportedOpError(f"cannot lower a multi-source weight through {self._ops!r}")
-            (input_weights,) = self._source_operation.args
-            concat_dimension = self._source_operation.kwargs["dim"]
-            destination_offset = 0
-            for input_weight in input_weights:
-                input_width = input_weight.shape[concat_dimension]
-                destination_slice = destination.narrow(concat_dimension, destination_offset, input_width)
-                input_weight._record_copy(destination_slice)
-                destination_offset += input_width
+            # Indexed assignment enters through ATen with __torch_function__ disabled.
+            with torch._C._EnableTorchFunction():
+                for region in self._resolve_copy_regions():
+                    destination_slice = destination
+                    for dimension, (offset, size) in enumerate(zip(region.offsets, region.value.shape, strict=True)):
+                        destination_slice = destination_slice.narrow(dimension, offset, size)
+                    value = region.value
+                    for dtype in region.cast_dtypes:
+                        value = value.to(dtype=dtype)
+                    value._record_copy(destination_slice)
             return destination
 
         resolved_destination = self._recorder.resolve_destination(destination)
@@ -331,7 +342,7 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-        if func is torch.cat:
+        if func in (torch.cat, torch.concat, torch.concatenate):
             return cls._record_concatenation(*args, **kwargs)
         if func is torch.Tensor.copy_:
             destination = args[0]
@@ -340,8 +351,20 @@ class LazyWeight(torch.Tensor):
                 return source._record_copy(destination)
 
         op_name = SUPPORTED_OPS.get(func)
-        if op_name is not None and args and isinstance(args[0], cls):
-            return cls._intercept(args[0], func, op_name, tuple(args[1:]), kwargs)
+        if op_name is not None:
+            if args:
+                source, operation_args = args[0], tuple(args[1:])
+            else:
+                kwargs = dict(kwargs)
+                source = kwargs.pop("input", None)
+                if source is None:
+                    source = kwargs.pop("tensor", None)
+                operation_args = ()
+            if isinstance(source, cls):
+                if op_name == "split" and "split_size_or_sections" in kwargs:
+                    kwargs = dict(kwargs)
+                    kwargs["split_size"] = kwargs.pop("split_size_or_sections")
+                return cls._intercept(source, getattr(torch.Tensor, op_name), op_name, operation_args, kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
@@ -358,24 +381,6 @@ class LazyWeight(torch.Tensor):
         meta = source._meta()
         with torch._C.DisableTorchFunctionSubclass():
             result = func(meta, *args, **kwargs)
-        # Resolve slices of a multi-input node before emitting replay chains.
-        if source._source_operation is not None and not source._ops:
-            if op_name == "narrow":
-                return source._slice_concatenation_inputs(*args, **kwargs)
-            if op_name in ("chunk", "split"):
-                if "dim" in kwargs:
-                    split_dimension = kwargs["dim"]
-                elif len(args) > 1:
-                    split_dimension = args[1]
-                else:
-                    split_dimension = 0
-                split_weights = []
-                split_start = 0
-                for split_meta in result:
-                    split_length = split_meta.shape[split_dimension]
-                    split_weights.append(source._slice_concatenation_inputs(split_dimension, split_start, split_length))
-                    split_start += split_length
-                return tuple(split_weights)
         operation = TensorOperation(name=op_name, args=args, kwargs=dict(kwargs))
         if isinstance(result, torch.Tensor):
             if result.dtype not in _SUPPORTED_DTYPES:
