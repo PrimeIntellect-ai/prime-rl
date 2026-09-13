@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from itertools import product
 from math import prod
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import torch
 
@@ -35,6 +35,9 @@ class TensorReplayPlan:
 
 
 SUPPORTED_OPS: dict[Any, str] = {
+    torch.cat: "cat",
+    torch.concat: "cat",
+    torch.concatenate: "cat",
     torch.Tensor.narrow: "narrow",
     torch.Tensor.select: "select",
     torch.Tensor.view: "view",
@@ -222,19 +225,6 @@ class LazyWeight(torch.Tensor):
             self._ops + ops,
         )
 
-    @classmethod
-    def _record_concatenation(cls, tensors: Iterable["LazyWeight"], dim: int = 0) -> "LazyWeight":
-        """Record a cat node while keeping every trainer input independent."""
-        inputs = tuple(tensors)
-        if not inputs or not all(isinstance(weight, cls) for weight in inputs):
-            raise UnsupportedOpError("lazy concatenation requires only lazy weight sources")
-        first_input = inputs[0]
-        for input_weight in inputs:
-            if input_weight.device != first_input.device or input_weight._recorder is not first_input._recorder:
-                raise UnsupportedOpError("lazy concatenation requires matching device and recorder")
-
-        return first_input._child(TensorOperation("cat", args=(inputs[1:],), kwargs={"dim": dim}))
-
     def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
         if isinstance(destination, LazyWeight):
             raise UnsupportedOpError("copy_ between lazy graph tensors is not supported")
@@ -271,8 +261,6 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-        if func in (torch.cat, torch.concat, torch.concatenate):
-            return cls._record_concatenation(*args, **kwargs)
         if func is torch.Tensor.copy_:
             destination = args[0]
             source = args[1] if len(args) > 1 else kwargs.get("src")
@@ -280,8 +268,8 @@ class LazyWeight(torch.Tensor):
                 return source._record_copy(destination)
 
         op_name = SUPPORTED_OPS.get(func)
-        if op_name is not None and args and isinstance(args[0], cls):
-            return cls._intercept(args[0], func, op_name, tuple(args[1:]), kwargs)
+        if op_name is not None:
+            return cls._intercept(func, op_name, args, kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
@@ -289,12 +277,17 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def _intercept(
         cls,
-        source: "LazyWeight",
         func: Callable,
         op_name: str,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ):
+        if op_name == "cat":
+            inputs = tuple(args[0] if args else kwargs["tensors"])
+            dim = kwargs.get("dim", args[1] if len(args) > 1 else 0)
+            return inputs[0]._child(TensorOperation("cat", args=(inputs[1:],), kwargs={"dim": dim}))
+
+        source, args = args[0], args[1:]
         meta = source._meta()
         with torch._C.DisableTorchFunctionSubclass():
             result = func(meta, *args, **kwargs)
