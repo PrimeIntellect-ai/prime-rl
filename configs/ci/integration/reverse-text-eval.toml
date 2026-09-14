@@ -2,10 +2,6 @@
 num_examples = 16
 dashboard = false
 
-[concurrency]
-min_inflight = 8
-max_inflight = 8
-
 [sampling]
 max_completion_tokens = 8192
 

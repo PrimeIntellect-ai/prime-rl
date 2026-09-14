@@ -16,7 +16,7 @@ This page covers `uv run eval` — evaluating one or more environments against a
 
 ## Standalone Evals
 
-`uv run eval` evaluates one or more environments against a live inference server and exits after one epoch per source. It reuses the orchestrator's eval pipeline: env servers are spawned per source, episodes are admitted under the adaptive concurrency controller, and every episode streams into the run's trace stream and metrics.
+`uv run eval` evaluates one or more environments against a live inference server and exits after one epoch per source. It reuses the orchestrator's eval pipeline: env servers are spawned per source, episodes are admitted under the concurrency controller (pinned at 128 by default), and every episode streams into the run's trace stream and metrics.
 
 ### Launch
 
@@ -36,7 +36,7 @@ uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost
 
 Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
 
-Against vLLM the concurrency band adapts to KV usage like the orchestrator's. External APIs expose no vLLM `/metrics`, so there the band must be pinned (`-c N`, or `min_inflight = max_inflight` in `[concurrency]`) or the startup `/metrics` probe fails fast.
+Concurrency is pinned at 128 in-flight episodes by default; `-c N` repins it. External APIs expose no vLLM `/metrics` to adapt to, so the pin is what they run with. Against a vLLM server, set `min_inflight < max_inflight` in `[concurrency]` to let the band adapt to KV usage like the orchestrator's.
 
 ### Configuration
 
@@ -50,8 +50,9 @@ group_size = 4
 [client]
 base_url = "http://localhost:8000/v1"
 
-[concurrency]
-max_inflight = 128
+[concurrency]        # adaptive against vLLM (the default pins 128)
+min_inflight = 8
+max_inflight = 256
 
 [sampling]
 max_completion_tokens = 2048

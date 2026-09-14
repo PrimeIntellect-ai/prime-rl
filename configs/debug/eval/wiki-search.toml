@@ -5,10 +5,6 @@
 
 num_examples = 5
 
-[concurrency]
-min_inflight = 8
-max_inflight = 8
-
 [[source]]
 env.taskset.id = "wiki-search"
 env.agent.max_turns = 10

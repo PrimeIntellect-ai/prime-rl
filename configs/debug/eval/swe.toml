@@ -4,9 +4,8 @@
 #   uv run eval @ configs/debug/eval/swe.toml
 #
 # The tasksets run in prime sandboxes (the default runtime), so PRIME_API_KEY
-# also authenticates sandbox creation. External API endpoints expose no vLLM
-# /metrics, so adaptive concurrency has no load signal - the band must be
-# pinned (min_inflight = max_inflight, or `-c N`) or the run refuses to start.
+# also authenticates sandbox creation; the band is pinned below the default
+# 128 to bound the number of live sandboxes.
 
 [concurrency]
 min_inflight = 32

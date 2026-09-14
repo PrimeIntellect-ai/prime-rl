@@ -5,7 +5,7 @@ description: Launch and monitor prime-rl evals — the `uv run eval` entrypoint 
 
 # Eval
 
-`uv run eval` evaluates one or more environments against a live inference server and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, adaptive concurrency, every episode streamed through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and a task cursor checkpointed after every completed group so an interrupted run resumes with `--resume`. Online evals of training runs (`[orchestrator.eval]` for RL, `[eval]` for SFT) share the same source shape — see the `training` skill for those.
+`uv run eval` evaluates one or more environments against a live inference server and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, concurrency pinned at 128 by default (adaptive on request), every episode streamed through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and a task cursor checkpointed after every completed group so an interrupted run resumes with `--resume`. Online evals of training runs (`[orchestrator.eval]` for RL, `[eval]` for SFT) share the same source shape — see the `training` skill for those.
 
 Two phases — start the eval, then read its results.
 
@@ -14,10 +14,11 @@ Two phases — start the eval, then read its results.
 The user launches runs; hand over the command unless told otherwise. Always cap the size of smokes (`-n`, `-r`).
 
 ```bash
-uv run eval gsm8k -n 32 -r 4 -c 8                                # Prime Inference (default client + model), pinned band
+uv run eval gsm8k -n 32 -r 4                                     # Prime Inference (default client + model), 128 in flight
+uv run eval gsm8k -n 32 -r 4 -c 8                                # repin the band
 uv run eval gsm8k -n 32 -r 4 -c 8 --env.agent.harness.id bash    # a field of the source's env block
 uv run inference --vllm.model Qwen/Qwen3-4B                      # or a local vLLM server ...
-uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1   # ... adaptive band
+uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1   # ... still pinned; adapt via [concurrency]
 uv run eval @ eval.toml --run.name my-eval                        # multi-source TOML
 uv run eval @ eval.toml --run.name my-eval --resume               # resume the interrupted run
 uv run eval @ eval.toml --dry-run                                 # resolve + write the config, exit
@@ -25,7 +26,7 @@ uv run eval @ eval.toml --dry-run                                 # resolve + wr
 
 Shorthands (single-source runs): `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n` `num_examples`, `-r` `group_size`, `-m` `model`, `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
 
-Defaults: model `deepseek/deepseek-v4.1-flash` on Prime Inference (`PRIME_API_KEY`, else the `prime login` config). External inference APIs (no vLLM `/metrics`) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`-c N`). Against `uv run inference` the band adapts to KV usage like the orchestrator's.
+Defaults: model `deepseek/deepseek-v4.1-flash` on Prime Inference (`PRIME_API_KEY`, else the `prime login` config). Concurrency is pinned at 128 (`-c N` repins). External APIs expose no vLLM `/metrics`, so the pin is what they run with; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to KV usage like the orchestrator's (the startup `/metrics` probe fails fast if the band is adaptive and the endpoint has no metrics).
 
 Minimal multi-source `eval.toml` (`EvalConfig`, `packages/prime-rl-configs/src/prime_rl/configs/eval.py`; the eval block is flattened to the top level):
 
@@ -37,8 +38,9 @@ group_size = 4
 [client]
 base_url = "http://localhost:8000/v1"
 
-[concurrency]       # adaptive against vLLM; pin with min_inflight = max_inflight
-max_inflight = 128
+[concurrency]       # adaptive against vLLM; the default pins 128
+min_inflight = 8
+max_inflight = 256
 
 [sampling]
 max_completion_tokens = 2048

@@ -5,10 +5,6 @@
 num_examples = 5
 group_size = 2
 
-[concurrency]
-min_inflight = 8
-max_inflight = 8
-
 [[source]]
 env.taskset.id = "wordle"
 env.player.max_turns = 8
