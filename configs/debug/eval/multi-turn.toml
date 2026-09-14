@@ -1,0 +1,19 @@
+# Single env, multi turn: terminal-bench-2's fix-git task with the bash harness
+# in a prime sandbox (PRIME_API_KEY also authenticates sandbox creation), with
+# whole-rollout retries for provider and sandbox errors.
+#
+#   uv run eval @ configs/debug/eval/multi-turn.toml
+
+group_size = 2
+
+[concurrency]
+min_inflight = 4
+max_inflight = 4
+
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.taskset.tasks = ["fix-git"]
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["ProviderError", "SandboxError"]

@@ -14,11 +14,12 @@ Configurations for running prime-rl.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
   (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), `multi-env/`
   (two reverse-text train sources + one eval source, one env server per source), and
-  `eval/` (`uv run eval` smokes against Prime Inference: gsm8k, wordle, wiki-search,
-  swe). Not guaranteed functional or up to date.
+  `eval/` (`uv run eval` smokes against Prime Inference, one per shape: `single-turn`
+  (gsm8k), `multi-turn` (terminal-bench-2 fix-git in a sandbox), `resume`, `multi-env`).
+  Not guaranteed functional or up to date.
 
 ```bash
 uv run rl   @ configs/basic/<env>/rl.toml
 uv run sft  @ configs/basic/<env>/sft.toml   # where present
-uv run eval @ configs/debug/eval/<env>.toml
+uv run eval @ configs/debug/eval/<shape>.toml
 ```

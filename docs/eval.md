@@ -24,7 +24,7 @@ The default client is Prime Inference with `deepseek/deepseek-v4.1-flash`. Authe
 
 ```bash
 uv run eval gsm8k -n 32 -r 4 -c 8                                   # Prime Inference, the default client
-uv run eval @ configs/debug/eval/gsm8k.toml                         # the same run as a TOML
+uv run eval @ configs/debug/eval/single-turn.toml                   # the same shape as a TOML
 ```
 
 To evaluate a model you serve yourself, start a `uv run inference` vLLM server (or any OpenAI-compatible API) and point the client at it:
@@ -69,7 +69,7 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process at `tcp://127.0.0.1:<env_server_base_port + index>` unless the source sets `serve.address`, in which case the server is externally managed.
 
-The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval).
+The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval), one per shape: single turn, multi turn (a sandboxed terminal task), resume, and multi env.
 
 ### Run Directory and Resume
 

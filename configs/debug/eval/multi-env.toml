@@ -1,0 +1,28 @@
+# Multi env: gsm8k (single turn, null harness, subprocess) and terminal-bench-2's
+# fix-git (multi turn, bash harness in a prime sandbox) in one run, one epoch
+# each, one env server per source.
+#
+#   uv run eval @ configs/debug/eval/multi-env.toml
+
+group_size = 2
+
+[concurrency]
+min_inflight = 4
+max_inflight = 4
+
+[sampling]
+max_completion_tokens = 8192
+
+[[source]]
+num_examples = 8
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.taskset.tasks = ["fix-git"]
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["ProviderError", "SandboxError"]
