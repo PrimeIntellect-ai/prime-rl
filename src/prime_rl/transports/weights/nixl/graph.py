@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 import torch
@@ -30,9 +30,17 @@ class TensorReplayPlan:
     source_shape: tuple[int, ...]
     source_stride: tuple[int, ...]
     replay_ops: OperationChain
+    incoming_copies: tuple[RecordedCopy, ...] = ()
+    staging_dtype: torch.dtype | None = None
+
+    def can_receive_into(self, dtype: torch.dtype) -> bool:
+        return not self.incoming_copies and not self.replay_ops and self.staging_dtype == dtype
 
 
 SUPPORTED_OPS: dict[Any, str] = {
+    torch.cat: "cat",
+    torch.concat: "cat",
+    torch.concatenate: "cat",
     torch.Tensor.narrow: "narrow",
     torch.Tensor.select: "select",
     torch.Tensor.view: "view",
@@ -60,13 +68,13 @@ class UnsupportedOpError(NotImplementedError):
 
 
 def apply_chain(value: Any, ops: OperationChain) -> torch.Tensor:
-    """Replay a recorded chain, including deferred dtype conversions."""
-    # Invariant: LazyWeight records only operations from SUPPORTED_OPS and
-    # follows tuple-returning methods with tuple_getitem, so every chain ends
-    # in a tensor.
+    """Evaluate recorded tensor operations; cat is evaluated only on metadata."""
     result = value
     for operation in ops:
-        if operation.name == "tuple_getitem":
+        if operation.name == "cat":
+            (other_inputs,) = operation.args
+            result = torch.cat([result, *(weight._meta() for weight in other_inputs)], **operation.kwargs)
+        elif operation.name == "tuple_getitem":
             result = result[operation.args[0]]
         elif operation.name == "__getitem__":
             result = result[operation.args[0]]
@@ -89,7 +97,14 @@ def is_view_of(value: torch.Tensor, root: torch.Tensor) -> bool:
     return False
 
 
-def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain) -> TensorReplayPlan:
+def plan_tensor_replay(
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    ops: OperationChain,
+    *,
+    source_name: str = "",
+    plans: dict[int, TensorReplayPlan] | None = None,
+) -> TensorReplayPlan:
     """Resolve a directly transferable source view and local replay suffix.
 
     The prefix must remain a contiguous, same-dtype view of the trainer root
@@ -98,6 +113,39 @@ def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: Operatio
     replayed on the receive arena.
     """
     root = torch.empty(shape, dtype=dtype, device="meta")
+    plans = {} if plans is None else plans
+    for index in range(len(ops) - 1, -1, -1):
+        operation = ops[index]
+        if operation.name != "cat":
+            continue
+        if id(operation) not in plans:
+            first = apply_chain(root, ops[:index])
+            output = apply_chain(first, (operation,))
+            dim = operation.kwargs["dim"] % output.ndim
+            inputs = [(source_name, shape, dtype, ops[:index], first.shape)] + [
+                (weight._source_name, weight._source_shape, weight._source_dtype, weight._ops, weight.shape)
+                for weight in operation.args[0]
+            ]
+            incoming = []
+            offset = 0
+            for name, source_shape, source_dtype, input_ops, input_shape in inputs:
+                width = input_shape[dim] if torch.Size(input_shape).numel() else 0
+                destination_shape = list(output.shape)
+                destination_shape[dim] = width
+                if tuple(input_shape) != tuple(destination_shape):
+                    input_ops += (TensorOperation("reshape", args=(tuple(destination_shape),)),)
+                copy = RecordedCopy(
+                    name, input_ops, None, "", offset * output.stride(dim), tuple(destination_shape), output.stride()
+                )
+                incoming.append(copy)
+                plans[id(copy)] = plan_tensor_replay(
+                    tuple(source_shape), source_dtype, input_ops, source_name=name, plans=plans
+                )
+                offset += width
+            plans[id(operation)] = TensorReplayPlan(
+                0, tuple(output.shape), output.stride(), (), tuple(incoming), output.dtype
+            )
+        return replace(plans[id(operation)], replay_ops=ops[index + 1 :])
     prefix_len = 0
     source_view = root
     for candidate_len in range(1, len(ops) + 1):
@@ -115,6 +163,7 @@ def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: Operatio
         source_shape=tuple(source_view.shape),
         source_stride=tuple(source_view.stride()),
         replay_ops=ops[prefix_len:],
+        staging_dtype=dtype,
     )
 
 
@@ -128,6 +177,25 @@ class RecordedCopy:
     destination_shape: tuple[int, ...]
     destination_stride: tuple[int, ...]
     is_persistent: bool = False
+
+
+def staging_copies(copies: list[RecordedCopy], plans: dict[int, TensorReplayPlan]):
+    """Visit each staging tensor once, with its incoming sources first."""
+    seen = set()
+
+    def visit(copy):
+        plan = plans[id(copy)]
+        key = id(plan.incoming_copies) if plan.incoming_copies else id(copy)
+        if key in seen:
+            return
+        seen.add(key)
+        for incoming in plan.incoming_copies:
+            if not plans[id(incoming)].can_receive_into(plan.staging_dtype):
+                yield from visit(incoming)
+        yield copy, plan, key
+
+    for copy in copies:
+        yield from visit(copy)
 
 
 @dataclass(frozen=True, eq=False)
@@ -260,8 +328,8 @@ class LazyWeight(torch.Tensor):
                 return source._record_copy(destination)
 
         op_name = SUPPORTED_OPS.get(func)
-        if op_name is not None and args and isinstance(args[0], cls):
-            return cls._intercept(args[0], func, op_name, tuple(args[1:]), kwargs)
+        if op_name is not None:
+            return cls._intercept(func, op_name, args, kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
@@ -269,12 +337,17 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def _intercept(
         cls,
-        source: "LazyWeight",
         func: Callable,
         op_name: str,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ):
+        if op_name == "cat":
+            inputs = tuple(args[0] if args else kwargs["tensors"])
+            dim = kwargs.get("dim", args[1] if len(args) > 1 else 0)
+            return inputs[0]._child(TensorOperation("cat", args=(inputs[1:],), kwargs={"dim": dim}))
+
+        source, args = args[0], args[1:]
         meta = source._meta()
         with torch._C.DisableTorchFunctionSubclass():
             result = func(meta, *args, **kwargs)
@@ -301,6 +374,10 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        # Indexed assignment lowers to a native copy without calling Tensor.copy_.
+        if func is torch.ops.aten.copy_.default and isinstance(args[1], cls):
+            return args[1]._record_copy(args[0])
+
         for value in (*args, *kwargs.values()):
             if isinstance(value, cls):
                 raise UnsupportedOpError(
