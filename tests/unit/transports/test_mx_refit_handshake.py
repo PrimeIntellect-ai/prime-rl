@@ -116,3 +116,10 @@ def test_sender_records_trainer_client_metrics(tmp_path, monkeypatch):
 
     assert timer.marks["manifest_cache_hit"] == 1
     assert timer.marks["manifest_generation_s"] == 0.002
+    assert set(timer.phases) == {"handshake", "publish", "rendezvous", "release"}
+    assert timer.marks["handshake_tensor_mode"] == 0
+    assert timer.marks["handshake_barrier_enabled"] == 0
+    assert timer.marks["handshake_barrier_s"] == 0
+    for child in ("publish_barrier_s", "publish_client_s", "publish_metrics_s", "rendezvous_barrier_s"):
+        assert timer.marks[child] >= 0
+        assert child not in timer.phases

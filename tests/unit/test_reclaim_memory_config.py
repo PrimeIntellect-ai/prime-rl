@@ -33,6 +33,26 @@ def test_reclaim_default_reaches_trainer():
     config = rl_config(type="mx_refit")
 
     assert config.trainer.weight_broadcast.reclaim_memory == "always"
+    assert config.trainer.weight_broadcast.handshake_mode == "object"
+    assert config.trainer.weight_broadcast.handshake_barrier is False
+
+
+def test_mx_handshake_settings_reach_only_trainer():
+    config = rl_config(type="mx_refit", handshake_mode="tensor", handshake_barrier=True)
+
+    assert config.trainer.weight_broadcast.handshake_mode == "tensor"
+    assert config.trainer.weight_broadcast.handshake_barrier is True
+    assert not hasattr(config.orchestrator.weight_broadcast, "handshake_mode")
+    assert not hasattr(config.orchestrator.weight_broadcast, "handshake_barrier")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"handshake_mode": "unknown"}, {"handshake_mode": "tensor", "run_uid": "\N{GREEK SMALL LETTER PI}" * 2044}],
+)
+def test_mx_invalid_handshake_settings_are_rejected(fields):
+    with pytest.raises(ValueError):
+        rl_config(type="mx_refit", **fields)
 
 
 def test_unknown_reclaim_mode_is_rejected():

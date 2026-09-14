@@ -183,6 +183,20 @@ class SharedMXRefitWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     run_uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
     """Namespace for this run's ModelExpress weight versions."""
 
+    handshake_mode: Literal["object", "tensor"] = "object"
+    """Broadcast each fresh offer token as a Python object or a reusable fixed CPU tensor (up to 4096 UTF-8 bytes)."""
+
+    handshake_barrier: bool = False
+    """Insert a diagnostic barrier inside the trainer's timed handshake before token broadcast."""
+
+    @model_validator(mode="after")
+    def validate_handshake_token_size(self):
+        if self.handshake_mode == "tensor" and len(self.run_uid.encode("utf-8")) + 9 > 4096:
+            raise ValueError(
+                "tensor handshake requires run_uid plus the 9-byte offer suffix to fit in 4096 UTF-8 bytes"
+            )
+        return self
+
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
@@ -537,6 +551,8 @@ class RLConfig(BaseConfig):
             else:  # mx_refit
                 transport_config = dict()
                 trainer_only_config["run_uid"] = self.weight_broadcast.run_uid
+                trainer_only_config["handshake_mode"] = self.weight_broadcast.handshake_mode
+                trainer_only_config["handshake_barrier"] = self.weight_broadcast.handshake_barrier
                 trainer_config_type = TrainerMXRefitWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorMXRefitWeightBroadcastConfig
             self.trainer.weight_broadcast = trainer_config_type(

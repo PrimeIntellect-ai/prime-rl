@@ -3,6 +3,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from prime_rl.configs.trainer import MXRefitWeightBroadcastConfig
 from prime_rl.transports.weights.base import SENDER_READY_MARKER
 from prime_rl.transports.weights.mx_refit import (
@@ -15,8 +17,8 @@ from prime_rl.utils.pathing import get_broadcast_dir
 RUN_UID = "testrun"
 
 
-def make_sender(output_dir: Path, timeout: int = 5) -> MXRefitWeightSender:
-    config = MXRefitWeightBroadcastConfig(run_uid=RUN_UID, timeout=timeout)
+def make_sender(output_dir: Path, timeout: int = 5, handshake_mode: str = "object") -> MXRefitWeightSender:
+    config = MXRefitWeightBroadcastConfig(run_uid=RUN_UID, timeout=timeout, handshake_mode=handshake_mode)
     return MXRefitWeightSender(output_dir, config, parallel_dims=None, model_name="model")
 
 
@@ -32,18 +34,20 @@ def offer(sender: MXRefitWeightSender, step: int) -> Path:
     return step_dir
 
 
-def test_restart_uses_new_version_id(tmp_path):
-    first = make_sender(tmp_path)
+@pytest.mark.parametrize("mode", ["object", "tensor"])
+def test_restart_uses_new_version_id(tmp_path, mode):
+    first = make_sender(tmp_path, handshake_mode=mode)
     offer(first, 3)
-    restarted = make_sender(tmp_path)
+    restarted = make_sender(tmp_path, handshake_mode=mode)
     offer(restarted, 3)
 
     assert first._offer_token != restarted._offer_token
     assert weight_version_uid(first._offer_token, 3) != weight_version_uid(restarted._offer_token, 3)
 
 
-def test_each_offer_uses_new_version_id(tmp_path):
-    sender = make_sender(tmp_path)
+@pytest.mark.parametrize("mode", ["object", "tensor"])
+def test_each_offer_uses_new_version_id(tmp_path, mode):
+    sender = make_sender(tmp_path, handshake_mode=mode)
     offer(sender, 3)
     first = sender._offer_token
     offer(sender, 3)

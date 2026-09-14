@@ -45,9 +45,12 @@ def test_records_failed_phase():
     timer = PhaseTimer("generator", 1, "abc123:1")
     with pytest.raises(RuntimeError, match="staging blew up"):
         with timer.phase("wire"):
-            raise RuntimeError("staging blew up")
+            with timer.child("read_s"):
+                raise RuntimeError("staging blew up")
 
     assert "wire" in timer.payload()["phases_s"]
+    assert "read_s" in timer.payload()["marks"]
+    assert "read_s" not in timer.payload()["phases_s"]
 
 
 def test_repeated_phase_accumulates():
@@ -92,11 +95,14 @@ def test_emission_falls_back_to_stdout_when_the_logger_is_unavailable(capsys, mo
 def test_marks_are_not_counted_as_time():
     with timed_refit("orchestrator", 3, "abc123:3") as timer:
         with timer.phase("discovery"):
-            pass
+            with timer.child("poll_s"):
+                pass
         timer.mark("offer_lag_s", 29.7)
 
     record = timer.payload()
-    assert record["marks"] == {"offer_lag_s": 29.7}
+    assert record["marks"]["offer_lag_s"] == 29.7
+    assert record["marks"]["poll_s"] >= 0
+    assert "poll_s" not in record["phases_s"]
     assert "offer_lag_s" not in record["phases_s"]
     assert record["accounted_s"] == pytest.approx(sum(record["phases_s"].values()))
 
@@ -107,3 +113,54 @@ def test_payload_omits_empty_marks():
             pass
 
     assert "marks" not in timer.payload()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_timeline_preserves_child_intervals_and_uncovered_gaps(failed, monkeypatch):
+    ticks = iter([10.0, 11.0, 12.0, 13.0, 15.0, 17.0, 20.0])
+    with monkeypatch.context() as clock:
+        clock.setattr(_MODULE["time"], "perf_counter", lambda: next(ticks))
+        timer = PhaseTimer("orchestrator", 3, "test:3")
+        try:
+            with timer.phase("update_rpc", timeline=True):
+                with timer.span("admin_pause"):
+                    pass
+                with timer.span("admin_update"):
+                    if failed:
+                        raise RuntimeError("update failed")
+        except RuntimeError:
+            assert failed
+        timer.elapsed = 10.0
+    record = timer.payload()
+    assert record["hostname"]
+    assert [span["name"] for span in record["spans"]] == ["admin_pause", "admin_update", "update_rpc"]
+    assert record["spans"][1] == {
+        "name": "admin_update",
+        "start_offset_s": 5.0,
+        "end_offset_s": 7.0,
+        "duration_s": 2.0,
+        "status": "failed" if failed else "complete",
+    }
+    assert record["spans"][-1]["status"] == ("failed" if failed else "complete")
+    assert [(gap["start_offset_s"], gap["end_offset_s"]) for gap in record["span_gaps"]] == [
+        (1.0, 2.0),
+        (3.0, 5.0),
+        (7.0, 10.0),
+    ]
+    assert record["marks"]["update_rpc_uncovered_s"] == 6.0
+    assert record["accounted_s"] == 9.0
+
+
+def test_timeline_gaps_use_interval_union_for_nested_children(monkeypatch):
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 6.0, 8.0, 10.0])
+    with monkeypatch.context() as clock:
+        clock.setattr(_MODULE["time"], "perf_counter", lambda: next(ticks))
+        timer = PhaseTimer("orchestrator", 2, "test:2")
+        with timer.phase("update_rpc", timeline=True):
+            with timer.span("outer"):
+                with timer.span("inner"):
+                    pass
+    assert timer.phases["update_rpc"] == 9.0
+    assert timer.marks["outer_s"] == 6.0
+    assert timer.marks["inner_s"] == 3.0
+    assert timer.marks["update_rpc_uncovered_s"] == 3.0

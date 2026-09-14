@@ -683,6 +683,20 @@ class MXRefitWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     run_uid: str
     """Namespace for this run's ModelExpress weight versions."""
 
+    handshake_mode: Literal["object", "tensor"] = "object"
+    """Broadcast each fresh offer token as a Python object or a reusable fixed CPU tensor (up to 4096 UTF-8 bytes)."""
+
+    handshake_barrier: bool = False
+    """Insert a diagnostic barrier inside the timed handshake before token broadcast; this does not remove arrival waiting."""
+
+    @model_validator(mode="after")
+    def validate_handshake_token_size(self):
+        if self.handshake_mode == "tensor" and len(self.run_uid.encode("utf-8")) + 9 > 4096:
+            raise ValueError(
+                "tensor handshake requires run_uid plus the 9-byte offer suffix to fit in 4096 UTF-8 bytes"
+            )
+        return self
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig

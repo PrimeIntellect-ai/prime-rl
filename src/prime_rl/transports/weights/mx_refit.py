@@ -28,9 +28,12 @@ from prime_rl.orchestrator.clients import init_mx_refit_broadcast
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import SENDER_READY_MARKER, WeightReceiver, WeightSender
 from prime_rl.transports.weights.mx_phases import PhaseTimer, timed_refit
+from prime_rl.utils.mx_handshake import OfferTokenMessage
+from prime_rl.utils.mx_precision import build_trainer_context
 
 RELEASE_POLL_INTERVAL = 0.05
 READY_POLL_INTERVAL = 0.1
+
 
 
 def weight_version_uid(offer_token: str, step: int) -> str:
@@ -86,16 +89,18 @@ class MXRefitWeightSender(WeightSender):
         self._control: ModelExpressControlClient | None = None
         self._expected_slots: list[str] = []
         self._offer_token: str | None = None
+        self._token_message = OfferTokenMessage() if config.handshake_mode == "tensor" else None
 
     @property
     def server_url(self) -> str:
         return f"{self.config.host}:{self.config.port}"
 
     def _initialize(self, model: nn.Module) -> None:
+        tensors = model.state_dict()
         # Publishers stay unpinned because every receiver reads from every rank.
         self._client = ModelExpressTrainerClient.initialize(
             ModelExpressTrainerConfig(
-                engine_context=FSDPTrainerContext(),
+                engine_context=build_trainer_context(FSDPTrainerContext, model, tensors),
                 model_name=self.model_name,
                 device_id=self.world.local_rank,
                 server_url=self.server_url,
@@ -103,7 +108,7 @@ class MXRefitWeightSender(WeightSender):
                 payload_format=WeightPayloadFormat.FULL_TENSOR,
             )
         )
-        slot = self._client.bind_tensors(model.state_dict())
+        slot = self._client.bind_tensors(tensors)
         if self.world.is_master:
             self._control = ModelExpressControlClient.connect(server_url=self.server_url)
 
@@ -129,11 +134,49 @@ class MXRefitWeightSender(WeightSender):
         del step_dir  # mx_refit addresses versions by uid, not by path
         with timed_refit("trainer", step, weight_version_uid(self._offer_token or "", step)) as timer:
             timer.mark("rank", self.world.rank)
+            timer.mark("handshake_tensor_mode", float(self.config.handshake_mode == "tensor"))
+            timer.mark("handshake_barrier_enabled", float(self.config.handshake_barrier))
+            for child in (
+                "handshake_barrier_s",
+                "handshake_token_prepare_s",
+                "handshake_collective_s",
+                "handshake_token_decode_s",
+                "publish_create_version_s",
+                "rendezvous_wait_released_s",
+                "rendezvous_rpc_s",
+                "rendezvous_sleep_s",
+                "rendezvous_poll_overhead_s",
+                "rendezvous_poll_count",
+                "rendezvous_sleep_count",
+            ):
+                timer.mark(child, 0.0)
             with timer.phase("handshake"):
+                if self.config.handshake_barrier and self.world.world_size > 1:
+                    with timer.child("handshake_barrier_s"):
+                        dist.barrier()
                 if self.world.world_size > 1:
-                    offered = [self._offer_token]
-                    dist.broadcast_object_list(offered, src=0)
-                    self._offer_token = offered[0]
+                    with timer.child("handshake_token_prepare_s"):
+                        device = (
+                            dist.distributed_c10d._get_object_coll_device() if self._token_message is None else "cpu"
+                        )
+                        backends = dict(pair.split(":", 1) for pair in dist.get_backend_config().split(","))
+                        timer.mark("handshake_collective_cpu", float(device == "cpu"))
+                        timer.mark("handshake_collective_gloo", float(backends.get(device) == "gloo"))
+                        if self._token_message is not None and backends.get("cpu") != "gloo":
+                            raise RuntimeError("tensor handshake requires a configured CPU Gloo backend")
+                        if self._token_message is None:
+                            offered = [self._offer_token]
+                        elif self.world.is_master:
+                            if self._offer_token is None:
+                                raise RuntimeError("mx_refit has no offer token to encode")
+                            self._token_message.encode(self._offer_token)
+                    with timer.child("handshake_collective_s"):
+                        if self._token_message is None:
+                            dist.broadcast_object_list(offered, src=0)
+                        else:
+                            dist.broadcast(self._token_message.tensor, src=0)
+                    with timer.child("handshake_token_decode_s"):
+                        self._offer_token = offered[0] if self._token_message is None else self._token_message.decode()
             if self._offer_token is None:
                 raise RuntimeError("mx_refit broadcast reached publication without an offer token")
             uid = weight_version_uid(self._offer_token, step)
@@ -147,49 +190,75 @@ class MXRefitWeightSender(WeightSender):
             with timer.phase("publish"):
                 if self.world.is_master:
                     assert self._control is not None
-                    self._control.create_weight_version(
-                        model_name=self.model_name,
-                        idempotency_key=uid,
-                        payload_format=WeightPayloadFormat.FULL_TENSOR,
-                        expected_source_slots=self._expected_slots,
-                        uid=uid,
-                    )
-                dist.barrier()
-                self._client.publish_version(version=WeightVersionRef(uid))
-                for name, value in self._client.pop_metrics().items():
-                    timer.mark(name, float(value))
+                    with timer.child("publish_create_version_s"):
+                        self._control.create_weight_version(
+                            model_name=self.model_name,
+                            idempotency_key=uid,
+                            payload_format=WeightPayloadFormat.FULL_TENSOR,
+                            expected_source_slots=self._expected_slots,
+                            uid=uid,
+                        )
+                with timer.child("publish_barrier_s"):
+                    dist.barrier()
+                with timer.child("publish_client_s"):
+                    self._client.publish_version(version=WeightVersionRef(uid))
+                with timer.child("publish_metrics_s"):
+                    for name, value in self._client.pop_metrics().items():
+                        timer.mark(name, float(value))
 
             with timer.phase("rendezvous"):
                 if self.world.is_master:
-                    self._wait_released(uid)
-                dist.barrier()
+                    with timer.child("rendezvous_wait_released_s"):
+                        self._wait_released(uid, timer)
+                with timer.child("rendezvous_barrier_s"):
+                    dist.barrier()
 
             with timer.phase("release"):
                 self._client.release_version(version=WeightVersionRef(uid))
 
-    def _wait_released(self, uid: str) -> None:
+    def _wait_released(self, uid: str, timer: PhaseTimer | None = None) -> None:
         assert self._control is not None
-        deadline = time.monotonic() + self.timeout
-        while True:
-            try:
-                state = self._control.get_weight_version(uid).state
-            except grpc.RpcError as error:
-                if version_missing(error):
-                    return  # already retired == generator done
-                raise
-            if state is WeightVersionState.RELEASING:
-                return
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"No generator pulled version {uid} within {self.timeout}s (state={state}). "
-                    + (
-                        "The consumer is not looking for this step; if only one side restarted, "
-                        "restart both so they resync to the same step."
-                        if state is WeightVersionState.READY
-                        else "Not every trainer rank published its shard."
+        started = time.perf_counter()
+        rpc_s = sleep_s = 0.0
+        polls = sleeps = 0
+        try:
+            deadline = time.monotonic() + self.timeout
+            while True:
+                rpc_started = time.perf_counter()
+                polls += 1
+                try:
+                    state = self._control.get_weight_version(uid).state
+                except grpc.RpcError as error:
+                    if version_missing(error):
+                        return  # already retired == generator done
+                    raise
+                finally:
+                    rpc_s += time.perf_counter() - rpc_started
+                if state is WeightVersionState.RELEASING:
+                    return
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"No generator pulled version {uid} within {self.timeout}s (state={state}). "
+                        + (
+                            "The consumer is not looking for this step; if only one side restarted, "
+                            "restart both so they resync to the same step."
+                            if state is WeightVersionState.READY
+                            else "Not every trainer rank published its shard."
+                        )
                     )
-                )
-            time.sleep(RELEASE_POLL_INTERVAL)
+                sleep_started = time.perf_counter()
+                sleeps += 1
+                try:
+                    time.sleep(RELEASE_POLL_INTERVAL)
+                finally:
+                    sleep_s += time.perf_counter() - sleep_started
+        finally:
+            if timer is not None:
+                timer.mark("rendezvous_rpc_s", rpc_s)
+                timer.mark("rendezvous_sleep_s", sleep_s)
+                timer.mark("rendezvous_poll_overhead_s", max(0.0, time.perf_counter() - started - rpc_s - sleep_s))
+                timer.mark("rendezvous_poll_count", polls)
+                timer.mark("rendezvous_sleep_count", sleeps)
 
 
 class MXRefitWeightReceiver(WeightReceiver):
@@ -217,12 +286,13 @@ class MXRefitWeightReceiver(WeightReceiver):
                 timer.identify(uid)
                 await resolve_ready_version(self._control, uid, timeout=self.config.timeout)
             try:
-                with timer.phase("update_rpc"):
+                with timer.phase("update_rpc", timeline=True):
                     await self.admin_plane.update_weights(
                         None,
                         transport="mx_refit",
                         step=step,
                         version_uid=uid,
+                        phase_timer=timer,
                     )
             finally:
                 # Retiring releases the trainer even when installation fails.

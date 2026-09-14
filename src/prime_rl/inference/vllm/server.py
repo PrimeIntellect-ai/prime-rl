@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import uuid
 from argparse import Namespace
 
@@ -96,7 +97,8 @@ async def update_weights(request: Request):
         if isinstance(result, dict) and result.get("record") == "mx-initial-refit-verification-v1"
     ]
     for record in records:
-        print(json.dumps(record), flush=True)
+        sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
     if os.environ.get("MX_VERIFY_INITIAL_REFIT") == "1" and str(data.get("version_uid", "")).endswith(":0"):
         if not records or len(records) != len(results):
             raise HTTPException(status_code=500, detail="Initial verification is missing receiver records")
