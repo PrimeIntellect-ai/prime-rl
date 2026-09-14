@@ -444,16 +444,24 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     fi
 {%- endif %}
 
-    # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
-    # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
-    # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
-    # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
-    if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+    # One vLLM API server per local DP rank (PORT + k), each pinned to its TP slice
+    # with a unique NIXL side-channel port. Multi-rank roles form an external-LB DP
+    # group rooted on the role-replica head. A single-rank role must omit the DP
+    # rendezvous arguments because vLLM rejects external-LB mode for dp=1.
+    if [ "$DP" -gt 1 ]; then
+        if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+    fi
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
-        GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        if [ "$DP" -gt 1 ]; then
+            GLOBAL_RANK=$((START_RANK + k))
+            RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+            DP_RPC_PORT=$INFERENCE_DATA_PARALLEL_RPC_PORT
+        else
+            RANK_EXTRA="{$ROLE_EXTRA}"
+            DP_RPC_PORT=""
+        fi
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$DP_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
     # Start the single global router on inference node 0 (external LB across all per-rank endpoints)

@@ -17,7 +17,9 @@ def setup_vllm_env(config: InferenceConfig):
     if config.enable_return_sampling_mask:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
     elif config.vllm.enable_return_routed_experts:
-        use_v2_runner = config.deployment.type != "disaggregated"
+        # Per-rank configs omit the launcher-only deployment block, but retain this
+        # flag so workers can detect that NIXL P/D transfer is active.
+        use_v2_runner = not config.use_pd_kv_transfer
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1" if use_v2_runner else "0")
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which

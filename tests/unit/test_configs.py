@@ -939,3 +939,18 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_pd_routed_experts_use_v1_runner_without_deployment_config(monkeypatch):
+    from prime_rl.inference.server import setup_vllm_env
+
+    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    config = InferenceConfig(
+        use_pd_kv_transfer=True,
+        vllm={"enable_return_routed_experts": True},
+    )
+
+    setup_vllm_env(config)
+
+    assert config.deployment.type == "single_node"
+    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "0"
