@@ -1,5 +1,5 @@
 max_steps = 20
-seq_len = 131072
+seq_len = 65536
 output_dir = "/home/mikasenghaas/outputs/adaptive-concurrency-improvs"
 
 [run]
@@ -29,7 +29,7 @@ type = "nccl"
 timeout = 3600
 
 [model]
-name = "zai-org/GLM-4.5-Air"
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
 [trainer]
 dist_timeout_seconds = 3600
@@ -38,8 +38,9 @@ enable_router_replay = true
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
-cp = 4
+cp = 8
 cp_style = "ulysses"
+ep = 8
 optim_cpu_offload = false
 full_offload = true
 fused_lm_head_token_chunk_size = 1024
@@ -69,8 +70,7 @@ num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
 [orchestrator.renderer]
-name = "glm-4.5"
-thinking_retention = "all"
+name = "qwen3"
 
 [[orchestrator.train.source]]
 name = "scaleswe"
@@ -90,7 +90,6 @@ VLLM_CACHE_ROOT = "/tmp/adaptive-concurrency-pd/vllm"
 FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-pd/flashinfer"
 
 [inference.vllm]
-max_model_len = 131072
+max_model_len = 65536
 tensor_parallel_size = 8
-quantization = "fp8"
 enable_return_routed_experts = true

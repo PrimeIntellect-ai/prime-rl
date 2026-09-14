@@ -1,5 +1,5 @@
 max_steps = 20
-seq_len = 131072
+seq_len = 65536
 output_dir = "/home/mikasenghaas/outputs/adaptive-concurrency-improvs"
 
 [run]
@@ -17,7 +17,7 @@ pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-linear ; timeout 120 prime
 
 [deployment]
 type = "multi_node"
-num_train_nodes = 4
+num_train_nodes = 1
 num_infer_nodes = 1
 num_infer_replicas = 2
 
@@ -30,7 +30,7 @@ type = "nccl"
 timeout = 3600
 
 [model]
-name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+name = "Qwen/Qwen3.5-35B-A3B"
 
 [trainer]
 dist_timeout_seconds = 3600
@@ -42,6 +42,8 @@ attn = "flash_attention_3"
 cp = 8
 cp_style = "ulysses"
 ep = 8
+optim_cpu_offload = false
+full_offload = true
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -52,7 +54,7 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.optim]
-type = "adamw"
+type = "sign_sgd"
 
 [orchestrator]
 batch_size = 128
@@ -69,14 +71,12 @@ num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
 [orchestrator.renderer]
-name = "nemotron-3"
-truncate_history_thinking = false
+name = "qwen3.5"
 
 [[orchestrator.train.source]]
 name = "scaleswe"
 env.taskset.id = "scaleswe"
-env.agent.harness.id = "rlm"
-env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["ac-linear-baseline"]
 
 [inference]
@@ -86,9 +86,8 @@ VLLM_CACHE_ROOT = "/tmp/adaptive-concurrency-linear/vllm"
 FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-linear/flashinfer"
 
 [inference.vllm]
-max_model_len = 131072
+max_model_len = 65536
 tensor_parallel_size = 8
 enable_prefix_caching = true
 enable_expert_parallel = true
 enable_return_routed_experts = true
-use_deep_gemm = true
