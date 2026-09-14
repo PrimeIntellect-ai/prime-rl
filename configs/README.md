@@ -7,7 +7,7 @@ Configurations for running prime-rl.
   [`examples/basic/`](../examples/basic) tutorial and is smoke-tested for one step.
   Envs: `reverse-text`, `alphabet-sort`, `wiki-search`, `wordle`, `hendrycks-sanity`.
 - **[`advanced/`](advanced)** — frontier-model training configs without launch walkthroughs:
-  `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft + a standalone
+  `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft, bf16 RL, and a standalone
   vLLM serving pre-flight). For the tutorialized equivalents, see
   [`examples/advanced/`](../examples/advanced).
 - **`evals/`** — standalone eval configs, run with `uv run evals @ configs/evals/swe.toml`.
