@@ -1,0 +1,89 @@
+max_steps = 20
+seq_len = 2048
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "dsv4-bf16-broadcast"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+
+[slurm]
+job_name = "ds-v4-rl"
+partition = "all"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+quantize_in_weight_transfer = false
+
+[orchestrator]
+batch_size = 32
+group_size = 8
+
+[orchestrator.concurrency]
+max_inflight = 64
+
+# A bf16 HF-layout export built by `tools/convert_prime_to_hf.py`, not the published repo, whose
+# `config.json` carries `quantization_config` and `expert_dtype = "fp4"` and would make vLLM
+# allocate fp8 linears and MXFP4 experts that bf16 weights cannot fill.
+[orchestrator.model]
+name = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+
+[orchestrator.renderer]
+name = "deepseek-v4"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+enable_router_replay = true
+dist_timeout_seconds = 14400
+
+[trainer.model]
+name = "deepseek-ai/DeepSeek-V4-Flash-0731"
+impl = "custom"
+ep = 8
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+# `lr = 0` holds the policy fixed, so the trainer-vs-inference mismatch KL measures implementation
+# disagreement rather than policy drift: a fidelity measurement, not a training run.
+[trainer.optim]
+lr = 0.0
+weight_decay = 0.0
+
+[inference]
+
+# `VLLM_USE_DEEP_GEMM_E8M0` is pinned off because vLLM otherwise derives it from the checkpoint's
+# `scale_fmt`, and the export carries no `quantization_config` to read.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+model = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.8
+max_model_len = 2048
+# Required rather than a tuning choice: every DeepSeek V4 attention class sets
+# `use_fp8_ds_mla_layout = True`, and the sparse-MLA layout asserts against the `auto` default.
+kv_cache_dtype = "fp8"
+block_size = 256
