@@ -39,8 +39,6 @@ num_infer_replicas = 3
 project = "swe-ablations"
 name = "glm45air-scaleswe"
 
-[monitors.prime]
-
 [weight_broadcast]
 type = "nccl"
 timeout = 3600

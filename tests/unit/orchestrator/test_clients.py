@@ -6,7 +6,13 @@ import httpx
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.orchestrator.clients import _is_retryable_lora_error, check_health, load_lora_adapter, setup_client
+from prime_rl.orchestrator.clients import (
+    AdminPlane,
+    _is_retryable_lora_error,
+    check_health,
+    load_lora_adapter,
+    setup_client,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -36,17 +42,49 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
 
 def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client = AsyncMock()
+    admin_plane = MagicMock(clients=[mock_client])
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_admin_plane_initializes_nccl():
+    admin_plane = AdminPlane(ClientConfig())
+    client = AsyncMock()
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    client.post.return_value = response
+    admin_plane.clients = [client]
+
+    asyncio.run(
+        admin_plane.initialize_nccl(
+            host="trainer",
+            port=29501,
+            timeout=1200,
+            inference_world_size=1,
+        )
+    )
+
+    client.post.assert_awaited_once_with(
+        "/init_broadcaster",
+        json={
+            "host": "trainer",
+            "port": 29501,
+            "rank_offset": 0,
+            "inference_world_size": 1,
+            "timeout": 1200,
+            "quantize_in_weight_transfer": False,
+        },
+    )
+    asyncio.run(admin_plane.aclose())
 
 
 def test_setup_client_creates_renderer_client():

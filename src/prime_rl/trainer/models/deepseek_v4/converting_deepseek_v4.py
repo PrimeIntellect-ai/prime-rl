@@ -77,7 +77,7 @@ def _layer_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
         idx, prime_idx = f"{attn}.indexer", f"{prime_attn}.compressor.indexer"
         ops += [
             Rename(f"{idx}.wq_b.weight", f"{prime_idx}.q_b_proj.weight"),
-            Rename(f"{idx}.weights_proj.weight", f"{prime_idx}.scorer.weights_proj.weight"),
+            Rename(f"{idx}.weights_proj.weight", f"{prime_idx}.weights_proj.weight"),
             Rename(f"{idx}.compressor.wkv.weight", f"{prime_idx}.compressor.kv_proj.weight"),
             Rename(f"{idx}.compressor.wgate.weight", f"{prime_idx}.compressor.gate_proj.weight"),
             Rename(f"{idx}.compressor.norm.weight", f"{prime_idx}.compressor.kv_norm.weight"),

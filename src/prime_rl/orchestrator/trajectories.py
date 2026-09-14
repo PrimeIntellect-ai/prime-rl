@@ -91,6 +91,7 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
 def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
     """Yield each branch that yields a training sample, with its trainable-token mask.
 
+    Branches excluded by trace semantics are skipped before shared-node accounting.
     The mask is `branch.sampled_mask` except that a sampled node shared by several branches
     (a mid-trajectory fork) is trainable only in the first branch containing it; later
     branches carry its tokens as context (mask False). Branches left with no trainable
@@ -99,6 +100,8 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
     """
     trained_nodes: set[int] = set()
     for branch in trace.branches:
+        if not branch.trainable:
+            continue
         mask: list[bool] = []
         for node in branch.nodes:
             if node.sampled and any(node.mask) and id(node) in trained_nodes:

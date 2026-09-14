@@ -25,8 +25,6 @@ num_infer_replicas = 4
 project = "search-ablations"
 name = "glm45air-search"
 
-[monitors.prime]
-
 [weight_broadcast]
 type = "nccl"
 timeout = 3600

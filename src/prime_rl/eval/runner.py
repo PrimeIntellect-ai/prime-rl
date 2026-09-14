@@ -26,7 +26,7 @@ from subprocess import Popen
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, OnlineEvalConfig
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -72,7 +72,7 @@ class EvalRunner:
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
         self.clients: InferenceClient | None = None
-        self.admin_clients: AdminClients | None = None
+        self.admin_plane: AdminPlane | None = None
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
@@ -88,7 +88,7 @@ class EvalRunner:
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
-        self.admin_clients = AdminClients(config.client)
+        self.admin_plane = AdminPlane(config.client)
 
         self.spawn_env_servers()
 
@@ -98,7 +98,7 @@ class EvalRunner:
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.admin_clients.wait_for_ready(config.model)
+        await self.admin_plane.wait_for_ready(config.model)
         get_logger().info("Inference pool ready")
 
         self.eval_source = EvalSource(self.eval_envs, skip_first_step=skip_first_step, is_resumed=is_resumed)
@@ -134,7 +134,7 @@ class EvalRunner:
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin_clients.clients,
+            self.admin_plane.clients,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints
@@ -145,7 +145,7 @@ class EvalRunner:
         if not await self.inference_metrics.probe():
             concurrency = config.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.admin_clients.clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin_plane.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -327,6 +327,7 @@ class EvalRunner:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
                 f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+                f"Error {full.has_error.mean():.1%} | "
                 f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
             )
             return
@@ -373,6 +374,6 @@ class EvalRunner:
             await self.dispatcher.stop()
         if self.clients is not None:
             await self.clients.aclose()
-        if self.admin_clients is not None:
-            await self.admin_clients.aclose()
+        if self.admin_plane is not None:
+            await self.admin_plane.aclose()
         cleanup_processes(self.env_server_procs)

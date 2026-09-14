@@ -320,7 +320,7 @@ class DeepseekV4Config(PretrainedConfig):
                 self.rope_parameters = rope_parameters_dict
 
     def to_dict(self) -> dict[str, Any]:
-        """Drop the derived `mlp_layer_types` duck-typing shim before serializing.
+        """Drop the in-memory-only field before serializing.
 
         `num_hash_layers` is the on-disk source of truth (matching the real checkpoint);
         `mlp_layer_types` only exists in memory so HF's real `DeepseekV4SparseMoeBlock`

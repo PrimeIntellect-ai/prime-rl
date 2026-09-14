@@ -58,7 +58,7 @@ class OnlineEval:
         self.receiver = setup_weight_receiver(
             config.broadcasts_dir,
             weight_broadcast,
-            admin_clients=self.runner.admin_clients.clients,
+            admin_plane=self.runner.admin_plane,
             model_name=config.model,
         )
         await self.receiver.initialize()
