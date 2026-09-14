@@ -16,13 +16,9 @@ num_infer_replicas = 2
 [monitors.wandb]
 name = "baseline-mooncake"
 
-# External KV-cache hits do not carry the routed-expert decisions needed for router replay.
-[trainer]
-enable_router_replay = false
-
 [[orchestrator.train.source]]
-name = "scaleswe"
-env.taskset.id = "scaleswe"
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["ac-mooncake-baseline"]
 

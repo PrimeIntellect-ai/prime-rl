@@ -21,7 +21,6 @@ name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
 [trainer]
 dist_timeout_seconds = 3600
-enable_router_replay = true
 
 [trainer.model]
 impl = "custom"
@@ -29,8 +28,6 @@ attn = "flash_attention_3"
 cp = 8
 cp_style = "ulysses"
 ep = 8
-optim_cpu_offload = false
-full_offload = true
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -50,12 +47,6 @@ max_off_policy_steps = 32
 
 [orchestrator.algo]
 type = "grpo"
-
-[orchestrator.algo.length_penalty]
-type = "linear"
-num_output_tokens_weight = 0.0
-num_input_tokens_weight = 0.1
-num_turns_weight = 0.1
 
 [orchestrator.renderer]
 name = "qwen3"

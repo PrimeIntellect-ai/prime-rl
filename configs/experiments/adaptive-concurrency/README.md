@@ -1,6 +1,6 @@
 # Adaptive concurrency baselines
 
-These runs measure the default adaptive concurrency controller on ScaleSWE.
+These runs measure the default adaptive concurrency controller on Terminal Lego.
 Each run uses 20 training steps and three H200 nodes.
 
 | Overlay | Model | Inference setup |
@@ -9,9 +9,9 @@ Each run uses 20 training steps and three H200 nodes.
 | `mooncake.toml` | Qwen3-30B-A3B-Thinking-2507 | Two replicas with a shared Mooncake cache |
 | `linear-attention.toml` | Qwen3.5-35B-A3B | Two replicas with hybrid linear attention |
 
-All runs use one trainer node, a 65,536-token context, full CPU offload,
-and SignSGD. The controller uses its default bounds and derives its initial
-limit from live inference metrics.
+All runs use one trainer node, a 65,536-token context, CP=8, EP=8, activation
+offloading, and SignSGD. The controller uses its default bounds and derives its
+initial limit from live inference metrics.
 
 Stack the shared settings with one experiment overlay:
 

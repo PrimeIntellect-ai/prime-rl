@@ -24,8 +24,8 @@ name = "Qwen/Qwen3.5-35B-A3B"
 name = "qwen3.5"
 
 [[orchestrator.train.source]]
-name = "scaleswe"
-env.taskset.id = "scaleswe"
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["ac-linear-baseline"]
 
@@ -36,4 +36,3 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-linear/flashinfer"
 [inference.vllm]
 enable_prefix_caching = true
 enable_expert_parallel = true
-enable_return_routed_experts = true
