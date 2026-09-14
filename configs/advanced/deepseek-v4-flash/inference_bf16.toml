@@ -9,16 +9,13 @@ VLLM_USE_DEEP_GEMM_E8M0 = "0"
 port = 8000
 
 [vllm]
-# A bf16 HF-layout export built by `tools/convert_prime_to_hf.py`, not the published repo, whose
-# `config.json` carries `quantization_config` and `expert_dtype = "fp4"` and would make vLLM
-# allocate fp8 linears and MXFP4 experts that bf16 weights cannot fill.
-model = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 dtype = "bfloat16"
 tensor_parallel_size = 8
 enable_expert_parallel = true
 gpu_memory_utilization = 0.85
 max_model_len = 8192
-# Required rather than a tuning choice: every DeepSeek V4 attention class sets
-# `use_fp8_ds_mla_layout = True`, and the sparse-MLA layout asserts against the `auto` default.
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
 kv_cache_dtype = "fp8"
 block_size = 256
