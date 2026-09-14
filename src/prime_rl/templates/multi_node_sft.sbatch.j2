@@ -200,14 +200,14 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         export {{ key }}="{{ value }}"
 {%- endfor %}
         (
-            PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-eval uv run online-eval \
+            PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-eval uv run python -m prime_rl.eval.online \
                 @ $CONFIG_DIR/online_eval.json \
                 --client.base-url $INFER_URLS \
                 --client.admin-base-url $ADMIN_URLS \
 {%- if use_nccl_broadcast %}
                 --weight-broadcast.host $MASTER_ADDR \
 {%- endif %}
-                2>&1 | tee $LOG_DIR/online-eval.log
+                2>&1 | tee $LOG_DIR/eval.log
             COMPONENT_CODE=$?
             if [ "$COMPONENT_CODE" -eq 0 ]; then
                 touch "$EVAL_DONE" || exit $?

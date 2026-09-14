@@ -42,7 +42,7 @@ except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
-MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log", "online-eval.log"}
+MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
@@ -349,7 +349,6 @@ def log_component(rel: Path) -> tuple[str, str]:
             "orchestrator.log": ("orch", "orchestrator"),
             "inference.log": ("infer", "inference"),
             "eval.log": ("eval", "eval"),
-            "online-eval.log": ("eval", "online-eval"),
         }.get(parts[0], ("other", parts[0]))
     if parts[0] == "trainer":
         if parts[1] == "torchrun":  # trainer/torchrun/<rdzv>/attempt_0/<rank>/std{out,err}.log

@@ -8,7 +8,7 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-from prime_rl.configs.eval import OnlineEvalConfig
+from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -76,9 +76,9 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_config(config: SFTConfig) -> OnlineEvalConfig:
-    """Derive the online-eval config from the resolved SFT config: its ``[eval]`` block
-    plus the run-level fields. The launcher spawns the env servers itself, so each
+def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
+    """The online-eval process's config: the resolved ``[eval]`` block with the run-level
+    fields filled from the SFT config. The launcher spawns the env servers itself, so each
     source's derived address is stamped in, marking it externally managed for the
     online-eval process."""
     assert config.eval is not None
@@ -86,8 +86,7 @@ def build_online_eval_config(config: SFTConfig) -> OnlineEvalConfig:
     addresses = config.eval.env_addresses
     for source in eval_config.source:
         source.serve.address = addresses[("eval", source.resolved_name)]
-    return OnlineEvalConfig(
-        **eval_config.model_dump(),
+    run_fields = dict(
         model=config.model.name,
         weight_broadcast=config.weight_broadcast,
         broadcasts_dir=get_broadcast_dir(config.run_dir),
@@ -97,6 +96,7 @@ def build_online_eval_config(config: SFTConfig) -> OnlineEvalConfig:
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=config.monitors,
     )
+    return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
 
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
@@ -403,7 +403,7 @@ def sft_local(config: SFTConfig):
             logger.info("Starting online evals")
             start_process(
                 "online-eval",
-                ["online-eval", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
+                [sys.executable, "-m", "prime_rl.eval.online", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
@@ -415,7 +415,7 @@ def sft_local(config: SFTConfig):
                     **wandb_shared_env,
                     "WANDB_SHARED_LABEL": "online-eval",
                 },
-                log_path=log_dir / "online-eval.log",
+                log_path=log_dir / "eval.log",
             )
 
         from prime_rl.utils.utils import get_free_port

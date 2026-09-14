@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import prime_runs as pr
 from prime_cli.core.config import Config as PrimeConfig
 
-from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeMonitorConfig
+from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.utils import sanitize
@@ -29,7 +29,7 @@ def _base_url() -> str | None:
     return base.rstrip("/").removesuffix("/rft") if base else None
 
 
-class PrimeMonitor(Monitor):
+class PrimeTrainMonitor(Monitor):
     """Logs metrics and episodes to the Prime platform through ``prime_runs``.
 
     The run handle owns what ``TrainRun`` used to do by hand: the RFT
@@ -43,7 +43,7 @@ class PrimeMonitor(Monitor):
     and backpressure, so they never stall the loop.
     """
 
-    config: PrimeMonitorConfig
+    config: PrimeTrainMonitorConfig
     run: pr.Run
 
     async def init(self, config: BaseConfig | None = None) -> None:

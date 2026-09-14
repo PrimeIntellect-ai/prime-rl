@@ -24,7 +24,7 @@ from pathlib import Path
 from subprocess import Popen
 
 from prime_rl import monitors
-from prime_rl.configs.eval import EvalConfig, OnlineEvalConfig
+from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -59,7 +59,7 @@ POLL_INTERVAL_S = 2.0
 
 
 class EvalRunner:
-    def __init__(self, config: EvalConfig | OnlineEvalConfig, *, run_dir: Path, log_dir: Path) -> None:
+    def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path, log_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
         self.log_dir = log_dir

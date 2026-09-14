@@ -58,7 +58,7 @@ class EvalConfig(ServedEvalConfig):
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``); point ``client.base_url`` at a vLLM server for adaptive concurrency."""
 
-    model: str = Field("deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m"))
+    model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
 
     client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
@@ -122,27 +122,27 @@ class EvalConfig(ServedEvalConfig):
         return self
 
 
-class SFTEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
-    """The ``[eval]`` block of the ``sft`` entrypoint: interval-driven eval sources
-    against the inference server that receives the trainer's weight broadcasts."""
+class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
+    """The ``[eval]`` block of the ``sft`` entrypoint, and the config of the online-eval
+    process the launcher spawns from it: interval-driven eval sources against the inference
+    server that receives the trainer's weight broadcasts. The process watches the
+    broadcasts directory, moves the inference server onto each broadcast, and runs the
+    due sources against the updated weights. The launcher fills the run-level fields
+    (``model``, ``weight_broadcast``, ``broadcasts_dir``, ``max_steps``, ``resume_step``,
+    ``output_dir``, ``log``, ``monitors``) from the resolved SFT config."""
 
     cancel_on_new_checkpoint: bool = True
     """Cancel unfinished episodes when a newer trainer checkpoint is ready. Disable to
     finish every triggered eval epoch before loading later weights. The trainer can idle
     while it waits for slow evals."""
 
-
-class OnlineEvalConfig(SFTEvalConfig):
-    """``online-eval``: watch a broadcasts directory for the trainer's weight broadcasts,
-    move the inference server onto each of them, and run the due eval sources against the
-    updated weights. The ``sft`` launcher writes this config from its ``[eval]`` block;
-    with ``weight_broadcast.type = "filesystem"`` it also works standalone against any
-    trainer that writes ``broadcasts/step_{n}`` directories with the broadcast markers."""
-
-    model: str = "Qwen/Qwen3-0.6B"
+    model: str | None = None
     """Name the inference server serves the model under. The name stays fixed across
     weight updates (weights are swapped in place), so per-step results are told apart by
     ``eval/{env}/policy_version``."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Weight transport. None reloads weights from the filesystem broadcasts."""
 
     broadcasts_dir: Path | None = None
     """Directory to watch for ``step_{n}`` weight broadcasts. Defaults to
@@ -155,10 +155,6 @@ class OnlineEvalConfig(SFTEvalConfig):
     resume_step: int | None = None
     """Trainer step the run resumed from. When set, the startup (base-model) eval is
     skipped; set ``retrigger_on_resume`` to re-fire interval-aligned evals at this step."""
-
-    weight_broadcast: WeightBroadcastConfig | None = None
-    """Weight transport. The ``sft`` launcher fills this from its resolved trainer
-    transport. None reloads weights from the filesystem broadcasts."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """The run directory, shared with the trainer. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

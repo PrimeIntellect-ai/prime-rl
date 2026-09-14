@@ -1,6 +1,7 @@
 """Online evals: evaluate the trainer's weight broadcasts as they appear.
 
-The process watches a broadcasts directory for offered weight broadcasts through a
+Spawned by the ``sft`` launcher (``python -m prime_rl.eval.online @ online_eval.json``)
+next to the trainer. The process watches a broadcasts directory for offered weight broadcasts through a
 ``WeightReceiver`` (announced by their ``.sender_ready`` marker), moves the inference
 server onto each of them, and runs the due eval sources against the updated weights,
 sequentially per broadcast so every epoch measures exactly one policy version. Every
@@ -12,15 +13,19 @@ every epoch instead."""
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from pathlib import Path
 
 from prime_rl import monitors
-from prime_rl.configs.eval import OnlineEvalConfig
+from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps
+from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.pathing import get_all_ckpt_steps, prepare_attempt_dirs
+from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
 # Budget for the trainer's startup broadcast: it is always coming, but only
@@ -29,7 +34,8 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class OnlineEval:
-    def __init__(self, config: OnlineEvalConfig, log_dir: Path) -> None:
+    def __init__(self, config: SFTOnlineEvalConfig, log_dir: Path) -> None:
+        assert config.model is not None, "the sft launcher fills eval.model"
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.output_dir, log_dir=log_dir)
         # The last weight-broadcast step already handled (evaluated or skipped).
@@ -193,7 +199,7 @@ class OnlineEval:
 
 
 @clean_exit
-async def run_online_eval(config: OnlineEvalConfig, log_dir: Path) -> None:
+async def run_online_eval(config: SFTOnlineEvalConfig, log_dir: Path) -> None:
     evaluation = OnlineEval(config, log_dir)
     try:
         await evaluation.run()
@@ -201,3 +207,18 @@ async def run_online_eval(config: OnlineEvalConfig, log_dir: Path) -> None:
         await monitors.finalize()
     finally:
         await evaluation.runner.stop()
+
+
+def main():
+    set_proc_title("OnlineEvals")
+    config = cli(SFTOnlineEvalConfig)
+    config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
+    os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
+    os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
+    (config_dir / "online_eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    setup_logger(config.log.level, json_logging=config.log.json_logging)
+    asyncio.run(run_online_eval(config, log_dir))
+
+
+if __name__ == "__main__":
+    main()

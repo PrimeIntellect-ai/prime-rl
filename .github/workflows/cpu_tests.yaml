@@ -43,6 +43,37 @@ jobs:
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
 
+  eval-test:
+    name: Eval test (reverse-text on Prime Inference)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run eval test
+        env:
+          USERNAME_CI: CI_RUNNER
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+        run: uv run pytest tests/integration/test_reverse_text_eval.py
+      - name: Cleanup output_dir
+        run: rm -rf /tmp/outputs
+
   slim-configs-install:
     name: Slim install (prime-rl-configs only)
     runs-on: ubuntu-latest

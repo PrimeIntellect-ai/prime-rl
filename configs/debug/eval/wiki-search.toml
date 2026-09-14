@@ -1,12 +1,9 @@
 # wiki-search - a search tool served by a shared tool server; the agent runs the
 # bash harness with a turn cap.
 #
-#   export PRIME_API_KEY=<your Prime Inference key>
-#   uv run eval @ examples/eval/wiki-search.toml
+#   uv run eval @ configs/debug/eval/wiki-search.toml
 
-model = "deepseek/deepseek-v4-flash"
 num_examples = 5
-
 
 [concurrency]
 min_inflight = 8

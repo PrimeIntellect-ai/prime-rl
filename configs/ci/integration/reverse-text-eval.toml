@@ -1,12 +1,13 @@
-model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+# CI eval smoke: reverse-text against the default model on Prime Inference.
 num_examples = 16
 dashboard = false
 
-[client]
-base_url = "http://localhost:8000/v1"
+[concurrency]
+min_inflight = 8
+max_inflight = 8
 
 [sampling]
-max_completion_tokens = 256
+max_completion_tokens = 8192
 
 [[source]]
 env.taskset.id = "reverse-text"

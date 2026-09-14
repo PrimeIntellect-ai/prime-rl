@@ -10,7 +10,7 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
-from prime_rl.configs.monitors import OrchestratorMonitorsConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     BaseWeightBroadcastConfig,
@@ -404,6 +404,11 @@ class ScheduledEvalConfig(EvalSourcesConfig):
         return self
 
 
+class RLOnlineEvalConfig(ScheduledEvalConfig):
+    """The ``[orchestrator.eval]`` block: online evals against the orchestrator's
+    inference pool, on the policy the train rollouts see."""
+
+
 class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
@@ -521,7 +526,7 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    eval: ScheduledEvalConfig | None = None
+    eval: RLOnlineEvalConfig | None = None
     """Evaluation configuration."""
 
     log: LogConfig = LogConfig()
@@ -529,7 +534,7 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True

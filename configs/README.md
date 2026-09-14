@@ -12,11 +12,13 @@ Configurations for running prime-rl.
   [`examples/advanced/`](../examples/advanced).
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
-  (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), and `multi-env/`
-  (two reverse-text train sources + one eval source, one env server per source). Not
-  guaranteed functional or up to date.
+  (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), `multi-env/`
+  (two reverse-text train sources + one eval source, one env server per source), and
+  `eval/` (`uv run eval` smokes against Prime Inference: gsm8k, wordle, wiki-search,
+  swe). Not guaranteed functional or up to date.
 
 ```bash
-uv run rl  @ configs/basic/<env>/rl.toml
-uv run sft @ configs/basic/<env>/sft.toml   # where present
+uv run rl   @ configs/basic/<env>/rl.toml
+uv run sft  @ configs/basic/<env>/sft.toml   # where present
+uv run eval @ configs/debug/eval/<env>.toml
 ```

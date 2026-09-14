@@ -43,7 +43,7 @@ class FileMonitorConfig(BaseConfig):
     not the records, so this only trades record size against overlay precision."""
 
 
-class PrimeMonitorConfig(BaseConfig):
+class PrimeTrainMonitorConfig(BaseConfig):
     name: str | None = None
     """Run name shown on the platform. Inherits ``run.name`` when unset."""
 
@@ -61,8 +61,8 @@ class MonitorsConfig(BaseConfig):
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
 
-class OrchestratorMonitorsConfig(MonitorsConfig):
-    prime: PrimeMonitorConfig | None = None
+class TrainMonitorsConfig(MonitorsConfig):
+    prime: PrimeTrainMonitorConfig | None = None
     """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
 
 

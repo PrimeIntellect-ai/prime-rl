@@ -1,12 +1,9 @@
 # wordle - the textarena taskset pinned to Wordle, the engine playing the user.
 #
-#   export PRIME_API_KEY=<your Prime Inference key>
-#   uv run eval @ examples/eval/wordle.toml
+#   uv run eval @ configs/debug/eval/wordle.toml
 
-model = "deepseek/deepseek-v4-flash"
 num_examples = 5
 group_size = 2
-
 
 [concurrency]
 min_inflight = 8

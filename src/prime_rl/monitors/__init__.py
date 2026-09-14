@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from prime_rl.configs.monitors import (
     FileMonitorConfig,
     PrimeEvalMonitorConfig,
-    PrimeMonitorConfig,
+    PrimeTrainMonitorConfig,
     WandbMonitorConfig,
 )
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.prime import PrimeEvalMonitor, PrimeMonitor
+from prime_rl.monitors.prime import PrimeEvalMonitor, PrimeTrainMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import format_time, get_logger
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Monitor",
     "WandbMonitor",
-    "PrimeMonitor",
+    "PrimeTrainMonitor",
     "PrimeEvalMonitor",
     "FileMonitor",
     "setup",
@@ -47,7 +47,7 @@ MONITORS: list[Monitor] = []
 
 async def setup(
     wandb: WandbMonitorConfig | None = None,
-    prime: PrimeMonitorConfig | PrimeEvalMonitorConfig | None = None,
+    prime: PrimeTrainMonitorConfig | PrimeEvalMonitorConfig | None = None,
     file: FileMonitorConfig | None = None,
     *,
     output_dir: Path,
@@ -69,10 +69,10 @@ async def setup(
         return
 
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
-    if isinstance(prime, PrimeEvalMonitorConfig):
+    if isinstance(prime, PrimeTrainMonitorConfig):
+        monitors.append(("prime", PrimeTrainMonitor(prime), dict(config=run_config)))
+    elif isinstance(prime, PrimeEvalMonitorConfig):
         monitors.append(("prime", PrimeEvalMonitor(prime), dict(config=run_config)))
-    elif prime is not None:
-        monitors.append(("prime", PrimeMonitor(prime), dict(config=run_config)))
     if wandb is not None:
         monitors.append(
             (

@@ -1,24 +1,16 @@
-import os
 import re
-import signal
-import subprocess
-import time
 from pathlib import Path
-from typing import Callable, Generator
+from typing import Callable
 
-import httpx
 import pytest
 
-from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
 from tests.utils import strip_escape_codes
 
-pytestmark = [pytest.mark.gpu, pytest.mark.slow]
+pytestmark = [pytest.mark.slow]
 
 RUN_NAME = "reverse-text-eval"
 TIMEOUT = 600
-INFERENCE_PORT = 8000
-INFERENCE_READY_TIMEOUT_S = 300
 
 
 @pytest.fixture(scope="module")
@@ -26,51 +18,10 @@ def run_dir(output_dir: Path) -> Path:
     return output_dir / RUN_NAME
 
 
-def _wait_for_inference(port: int, timeout_s: int) -> None:
-    url = f"http://localhost:{port}/v1/models"
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            if httpx.get(url, timeout=2.0).status_code == 200:
-                return
-        except (httpx.ConnectError, httpx.ReadTimeout):
-            pass
-        time.sleep(1.0)
-    raise TimeoutError(f"Inference server at {url} did not become ready within {timeout_s}s")
-
-
 @pytest.fixture(scope="module")
-def inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
-    """A `uv run inference` server for the trained reverse-text model; the eval adapts its
-    concurrency to this server's vLLM metrics."""
-    log_dir = output_dir.parent / f"{output_dir.name}_inference"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "uv",
-        "run",
-        "inference",
-        "--vllm.model",
-        "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
-        "--server.port",
-        str(INFERENCE_PORT),
-    ]
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
-    with open(log_dir / "inference.log", "w") as log_file:
-        proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
-    try:
-        _wait_for_inference(INFERENCE_PORT, INFERENCE_READY_TIMEOUT_S)
-        yield proc
-    finally:
-        cleanup_process(proc.pid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            cleanup_process(proc.pid, signal.SIGKILL)
-            proc.wait()
-
-
-@pytest.fixture(scope="module")
-def eval_process(inference, run_process: Callable[..., ProcessResult], output_dir: Path) -> ProcessResult:
+def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) -> ProcessResult:
+    """`uv run eval` against Prime Inference (the default client and model), so the test
+    needs `PRIME_API_KEY` and no GPU."""
     cmd = [
         "uv",
         "run",

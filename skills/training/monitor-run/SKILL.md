@@ -82,8 +82,7 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── eval.log                  # `uv run eval` process
-├── online-eval.log           # SFT online-eval process
+├── eval.log                   # SFT online-eval process (also the `uv run eval` process — see the `eval` skill)
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -101,7 +100,7 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evals,online-eval,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,eval,inference}.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 

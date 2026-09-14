@@ -8,7 +8,7 @@ from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.eval import SFTEvalConfig
+from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -203,7 +203,7 @@ class SFTConfig(BaseConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
-    eval: SFTEvalConfig | None = None
+    eval: SFTOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
     server that receives the trainer's weight broadcasts. If None, no online evals run."""
 

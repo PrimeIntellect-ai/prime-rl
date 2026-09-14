@@ -113,7 +113,7 @@ def format_log_message(
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
     if online_eval:
-        log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/online-eval.log")
+        log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/eval.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
