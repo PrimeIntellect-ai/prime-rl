@@ -27,11 +27,9 @@ group_size = 8
 [orchestrator.concurrency]
 max_inflight = 64
 
-# A bf16 HF-layout export built by `tools/convert_prime_to_hf.py`, not the published repo, whose
-# `config.json` carries `quantization_config` and `expert_dtype = "fp4"` and would make vLLM
-# allocate fp8 linears and MXFP4 experts that bf16 weights cannot fill.
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
 [orchestrator.model]
-name = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [orchestrator.renderer]
 name = "deepseek-v4"
@@ -63,27 +61,24 @@ freq = 1
 [trainer.model.ac_offloading]
 max_inflight_activations = 5
 
-# `lr = 0` holds the policy fixed, so the trainer-vs-inference mismatch KL measures implementation
-# disagreement rather than policy drift: a fidelity measurement, not a training run.
+# `lr = 0` holds the policy fixed: this measures trainer-vs-inference mismatch, not training.
 [trainer.optim]
 lr = 0.0
 weight_decay = 0.0
 
 [inference]
 
-# `VLLM_USE_DEEP_GEMM_E8M0` is pinned off because vLLM otherwise derives it from the checkpoint's
-# `scale_fmt`, and the export carries no `quantization_config` to read.
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
 [inference.env_vars]
 VLLM_USE_DEEP_GEMM_E8M0 = "0"
 
 [inference.vllm]
-model = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 dtype = "bfloat16"
 tensor_parallel_size = 8
 enable_expert_parallel = true
 gpu_memory_utilization = 0.8
 max_model_len = 2048
-# Required rather than a tuning choice: every DeepSeek V4 attention class sets
-# `use_fp8_ds_mla_layout = True`, and the sparse-MLA layout asserts against the `auto` default.
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
 kv_cache_dtype = "fp8"
 block_size = 256
