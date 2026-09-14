@@ -3,7 +3,7 @@
 These runs measure the default adaptive concurrency controller on ScaleSWE.
 Each run uses 20 training steps and three H200 nodes.
 
-| Config | Model | Inference setup |
+| Overlay | Model | Inference setup |
 | --- | --- | --- |
 | `pd-disagg.toml` | Qwen3-30B-A3B-Thinking-2507 | One prefill node and one decode node |
 | `mooncake.toml` | Qwen3-30B-A3B-Thinking-2507 | Two replicas with a shared Mooncake cache |
@@ -12,6 +12,13 @@ Each run uses 20 training steps and three H200 nodes.
 All runs use one trainer node, a 65,536-token context, full CPU offload,
 and SignSGD. The controller uses its default bounds and derives its initial
 limit from live inference metrics.
+
+Stack the shared settings with one experiment overlay:
+
+```bash
+uv run rl @ configs/experiments/adaptive-concurrency/base.toml \
+  @ configs/experiments/adaptive-concurrency/pd-disagg.toml
+```
 
 ## Metrics
 
