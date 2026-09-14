@@ -1,6 +1,10 @@
 max_steps = 20
 seq_len = 2048
 
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
 [monitors.wandb]
 project = "deepseek-v4-flash"
 group = "dsv4-bf16-broadcast"
@@ -26,10 +30,6 @@ group_size = 8
 [orchestrator.concurrency]
 max_inflight = 64
 
-# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
-[orchestrator.model]
-name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
-
 [orchestrator.renderer]
 name = "deepseek-v4"
 
@@ -47,7 +47,6 @@ enable_router_replay = true
 dist_timeout_seconds = 14400
 
 [trainer.model]
-name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 impl = "custom"
 ep = 8
 
@@ -72,7 +71,6 @@ weight_decay = 0.0
 VLLM_USE_DEEP_GEMM_E8M0 = "0"
 
 [inference.vllm]
-model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 dtype = "bfloat16"
 tensor_parallel_size = 8
 enable_expert_parallel = true
