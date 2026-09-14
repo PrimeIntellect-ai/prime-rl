@@ -23,7 +23,7 @@ def _weights(model: nn.Module) -> dict[str, torch.Tensor]:
             tensor = getattr(module, leaf, None)
             if isinstance(tensor, torch.Tensor):
                 name = f"{module_name}.{leaf}" if module_name else leaf
-                if name in tensors:
+                if name in tensors and tensors[name] is not tensor:
                     raise ValueError(f"Duplicate verification tensor name: {name}")
                 tensors[name] = tensor
     return tensors
@@ -80,7 +80,11 @@ def snapshot_weights(model: nn.Module, *, max_bytes: int = 64 * 1024**3) -> Weig
     values = {}
     for name, tensor in unique.items():
         value = tensor.detach().to(device="cpu", copy=True)
-        if any(not torch.isfinite(chunk).all().item() for chunk in _chunks(value)):
+        # CPU isfinite does not support every FP8 format; widening is exact.
+        if any(
+            not torch.isfinite(chunk.float() if chunk.element_size() == 1 else chunk).all().item()
+            for chunk in _chunks(value)
+        ):
             raise ValueError(f"Non-finite initial weights: {name}")
         values[name] = value
     return WeightSnapshot(values, {n: _layout(t) for n, t in tensors.items()}, aliases)
