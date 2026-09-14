@@ -22,6 +22,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_deepseek_v4_attn_sink_loading()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -228,6 +229,68 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Route DeepSeek V4's attention sinks through vLLM's weight loaders.
+
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare
+    ``params_dict[name][:n].copy_(narrow_weight)`` instead of going through
+    ``param.weight_loader``. Layerwise reload works by moving a layer's tensors to meta
+    and wrapping each loader to buffer the incoming tensor, so that copy lands in a meta
+    tensor and is discarded: ``meta[:n].copy_(real)`` succeeds silently. The module's
+    ``load_numel`` stays 0, finalize restores the boot value with only a warning, and the
+    loader still does ``loaded_params.add(name)``, so a ``named_parameters() -
+    loaded_params`` diff cannot see the loss either. Attention sinks are trainable, so
+    every reload keeps serving the sinks the server booted with. This is live on the
+    existing fp8 broadcast path too, not only on a bf16 one.
+
+    The parameter is padded to the platform's Q head count (``torch.full((padded_heads,),
+    -inf)`` in ``vllm/models/deepseek_v4/attention.py``), which is why upstream writes a
+    prefix rather than the whole tensor. Padding this rank's heads back up with ``-inf``,
+    the parameter's own init value meaning no sink, makes it an ordinary full-parameter
+    load, so ``load_numel`` reaches ``load_numel_total`` and no new loader contract is
+    needed. The loader must be reached through ``param.weight_loader`` rather than
+    attached to the parameter later, because ``initialize_layerwise_reload`` captures the
+    original loader at the moment it wraps.
+
+    Remove this patch when the pinned vLLM version loads ``attn_sink`` through a weight
+    loader. 0.29.0 and vLLM main both still write the bare slice copy; the same fix
+    appears only in vllm-project/vllm#54955, an open draft marked do-not-merge, so no
+    release carries it. This covers the NVIDIA path only, and the ``amd`` and ``xpu``
+    model files carry the same bare copy.
+    """
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
 
 
 def monkey_patch_nano_v3_reasoning_parser():
