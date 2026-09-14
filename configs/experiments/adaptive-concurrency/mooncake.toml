@@ -6,8 +6,8 @@ TMPDIR = "/tmp/adaptive-concurrency-mooncake"
 TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-mooncake/triton"
 
 [slurm]
-job_name = "ac-mooncake-baseline"
-pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-mooncake ; timeout 120 prime sandbox delete --label "ac-mooncake-baseline" -y || true'
+job_name = "ac-mooncake-terminal-lego"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-mooncake ; timeout 120 prime sandbox delete --label "ac-mooncake-terminal-lego" -y || true'
 
 [deployment]
 num_infer_nodes = 1
@@ -20,7 +20,7 @@ name = "baseline-mooncake"
 name = "terminal-lego"
 env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["ac-mooncake-baseline"]
+env.agent.runtime.labels = ["ac-mooncake-terminal-lego"]
 
 [inference.kv_cache_offload]
 type = "mooncake"

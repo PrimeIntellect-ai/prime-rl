@@ -6,8 +6,8 @@ TMPDIR = "/tmp/adaptive-concurrency-pd"
 TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-pd/triton"
 
 [slurm]
-job_name = "ac-pd-baseline"
-pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-pd ; timeout 120 prime sandbox delete --label "ac-pd-baseline" -y || true'
+job_name = "ac-pd-terminal-lego"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-pd ; timeout 120 prime sandbox delete --label "ac-pd-terminal-lego" -y || true'
 
 [deployment]
 num_infer_nodes = 2
@@ -20,7 +20,7 @@ name = "baseline-pd-disagg"
 name = "terminal-lego"
 env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["ac-pd-baseline"]
+env.agent.runtime.labels = ["ac-pd-terminal-lego"]
 
 [inference.deployment]
 type = "disaggregated"
