@@ -632,8 +632,8 @@ def monkey_patch_tokenize_params_validation():
         if self.max_total_tokens is None or tokenizer is None:
             return text
 
+        max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
         if self.truncate_prompt_tokens is None:
-            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
             if len(text) > max_chars:
                 raise VLLMValidationError(
                     f"You passed {len(text)} input characters. "
@@ -644,6 +644,11 @@ def monkey_patch_tokenize_params_validation():
                     parameter="input_text",
                     value=len(text),
                 )
+        elif self.truncation_side is not None and len(text) > max_chars:
+            if self.truncation_side == "left":
+                text = text[-max_chars:]
+            else:
+                text = text[:max_chars]
         return text
 
     def _patched_get_encode_kwargs(self):
@@ -657,6 +662,14 @@ def monkey_patch_tokenize_params_validation():
             max_length = self.max_total_tokens
         elif max_length is None and self.max_total_tokens is not None:
             max_length = self.max_total_tokens + 1
+
+        # Match upstream: a truncation-side override needs the full token sequence so
+        # _token_truncation can slice from the requested side; _text_len_check pre-trims.
+        if self.truncation_side is not None and self.truncate_prompt_tokens is not None:
+            return dict(
+                truncation=False,
+                add_special_tokens=self.add_special_tokens,
+            )
 
         return dict(
             truncation=max_length is not None,
