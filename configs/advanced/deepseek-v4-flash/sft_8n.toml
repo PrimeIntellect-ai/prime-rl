@@ -1,7 +1,7 @@
-# Smoke test for PrimeIntellect/DeepSeek-V4-Flash-0731-bf16 on the scaleswe SFT corpus: whether the
+# Short SFT run for PrimeIntellect/DeepSeek-V4-Flash-0731-bf16 on the scaleswe corpus: whether the
 # data path holds up and whether loss, gradient norm and routing look sane, before a long run.
 #
-#   uv run sft @ configs/advanced/deepseek-v4-flash/sft_smoke_8n.toml --run.name dsv4-smoke-8n-$(date +%m%d-%H%M)
+#   uv run sft @ configs/advanced/deepseek-v4-flash/sft_8n.toml --run.name dsv4-sft-8n-$(date +%m%d-%H%M)
 #
 # Both the model and the dataset repo are private, so the run needs `HF_TOKEN` set.
 
@@ -22,7 +22,7 @@ cp = 8
 # Freezing the router keeps this measuring the data rather than expert drift onto one domain.
 freeze_moe_router = true
 
-# DeepEP dies on the first backward at full depth, inside `DeepEPTokenDispatcher.combine`.
+# DeepEP dies on the first backward, inside `DeepEPTokenDispatcher.combine`.
 [model.moe.dispatch]
 type = "torch"
 
@@ -34,7 +34,6 @@ max_inflight_activations = 5
 
 [renderer]
 name = "deepseek-v4"
-# Defaults to false, which would drop the reasoning block this corpus trains on.
 enable_thinking = true
 
 [data]
@@ -46,15 +45,10 @@ batch_size = 8
 [optim]
 lr = 1e-5
 
-# Expandable segments repeatedly fail to map new pages at a device this full.
-[env_vars]
-PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
-
-# Four nodes OOMs: the optimizer step holds four fp32 parameter copies that no activation knob shrinks.
 [deployment]
 type = "multi_node"
 num_train_nodes = 8
 
 [slurm]
-job_name = "ds-v4-sft-smoke-8n"
+job_name = "ds-v4-sft-8n"
 partition = "all"
