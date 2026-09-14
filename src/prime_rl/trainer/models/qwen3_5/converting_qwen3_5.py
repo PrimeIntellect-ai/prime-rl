@@ -1,7 +1,6 @@
 from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeTextConfig
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -19,7 +18,7 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
 def conversion_chain(config) -> list[ConvOp]:
     operations: list[ConvOp] = [Drop("mtp.", is_prefix=True)]
     text_config = getattr(config, "text_config", config)
-    if not isinstance(text_config, Qwen3_5MoeTextConfig):
+    if text_config.model_type != "qwen3_5_moe_text":
         return operations
 
     model_prefix = "model.language_model" if hasattr(config, "vision_config") else "model"
