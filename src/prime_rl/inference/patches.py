@@ -232,33 +232,23 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
 
 
 def monkey_patch_deepseek_v4_attn_sink_loading():
-    """Route DeepSeek V4's attention sinks through vLLM's weight loaders.
+    """A weight update silently leaves DeepSeek V4's attention sinks at their boot values.
 
-    ``DeepseekV4Model.load_weights`` writes the sinks with a bare
-    ``params_dict[name][:n].copy_(narrow_weight)`` instead of going through
-    ``param.weight_loader``. Layerwise reload works by moving a layer's tensors to meta
-    and wrapping each loader to buffer the incoming tensor, so that copy lands in a meta
-    tensor and is discarded: ``meta[:n].copy_(real)`` succeeds silently. The module's
-    ``load_numel`` stays 0, finalize restores the boot value with only a warning, and the
-    loader still does ``loaded_params.add(name)``, so a ``named_parameters() -
-    loaded_params`` diff cannot see the loss either. Attention sinks are trainable, so
-    every reload keeps serving the sinks the server booted with. This is live on the
-    existing fp8 broadcast path too, not only on a bf16 one.
+    ``attn_sink`` is the only parameter ``DeepseekV4Model.load_weights`` writes without calling
+    ``param.weight_loader``; it gets a bare ``params_dict[name][:n].copy_()``. Layerwise reload has
+    already moved that parameter to meta, so the copy is discarded, ``load_numel`` stays 0, and the
+    loader still records the name as loaded. Sinks are trainable, so the engine serves stale ones
+    for the rest of the run.
 
-    The parameter is padded to the platform's Q head count (``torch.full((padded_heads,),
-    -inf)`` in ``vllm/models/deepseek_v4/attention.py``), which is why upstream writes a
-    prefix rather than the whole tensor. Padding this rank's heads back up with ``-inf``,
-    the parameter's own init value meaning no sink, makes it an ordinary full-parameter
-    load, so ``load_numel`` reaches ``load_numel_total`` and no new loader contract is
-    needed. The loader must be reached through ``param.weight_loader`` rather than
-    attached to the parameter later, because ``initialize_layerwise_reload`` captures the
-    original loader at the moment it wraps.
+    The sink tensor has one entry per attention head, and each tensor-parallel rank loads only its
+    own ``n_heads // tp_size`` slice. The parameter is longer than that slice: some attention
+    backends allocate their query and output buffers at a rounded-up head count, and the sinks are
+    sized to match, with the tail left at ``-inf`` meaning no sink. That is why upstream writes only
+    the leading entries. Padding the incoming slice back up to the full length with ``-inf`` makes
+    it an ordinary whole-parameter load.
 
-    Remove this patch when the pinned vLLM version loads ``attn_sink`` through a weight
-    loader. 0.29.0 and vLLM main both still write the bare slice copy; the same fix
-    appears only in vllm-project/vllm#54955, an open draft marked do-not-merge, so no
-    release carries it. This covers the NVIDIA path only, and the ``amd`` and ``xpu``
-    model files carry the same bare copy.
+    Remove this patch once the pinned vLLM loads ``attn_sink`` through a weight loader; as of
+    0.29.0 the same fix exists only in vllm-project/vllm#54955, an open draft.
     """
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
     from vllm.models.deepseek_v4.nvidia import model as dsv4_model
