@@ -18,6 +18,12 @@ limit from live inference metrics.
 Use the local `monitors/file/metrics.jsonl` file as the source of record.
 W&B receives the same metrics.
 
+Summarize one or more completed runs from the repository root:
+
+```bash
+uv run python tools/analyze_adaptive_concurrency.py <run-dir> [<run-dir> ...]
+```
+
 | Question | Metric |
 | --- | --- |
 | Is the concurrency cap smooth? | `concurrency/max_inflight` |
