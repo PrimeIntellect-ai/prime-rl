@@ -49,9 +49,10 @@ The GPU + Nightly workflows skip drafts — open the PR as **Draft** until you'r
 
 ### Markers
 
-Two pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
+Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
+- `distributed` — gate a multi-GPU `DTest` subclass (`tests/dtest.py`). Auto-applied via `DTest.pytestmark`, inherited by every subclass — don't set it manually.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
 
 ## Pre-Commit Hooks
