@@ -344,14 +344,24 @@ def test_env_server_workers_install_native_routed_experts_normalizer(monkeypatch
     utils_module = ModuleType("prime_rl.utils.utils")
     utils_module.clean_exit = lambda function: function
     monkeypatch.setitem(sys.modules, "prime_rl.utils.utils", utils_module)
-    sys.modules.pop("prime_rl.entrypoints.env_server", None)
-    env_server = importlib.import_module("prime_rl.entrypoints.env_server")
+    module_name = "prime_rl.entrypoints.env_server"
+    previous_module = sys.modules.pop(module_name, None)
+    try:
+        env_server = importlib.import_module(module_name)
 
-    installed: list[bool] = []
-    monkeypatch.setattr(env_server, "setup_env_server_logging", lambda *_args: None)
-    monkeypatch.setattr(env_server, "set_base_sandbox_labels", lambda _labels: None)
-    monkeypatch.setattr(env_server, "install_native_routed_experts_normalizer", lambda: installed.append(True))
+        installed: list[bool] = []
+        monkeypatch.setattr(env_server, "setup_env_server_logging", lambda *_args: None)
+        monkeypatch.setattr(env_server, "set_base_sandbox_labels", lambda _labels: None)
+        monkeypatch.setattr(
+            env_server,
+            "install_native_routed_experts_normalizer",
+            lambda: installed.append(True),
+        )
 
-    env_server.setup_worker(None, False, [])
+        env_server.setup_worker(None, False, [])
 
-    assert installed == [True]
+        assert installed == [True]
+    finally:
+        sys.modules.pop(module_name, None)
+        if previous_module is not None:
+            sys.modules[module_name] = previous_module
