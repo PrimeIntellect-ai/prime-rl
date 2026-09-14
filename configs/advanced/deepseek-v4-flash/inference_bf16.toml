@@ -1,0 +1,24 @@
+# Standalone bf16 serving pre-flight, run directly on one already-allocated 8xH200 node, no [slurm] block:
+#
+#   uv run inference @ configs/advanced/deepseek-v4-flash/inference_bf16.toml
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[server]
+port = 8000
+
+[vllm]
+# A bf16 HF-layout export built by `tools/convert_prime_to_hf.py`, not the published repo, whose
+# `config.json` carries `quantization_config` and `expert_dtype = "fp4"` and would make vLLM
+# allocate fp8 linears and MXFP4 experts that bf16 weights cannot fill.
+model = "/home/hf-cache/exports/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 8192
+# Required rather than a tuning choice: every DeepSeek V4 attention class sets
+# `use_fp8_ds_mla_layout = True`, and the sparse-MLA layout asserts against the `auto` default.
+kv_cache_dtype = "fp8"
+block_size = 256
