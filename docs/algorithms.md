@@ -184,7 +184,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -214,6 +214,36 @@ The knobs under `[trainer.loss]` are:
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+### IcePop Loss
+
+IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
+importance ratio falls outside a fixed acceptance band, introduced to stabilize
+MoE RL in [Every Step Evolves: Scaling Reinforcement Learning for Trillion-Scale
+Mixture-of-Experts Reasoning Models](https://arxiv.org/abs/2510.18855). Accepted
+tokens retain the importance-weighted policy-gradient term, and there is no
+separate KL penalty:
+
+$$
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
+\mathbb{1}\!\left(\alpha \le \frac{\pi(y_t)}{\mu(y_t)} \le \beta\right)
+\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}.
+$$
+
+Enable it explicitly:
+
+```toml
+[trainer.loss]
+type = "icepop"
+ratio_low = 0.2
+ratio_high = 5.0
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
+| `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 ### Custom Loss
 
@@ -413,7 +443,9 @@ demo_key = "demonstration"
 
 Scoring runs before curriculum admission, so a rollout that is later rejected still costs its reference compute.
 
-By default, zero-advantage RL tokens are removed after a complete batch cohort has been collected and before its payload is packed for the trainer. This does not backfill the batch. Samples that still carry CE or reference-KL components are retained, while pure zero-advantage RL samples are not shipped. Removing an RL token also removes its trainer/inference mismatch-KL contribution. Set `orchestrator.train.filter_zero_advantages = false` to retain them.
+The orchestrator filters samples with no training signal. This includes samples with zero advantage on all RL tokens. Samples that still carry CE or reference-KL components are retained. Filtering an RL token also removes its trainer/inference mismatch-KL contribution.
+
+`orchestrator.constant_trainer_batch_size` defaults to `true`. The orchestrator filters samples before they count toward the batch target. It collects replacements, so rollout-based batches contain `orchestrator.batch_size` training traces. Set the option to `false` to filter after collection without replacement. This setting can improve orchestrator throughput, but it produces smaller trainer batches.
 
 ## Curricula
 
@@ -425,7 +457,7 @@ Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
 - `DifficultyPoolSampler` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight; weight `0` disables sampling from that pool. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
-- `AdvRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
+- `AdvRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in token filter, it can reject a configurable advantage range. Groups without an advantage stream are admitted.
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]

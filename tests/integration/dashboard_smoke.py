@@ -112,7 +112,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             page.wait_for_timeout(1500)
             assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
 
-            # traces: when the run saved rollouts, episodes must render and open
+            # traces: when the run shipped a cohort, episodes must render and open
             rollout_steps = page.evaluate(
                 f"""fetch('{base}/api/runs/{run_name}/rollouts').then(r => r.json()).then(d => d.steps.length)"""
             )
@@ -127,6 +127,20 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert entries > 0, "episode viewer rendered no messages"
                 reward = page.locator(".tm-reward-big").first.inner_text()
                 assert reward not in ("", "n/a"), f"episode reward did not render: {reward!r}"
+                page.click("#tm-view [data-view=replay]")
+                page.wait_for_timeout(250)
+                assert page.locator(".replay-shell").count() == 1, "terminal replay did not render"
+                assert page.locator("#replay-output .replay-event").count() > 0, "terminal replay showed no events"
+                assert page.locator("#replay-speed").input_value() == "8"
+                page.check("#replay-skip-inference")
+                assert "inference skipped" in page.locator("#replay-timing-badge").inner_text()
+                assert page.locator("#replay-show-thinking").is_checked()
+                page.keyboard.press("t")
+                assert not page.locator("#replay-show-thinking").is_checked()
+                page.keyboard.press("Home")
+                assert page.locator("#replay-top").get_attribute("class").find("active") >= 0
+                page.keyboard.press("End")
+                assert page.locator("#replay-live").get_attribute("class").find("active") >= 0
                 page.keyboard.press("Escape")
 
             # logs: the merged pane shows lines

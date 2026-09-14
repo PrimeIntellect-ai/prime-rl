@@ -100,7 +100,7 @@ class SharedMonitorsConfig(BaseConfig):
     """Shared W&B config. Propagated to trainer and orchestrator."""
 
     file: FileMonitorConfig | None = None
-    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
     prime: PrimeMonitorConfig | None = None
     """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
@@ -638,6 +638,53 @@ class RLConfig(BaseConfig):
     def validate_multi_node_requires_router(self):
         if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
             raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_sampling_mask_capture(self):
+        """Truncated train sampling needs the inference server to return the sampling
+        masks the trainer replays (OrchestratorConfig guarantees truncating
+        configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
+        on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
+        so eval sampling against the same server must set both."""
+        policy_samplings = [
+            env.sampling
+            for env in self.orchestrator.train.source
+            if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        if not any(sampling.truncates_distribution() for sampling in policy_samplings):
+            return self
+        if self.inference is None:
+            warnings.warn(
+                "Truncated train sampling with no managed inference server: set "
+                "`enable_return_sampling_mask = true` on the standalone server's config so it "
+                "returns the sampling masks the trainer replays.",
+                stacklevel=2,
+            )
+            return self
+        self.inference.enable_return_sampling_mask = True
+        if self.orchestrator.eval is not None:
+            warnings.warn(
+                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
+                "eval sampling config or the model's generation config) or with temperature 0 are "
+                "rejected by the inference server while truncated train sampling is on.",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_disaggregated_combined_replay(self):
+        inference = self.inference
+        if (
+            inference is not None
+            and inference.deployment.type == "disaggregated"
+            and inference.enable_return_sampling_mask
+            and inference.vllm.enable_return_routed_experts
+        ):
+            raise ValueError(
+                "Combined router and sampling replay is not supported with disaggregated P/D: "
+                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
+            )
         return self
 
     @model_validator(mode="after")

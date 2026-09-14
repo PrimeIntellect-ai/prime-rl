@@ -11,6 +11,9 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("arcee-ai/Trinity-Mini", "hermes", "deepseek_r1"),
     ("arcee-ai/Trinity-Nano-Preview", "hermes", "deepseek_r1"),
     # DeepSeek
+    ("deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek_v4", "deepseek_v4"),
+    ("deepseek-ai/DeepSeek-V4-Flash", "deepseek_v4", "deepseek_v4"),
+    ("deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek_v4", "deepseek_v4"),
     ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32", "deepseek_r1"),
     ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32", "deepseek_r1"),
     ("deepseek-ai/DeepSeek-V3.1", "deepseek_v31", "deepseek_r1"),

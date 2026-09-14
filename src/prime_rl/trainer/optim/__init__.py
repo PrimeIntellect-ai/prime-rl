@@ -1,9 +1,12 @@
 import torch
+import torch.distributed as dist
 from dion import Muon
 from torch import nn
+from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -15,6 +18,33 @@ from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
+
+
+def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
+    """Establish NCCL peer connections before Muon's first optimizer step.
+
+    This is a correctness workaround, not an optional performance warm-up:
+    multi-node GLM-Air training can deadlock on Muon's first bulk all-to-all
+    without it. Optimizer refactors must preserve this initialization.
+    """
+    # get_group() without a mesh dim is only valid for 1-D meshes; the
+    # replicate-only world mesh is 2-D and has no single group to warm.
+    if mesh.ndim != 1:
+        return
+    group = mesh.get_group()
+    size = dist.get_world_size(group)
+    if size <= 1 or dist.get_backend(group) != "nccl":
+        return
+
+    get_logger().info(f"Warming Muon all-to-all connections on group {group.group_name} ({size} ranks)")
+    device = torch.device("cuda", torch.cuda.current_device())
+    # Use a bulk list all-to-all, matching Dion's path rather than a scalar
+    # collective that may leave bulk-transfer peer channels uninitialized.
+    inputs = [torch.zeros(3 * 1024 * 1024, dtype=torch.bfloat16, device=device) for _ in range(size)]
+    outputs = [torch.empty_like(tensor) for tensor in inputs]
+    dist.all_to_all(outputs, inputs, group=group, async_op=True).wait()
+    torch.cuda.synchronize()
+    get_logger().info(f"Finished warming Muon all-to-all connections on group {group.group_name}")
 
 
 def setup_optimizer(
@@ -54,6 +84,7 @@ def setup_optimizer(
         optimizer_named_params,
         parallel_dims,
         fused_adamw=config.type == "adamw" and not cpu_offload,
+        model=model,
     )
 
     if full_offload_config is not None:
@@ -80,6 +111,7 @@ def _create_optimizer(
     parallel_dims: ParallelDims,
     lr: float | None = None,
     fused_adamw: bool = False,
+    model: nn.Module | None = None,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -107,7 +139,7 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, parallel_dims, lr)
+            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,
@@ -120,6 +152,7 @@ def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
+    model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
     def muon_enabled(n, p):
@@ -185,8 +218,20 @@ def _create_muon_optimizer(
     else:
         distributed_mesh = parallel_dims.world_mesh
 
+    # Runtime fusions pack several logical matrices into one physical parameter. Muon
+    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
+    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
+    matrix_partitions = {}
+    if model is not None:
+        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+        for packed_info in get_model_packed_parameters(model):
+            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+            if partitions is not None and packed_info.parameter in muon_params:
+                matrix_partitions[packed_info.parameter] = partitions
+
     optimizer = Muon(
         params=param_groups,
+        matrix_partitions=matrix_partitions,
         lr=lr,
         mu=config.mu,
         betas=(config.betas1, config.betas2),
@@ -196,4 +241,9 @@ def _create_muon_optimizer(
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
     )
+    # Keep both warm-ups after Muon construction and before its first step. The
+    # main and expert groups establish independent NCCL peer connections.
+    _warmup_muon_mesh(distributed_mesh)
+    if expert_params and parallel_dims.ep_enabled:
+        _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer

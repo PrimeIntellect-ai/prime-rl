@@ -2,7 +2,7 @@ import json
 import re
 import warnings
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import torch
 import torch.distributed as dist
@@ -18,7 +18,6 @@ from transformers.utils import (
     SAFE_WEIGHTS_NAME,
 )
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -98,6 +97,8 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
     Format detection uses the model's full key set, so a partial dict (one rank's
     slice) converts the same way as the full state dict would.
     """
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+
     full_keys = dict.fromkeys(resolve_fqn(model, key) for key in model.state_dict().keys())
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(full_keys):
         # PrimeRL custom model holding weights in prime format: apply the model's
@@ -150,6 +151,14 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
     return {key: unit_owner[unit] for key, unit in key_to_unit.items()}
 
 
+def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
+    """The dtype a tensor must travel to the inference engine in.
+
+    TODO: NIXL keeps its own inline copy of this rule; unify the handling.
+    """
+    return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
+
+
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
@@ -158,7 +167,15 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     only the master keeping everything, each rank copies its owned slice to CPU —
     so the D2H traffic and the shard writes are split across ranks. The copies are
     plain blocking transfers; no stream-ordering assumptions.
+
+    Parameters the model reports via ``keep_in_fp32_for_weight_transfer`` skip the
+    downcast. Those lists exist because the inference engine's kernels require fp32
+    for them: vLLM's DeepSeek V4 hyper-connection kernels, for instance, assert
+    ``fn``/``base``/``scale`` are fp32, and its loader silently casts a bf16 tensor
+    back up rather than failing, so a downcast here shows up as lost mantissa in a
+    Sinkhorn normalization rather than as an error.
     """
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
@@ -169,7 +186,8 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
         for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
-                value = cast(DTensor, value.to(dtype)).full_tensor()
+                target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)
+                value = cast(DTensor, value.to(target_dtype)).full_tensor()
             if owners[key] != world.rank:
                 continue
             partial[resolve_fqn(model, key)] = value.to("cpu")

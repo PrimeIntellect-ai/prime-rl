@@ -17,17 +17,19 @@ dependencies = [
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.6.19",
+    "prime-runs[train]>=0.1.1",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
     "orjson>=3.11.0",
     "psutil>=7.0.0",
+    "pyzstd>=0.16.2",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "verifiers[harbor]>=0.3.1",
-    "renderers[multimodal]>=0.1.11",
+    "renderers[multimodal]>=0.1.12.dev2",
     "pybase64>=1.4.2",
     "orjson>=3.10",
     "pandas>=2.0",
@@ -60,6 +62,7 @@ gpu = [
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     "flash-linear-attention ; sys_platform == 'linux'",
+    "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
     "modelexpress==0.3.0 ; sys_platform == 'linux'",
@@ -69,6 +72,7 @@ dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
@@ -88,9 +92,6 @@ disagg = [
     "nixl ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
     "vllm-router ; sys_platform == 'linux'",
-]
-gpt-oss = [
-    "kernels ; sys_platform == 'linux'",
 ]
 quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
@@ -139,6 +140,8 @@ environments = [
 # Override torch's pinned cuDNN to fix the Conv3d performance regression.
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
+    # Keep vLLM's TileLang version; Nemotron uses Mamba-2's Triton kernels.
+    "tilelang==0.1.12",
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
@@ -190,6 +193,15 @@ requires-dist = [
     "torch>=2.6.0",
 ]
 
+# Mirror the upstream Pydantic compatibility correction until the next release.
+[[tool.uv.dependency-metadata]]
+name = "ai-dynamo-runtime"
+version = "1.4.2"
+requires-dist = [
+    "pydantic>=2.10.6,<=2.13.5",
+    "uvloop>=0.21.0",
+]
+
 # NIXL publishes its CUDA 12 package as a base dependency even when the
 # caller requests its CUDA 13 extra. Use the requested CUDA 13 package only.
 [[tool.uv.dependency-metadata]]
@@ -221,6 +233,8 @@ flash_attn_3 = false
 # appear in `uv tree` need to be listed; the resolver ignores entries for
 # packages it never sees.
 prime = false
+prime-runs = false
+prime-traces = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
@@ -251,7 +265,7 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
+dion = { git = "https://github.com/samsja/dion.git", rev = "99e5f7e" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
@@ -274,12 +288,13 @@ prime-kernels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
+mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
-mamba-ssm = [{ requirement = "torch", match-runtime = true }]
+mamba-ssm = ["torch>=2.13.0"]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
