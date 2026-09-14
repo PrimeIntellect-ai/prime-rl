@@ -267,6 +267,14 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
         patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
         patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=RuntimeError("failed"))),
         pytest.raises(RuntimeError, match="engines remain paused"),
+    ):
+        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
+
+    assert [call.args[1] for call in post.await_args_list] == ["/pause"]
+    assert admin._nccl_initialization_state == "terminal"
+    asyncio.run(admin.aclose())
+
+
 def test_native_npy_routed_experts_are_normalized_at_prime_boundary():
     routed = np.arange(12, dtype=np.int32).reshape(3, 2, 2)
     encoded = io.BytesIO()
@@ -347,9 +355,3 @@ def test_env_server_workers_install_native_routed_experts_normalizer(monkeypatch
     env_server.setup_worker(None, False, [])
 
     assert installed == [True]
-    ):
-        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
-
-    assert [call.args[1] for call in post.await_args_list] == ["/pause"]
-    assert admin._nccl_initialization_state == "terminal"
-    asyncio.run(admin.aclose())
