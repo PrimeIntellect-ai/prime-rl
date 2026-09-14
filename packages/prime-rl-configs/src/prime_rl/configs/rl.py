@@ -803,14 +803,29 @@ class RLConfig(BaseConfig):
                 and self.inference.deployment.type != "disaggregated"
             ):
                 inference_tp = self.inference.vllm.tensor_parallel_size
-                if self.deployment.gpus_per_node % inference_tp != 0:
+                total_infer_gpus = self.deployment.infer_nodes_per_replica * self.deployment.gpus_per_node
+                cross_node_ray = (
+                    getattr(self.inference.vllm, "distributed_executor_backend", None) == "ray"
+                    and inference_tp > self.deployment.gpus_per_node
+                )
+                if cross_node_ray:
+                    if inference_tp != total_infer_gpus or self.inference.vllm.data_parallel_size != 1:
+                        raise ValueError(
+                            "Cross-node Ray expert parallel inference requires one TP group across all inference nodes per replica."
+                        )
+                    if self.slurm.template_path is None:
+                        raise ValueError(
+                            "Cross-node Ray expert parallel inference requires a custom slurm.template_path that launches the Ray cluster."
+                        )
+                    inferred_dp_local = 1
+                elif self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
                         "deployment.gpus_per_node must be divisible by inference.vllm.tensor_parallel_size "
                         "when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
+                else:
+                    inferred_dp_local = self.deployment.gpus_per_node // inference_tp
 
-                inferred_dp_local = self.deployment.gpus_per_node // inference_tp
-                total_infer_gpus = self.deployment.infer_nodes_per_replica * self.deployment.gpus_per_node
                 expected_global_world_size = self.inference.vllm.data_parallel_size * inference_tp
                 if expected_global_world_size != total_infer_gpus:
                     raise ValueError(
@@ -822,7 +837,7 @@ class RLConfig(BaseConfig):
                     self.inference.vllm.data_parallel_size_local = inferred_dp_local
                 elif self.inference.vllm.data_parallel_size_local != inferred_dp_local:
                     raise ValueError(
-                        "inference.vllm.data_parallel_size_local must equal deployment.gpus_per_node / inference.vllm.tensor_parallel_size "
+                        "inference.vllm.data_parallel_size_local must equal the resolved local DP size "
                         f"({inferred_dp_local}) when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
 

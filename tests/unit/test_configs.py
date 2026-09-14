@@ -499,6 +499,45 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+@pytest.mark.parametrize("damage", [None, "backend", "dp", "nodes", "local_dp", "template"])
+def test_cross_node_ray_expert_parallel_config(damage):
+    vllm = {
+        "tensor_parallel_size": 32,
+        "data_parallel_size": 1,
+        "enable_expert_parallel": True,
+        "distributed_executor_backend": "ray",
+    }
+    deployment = {"type": "multi_node", "gpus_per_node": 8, "num_train_nodes": 1, "num_infer_nodes": 4}
+    slurm = {"template_path": "/tmp/ray-cluster.sbatch.j2"}
+    if damage == "backend":
+        vllm["distributed_executor_backend"] = "mp"
+    elif damage == "dp":
+        vllm["data_parallel_size"] = 2
+    elif damage == "nodes":
+        deployment["num_infer_nodes"] = 2
+    elif damage == "local_dp":
+        vllm["data_parallel_size_local"] = 2
+    elif damage == "template":
+        slurm = {}
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": vllm},
+        "deployment": deployment,
+        "slurm": slurm,
+        "weight_broadcast": {"type": "mx_refit"},
+    }
+    if damage is not None:
+        with pytest.raises(ValidationError):
+            RLConfig.model_validate(data)
+        return
+    config = RLConfig.model_validate(data)
+    assert config.inference.vllm.data_parallel_size_local == 1
+    assert config.inference.vllm.data_parallel_size == 1
+    assert config.inference.vllm.api_server_count == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 32
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
