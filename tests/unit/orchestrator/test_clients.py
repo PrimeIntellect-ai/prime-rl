@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -85,6 +86,34 @@ def test_admin_plane_initializes_nccl():
         },
     )
     asyncio.run(admin_plane.aclose())
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_mx_update_resumes_only_after_every_engine_succeeds(failed):
+    calls = []
+
+    async def handle(request):
+        calls.append(request.url.path)
+        status = 500 if failed and request.url.path == "/update_weights" else 200
+        return httpx.Response(status, json={"status": "ok"})
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://worker")]
+        try:
+            if failed:
+                with pytest.raises(httpx.HTTPStatusError):
+                    await admin.update_weights(None, transport="mx_refit", version_uid="test:0")
+            else:
+                await admin.update_weights(None, transport="mx_refit", version_uid="test:0")
+        finally:
+            await admin.aclose()
+
+    asyncio.run(run())
+    assert "/pause" in calls and "/update_weights" in calls
+    assert calls.count("/update_weights") == 1
+    assert ("/resume" in calls) is not failed
 
 
 def test_setup_client_creates_renderer_client():

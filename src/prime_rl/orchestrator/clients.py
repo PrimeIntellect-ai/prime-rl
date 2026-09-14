@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -160,11 +161,23 @@ class AdminPlane:
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+        verify_initial = transport == "mx_refit" and step == 0 and os.environ.get("MX_VERIFY_INITIAL_REFIT") == "1"
+        before = await self._mx_generation_control() if verify_initial else None
 
         await _pause_engines(self.clients, step=step)
+        updated = False
         try:
             if on_paused is not None:
                 on_paused()
+            if verify_initial:
+                await asyncio.gather(
+                    *[
+                        _admin_post(
+                            client, "/mx_prepare_initial_refit", timeout_s=UPDATE_WEIGHTS_TIMEOUT_S, retry_errors=False
+                        )
+                        for client in self.clients
+                    ]
+                )
             await asyncio.gather(
                 *[
                     _admin_post(
@@ -172,12 +185,42 @@ class AdminPlane:
                         "/update_weights",
                         json={"weight_dir": weight_dir_posix, "version_uid": version_uid},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                        retry_errors=transport != "mx_refit",
                     )
                     for admin_client in self.clients
                 ]
             )
+            updated = True
         finally:
-            await _resume_engines(self.clients)
+            if updated or transport != "mx_refit":
+                await _resume_engines(self.clients)
+        if verify_initial:
+            try:
+                after = await self._mx_generation_control()
+                replicas = [item["replica"] for item in after]
+                passed = before == after and sorted(replicas) == list(range(len(self.clients)))
+                record = {
+                    "record": "mx-initial-generation-control-v1",
+                    "passed": passed,
+                    "replicas": len(self.clients),
+                    "version_uid": version_uid,
+                    "before": before,
+                    "after": after,
+                }
+                print(json.dumps(record), flush=True)
+                if not passed:
+                    raise RuntimeError("Initial greedy generation changed after refit; restart the engines")
+            except BaseException:
+                await _pause_engines(self.clients, step=step)
+                raise
+
+    async def _mx_generation_control(self) -> list[dict]:
+        async def control(client):
+            response = await client.post("/mx_generation_control", timeout=UPDATE_WEIGHTS_TIMEOUT_S)
+            response.raise_for_status()
+            return response.json()
+
+        return await asyncio.gather(*(control(client) for client in self.clients))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -340,11 +383,19 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
+    if not retry_errors:
+        response = await client.post(
+            path, timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0), **kwargs
+        )
+        response.raise_for_status()
+        return
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error),
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),

@@ -272,6 +272,24 @@ The client and the ModelExpress server must be compatible. Both come from the sa
 
 Weight versions use `{run_uid}.{attempt}:{step}` IDs. `run_uid` separates runs on a long-lived server; the per-offer token permits a restarted trainer to republish a step.
 
+`mx_refit` enables Gloo for CPU metadata collectives while CUDA tensors use NCCL.
+Set `MX_REFIT_STAGING_BYTES` to a positive byte budget to stream complete modules
+through a reusable GPU arena. A failed streaming installation requires restarting
+the inference engine. `MX_REFIT_TIMING_STDOUT=1` emits per-rank phase records to
+stdout for torchrun/Ray log collection; `MX_REFIT_REPLICA_ID` identifies each
+independent inference replica. Records include independent elapsed time and
+completion status, with detailed streaming metrics in `marks`.
+
+`MX_VERIFY_INITIAL_REFIT=1` enables startup controls for version `:0`: fixed
+greedy generation, paused-engine CPU snapshots and NaN perturbation, exact
+restoration checks, then a second generation comparison with a fresh prefix
+cache. Snapshot storage is capped by `MX_VERIFY_CPU_BYTES` (64 GiB per rank by
+default); provision this across all local workers. It covers every named
+parameter and MLA derived weight, including FP32 values, aliases, strides and
+storage addresses. Receiver records are consolidated by the inference API server
+and one generation record is emitted by the orchestrator. Any failed MX update
+or restoration remains paused and is not retried in the same engine.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

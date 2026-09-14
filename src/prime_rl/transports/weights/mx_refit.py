@@ -128,6 +128,7 @@ class MXRefitWeightSender(WeightSender):
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         del step_dir  # mx_refit addresses versions by uid, not by path
         with timed_refit("trainer", step, weight_version_uid(self._offer_token or "", step)) as timer:
+            timer.mark("rank", self.world.rank)
             with timer.phase("handshake"):
                 if self.world.world_size > 1:
                     offered = [self._offer_token]
@@ -208,6 +209,7 @@ class MXRefitWeightReceiver(WeightReceiver):
     async def receive(self, step: int) -> None:
         assert self._control is not None
         with timed_refit("orchestrator", step, "") as timer:
+            timer.mark("rank", 0)
             self._mark_offer_lag(step, timer)
             self._ack(step)
             with timer.phase("discovery"):

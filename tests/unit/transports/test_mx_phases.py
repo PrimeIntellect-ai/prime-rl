@@ -26,6 +26,9 @@ def test_records_phases():
     assert record["step"] == 7
     assert record["version_uid"] == "abc123:7"
     assert set(record["phases_s"]) == {"publish", "rendezvous"}
+    assert record["status"] == "complete"
+    assert record["elapsed_s"] >= record["accounted_s"] - 1e-6
+    assert timer.payload()["elapsed_s"] == record["elapsed_s"]
 
 
 def test_accounted_time_is_the_sum_of_the_phases():
@@ -69,6 +72,8 @@ def test_failed_cycle_emits_record():
             raise RuntimeError("cycle blew up")
 
     assert [record["step"] for record in emitted] == [4]
+    assert emitted[0]["status"] == "failed"
+    assert emitted[0]["elapsed_s"] >= emitted[0]["accounted_s"] - 1e-6
 
 
 def test_emission_falls_back_to_stdout_when_the_logger_is_unavailable(capsys, monkeypatch):

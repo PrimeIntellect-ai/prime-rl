@@ -118,7 +118,13 @@ def train(config: TrainerConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=(
+            config.model.fsdp_cpu_offload
+            or config.model.full_offload is not None
+            # mx_refit broadcasts the offer token over the CPU collective, and
+            # its tensor handshake refuses to run without a Gloo backend.
+            or config.weight_broadcast.type == "mx_refit"
+        ),
     )
     if config.model.full_offload is not None:
         setup_full_cpu_optimizer_offload(config.model.full_offload)

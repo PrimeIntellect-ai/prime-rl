@@ -105,7 +105,7 @@ def test_sender_records_trainer_client_metrics(tmp_path, monkeypatch):
 
     config = MXRefitWeightBroadcastConfig(run_uid="run", timeout=1)
     sender = MXRefitWeightSender(tmp_path, config, parallel_dims=None, model_name="model")
-    sender.world = SimpleNamespace(world_size=1, is_master=False)
+    sender.world = SimpleNamespace(world_size=1, is_master=False, rank=0)
     sender._initialized = True
     sender._client = TrainerClient()
     sender._offer_token = "run.token"
