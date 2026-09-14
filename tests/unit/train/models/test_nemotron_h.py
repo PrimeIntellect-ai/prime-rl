@@ -6,6 +6,7 @@ import torch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -114,13 +115,14 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
 
     cp_group = MagicMock()
 
+    cp_context = CPContext(cp_group, 1, 2, "ulysses")
     for module in model.modules():
-        if hasattr(module, "setup_context_parallel"):
-            module.setup_context_parallel(cp_group, 1, 2, "ulysses")
+        if hasattr(module, "cp_context"):
+            module.cp_context = cp_context
 
-    assert mamba_layer.mamba.cp_group is cp_group
-    assert mamba_layer.mamba.cp_rank == 1
-    assert mamba_layer.mamba.cp_world_size == 2
+    assert mamba_layer.mamba.cp_context is cp_context
+    assert mamba_layer.mamba.cp_context.cp_rank == 1
+    assert mamba_layer.mamba.cp_context.cp_world_size == 2
 
 
 def test_nemotron_h_no_latent_projection():

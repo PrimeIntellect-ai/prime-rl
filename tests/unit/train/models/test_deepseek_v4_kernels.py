@@ -14,6 +14,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
 try:
@@ -1244,7 +1245,7 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
-        module.setup_context_parallel(MagicMock(), cp_rank, cp_world_size, "ring")
+        module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
 
         packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
         out_rank, _ = module(chunk, packed=packed)

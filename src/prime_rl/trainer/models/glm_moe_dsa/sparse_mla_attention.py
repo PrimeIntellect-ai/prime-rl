@@ -4,11 +4,10 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
-from prime_rl.trainer.models.base import CPStyle
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
-from prime_rl.utils.cp import gather_for_cp
+from prime_rl.utils.cp import CPContext, gather_for_cp
 
 try:
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
@@ -146,22 +145,7 @@ class GlmMoeDsaAttention(nn.Module):
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
 
-        self.cp_group: dist.ProcessGroup | None = None
-        self.cp_rank: int = 0
-        self.cp_world_size: int = 1
-        self.cp_style: CPStyle | None = None
-
-    def setup_context_parallel(
-        self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int, cp_style: CPStyle
-    ) -> None:
-        self.cp_group = cp_group
-        self.cp_rank = cp_rank
-        self.cp_world_size = cp_world_size
-        self.cp_style = cp_style
-
-    @property
-    def cp_enabled(self) -> bool:
-        return self.cp_world_size > 1
+        self.cp_context = CPContext()
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
@@ -183,9 +167,10 @@ class GlmMoeDsaAttention(nn.Module):
         q_nope, q_rope = q_full.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
 
         cos_full, sin_full = position_embeddings_full
-        if self.cp_enabled:
-            cos_local = cos_full[:, self.cp_rank * s_local : (self.cp_rank + 1) * s_local, :]
-            sin_local = sin_full[:, self.cp_rank * s_local : (self.cp_rank + 1) * s_local, :]
+        if self.cp_context.cp_enabled:
+            cp_rank = self.cp_context.cp_rank
+            cos_local = cos_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
+            sin_local = sin_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
         else:
             cos_local, sin_local = cos_full, sin_full
 
@@ -220,9 +205,9 @@ class GlmMoeDsaAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         q_latent, k_compressed_normed, k_rope = self.mla_latents(hidden_states)
 
-        if self.cp_enabled:
-            k_compressed_normed = gather_for_cp(k_compressed_normed, self.cp_group)
-            k_rope = gather_for_cp(k_rope, self.cp_group)
+        if self.cp_context.cp_enabled:
+            k_compressed_normed = gather_for_cp(k_compressed_normed, self.cp_context.cp_group)
+            k_rope = gather_for_cp(k_rope, self.cp_context.cp_group)
 
         indices = cached_indices
         if not self.skip_topk:
@@ -233,9 +218,9 @@ class GlmMoeDsaAttention(nn.Module):
                 ke=ke,
                 index_topk=self.args.index_topk,
                 position_embeddings_full=position_embeddings,
-                cp_group=self.cp_group,
-                cp_world_size=self.cp_world_size,
-                cp_rank=self.cp_rank,
+                cp_group=self.cp_context.cp_group,
+                cp_world_size=self.cp_context.cp_world_size,
+                cp_rank=self.cp_context.cp_rank,
             )
 
         sparse_q, sparse_kv, w_v = self.mla_up_proj(

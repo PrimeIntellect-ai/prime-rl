@@ -221,9 +221,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        cp_rank, cp_world_size = self.cp_rank, self.cp_world_size
-        if self.cp_enabled:
-            position_ids_full = self._gather_position_ids_for_cp(position_ids, self.cp_group, cp_world_size)
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+        if self.cp_context.cp_enabled:
+            position_ids_full = self._gather_position_ids_for_cp(position_ids, self.cp_context.cp_group, cp_world_size)
         else:
             position_ids_full = position_ids
 

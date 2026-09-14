@@ -235,7 +235,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         """
         assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
 
-        cp_rank, cp_world_size = self.cp_rank, self.cp_world_size
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
         assert seq_lens_are_pre_shard == (cp_world_size > 1), (
             f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
         )

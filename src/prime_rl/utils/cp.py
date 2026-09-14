@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
 import prime_rl._compat  # noqa: F401
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -20,6 +21,20 @@ if TYPE_CHECKING:
     from prime_rl.configs.trainer import ModelConfig
     from prime_rl.trainer.models.base import CPStyle
     from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@dataclass(frozen=True)
+class CPContext:
+    """Context-parallel topology, shared by every module that consumes it."""
+
+    cp_group: dist.ProcessGroup | None = None
+    cp_rank: int = 0
+    cp_world_size: int = 1
+    cp_style: CPStyle | None = None
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self.cp_world_size > 1
 
 
 def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
@@ -41,9 +56,16 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")
 
+    cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
     for module in model.modules():
-        if hasattr(module, "setup_context_parallel"):
-            module.setup_context_parallel(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
+        if not hasattr(module, "cp_context"):
+            continue
+        if not isinstance(module.cp_context, CPContext):
+            raise TypeError(
+                f"{type(module).__name__}.cp_context is {type(module.cp_context).__name__}, not a CPContext; "
+                "context-parallel setup claims that attribute name, so rename it"
+            )
+        module.cp_context = cp_context
 
     get_logger().info(f"Configured {config.cp_style} context parallelism (cp={parallel_dims.cp})")
 
