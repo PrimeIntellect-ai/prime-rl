@@ -1,0 +1,97 @@
+max_steps = 20
+seq_len = 131072
+output_dir = "/home/mikasenghaas/outputs/adaptive-concurrency-improvs"
+
+[run]
+name = "baseline-mooncake"
+
+[env_vars]
+TMPDIR = "/tmp/adaptive-concurrency-mooncake"
+TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-mooncake/triton"
+
+[slurm]
+job_name = "ac-mooncake-baseline"
+partition = "all"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-mooncake ; timeout 120 prime sandbox delete --label "ac-mooncake-baseline" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 2
+
+[monitors.wandb]
+project = "adaptive-concurrency-improvs"
+name = "baseline-mooncake"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# External KV-cache hits do not carry the routed-expert decisions needed for router replay.
+[trainer]
+dist_timeout_seconds = 3600
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+optim_cpu_offload = false
+full_offload = true
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "sign_sgd"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+max_off_policy_steps = 32
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["ac-mooncake-baseline"]
+
+[inference]
+
+[inference.kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7"
+
+[inference.kv_cache_offload.cpu]
+num_bytes = 512_000_000_000
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/adaptive-concurrency-mooncake/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-mooncake/flashinfer"
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 8
+quantization = "fp8"
