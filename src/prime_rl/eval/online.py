@@ -1,6 +1,6 @@
 """Online evals: evaluate the trainer's weight broadcasts as they appear.
 
-Spawned by the ``sft`` launcher (``python -m prime_rl.eval.online @ online_eval.json``)
+Spawned by the ``sft`` launcher (``python -m prime_rl.eval.online @ eval.json``)
 next to the trainer. The process watches a broadcasts directory for offered weight broadcasts through a
 ``WeightReceiver`` (announced by their ``.sender_ready`` marker), moves the inference
 server onto each of them, and runs the due eval sources against the updated weights,
@@ -215,7 +215,7 @@ def main():
     config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
-    (config_dir / "online_eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     setup_logger(config.log.level, json_logging=config.log.json_logging)
     asyncio.run(run_online_eval(config, log_dir))
 

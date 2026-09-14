@@ -42,7 +42,7 @@ SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
 
 INFERENCE_CONFIG = "inference.json"
-ONLINE_EVAL_CONFIG = "online_eval.json"
+ONLINE_EVAL_CONFIG = "eval.json"
 
 ENVS_DIR = "envs"
 

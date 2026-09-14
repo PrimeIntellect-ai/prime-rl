@@ -201,7 +201,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- endfor %}
         (
             PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-eval uv run python -m prime_rl.eval.online \
-                @ $CONFIG_DIR/online_eval.json \
+                @ $CONFIG_DIR/eval.json \
                 --client.base-url $INFER_URLS \
                 --client.admin-base-url $ADMIN_URLS \
 {%- if use_nccl_broadcast %}

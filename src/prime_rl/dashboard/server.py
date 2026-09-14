@@ -426,7 +426,7 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl", "sft", "eval", "online_eval", "orchestrator", "trainer", "inference"]
+CONFIG_ORDER = ["rl", "sft", "eval", "orchestrator", "trainer", "inference"]
 
 
 def config_rank(name: str) -> tuple[int, str]:
