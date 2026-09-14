@@ -35,4 +35,3 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-linear/flashinfer"
 
 [inference.vllm]
 enable_prefix_caching = true
-enable_expert_parallel = true

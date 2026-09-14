@@ -42,7 +42,7 @@ type = "sign_sgd"
 
 [orchestrator]
 batch_size = 128
-group_size = 16
+group_size = 8
 max_off_policy_steps = 32
 
 [orchestrator.algo]
@@ -56,3 +56,4 @@ name = "qwen3"
 [inference.vllm]
 max_model_len = 65536
 tensor_parallel_size = 8
+enable_expert_parallel = true
