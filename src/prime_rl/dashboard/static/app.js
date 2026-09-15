@@ -2828,8 +2828,7 @@ function tmItemHtml(item) {
     return (
       `<div class="tm-item live ${rolloutActive(item) ? "active" : ""}" data-live="${esc(r.trace)}" title="${esc(r.last ?? "")}">` +
       `<span class="tm-num"><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></span>` +
-      `<span class="tm-env muted" title="${esc(r.task ?? "")}">${esc(r.env ?? "")} · ${esc(r.task ?? "")}</span>` +
-      `<span class="tm-reward muted">t${r.turns ?? 0}</span></div>`
+      `<span class="tm-env muted" title="${esc(r.task ?? "")}">${esc(r.env ?? "")} · ${esc(r.task ?? "")}</span></div>`
     );
   }
   const e = item;
