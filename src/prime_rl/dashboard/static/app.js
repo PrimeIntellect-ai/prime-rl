@@ -1997,8 +1997,11 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
-    $("#trace-status").textContent = "";
-    showTraceEmpty("no traces yet");
+    // no finished stream yet: the in-flight rollouts (if any) are the whole table
+    traces.episodes = [];
+    traces.total = 0;
+    $("#trace-status").textContent = traceStatusText(0);
+    renderEpisodeRows(fresh);
     syncTraceChart();
     return;
   }
@@ -6129,6 +6132,22 @@ async function pollDashboard() {
 }
 
 setInterval(pollDashboard, POLL_MS);
+
+/* in-flight rollouts change turn by turn; while the traces tab is open their rows
+   (and an open live trace) refresh once a second, the rest of the tab at POLL_MS */
+const LIVE_POLL_MS = 1000;
+let livePolling = false;
+async function pollLive() {
+  if (!state.live || livePolling || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
+  if (state.traces.mode !== "stream" || state.traces.status === "done") return;
+  livePolling = true;
+  try {
+    await loadLive();
+  } finally {
+    livePolling = false;
+  }
+}
+setInterval(pollLive, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) pollDashboard();
 });

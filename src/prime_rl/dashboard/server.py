@@ -2035,6 +2035,17 @@ def get_episode_timeline(run: str, line: int) -> dict:
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """The page and its assets change with the checkout the daemon runs; a reload must
+    revalidate them (an ETag answers 304 when unchanged) instead of trusting a heuristic
+    freshness from ``Last-Modified``."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
