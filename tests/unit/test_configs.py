@@ -478,6 +478,27 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
+def test_sticky_router_auto_enables_session_release():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {
+                "router": {"type": "vllm-router", "policy": "sticky_least_loaded"},
+                "vllm": {"tensor_parallel_size": 1},
+            },
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 2,
+                "num_train_gpus": 1,
+                "num_infer_gpus": 1,
+            },
+        }
+    )
+
+    assert config.orchestrator.model.client.finish_sessions is True
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {

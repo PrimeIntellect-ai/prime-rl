@@ -87,6 +87,10 @@ more than the local GPU architecture.
 
 Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
+### vLLM router backend
+
+The pinned `vllm-router` revision is a source archive. Installing the `disagg` extra therefore builds its Rust extension locally and requires a Rust toolchain, `pkg-config`, and OpenSSL development headers.
+
 ### llm-d router backend
 
 Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[inference.router] type = "llm-d"`). It needs three native binaries — install once:
