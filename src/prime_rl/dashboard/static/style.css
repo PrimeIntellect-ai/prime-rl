@@ -384,7 +384,14 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tm-strip-seg { cursor: pointer; }
 .tm-strip-seg:hover { filter: brightness(1.25); }
 .tm-line.err { fill: var(--negative); }
+.comp-pane [data-part].dim { opacity: 0.2; }
+.comp-pane .tm-node.dim { opacity: 0.35; }
+.sum-grid { margin-bottom: 4px; }
+.sum-tile { cursor: default; }
 .tm-note { font-size: 10px; margin-top: 4px; }
+.tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; }
+.tm-more:hover { color: var(--grey-6); }
+.tm-strips.scroll { max-height: 560px; overflow-y: auto; }
 .tm-tree { width: 150px; flex-shrink: 0; font-size: 11px; color: var(--grey-4); }
 .tm-node { padding: 2px 0; cursor: pointer; white-space: nowrap; }
 .tm-node:hover { color: var(--grey-6); }
