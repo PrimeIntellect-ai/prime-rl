@@ -102,7 +102,10 @@ class EvalRunner:
         await self.admin_plane.wait_for_ready(config.model)
         get_logger().info("Inference pool ready")
 
-        self.eval_source = EvalSource(self.eval_envs, skip_first_step=skip_first_step, is_resumed=is_resumed)
+        intervals = config.intervals if isinstance(config, SFTOnlineEvalConfig) else None
+        self.eval_source = EvalSource(
+            self.eval_envs, intervals=intervals, skip_first_step=skip_first_step, is_resumed=is_resumed
+        )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
         self.policy = Policy(version=0, model_name=config.model)
 

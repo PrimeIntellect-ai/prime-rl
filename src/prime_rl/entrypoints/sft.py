@@ -9,7 +9,7 @@ from subprocess import Popen
 from threading import Event, Thread
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.orchestrator import EvalSourceConfig
+from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
@@ -49,7 +49,7 @@ ONLINE_EVAL_CONFIG = "eval.json"
 ENVS_DIR = "envs"
 
 
-def eval_env_servers(config: SFTConfig) -> list[EvalSourceConfig]:
+def eval_env_servers(config: SFTConfig) -> list[OnlineEvalSourceConfig]:
     """Every launcher-managed eval source. A source with ``serve.address`` set is
     externally managed — the launcher neither writes its config nor spawns a server for it."""
     if config.eval is None:

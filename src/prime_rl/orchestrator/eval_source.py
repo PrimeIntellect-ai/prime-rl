@@ -25,9 +25,12 @@ class EvalSource:
         self,
         eval_envs: EvalEnvs,
         *,
+        intervals: dict[str, int] | None = None,
         skip_first_step: bool = False,
         is_resumed: bool = False,
     ) -> None:
+        """``intervals`` is the step interval per env of a training run's online evals;
+        a standalone eval has none and fires every env on its one trigger."""
         self.eval_envs = eval_envs
         self.skip_first_step = skip_first_step
 
@@ -35,7 +38,7 @@ class EvalSource:
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
-            self.intervals[env.name] = env.config.interval
+            self.intervals[env.name] = (intervals or {}).get(env.name, 1)
 
         self.queue: deque[TaskRequest] = deque()
         self.cursor = 0

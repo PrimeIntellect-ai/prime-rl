@@ -166,9 +166,6 @@ class EnvConfig(BaseConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
-    ratio: float = Field(1.0, gt=0)
-    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
-
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
@@ -269,6 +266,9 @@ class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
+    ratio: float = Field(1.0, gt=0)
+    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
+
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
@@ -292,6 +292,10 @@ class EvalSourceConfig(EnvConfig):
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
+
+
+class OnlineEvalSourceConfig(EvalSourceConfig):
+    """An eval source of a training run: evaluated on a step interval."""
 
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
@@ -383,6 +387,9 @@ class EvalSourcesConfig(BaseConfig):
 class ScheduledEvalConfig(EvalSourcesConfig):
     """Eval sources evaluated on a step interval next to training."""
 
+    source: list[OnlineEvalSourceConfig] = Field(default_factory=list)
+    """Evaluation sources, each with its own step interval."""
+
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
@@ -402,6 +409,11 @@ class ScheduledEvalConfig(EvalSourcesConfig):
             if "interval" not in source.model_fields_set:
                 source.interval = self.interval
         return self
+
+    @property
+    def intervals(self) -> dict[str, int]:
+        """Step interval per eval env, by resolved name."""
+        return {source.resolved_name: source.interval for source in self.source}
 
 
 class RLOnlineEvalConfig(ScheduledEvalConfig):
