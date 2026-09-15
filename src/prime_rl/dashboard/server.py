@@ -309,9 +309,13 @@ def run_meta(run_dir: Path) -> dict:
         updated = max(touched + ([updated] if updated is not None else []))
     if started is None and resolved.is_dir():
         started = resolved.stat().st_mtime
+    # An eval has no step horizon; it is complete when its file monitor finalized, which
+    # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
+    finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
     return {
         "name": run_dir.name,
         "type": run_type,
+        "finished": finished,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "has_validation": run_type == "sft" and config.get("val") is not None,

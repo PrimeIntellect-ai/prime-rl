@@ -256,6 +256,7 @@ function currentStep() {
 
 function runStatus(step) {
   const meta = state.meta;
+  if (meta.finished) return "completed";
   if (meta.updated && Date.now() / 1000 - meta.updated < 180) return "running";
   if (step != null && meta.max_steps && step >= meta.max_steps) return "completed";
   return "stopped";
@@ -2238,7 +2239,7 @@ function liveRowHtml(r) {
         <td>${r.turns ?? ""}</td>
         <td>${r.branches ?? ""}</td>
         <td class="muted">${esc(r.stop_condition ?? "")}</td>
-        <td class="muted">in flight</td>
+        <td class="muted">n/a</td>
         <td class="muted">n/a</td>
       </tr>`;
 }
