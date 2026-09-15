@@ -604,7 +604,8 @@ function evalProgressHtml(envs, idx, live) {
   const parts = [`${done}/${total ?? "?"} episodes`];
   if (live.length) parts.push(`${live.length} in flight`);
   if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
-  $("#metrics-status").textContent = [...parts, ...(pct != null ? [`${Math.round(pct)}%`] : [])].join(" · ");
+  // the toolbar line reads like the traces tab's
+  $("#metrics-status").textContent = [...(live.length ? [`${live.length} in flight`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
   return (
     `<div class="eval-progress"><div class="ep-head">${legend}<span class="muted">${parts.join(" · ")}</span></div>` +
     `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
