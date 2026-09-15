@@ -356,6 +356,8 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .swarm circle { fill: var(--accent); fill-opacity: 0.7; cursor: pointer; }
 .swarm circle.err { fill: var(--negative); }
 .swarm circle:hover { fill-opacity: 1; stroke: var(--grey-6); stroke-width: 1; }
+.sw-axis { stroke: var(--grey-3); stroke-width: 1; }
+.sw-grid { stroke: var(--hairline-faint); stroke-width: 1; }
 .sw-box rect { fill: var(--hairline-faint); stroke: var(--grey-3); stroke-width: 1; }
 .sw-box line { stroke: var(--grey-3); stroke-width: 1; }
 .sw-box .median { stroke: var(--grey-4); stroke-width: 1.5; }

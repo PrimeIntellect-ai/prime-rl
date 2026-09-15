@@ -623,16 +623,54 @@ function swarmCardHtml(entry) {
   );
 }
 
+/* tick values at a round step so that the labels, set in the mono axis font, fit
+   the width without colliding: 1, 2 or 5 × a power of ten for numbers, the clock's
+   steps (seconds, quarter minutes, hours) for durations */
+const TIME_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400];
+
+function niceTicks(min, max, width, fmt, time = false) {
+  if (max <= min) return [min];
+  const CHAR_W = 6, GAP = 18;
+  const labelW = Math.max(fmt(min).length, fmt(max).length) * CHAR_W + GAP;
+  const count = Math.max(2, Math.floor(width / labelW));
+  const raw = (max - min) / count;
+  let step;
+  if (time) step = TIME_STEPS.find((c) => c >= raw) ?? 86400 * Math.ceil(raw / 86400);
+  else {
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    step = [1, 2, 5, 10].map((m) => m * mag).find((c) => c >= raw);
+  }
+  const ticks = [];
+  let last = null;
+  for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {
+    const value = Math.abs(v) < step * 1e-9 ? 0 : v;
+    const label = fmt(value);
+    if (label === last) continue; // the formatter rounds two ticks together
+    last = label;
+    ticks.push(value);
+  }
+  return ticks;
+}
+
+const SWARM_AXIS_H = 18;
+
+/* a tick reads shorter than a value: round counts lose their ".0", durations their
+   empty trailing units (5m 0s → 5m) */
+function tickLabel(v, fmt) {
+  return fmt(v).replace(/\.0(?=[KMB]$)/, "").replace(/ 0s$/, "").replace(/ 0m$/, "");
+}
+
 function swarmSvg(entry, W, H) {
   const { points, stats } = entry;
   const pad = 10;
+  const plotH = H - SWARM_AXIS_H;
   const span = stats.max - stats.min || 1;
   const x = (v) => pad + ((v - stats.min) / span) * (W - 2 * pad);
   const step = Math.max(1, points.length / SWARM_MAX_POINTS);
   const shown = [];
   for (let k = 0; k < points.length; k += step) shown.push(Math.floor(k));
-  const r = Math.max(1.5, Math.min(H / 28, shown.length > 600 ? 2 : shown.length > 200 ? 2.5 : 3.5));
-  const mid = H / 2;
+  const r = Math.max(1.5, Math.min(plotH / 28, shown.length > 600 ? 2 : shown.length > 200 ? 2.5 : 3.5));
+  const mid = plotH / 2;
   const placed = []; // [x, y], in value order
   const circles = shown.map((i) => {
     const px = x(points[i].v);
@@ -654,18 +692,33 @@ function swarmSvg(entry, W, H) {
       if (clear) { best = c; bestAbs = Math.abs(c); }
     }
     placed.push([px, best]);
-    const y = Math.max(r, Math.min(H - r, mid + best));
+    const y = Math.max(r, Math.min(plotH - r, mid + best));
     return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
+  // the x axis: a baseline under the plot, round-valued ticks with grid lines
+  const label = (v) => tickLabel(v, entry.fmt);
+  const ticks = niceTicks(stats.min, stats.max, W - 2 * pad, label, entry.fmt === fmtDuration);
+  const axis =
+    `<line class="sw-axis" x1="0" x2="${W}" y1="${plotH + 0.5}" y2="${plotH + 0.5}"></line>` +
+    ticks
+      .map((v) => {
+        const tx = x(v).toFixed(1);
+        const anchor = x(v) < 24 ? "start" : x(v) > W - 24 ? "end" : "middle";
+        return (
+          `<line class="sw-grid" x1="${tx}" x2="${tx}" y1="0" y2="${plotH}"></line>` +
+          `<text class="hax" style="text-anchor:${anchor}" x="${tx}" y="${H - 4}">${esc(label(v))}</text>`
+        );
+      })
+      .join("");
   // the boxplot sits behind the dots: p25–p75 box, median line, whiskers to p10/p90
-  const top = H * 0.3, bottom = H * 0.7;
+  const top = plotH * 0.3, bottom = plotH * 0.7;
   const box =
     `<g class="sw-box"><line x1="${x(stats.p10).toFixed(1)}" x2="${x(stats.p25).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
     `<line x1="${x(stats.p75).toFixed(1)}" x2="${x(stats.p90).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
     `<rect x="${x(stats.p25).toFixed(1)}" y="${top}" width="${Math.max(1, x(stats.p75) - x(stats.p25)).toFixed(1)}" height="${bottom - top}"></rect>` +
     `<line class="median" x1="${x(stats.median).toFixed(1)}" x2="${x(stats.median).toFixed(1)}" y1="${top}" y2="${bottom}"></line>` +
     `<line class="mean" x1="${x(stats.mean).toFixed(1)}" x2="${x(stats.mean).toFixed(1)}" y1="${top}" y2="${bottom}"></line></g>`;
-  return `<svg class="swarm" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>${box}<g class="sw-pts">${circles.join("")}</g></svg>`;
+  return `<svg class="swarm" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>${axis}${box}<g class="sw-pts">${circles.join("")}</g></svg>`;
 }
 
 /* swarms are drawn to their host's pixel size, so they redraw with the panes */
