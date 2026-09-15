@@ -364,7 +364,6 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .sw-box rect { fill: var(--hairline-faint); stroke: var(--grey-3); stroke-width: 1; }
 .sw-box line { stroke: var(--grey-3); stroke-width: 1; }
 .sw-box .median { stroke: var(--grey-4); stroke-width: 1.5; }
-.sw-box .mean { stroke: var(--grey-4); stroke-dasharray: 3 3; }
 /* timing pane: breadcrumb, icicle of the zoomed node, per-episode strips, tree legend */
 /* eval metrics sections: flat, a muted heading each */
 .eval-sec { margin-bottom: 18px; }

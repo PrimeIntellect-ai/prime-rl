@@ -617,14 +617,14 @@ const DOTPLOT_MAX_VALUES = 8;
 
 /* a distribution renders by its shape: one value is a chip, up to eight distinct
    values a counted dot plot, anything wider a beeswarm */
-function swarmEntry(key, label, points, fmt, { headline, rows } = {}) {
+function swarmEntry(key, label, points, fmt, { headline, rows, shape: forced } = {}) {
   const sorted = points.filter((p) => typeof p.v === "number" && isFinite(p.v)).sort((a, b) => a.v - b.v);
   if (!sorted.length) return null;
   const stats = distStats(sorted.map((p) => p.v));
   stats.p25 = quantile(stats.sorted, 0.25);
   stats.p75 = quantile(stats.sorted, 0.75);
   const distinct = [...new Set(sorted.map((p) => p.v))];
-  const shape = distinct.length === 1 ? "constant" : distinct.length <= DOTPLOT_MAX_VALUES ? "dots" : "swarm";
+  const shape = forced ?? (distinct.length === 1 ? "constant" : distinct.length <= DOTPLOT_MAX_VALUES ? "dots" : "swarm");
   return { key, label, points: sorted, fmt, stats, headline: headline ?? fmt(stats.mean), rows, shape, distinct };
 }
 
@@ -786,8 +786,7 @@ function swarmSvg(entry, W, H) {
     `<g class="sw-box"><line x1="${x(stats.p10).toFixed(1)}" x2="${x(stats.p25).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
     `<line x1="${x(stats.p75).toFixed(1)}" x2="${x(stats.p90).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
     `<rect x="${x(stats.p25).toFixed(1)}" y="${top}" width="${Math.max(1, x(stats.p75) - x(stats.p25)).toFixed(1)}" height="${bottom - top}"></rect>` +
-    `<line class="median" x1="${x(stats.median).toFixed(1)}" x2="${x(stats.median).toFixed(1)}" y1="${top}" y2="${bottom}"></line>` +
-    `<line class="mean" x1="${x(stats.mean).toFixed(1)}" x2="${x(stats.mean).toFixed(1)}" y1="${top}" y2="${bottom}"></line></g>`;
+    `<line class="median" x1="${x(stats.median).toFixed(1)}" x2="${x(stats.median).toFixed(1)}" y1="${top}" y2="${bottom}"></line></g>`;
   return `<svg class="swarm" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>${axis}${box}<g class="sw-pts">${circles.join("")}</g></svg>`;
 }
 
@@ -801,7 +800,7 @@ function drawSwarms() {
   }
 }
 
-const SWARM_STAT_ROWS = ["min", "p10", "p25", "median", "mean", "p75", "p90", "max"];
+const SWARM_STAT_ROWS = ["min", "p10", "median", "p90", "max"];
 
 function swarmTipHtml(entry, point) {
   const row = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
@@ -1042,7 +1041,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
       const label = `${seg.name} · ${fmt(seg.stats.mean)} · ${Math.round(seg.share * 100)}%`;
       const shown = w > label.length * 6.5 + 12 ? label : w > 40 ? seg.name : "";
       const t = tip(
-        `<div class="tip-head">${esc(seg.name)}</div>${rowTip("share", `${Math.round(seg.share * 100)}%`)}${rowTip("mean", fmt(seg.stats.mean))}` +
+        `<div class="tip-head">${esc(seg.name)}</div>${rowTip("share", `${Math.round(seg.share * 100)}%`)}` +
           `${rowTip("median", fmt(seg.stats.median))}${rowTip("p90", fmt(seg.stats.p90))}${rowTip("max", fmt(seg.stats.max))}` +
           (seg.zoomable ? rowTip("", "click zooms in") : "")
       );
@@ -1148,7 +1147,7 @@ function renderEvalPane(body) {
   body.insertAdjacentHTML("beforeend", evalProgressHtml(env, all, live));
   // errored episodes stay out of the distributions unless asked in, where they read red
   const idx = m.includeErrors ? all : all.filter((i) => series.ok?.[i] !== false);
-  const episodeEntry = (key, label, fmt) =>
+  const episodeEntry = (key, label, fmt, opts) =>
     swarmEntry(
       key,
       label,
@@ -1158,13 +1157,14 @@ function renderEvalPane(body) {
         reward: series.reward?.[i],
         err: series.ok?.[i] === false,
       })),
-      fmt
+      fmt,
+      opts
     );
   const keyed = (prefix, fmt) =>
     Object.keys(series)
       .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
       .sort()
-      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
+      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt, { shape: "swarm" }));
   // constants sit in a chip row above the section's panes: a pane for a value every
   // episode shares would only take space
   // sections are flat: a muted heading, the constants as chips, then the panes
@@ -1192,7 +1192,6 @@ function renderEvalPane(body) {
     evalSection("summary", summary);
     shown += 1;
   }
-  shown += section("scores", scores);
   shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
   const tokensHtml = tokensPaneHtml(idx);
   const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
