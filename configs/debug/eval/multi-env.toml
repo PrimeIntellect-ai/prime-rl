@@ -1,24 +1,20 @@
-# Multi env: gsm8k (single turn, null harness, subprocess) and terminal-bench-2's
-# fix-git (multi turn, bash harness in a prime sandbox) in one run, one epoch
-# each, one env server per source.
+# Multi env: 16 terminal-bench-2 tasks under two harnesses, bash and rlm, in prime
+# sandboxes (PRIME_API_KEY authenticates sandbox creation), one rollout each with
+# a ten-minute budget, against Prime Inference on the default model. One env server
+# per source; the sources share the taskset, so each carries its own name.
 #
 #   uv run eval @ configs/debug/eval/multi-env.toml
 
-group_size = 2
-
-[concurrency]
-min_inflight = 4
-max_inflight = 4
-
-[sampling]
-max_completion_tokens = 8192
+num_examples = 16
 
 [[source]]
-num_examples = 8
-env.taskset.id = "gsm8k"
-env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
-
-[[source]]
+name = "tb2-bash"
 env.taskset.id = "terminal-bench-2"
-env.taskset.tasks = ["fix-git"]
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 600
+
+[[source]]
+name = "tb2-rlm"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 600

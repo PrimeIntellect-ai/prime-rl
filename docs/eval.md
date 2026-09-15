@@ -70,7 +70,7 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
-The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval), one per shape: single turn, multi turn (a sandboxed terminal task), resume, and multi env, plus AIME 2026 at avg@16 and Terminal-Bench 2 at avg@4.
+The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval), one per shape: single turn, multi turn (a sandboxed terminal task), resume, and multi env (the same terminal tasks under the bash and rlm harnesses), plus AIME 2026 at avg@16 and Terminal-Bench 2 at avg@4.
 
 ### Run Directory and Resume
 
