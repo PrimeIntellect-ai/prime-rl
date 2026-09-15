@@ -373,7 +373,9 @@ class Dispatcher:
 
     def retire(self, meta: InflightEpisode) -> None:
         """An episode left the in-flight set (finished, cancelled, dropped): its live
-        traces are over."""
+        traces are over, and so is its pending placeholder if no trace ever streamed."""
+        if not meta.live:
+            self.live_events.append(live.dispatched_event(meta))
         self.live_events.extend({"done": trace_id} for trace_id in meta.live)
 
     async def flush_live(self) -> None:
@@ -576,6 +578,8 @@ class Dispatcher:
         )
 
         def on_delta(delta: dict) -> None:
+            if not meta.live:
+                self.live_events.append(live.dispatched_event(meta))
             live.apply(meta, delta)
             self.live_events.append({"delta": delta, "dispatch": live.dispatch_info(meta)})
 
@@ -589,6 +593,7 @@ class Dispatcher:
             )
         )
         self.inflight[task] = meta
+        self.live_events.append(live.pending_event(meta))
         return True
 
     async def acquire(self) -> None:

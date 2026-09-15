@@ -15,10 +15,12 @@ from prime_rl.orchestrator.types import InflightEpisode, LiveTrace
 
 
 def dispatch_info(meta: InflightEpisode) -> dict[str, Any]:
-    """Who an in-flight episode is, stamped on the first line of each of its live traces."""
+    """Who an in-flight episode is, stamped on the first line of each of its live traces
+    and on its pending placeholder."""
     data = meta.task.data
     name = getattr(data, "name", None)
     return {
+        "id": meta.dispatch_id,
         "kind": meta.kind,
         "env": meta.env_name,
         "group": str(meta.group_id),
@@ -27,6 +29,16 @@ def dispatch_info(meta: InflightEpisode) -> dict[str, Any]:
         "step": meta.step,
         "started": time.time() - (time.monotonic() - meta.started_at) if meta.started_at else None,
     }
+
+
+def pending_event(meta: InflightEpisode) -> dict[str, Any]:
+    """The episode was dispatched; until a trace streams, this is all there is to show."""
+    return {"pending": meta.dispatch_id, "dispatch": dispatch_info(meta)}
+
+
+def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
+    """The episode is no longer pending: a trace streamed, or the episode left the in-flight set."""
+    return {"dispatched": meta.dispatch_id}
 
 
 def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:

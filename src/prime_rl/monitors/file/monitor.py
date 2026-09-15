@@ -14,7 +14,7 @@ from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
-from prime_rl.monitors.file.traces.live import get_live_dir
+from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
@@ -62,14 +62,26 @@ class FileMonitor(Monitor):
 
     async def log_live(self, events: list[dict[str, Any]]) -> None:
         """Append each delta to its trace's file under ``traces/live/`` (the first line
-        carrying the dispatch identity); a finished or discarded trace's file goes away."""
+        carrying the dispatch identity); a finished or discarded trace's file goes away.
+        A dispatched episode holds a placeholder under ``traces/live/pending/`` until its
+        first trace streams."""
         live_dir = get_live_dir(self.output_dir)
+        pending_dir = get_pending_dir(self.output_dir)
 
         def write() -> None:
-            live_dir.mkdir(parents=True, exist_ok=True)
+            pending_dir.mkdir(parents=True, exist_ok=True)
             for event in events:
                 if "done" in event:
                     (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
+                    continue
+                if "pending" in event:
+                    path = pending_dir / f"{event['pending']}.json"
+                    tmp = path.with_suffix(".json.tmp")
+                    tmp.write_bytes(orjson.dumps(event["dispatch"]))
+                    tmp.replace(path)
+                    continue
+                if "dispatched" in event:
+                    (pending_dir / f"{event['dispatched']}.json").unlink(missing_ok=True)
                     continue
                 delta = event["delta"]
                 path = live_dir / f"{delta['trace']}.jsonl"

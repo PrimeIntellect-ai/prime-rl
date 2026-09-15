@@ -22,7 +22,3 @@ env.agent.runtime.type = "subprocess"
 [[source]]
 env.taskset.id = "terminal-bench-2"
 env.taskset.tasks = ["fix-git"]
-env.agent.harness.id = "bash"
-env.agent.timeout.rollout = 3600
-env.agent.retries.max_retries = 2
-env.agent.retries.include = ["ProviderError", "SandboxError"]

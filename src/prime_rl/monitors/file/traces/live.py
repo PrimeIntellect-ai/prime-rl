@@ -39,6 +39,25 @@ def live_path(output_dir: Path, trace_id: str) -> Path:
     return get_live_dir(output_dir) / f"{trace_id}.jsonl"
 
 
+def get_pending_dir(output_dir: Path) -> Path:
+    """Dispatched episodes whose first trace has not streamed yet, one JSON of dispatch
+    identity each; the file goes away once a trace streams or the episode ends."""
+    return get_live_dir(output_dir) / "pending"
+
+
+def list_pending(output_dir: Path) -> list[dict[str, Any]]:
+    pending_dir = get_pending_dir(output_dir)
+    if not pending_dir.is_dir():
+        return []
+    rows = []
+    for path in pending_dir.glob("*.json"):
+        try:
+            rows.append(orjson.loads(path.read_bytes()))
+        except (FileNotFoundError, orjson.JSONDecodeError):
+            continue  # gone or mid-write: it is not pending anymore, or not yet
+    return rows
+
+
 def read_live(path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """``(dispatch, trace)`` folded from one live file, None when the file vanished
     (its episode finished) or nothing has landed in it yet."""
@@ -68,7 +87,7 @@ def list_live(output_dir: Path) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     live_dir = get_live_dir(output_dir)
     if not live_dir.is_dir():
         return []
-    folded = [read_live(path) for path in sorted(live_dir.glob("*.jsonl"))]
+    folded = [read_live(path) for path in sorted(live_dir.glob("*.jsonl"))]  # not the pending/ subdir
     return sorted((item for item in folded if item is not None), key=lambda item: item[0].get("started") or 0)
 
 
@@ -130,6 +149,32 @@ def live_row(dispatch: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
     return {**dispatch, "elapsed": time.time() - started if started else None, **trace_row(trace)}
 
 
+def pending_row(dispatch: dict[str, Any]) -> dict[str, Any]:
+    started = dispatch.get("started")
+    return {
+        **dispatch,
+        "elapsed": time.time() - started if started else None,
+        "trace": None,
+        "agent": None,
+        "stage": "pending",
+        "turns": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": None,
+        "stop_condition": None,
+        "errors": 0,
+        "last": "",
+    }
+
+
+def live_rows(output_dir: Path) -> list[dict[str, Any]]:
+    """Every in-flight rollout: dispatched-but-not-yet-streaming placeholders and the
+    streaming traces, oldest dispatch first."""
+    rows = [pending_row(dispatch) for dispatch in list_pending(output_dir)]
+    rows.extend(live_row(dispatch, trace) for dispatch, trace in list_live(output_dir))
+    return sorted(rows, key=lambda row: row.get("started") or 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Read a run's live (in-flight) traces.")
     parser.add_argument("run_dir", type=Path)
@@ -142,14 +187,15 @@ def main() -> None:
         dispatch, trace = folded
         print(json.dumps({"dispatch": dispatch, "trace": trace}, indent=2, default=str))
         return
-    rows = [live_row(dispatch, trace) for dispatch, trace in list_live(args.run_dir)]
+    rows = live_rows(args.run_dir)
     if not rows:
         print(f"no live traces under {get_live_dir(args.run_dir)}")
         return
     for row in rows:
         elapsed = f"{row['elapsed']:.0f}s" if row.get("elapsed") is not None else "-"
+        dispatched = time.strftime("%H:%M:%S", time.localtime(row["started"])) if row.get("started") else "--:--:--"
         print(
-            f"{row['trace'][:8]}  {row.get('kind', ''):5s} {row.get('env', ''):20s} {str(row.get('task', '')):24s} "
+            f"{dispatched}  {(row['trace'] or '-')[:8]:8s}  {row.get('kind', ''):5s} {row.get('env', ''):20s} {str(row.get('task', '')):24s} "
             f"{row['stage']:9s} turns {row['turns']:3d}  in {row['input_tokens']:>7d} out {row['output_tokens']:>7d}  "
             f"{elapsed:>6s}  {row['last'][:60]}"
         )

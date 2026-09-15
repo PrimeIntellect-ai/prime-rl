@@ -2231,7 +2231,8 @@ function renderLiveRows() {
     r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : "";
   $("#live-table tbody").innerHTML = rows
     .map(
-      (r) => `<tr data-live="${esc(r.trace)}" class="stage-${esc(r.stage)}">
+      (r) => `<tr ${r.trace ? `data-live="${esc(r.trace)}"` : ""} class="stage-${esc(r.stage)}">
+        <td class="muted nowrap">${r.started ? fmtStamp(r.started) : ""}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
         <td>${esc(r.env ?? "")}</td>
         <td class="muted" title="${esc(r.task ?? "")}">${esc(r.task ?? "")}</td>
@@ -2290,7 +2291,11 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
   traceView = "transcript"; // the timeline and token views read the finished stream
   const live = episode.live || {};
   $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
+  // a refresh redraws the transcript under the reader; keep their place in it
+  const messages = $("#tm-messages");
+  const scrollTop = refresh ? messages.scrollTop : 0;
   renderEpisode();
+  if (refresh) messages.scrollTop = scrollTop;
 }
 
 async function refreshTraces() {

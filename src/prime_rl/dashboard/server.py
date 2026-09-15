@@ -28,7 +28,7 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
-from prime_rl.monitors.file.traces.live import list_live, live_path, live_row, read_live, stage
+from prime_rl.monitors.file.traces.live import live_path, live_rows, read_live, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_file_monitor_dir
@@ -1719,8 +1719,7 @@ def live_traces(run: str) -> dict:
     (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
     phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
     gone has finished and sits in the stream."""
-    rows = [live_row(dispatch, trace) for dispatch, trace in list_live(get_run_dir(run))]
-    return {"time": time.time(), "rows": rows}
+    return {"time": time.time(), "rows": live_rows(get_run_dir(run))}
 
 
 @app.get("/api/runs/{run}/live/{trace_id}")
