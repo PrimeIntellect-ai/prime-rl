@@ -19,7 +19,11 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
+    DeepseekV4HyperConnection,
+    DeepseekV4HyperHead,
+    hc_write_back,
+)
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -58,21 +62,15 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         *,
         packed: PackedContext,
     ) -> torch.Tensor:
-        dtype = hidden_states.dtype
-
         post, comb, collapsed = self.attn_hc(hidden_states)
         attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
-        hidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        hidden_states = hc_write_back(post, comb, attn_output, hidden_states)
 
         post, comb, collapsed = self.ffn_hc(hidden_states)
         mlp_output = self.mlp(
             self.post_attention_layernorm(collapsed), input_ids=input_ids, routed_experts=routed_experts
         )
-        return post.to(dtype).unsqueeze(-1) * mlp_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        return hc_write_back(post, comb, mlp_output, hidden_states)
 
 
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to

@@ -111,8 +111,25 @@ class DeepseekV4HyperHead(nn.Module):
         nn.init.ones_(self.hc_scale)
 
 
+def hc_write_back(
+    post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, hidden_streams: torch.Tensor
+) -> torch.Tensor:
+    """Broadcast the sublayer output over the streams via `post` and remix them via `comb`.
+
+    `comb` is consumed summing over the *source* stream axis, i.e. transposed; the fused
+    kernel applies that transpose internally, so both branches take `comb` untransposed.
+    """
+    dtype = hidden_streams.dtype
+    if _use_fused_mhc(hidden_streams, comb.shape[-1]):
+        return dsv4_mhc.fused_post_bda(comb.to(dtype), hidden_streams, post.to(dtype), sublayer_out)
+    return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
+        comb.to(dtype).transpose(-1, -2), hidden_streams
+    )
+
+
 __all__ = [
     "DeepseekV4HyperConnection",
     "DeepseekV4HyperHead",
     "DeepseekV4UnweightedRMSNorm",
+    "hc_write_back",
 ]
