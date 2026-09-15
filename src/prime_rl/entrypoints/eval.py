@@ -134,8 +134,7 @@ def main():
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
     log_file = log_dir / "eval.log"
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
-    names = ", ".join(source.resolved_name for source in config.source)
-    logger.info(f"Starting eval of {names} with {config.model} ({config.client.base_url})")
+    logger.info("Starting eval")
 
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
