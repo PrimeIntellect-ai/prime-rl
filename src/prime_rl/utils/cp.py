@@ -64,7 +64,7 @@ def setup_context_parallel(config: ModelConfig, parallel_dims: ParallelDims) -> 
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")
 
-    # Updating the _cp_context class attr on the mixin propagates the changes to all subclasses. 
+    # Updating the _cp_context class attr on the mixin propagates the changes to all subclasses.
     # Note: the converse is not true. Updating _cp_context on a CPContextMixin subclass doesn't
     # propagate.
     CPContextMixin._cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
