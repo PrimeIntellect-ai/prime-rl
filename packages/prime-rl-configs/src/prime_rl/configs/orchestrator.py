@@ -304,6 +304,9 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
+    filter_zero_advantages: bool = True
+    """Remove zero-advantage RL tokens before shipping samples to the trainer."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
