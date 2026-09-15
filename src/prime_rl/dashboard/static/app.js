@@ -880,7 +880,7 @@ const PHASE_COLORS = {
   boot: "#b7a6fa", setup: "#fcdaa4", agent: "#b6ff3c", finalize: "#4a9eff", scoring: "#ff6b4a",
   model: "#78f8a5", harness: "#e879f9", other: "#3a3a3a",
 };
-const TOKEN_COLORS = { input: "#4a9eff", output: "#ff6b4a" };
+const TOKEN_COLORS = { input: PHASE_COLORS.agent, output: PHASE_COLORS.boot }; // the timing palette
 
 function phaseColor(name) {
   if (PHASE_COLORS[name]) return PHASE_COLORS[name];
@@ -1016,7 +1016,7 @@ function tokensPaneHtml(idx) {
   );
 }
 
-const TM_MAX_STRIPS = 50;
+const TM_MAX_STRIPS = 40;
 
 function drawTiming() {
   drawComposition(document.querySelector("#metrics-body .timing-pane"), timingModel, { kind: "timing", fmt: fmtDuration, time: true, color: phaseColor });
@@ -1109,20 +1109,51 @@ function highlightPart(pane, name) {
 }
 
 /* the summary tiles: the run's headline numbers, each with its distribution on hover */
-function summaryTilesHtml(idx, scoreEntries) {
+/* a rate reads as a warning past 10% and as bad past 50% */
+function rateClass(rate) {
+  return rate > 0.5 ? " rate-bad" : rate > 0.1 ? " rate-warn" : "";
+}
+
+function summaryTilesHtml(idx, all, scoreEntries) {
   const series = state.metrics.evalSeries || {};
   const tip = (html) => paneTips.push(html) - 1;
   const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   const tiles = [];
-  const tile = (label, value, tipHtml) => tiles.push(`<div class="stat-card sum-tile" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div></div>`);
+  const tile = (label, value, tipHtml, { cls = "", sub = "" } = {}) =>
+    tiles.push(
+      `<div class="stat-card sum-tile${cls}" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div>` +
+        (sub ? `<div class="sum-sub muted">${sub}</div>` : "") +
+        `</div>`
+    );
   for (const entry of scoreEntries.filter(Boolean)) {
     const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
-    tile(entry.label, entry.headline, `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} tasks</div>${rows.map(([k, v]) => rowTip(k, v)).join("")}`);
+    tile(entry.label, entry.headline, `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} tasks</div>${rows.map(([k, v]) => rowTip(k, v)).join("")}`, { cls: " score" });
+  }
+  // failure rates count every landed episode, the errors filter notwithstanding
+  if (all.length) {
+    const errored = all.filter((i) => series.ok?.[i] === false || (series.num_errors?.[i] ?? 0) > 0).length;
+    const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
+    for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
+      const rate = n / all.length;
+      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: rateClass(rate) });
+    }
   }
   for (const [key, label, fmt] of [["turns", "mean turns", fmtNum], ["branches", "mean branches", fmtNum], ["duration", "mean episode time", fmtDuration]]) {
     const stats = distStats(idx.map((i) => series[key]?.[i]));
     if (!stats) continue;
     tile(label, fmt(stats.mean), `<div class="tip-head">${esc(label.replace("mean ", ""))} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmt(stats[k]))).join("")}`);
+  }
+  const tok = (v) => fmtCompact(Math.round(v));
+  const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
+  const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
+  if (inTok || outTok) {
+    const total = distStats(idx.map((i) => (series.input_tokens?.[i] ?? 0) + (series.output_tokens?.[i] ?? 0)));
+    tile(
+      "mean tokens",
+      tok(total.mean),
+      `<div class="tip-head">tokens · ${fmtCompact(total.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(total[k]))).join("")}`,
+      { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
+    );
   }
   return tiles.length ? `<div class="stat-grid sum-grid">${tiles.join("")}</div>` : "";
 }
@@ -1167,11 +1198,17 @@ function renderEvalPane(body) {
       .map((k) => episodeEntry(k, k.slice(prefix.length), fmt, { shape: "swarm" }));
   // constants sit in a chip row above the section's panes: a pane for a value every
   // episode shares would only take space
-  // sections are flat: a muted heading, the constants as chips, then the panes
-  const evalSection = (name, inner) => {
-    body.insertAdjacentHTML("beforeend", `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`);
+  // sections are flat: a muted heading, the constants as chips, then the panes; a
+  // collapsible one folds under the same heading and starts closed
+  const evalSection = (name, inner, { collapsible = false } = {}) => {
+    body.insertAdjacentHTML(
+      "beforeend",
+      collapsible
+        ? `<details class="eval-sec"><summary class="eval-sec-title">${esc(name)}<span class="sec-chev">›</span></summary>${inner}</details>`
+        : `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`
+    );
   };
-  const section = (name, entries) => {
+  const section = (name, entries, opts) => {
     const kept = entries.filter(Boolean);
     if (!kept.length) return 0;
     for (const entry of kept) swarmRegistry.set(entry.key, entry);
@@ -1180,29 +1217,30 @@ function renderEvalPane(body) {
     evalSection(
       name,
       (constants.length ? `<div class="const-row">${constants.map(constChipHtml).join("")}</div>` : "") +
-        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : "")
+        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : ""),
+      opts
     );
     return kept.length;
   };
   let shown = 0;
   paneTips = [];
   const scores = evalScoreEntries(idx, filter);
-  const summary = summaryTilesHtml(idx, scores);
+  const summary = summaryTilesHtml(idx, all, scores);
   if (summary) {
     evalSection("summary", summary);
     shown += 1;
   }
-  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
+  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)], { collapsible: true });
   const tokensHtml = tokensPaneHtml(idx);
   const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
   if (tokensHtml || cost) {
     for (const entry of [cost].filter(Boolean)) swarmRegistry.set(entry.key, entry);
-    evalSection("usage", tokensHtml + (cost && cost.shape !== "constant" ? `<div class="chart-grid">${swarmCardHtml(cost)}</div>` : cost ? `<div class="const-row">${constChipHtml(cost)}</div>` : ""));
+    evalSection("usage breakdown", tokensHtml + (cost && cost.shape !== "constant" ? `<div class="chart-grid">${swarmCardHtml(cost)}</div>` : cost ? `<div class="const-row">${constChipHtml(cost)}</div>` : ""));
     shown += 1;
   }
   const timingHtml = timingPaneHtml(idx);
   if (timingHtml) {
-    evalSection("timing", timingHtml);
+    evalSection("timing breakdown", timingHtml);
     shown += 1;
   }
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
@@ -1239,6 +1277,13 @@ $("#metrics-body").addEventListener("mousemove", (e) => {
   tip.style.left = `${Math.max(4, left)}px`;
   tip.style.top = `${e.clientY - host.top + 14}px`;
 });
+$("#metrics-body").addEventListener(
+  "toggle",
+  (e) => {
+    if (e.target.matches("details.eval-sec") && e.target.open) drawSwarms();
+  },
+  true
+);
 $("#metrics-body").addEventListener("mouseleave", () => {
   $("#swarm-tip").hidden = true;
   document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => highlightPart(p, null));

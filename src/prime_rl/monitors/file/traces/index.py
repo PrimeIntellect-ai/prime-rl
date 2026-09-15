@@ -30,6 +30,18 @@ def episode_kind(rec: dict) -> str:
     return (run.get("work") or {}).get("type") or run.get("type") or "eval"
 
 
+TRUNCATING_STOPS = frozenset({"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens"})
+
+
+def trace_truncated(trace: dict) -> bool:
+    """``Trace.is_truncated`` for a dumped trace: a framework limit stopped it, or its
+    last successful model call ran out of length."""
+    if trace.get("stop_condition") in TRUNCATING_STOPS:
+        return True
+    last = next((call for call in reversed(trace.get("calls") or []) if call.get("error") is None), None)
+    return bool(last and last.get("finish_reason") == "length")
+
+
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     """One index row: what the table, the filters, the chart and the sort need.
 
@@ -38,6 +50,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     rewards, advantages = [], []
     input_tokens = output_tokens = turns = branches = 0
     stop_condition = None
+    truncated = False
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
@@ -79,6 +92,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
             if (node.get("message") or {}).get("role") == "assistant":
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
+        truncated = truncated or trace_truncated(trace)
         if input_tokens == 0 and output_tokens == 0:  # some eval traces carry no token arrays
             for call in trace.get("calls") or []:
                 usage = call.get("usage") or {}
@@ -106,6 +120,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "turns": turns,
         "branches": branches,
         "stop_condition": stop_condition,
+        "truncated": truncated,
         # when the episode landed and how long it was alive: the stream's x axis,
         # and the one duration worth sorting a stream by
         "dispatch": (first_info.get("dispatch") or {}).get("time"),
