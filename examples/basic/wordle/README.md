@@ -29,7 +29,7 @@ Then, use the `eval` entrypoint to evaluate the model in the `wordle` environmen
 
 ```bash
 # Run this in the other terminal
-uv run eval wordle --harness.id null -m Qwen/Qwen3-1.7B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval @ examples/basic/wordle/eval.toml
 ```
 
 We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary, we can see that the most of the reward is coming from format and partial rewards. In fact, the model does not guess the correct word within any game, leading to a win rate of **0%**. Looking at some samples, it is evident repeatedly submitting guesses in the wrong format and is not able to revise its strategy from the environment feedback. Let's do some SFT warmup to get the model to learn the format of the environment.
@@ -97,7 +97,7 @@ uv run inference --vllm.model PrimeIntellect/Qwen3-1.7B-Wordle-RL
 
 ```bash
 # Run this in the other terminal
-uv run eval wordle --harness.id null -m PrimeIntellect/Qwen3-1.7B-Wordle-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval @ examples/basic/wordle/eval.toml -m PrimeIntellect/Qwen3-1.7B-Wordle-RL
 ```
 
 Way better! Our model now wins **~60%** and gets an average reward of **~1.5**.

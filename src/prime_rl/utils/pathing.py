@@ -83,15 +83,19 @@ def latest_log_dir(run_dir: Path) -> Path:
     return get_log_dir(run_dir) / "latest"
 
 
+def shorten(name: str, max_len: int) -> str:
+    """A name cut to fit a label column, the same way in every launcher block."""
+    return name if len(name) <= max_len else name[: max_len - 3] + "..."
+
+
 def format_log_message(
     log_dir: Path,
     trainer: bool = False,
     orchestrator: bool = False,
-    evals: bool = False,
+    eval: bool = False,
     inference: bool = False,
     job_log: bool = False,
-    train_env_names: list[str] | None = None,
-    eval_env_names: list[str] | None = None,
+    env_names: dict[str, list[str]] | None = None,
     num_train_nodes: int = 1,
     num_infer_nodes: int = 0,
 ) -> str:
@@ -112,25 +116,26 @@ def format_log_message(
         log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
-    if evals:
-        log_lines.append(f"{i1}{'Evals:':<{col}}tail -F {log_dir}/evals.log")
+    if eval:
+        log_lines.append(f"{i1}{'Eval:':<{col}}tail -F {log_dir}/eval.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    if train_env_names or eval_env_names:
+    # Env servers, by split (``envs/<split>/<name>.log``); one split lists its envs
+    # directly, several list them under the split.
+    splits = {split: names for split, names in (env_names or {}).items() if names}
+    if splits:
         env_log_dir = log_dir / "envs"
         log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
-        if train_env_names:
-            log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
-            for name in train_env_names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
-        if eval_env_names:
-            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*.log")
-            for name in eval_env_names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}.log")
+        for split, names in splits.items():
+            indent, width = (i2, col - 1) if len(splits) == 1 else (i3, col - 2)
+            if len(splits) > 1:
+                log_lines.append(f"{i2}{f'{split.capitalize()}:':<{col - 1}}tail -F {env_log_dir}/{split}/*.log")
+            for name in names:
+                log_lines.append(
+                    f"{indent}{f'{shorten(name, max_name)}:':<{width}}tail -F {env_log_dir}/{split}/{name}.log"
+                )
     return "Logs:\n" + "\n".join(log_lines)
 
 
@@ -186,10 +191,36 @@ def write_launch_toml(config_dir: Path, name: str) -> None:
     (config_dir.parent / f"{name}.toml").write_text("\n".join(texts))
 
 
+def format_config_message(config_dir: Path, name: str, components: list[tuple[str, Path | str]]) -> str:
+    """Where a launch's configs are: the command as typed, the launch TOML when one was
+    given, and each component's resolved config. Mirrors ``format_log_message``."""
+    col = 18
+    attempt_dir = config_dir.parent
+    lines = [f"  {'Command:':<{col}}{attempt_dir / 'command.txt'}"]
+    launch_toml = attempt_dir / f"{name}.toml"
+    if launch_toml.is_file():
+        lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
+    # A label starting with a space is a sub-entry (an env server under its split), cut
+    # to the column like the Logs block cuts env names.
+    for label, path in components:
+        if label.startswith(" "):
+            label = " " + shorten(label[1:], col - 4)
+        lines.append(f"  {f'{label}:':<{col}}{path}")
+    return "\n".join(lines)
+
+
 def write_launch_artifacts(config_dir: Path, name: str) -> None:
     """Write the user command and launch TOML for a config attempt."""
     write_launch_command(config_dir, name)
     write_launch_toml(config_dir, name)
+
+
+def env_address_file(config_dir: Path, split: str, name: str) -> Path:
+    """Where a launcher-managed env server publishes the address it bound
+    (``envs/<split>/<name>.address``, next to its config). The server binds an
+    OS-assigned port, so two runs on one host never race for the same one; a client
+    waits for this file instead of assuming a port."""
+    return config_dir / "envs" / split / f"{name}.address"
 
 
 def get_launcher_dir(output_dir: Path) -> Path:
@@ -208,6 +239,18 @@ def get_batch_dir(output_dir: Path) -> Path:
     return output_dir / "batches"
 
 
+def get_eval_plan_path(output_dir: Path) -> Path:
+    """``{env: {step: expected episodes}}`` for every eval epoch the run has started."""
+    return get_file_monitor_dir(output_dir) / "plan.json"
+
+
+def get_platform_run_path(output_dir: Path) -> Path:
+    """What the prime monitor knows about the run on the platform: ``{"kind": "train",
+    "id", "url"}`` for a training run, ``{"kind": "eval", "run_id", "evaluations":
+    {env: {"step", "id", "url"}}}`` for an eval run, one entry per uploaded epoch."""
+    return output_dir / "monitors" / "prime" / "run.json"
+
+
 def get_file_monitor_dir(output_dir: Path) -> Path:
     """Everything the file monitor dumps locally: the metrics, and the traces with
     the annotations about them."""
@@ -215,7 +258,7 @@ def get_file_monitor_dir(output_dir: Path) -> Path:
 
 
 def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "evals"
+    return output_dir / "eval"
 
 
 def get_broadcast_dir(output_dir: Path) -> Path:

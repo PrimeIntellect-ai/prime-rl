@@ -33,7 +33,7 @@ const state = {
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150, includeErrors: prefs.includeErrors ?? false,
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
@@ -53,6 +53,10 @@ const state = {
     kinds: { train: true, eval: true },
     bin: null,
     episodes: [],
+    live: [],
+    landing: new Map(),
+    // both on means no filter; exactly one narrows to it (the last one on stays on)
+    status: { live: prefs.traceStatus?.live ?? true, done: prefs.traceStatus?.done ?? true },
     total: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
@@ -178,6 +182,10 @@ async function toggleCompare(name, on) {
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
   $("#metrics-mode").hidden = isEval;
+  $("#metrics-filter-wrap").hidden = !isEval;
+  $("#metrics-search").hidden = isEval;
+  $("#metrics-collapse").hidden = isEval;
+  $("#metrics-expand").hidden = isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -199,9 +207,8 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null,
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null, allStrips: new Set(),
   };
-  if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
     files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
@@ -213,7 +220,7 @@ async function selectRun(name, deferTab = false) {
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
-    key: null, total: 0, bin: null, hist: null,
+    key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
   state.report = {
     ...state.report,
@@ -223,6 +230,7 @@ async function selectRun(name, deferTab = false) {
   renderOverview();
   renderCompareMenu();
   updateHash();
+  if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   if (!deferTab) await activateTab(state.tab, true);
 }
 
@@ -253,6 +261,7 @@ function currentStep() {
 
 function runStatus(step) {
   const meta = state.meta;
+  if (meta.finished) return "completed";
   if (meta.updated && Date.now() / 1000 - meta.updated < 180) return "running";
   if (step != null && meta.max_steps && step >= meta.max_steps) return "completed";
   return "stopped";
@@ -266,9 +275,45 @@ function envListField(envs, empty = "n/a") {
   return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
 }
 
+/* the top bar's link to the run on the Prime platform, from what the prime monitor left
+   in monitors/prime/run.json: one link for a training run or a single uploaded
+   evaluation, a menu when several epochs uploaded, a disabled button while none has */
+function renderPlatformLink(meta) {
+  const wrap = $("#platform-wrap"), link = $("#platform-link"), button = $("#platform-btn"), menu = $("#platform-menu");
+  const platform = meta?.platform;
+  wrap.hidden = !meta;
+  if (!meta) return;
+  if (!platform) {
+    // no prime monitor on this run: the button stays, and says what would light it up
+    link.hidden = false;
+    button.hidden = true;
+    link.classList.add("disabled");
+    link.removeAttribute("href");
+    link.title = "enable the prime monitor (--monitors.prime) to sync this run to the platform";
+    return;
+  }
+  const targets =
+    platform.kind === "train"
+      ? platform.url ? [["training run", platform.url]] : []
+      : Object.entries(platform.evaluations || {}).map(([env, e]) => [env, e.url]).filter(([, url]) => url);
+  const single = targets.length <= 1;
+  link.hidden = !single;
+  button.hidden = single;
+  if (single) {
+    const url = targets[0]?.[1];
+    link.classList.toggle("disabled", !url);
+    link.title = url ? "" : "the evaluation uploads when its epoch finishes";
+    if (url) link.href = url;
+    else link.removeAttribute("href");
+  } else {
+    menu.innerHTML = targets.map(([env, url]) => `<a class="dd-opt" href="${esc(url)}" target="_blank" rel="noopener">${esc(env)}</a>`).join("");
+  }
+}
+
 function renderOverview() {
   const el = $("#run-overview");
   const meta = state.meta;
+  renderPlatformLink(meta);
   if (!meta) {
     el.hidden = true;
     return;
@@ -458,15 +503,20 @@ async function fetchMetrics() {
    grid of stat cards showing the running average over the episodes so far */
 async function fetchEvalSeries() {
   const m = state.metrics;
+  const liveChanged = await loadLive({ render: state.tab === "traces" });
+  if (state.metrics !== m) return 0;
   let data;
   try {
     const qs = new URLSearchParams({ after: m.evalCount || 0 });
     if (m.evalEtag) qs.set("etag", m.evalEtag);
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/series?${qs}`);
   } catch {
+    data = { unchanged: true };
+  }
+  if (data.unchanged) {
+    if (liveChanged && m.loaded && state.tab === "metrics") renderMetricsBody();
     return 0;
   }
-  if (data.unchanged) return 0;
   m.evalEtag = data.etag;
   // merge the increment: keys new to this batch backfill nulls for earlier episodes
   m.evalSeries ??= {};
@@ -485,59 +535,797 @@ async function fetchEvalSeries() {
   return data.count;
 }
 
-const EVAL_CARD_GROUPS = [
-  ["rewards", (k) => k === "reward" || k === "advantage" || k.startsWith("rewards/")],
-  ["metrics", (k) => k.startsWith("metrics/")],
-  ["usage", (k) => ["cost", "input_tokens", "output_tokens", "turns", "branches"].includes(k)],
-  ["timing", (k) => k.startsWith("timing/")],
-];
+/* ------------------------------------------------------------ eval metrics */
+/* an eval run's metrics view is per env: a block bar with one cell per expected
+   episode, then the distributions of everything the episodes carry (scores, env
+   metrics, usage, timing) as swarms with their summary stats */
 
-function renderEvalCards(body) {
-  const m = state.metrics;
-  const series = m.evalSeries || {};
-  const filter = makeFilter(m.search.trim());
-  const total = state.meta?.total_episodes;
-  const done = m.evalCount || 0;
-  if (total) {
-    const pct = Math.min(100, (done / total) * 100);
-    body.insertAdjacentHTML(
-      "beforeend",
-      `<div class="eval-progress"><div class="ep-bar"><div class="ep-fill" style="width:${pct}%"></div></div>` +
-        `<span class="ep-label">${done}/${total} episodes · ${Math.round(pct)}%</span></div>`
-    );
+function evalEnvs() {
+  const meta = state.meta || {};
+  const streamed = (state.metrics.evalSeries?.env || []).filter(Boolean);
+  return [...new Set([...(meta.eval_envs || []), ...Object.keys(meta.eval_plan || {}), ...streamed])];
+}
+
+/* the pane shows one env at a time; the first is the default */
+function evalEnv() {
+  const envs = evalEnvs();
+  if (!envs.includes(state.metrics.evalEnv)) state.metrics.evalEnv = envs[0] ?? null;
+  return state.metrics.evalEnv;
+}
+
+function renderEvalEnvs() {
+  const envs = evalEnvs();
+  const current = evalEnv();
+  $("#metrics-env-row").hidden = !envs.length;
+  $("#metrics-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
+  syncDressedSelects();
+}
+
+/* the episodes of one env, as indices into the series */
+function evalIndices(env) {
+  const column = state.metrics.evalSeries?.env || [];
+  const out = [];
+  for (let i = 0; i < column.length; i++) if (column[i] === env) out.push(i);
+  return out;
+}
+
+function evalExpected(env) {
+  const plan = state.meta?.eval_plan?.[env];
+  if (plan) return Object.values(plan).reduce((a, b) => a + b, 0);
+  return state.meta?.eval_totals?.[env] ?? null; // no plan yet: what the config promises
+}
+
+const EP_CELL_CAP = 400;
+
+function evalProgressHtml(env, idx, live) {
+  const series = state.metrics.evalSeries || {};
+  const done = idx.length;
+  const total = evalExpected(env);
+  const n = Math.max(total ?? 0, done + live.length);
+  const pct = total ? Math.min(100, (done / total) * 100) : null;
+  let cells;
+  if (n <= EP_CELL_CAP) {
+    // one cell per episode: landed ones in arrival order (click opens it), the
+    // live ones (click follows it), then what is still to come
+    cells =
+      idx
+        .map((i) => {
+          const err = series.ok?.[i] === false;
+          const reward = series.reward?.[i];
+          return (
+            `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}" ` +
+            `title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`
+          );
+        })
+        .join("") +
+      live
+        .map(
+          (r) =>
+            `<span class="ep-cell live" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"></span>`
+        )
+        .join("") +
+      `<span class="ep-cell"></span>`.repeat(Math.max(0, n - done - live.length));
+  } else {
+    // past the cap a cell stands for a share of the episodes
+    const doneCells = Math.round((done / n) * EP_CELL_CAP);
+    const liveCells = Math.round((live.length / n) * EP_CELL_CAP);
+    cells =
+      `<span class="ep-cell done"></span>`.repeat(doneCells) +
+      `<span class="ep-cell live"></span>`.repeat(liveCells) +
+      `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
-  const fmtVal = (key, v) => {
-    if (v == null) return "n/a";
-    if (key === "cost") return fmtCost(v);
-    if (key.startsWith("timing/")) return fmtDuration(v);
-    if (key.endsWith("tokens")) return fmtCompact(Math.round(v));
-    return fmtNum(v);
+  // the toolbar line reads like the traces tab's
+  $("#metrics-status").textContent = [...(live.length ? [`${live.length} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
+  return (
+    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span></div>` +
+    `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
+    `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span></div></div>`
+  );
+}
+
+function quantile(sorted, q) {
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+function distStats(values) {
+  const sorted = values.filter((v) => typeof v === "number" && isFinite(v)).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return {
+    n: sorted.length,
+    sorted,
+    min: sorted[0],
+    p10: quantile(sorted, 0.1),
+    median: quantile(sorted, 0.5),
+    mean: sorted.reduce((a, b) => a + b, 0) / sorted.length,
+    p90: quantile(sorted, 0.9),
+    max: sorted[sorted.length - 1],
   };
-  let shown = 0;
-  for (const [name, match] of EVAL_CARD_GROUPS) {
-    const keys = Object.keys(series)
-      .filter(match)
-      .filter((k) => !filter || filter.test(k))
-      .sort();
-    if (!keys.length) continue;
-    shown += keys.length;
-    const { grid } = addSection(body, name);
-    grid.className = "stat-grid";
-    grid.innerHTML = keys
-      .map((key) => {
-        const values = series[key].filter((v) => v != null);
-        const avg = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-        const label = /^(rewards|metrics|timing)\//.test(key) ? key.split("/").slice(1).join("/") : key;
+}
+
+/* one swarm per card: the values as dots (each an episode, or a task), a faint
+   boxplot behind them, and the summary in a tooltip — hover a dot for its episode,
+   click it to open that trace; hover the background for the distribution */
+const swarmRegistry = new Map();
+const SWARM_MAX_POINTS = 1500;
+
+const DOTPLOT_MAX_VALUES = 8;
+
+/* a distribution renders by its shape: one value is a chip, up to eight distinct
+   values a counted dot plot, anything wider a beeswarm */
+function swarmEntry(key, label, points, fmt, { headline, rows, shape: forced } = {}) {
+  const sorted = points.filter((p) => typeof p.v === "number" && isFinite(p.v)).sort((a, b) => a.v - b.v);
+  if (!sorted.length) return null;
+  const stats = distStats(sorted.map((p) => p.v));
+  stats.p25 = quantile(stats.sorted, 0.25);
+  stats.p75 = quantile(stats.sorted, 0.75);
+  const distinct = [...new Set(sorted.map((p) => p.v))];
+  const shape = forced ?? (distinct.length === 1 ? "constant" : distinct.length <= DOTPLOT_MAX_VALUES ? "dots" : "swarm");
+  return { key, label, points: sorted, fmt, stats, headline: headline ?? fmt(stats.mean), rows, shape, distinct };
+}
+
+function constChipHtml(entry) {
+  return (
+    `<span class="const-chip" title="${esc(entry.label)} is ${esc(entry.fmt(entry.stats.min))} on every one of ${fmtCompact(entry.stats.n)} episodes">` +
+    `<span class="k">${esc(entry.label)}</span>${entry.fmt(entry.stats.min)}</span>`
+  );
+}
+
+/* one column group per distinct value, dots stacked from the axis and wrapping into
+   neighbouring columns when a stack outgrows the height, with the count and share
+   of each value above its block */
+function dotPlotSvg(entry, W, H) {
+  const { points, distinct } = entry;
+  const plotH = H - SWARM_AXIS_H - 16; // room for the count labels above
+  const slotW = W / distinct.length;
+  const counts = new Map(distinct.map((v) => [v, points.filter((p) => p.v === v).length]));
+  const biggest = Math.max(...counts.values());
+  // the largest radius at which the biggest block fits its slot, else sample
+  let r = 3.5;
+  for (const cand of [3.5, 3, 2.5, 2, 1.5]) {
+    r = cand;
+    const perCol = Math.floor(plotH / (2 * cand + 1));
+    const cols = Math.floor((slotW - 8) / (2 * cand + 1));
+    if (perCol * cols >= biggest) break;
+  }
+  const perCol = Math.max(1, Math.floor(plotH / (2 * r + 1)));
+  const cols = Math.max(1, Math.floor((slotW - 8) / (2 * r + 1)));
+  const capacity = perCol * cols;
+  const top = 16;
+  const byValue = new Map(distinct.map((v) => [v, []]));
+  points.forEach((p, i) => byValue.get(p.v).push([p, i]));
+  const parts = distinct.map((v, k) => {
+    const mine = byValue.get(v);
+    const step = Math.max(1, mine.length / capacity);
+    const shown = [];
+    for (let j = 0; j < mine.length; j += step) shown.push(mine[Math.floor(j)]);
+    const used = Math.ceil(shown.length / perCol);
+    const x0 = k * slotW + slotW / 2 - (used * (2 * r + 1)) / 2 + r;
+    const dots = shown
+      .map(([p, i], j) => {
+        const col = Math.floor(j / perCol), rowN = j % perCol;
+        const cx = x0 + col * (2 * r + 1);
+        const cy = top + plotH - r - rowN * (2 * r + 1);
+        return `<circle data-i="${i}" class="${p.err ? "err" : ""}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
+      })
+      .join("");
+    const n = counts.get(v);
+    const blockTop = top + plotH - Math.min(shown.length, perCol) * (2 * r + 1);
+    const label = `<text class="dp-count" style="text-anchor:middle" x="${(k * slotW + slotW / 2).toFixed(1)}" y="${(blockTop - 4).toFixed(1)}">${fmtCompact(n)} · ${Math.round((n / points.length) * 100)}%</text>`;
+    const tick = `<text class="hax" style="text-anchor:middle" x="${(k * slotW + slotW / 2).toFixed(1)}" y="${H - 4}">${esc(entry.fmt(v))}</text>`;
+    return dots + label + tick;
+  });
+  const axisY = top + plotH + 0.5;
+  return (
+    `<svg class="swarm dotplot" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>` +
+    `<line class="sw-axis" x1="0" x2="${W}" y1="${axisY}" y2="${axisY}"></line><g class="sw-pts">${parts.join("")}</g></svg>`
+  );
+}
+
+function swarmCardHtml(entry) {
+  return (
+    `<div class="chart-card swarm-card" data-key="${esc(entry.key)}"><div class="chart-head"><div class="chart-title" title="${esc(entry.key)}">${esc(entry.label)}</div>` +
+    `<div class="chart-last">${entry.headline}</div></div><div class="swarm-host"></div>` +
+    `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div><div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div></div>`
+  );
+}
+
+/* tick values at a round step so that the labels, set in the mono axis font, fit
+   the width without colliding: 1, 2 or 5 × a power of ten for numbers, the clock's
+   steps (seconds, quarter minutes, hours) for durations */
+const TIME_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400];
+
+function niceTicks(min, max, width, fmt, time = false) {
+  if (max <= min) return [min];
+  const CHAR_W = 6, GAP = 18;
+  const labelW = Math.max(fmt(min).length, fmt(max).length) * CHAR_W + GAP;
+  const count = Math.max(2, Math.floor(width / labelW));
+  const raw = (max - min) / count;
+  let step;
+  if (time) step = TIME_STEPS.find((c) => c >= raw) ?? 86400 * Math.ceil(raw / 86400);
+  else {
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    step = [1, 2, 5, 10].map((m) => m * mag).find((c) => c >= raw);
+  }
+  const ticks = [];
+  let last = null;
+  for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {
+    const value = Math.abs(v) < step * 1e-9 ? 0 : v;
+    const label = fmt(value);
+    if (label === last) continue; // the formatter rounds two ticks together
+    last = label;
+    ticks.push(value);
+  }
+  return ticks;
+}
+
+const SWARM_AXIS_H = 18;
+
+/* a tick reads shorter than a value: round counts lose their ".0", durations their
+   empty trailing units (5m 0s → 5m) */
+function tickLabel(v, fmt) {
+  if (v === 0) return "0";
+  return fmt(v).replace(/\.0(?=[KMB]$)/, "").replace(/ 0s$/, "").replace(/ 0m$/, "");
+}
+
+function swarmSvg(entry, W, H) {
+  const { points, stats } = entry;
+  const pad = 10;
+  const plotH = H - SWARM_AXIS_H;
+  const span = stats.max - stats.min || 1;
+  const x = (v) => pad + ((v - stats.min) / span) * (W - 2 * pad);
+  const step = Math.max(1, points.length / SWARM_MAX_POINTS);
+  const shown = [];
+  for (let k = 0; k < points.length; k += step) shown.push(Math.floor(k));
+  const r = Math.max(1.5, Math.min(plotH / 28, shown.length > 600 ? 2 : shown.length > 200 ? 2.5 : 3.5));
+  const mid = plotH / 2;
+  // dots stack in columns one diameter wide, alternating above and below the midline,
+  // so placement is one pass whatever the values look like
+  const d = 2 * r + 1;
+  const stacks = new Map();
+  const circles = shown.map((i) => {
+    const px = x(points[i].v);
+    const column = Math.round(px / d);
+    const k = stacks.get(column) || 0;
+    stacks.set(column, k + 1);
+    const offset = Math.ceil(k / 2) * d * (k % 2 ? -1 : 1);
+    const y = Math.max(r, Math.min(plotH - r, mid + offset));
+    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+  });
+  // the x axis: a baseline under the plot, round-valued ticks with grid lines
+  const label = (v) => tickLabel(v, entry.fmt);
+  const ticks = niceTicks(stats.min, stats.max, W - 2 * pad, label, entry.fmt === fmtDuration);
+  const axis =
+    `<line class="sw-axis" x1="0" x2="${W}" y1="${plotH + 0.5}" y2="${plotH + 0.5}"></line>` +
+    ticks
+      .map((v) => {
+        const tx = x(v).toFixed(1);
+        const anchor = x(v) < 24 ? "start" : x(v) > W - 24 ? "end" : "middle";
         return (
-          `<div class="stat-card"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>` +
-          `<div class="stat-value">${fmtVal(key, avg)}</div></div>`
+          `<line class="sw-grid" x1="${tx}" x2="${tx}" y1="0" y2="${plotH}"></line>` +
+          `<text class="hax" style="text-anchor:${anchor}" x="${tx}" y="${H - 4}">${esc(label(v))}</text>`
         );
       })
       .join("");
-  }
-  $("#metrics-status").textContent = total || !m.evalCount ? "" : `running avg over ${m.evalCount} episodes`;
-  if (!shown) body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
+  // the boxplot sits behind the dots: p25–p75 box, median line, whiskers to p10/p90
+  const top = plotH * 0.3, bottom = plotH * 0.7;
+  const box =
+    `<g class="sw-box"><line x1="${x(stats.p10).toFixed(1)}" x2="${x(stats.p25).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
+    `<line x1="${x(stats.p75).toFixed(1)}" x2="${x(stats.p90).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
+    `<rect x="${x(stats.p25).toFixed(1)}" y="${top}" width="${Math.max(1, x(stats.p75) - x(stats.p25)).toFixed(1)}" height="${bottom - top}"></rect>` +
+    `<line class="median" x1="${x(stats.median).toFixed(1)}" x2="${x(stats.median).toFixed(1)}" y1="${top}" y2="${bottom}"></line></g>`;
+  return `<svg class="swarm" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>${axis}${box}<g class="sw-pts">${circles.join("")}</g></svg>`;
 }
+
+/* swarms are drawn to their host's pixel size, so they redraw with the panes */
+function drawSwarms() {
+  for (const card of document.querySelectorAll("#metrics-body .swarm-card")) {
+    const entry = swarmRegistry.get(card.dataset.key);
+    const host = card.querySelector(".swarm-host");
+    if (!entry || !host?.clientWidth) continue;
+    host.innerHTML = (entry.shape === "dots" ? dotPlotSvg : swarmSvg)(entry, host.clientWidth, host.clientHeight);
+  }
+}
+
+const SWARM_STAT_ROWS = ["min", "p10", "median", "p90", "max"];
+
+function swarmTipHtml(entry, point) {
+  const row = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+  if (point) {
+    const rows = point.group
+      ? [row("rollouts", point.n), row(entry.label, entry.fmt(point.v))]
+      : [row(entry.label, entry.fmt(point.v)), ...(point.reward != null ? [row("reward", fmtReward(point.reward))] : [])];
+    if (point.err) rows.push(row("errors", point.group ? "in a rollout" : "yes"));
+    rows.push(row("", point.group ? "click opens its first rollout" : "click opens the trace"));
+    return `<div class="tip-head">${point.group ? `task ${esc(point.group.slice(0, 8))}` : `episode #${point.line}`}</div>${rows.join("")}`;
+  }
+  const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
+  return `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} ${entry.points[0]?.group ? "tasks" : "episodes"}</div>${rows.map(([k, v]) => row(k, v)).join("")}`;
+}
+
+/* unbiased pass@k for one task's binary rewards, k over the powers of two up to n
+   (the orchestrator's compute_pass_metrics) */
+function passAtK(rewards) {
+  const n = rewards.length, c = rewards.filter((r) => r === 1).length;
+  const comb = (a, b) => {
+    if (b < 0 || b > a) return 0;
+    b = Math.min(b, a - b);
+    let out = 1;
+    for (let i = 1; i <= b; i++) out = (out * (a - b + i)) / i;
+    return out;
+  };
+  const out = {};
+  for (let k = 1; k <= n; k *= 2) out[k] = 1 - comb(n - c, k) / comb(n, k);
+  return out;
+}
+
+function evalScoreEntries(idx, filter) {
+  const series = state.metrics.evalSeries || {};
+  const entries = [];
+  const byTask = new Map();
+  for (const i of idx) {
+    // an errored episode carries no reward; when the filter lets it in, it scores 0
+    const reward = series.reward?.[i] ?? (series.ok?.[i] === false ? 0 : null);
+    if (reward == null) continue;
+    const task = series.group?.[i] ?? String(i);
+    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
+    const t = byTask.get(task);
+    t.rewards.push(reward);
+    if (series.ok?.[i] === false) t.err = true;
+  }
+  const tasks = [...byTask.values()];
+  if (!tasks.length) return entries;
+  const k = Math.max(...tasks.map((t) => t.rewards.length));
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err });
+  if (!filter || filter.test("avg@k"))
+    entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
+  if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
+    const perTask = tasks.map((t) => ({ task: t, pass: passAtK(t.rewards) }));
+    const ks = [...new Set(perTask.flatMap((p) => Object.keys(p.pass).map(Number)))].sort((a, b) => a - b);
+    const mean = (kk) => {
+      const vals = perTask.map((p) => p.pass[kk]).filter((v) => v != null);
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+    const top = ks[ks.length - 1];
+    entries.push(
+      swarmEntry("pass@k", `pass@${top}`, perTask.map((p) => taskPoint(p.task, p.pass[top])), fmtReward, {
+        headline: fmtReward(mean(top)),
+        rows: ks.map((kk) => [`pass@${kk}`, fmtReward(mean(kk))]),
+      })
+    );
+  }
+  return entries;
+}
+
+
+/* ------------------------------------------------------------ eval timing */
+/* one pane for the whole timing hierarchy: the phases are key paths (agent/model),
+   every level sums to its parent with an `other` remainder, and the pane zooms
+   into a node — an icicle of mean composition above per-episode strips */
+
+/* one colour per phase, told apart at a glance; `other` is the grey remainder */
+const PHASE_COLORS = {
+  boot: "#b7a6fa", setup: "#fcdaa4", agent: "#b6ff3c", finalize: "#4a9eff", scoring: "#ff6b4a",
+  model: "#78f8a5", harness: "#e879f9", other: "#3a3a3a",
+};
+const TOKEN_COLORS = { input: PHASE_COLORS.agent, output: PHASE_COLORS.boot }; // the timing palette
+
+function phaseColor(name) {
+  if (PHASE_COLORS[name]) return PHASE_COLORS[name];
+  const names = [...new Set(Object.keys(state.metrics.evalSeries || {}).filter((k) => k.startsWith("timing/")).map((k) => k.split("/").pop()))].sort();
+  return PALETTE[names.indexOf(name) % PALETTE.length];
+}
+
+/* label text dark on light segments, light on dark ones */
+function onColor(hex) {
+  const [r, g, b] = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? "#111" : "#eee";
+}
+
+let timingModel = null;
+let tokensModel = null;
+let paneTips = [];
+
+/* phases in the order a rollout runs them; anything unknown follows, by name */
+const PHASE_ORDER = ["boot", "setup", "agent", "model", "harness", "finalize", "scoring"];
+
+function phaseRank(name) {
+  const k = PHASE_ORDER.indexOf(name);
+  return k === -1 ? PHASE_ORDER.length : k;
+}
+
+function comparePhasePaths(a, b) {
+  const pa = a.split("/"), pb = b.split("/");
+  for (let k = 0; k < Math.min(pa.length, pb.length); k++) {
+    if (pa[k] === pb[k]) continue;
+    return phaseRank(pa[k]) - phaseRank(pb[k]) || pa[k].localeCompare(pb[k]);
+  }
+  return pa.length - pb.length;
+}
+
+/* the leaf phases of the timing hierarchy: a phase with children (agent → model,
+   harness) is shown as its children, so the pane is flat; the episode's wall time
+   minus every leaf is `other` */
+function timingLeaves(series) {
+  const paths = Object.keys(series)
+    .filter((k) => k.startsWith("timing/"))
+    .map((k) => k.slice("timing/".length))
+    .sort(comparePhasePaths);
+  return paths.filter((p) => !paths.some((q) => q.startsWith(`${p}/`)));
+}
+
+/* a composition pane's shell: a horizontal legend, then the plots (the section's
+   heading names it, the summary tiles carry its mean) */
+function compositionPaneHtml(cls, parts, color) {
+  const legend = parts
+    .map((name) => `<span class="tm-node child" data-part="${esc(name)}"><span class="phase-dot" style="background:${color(name)}"></span>${esc(name)}</span>`)
+    .join("");
+  return `<div class="chart-card comp-pane ${cls}"><div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`;
+}
+
+function timingPaneHtml(idx) {
+  const series = state.metrics.evalSeries || {};
+  const leaves = timingLeaves(series);
+  if (!leaves.length) return "";
+  const names = [...leaves.map((p) => p.split("/").pop()), "other"];
+  const rows = idx
+    .map((i) => {
+      const total = series.duration?.[i];
+      if (total == null) return null;
+      const parts = leaves.map((p) => ({ name: p.split("/").pop(), v: series[`timing/${p}`]?.[i] ?? 0 }));
+      parts.push({ name: "other", v: Math.max(0, total - parts.reduce((a, p) => a + p.v, 0)) });
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total, parts };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+  if (!rows.length) return "";
+  const meanTotal = rows.reduce((a, r) => a + r.total, 0) / rows.length;
+  const segments = names.map((name, k) => {
+    const stats = distStats(rows.map((r) => r.parts[k].v));
+    return { name, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
+  });
+  timingModel = { rows, segments, meanTotal, kids: names };
+  return compositionPaneHtml("timing-pane", names, phaseColor);
+}
+
+/* usage: the same composition view over an episode's tokens, input beside output */
+function tokensPaneHtml(idx) {
+  const series = state.metrics.evalSeries || {};
+  if (!series.input_tokens && !series.output_tokens) return "";
+  const rows = idx
+    .map((i) => {
+      const input = series.input_tokens?.[i] ?? 0, output = series.output_tokens?.[i] ?? 0;
+      if (!input && !output) return null;
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total: input + output, parts: [{ name: "input", v: input }, { name: "output", v: output }] };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+  if (!rows.length) return "";
+  const meanTotal = rows.reduce((a, r) => a + r.total, 0) / rows.length;
+  const segments = ["input", "output"].map((name, k) => {
+    const stats = distStats(rows.map((r) => r.parts[k].v));
+    return { name, path: null, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
+  });
+  tokensModel = { rows, segments, meanTotal, kids: ["input", "output"] };
+  return compositionPaneHtml("tokens-pane", ["input", "output"], (n) => TOKEN_COLORS[n]);
+}
+
+const TM_MAX_STRIPS = 40;
+
+function drawTiming() {
+  drawComposition(document.querySelector("#metrics-body .timing-pane"), timingModel, { kind: "timing", fmt: fmtDuration, time: true, color: phaseColor });
+  drawComposition(document.querySelector("#metrics-body .tokens-pane"), tokensModel, { kind: "tokens", fmt: (v) => fmtCompact(Math.round(v)), time: false, color: (n) => TOKEN_COLORS[n] || "#3a3a3a" });
+}
+
+/* an icicle of the mean composition above one strip per episode; every segment
+   carries its part's name so a hover can light one part up across the pane */
+function drawComposition(pane, model, { kind, fmt, time, color }) {
+  if (!pane || !model) return;
+  const { rows, segments, meanTotal, kids } = model;
+  const tip = (html) => paneTips.push(html) - 1;
+  const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+  const ice = pane.querySelector(".tm-icicle");
+  const W = ice.clientWidth, IH = 28;
+  if (!W) return;
+  let x = 0;
+  const iceSegs = segments
+    .map((seg) => {
+      const w = meanTotal ? (seg.stats.mean / meanTotal) * W : 0;
+      if (w <= 0) return "";
+      const label = `${seg.name} · ${fmt(seg.stats.mean)} · ${Math.round(seg.share * 100)}%`;
+      const shown = w > label.length * 6.5 + 12 ? label : w > 40 ? seg.name : "";
+      const t = tip(
+        `<div class="tip-head">${esc(seg.name)}</div>${rowTip("share", `${Math.round(seg.share * 100)}%`)}` +
+          `${rowTip("median", fmt(seg.stats.median))}${rowTip("p90", fmt(seg.stats.p90))}${rowTip("max", fmt(seg.stats.max))}` +
+          (seg.zoomable ? rowTip("", "click zooms in") : "")
+      );
+      const html =
+        `<g class="tm-seg${seg.zoomable ? " zoomable" : ""}" data-tip="${t}" data-part="${esc(seg.name)}" ${seg.zoomable ? `data-zoom="${esc(seg.path)}"` : ""}>` +
+        `<rect x="${x.toFixed(1)}" y="0" width="${Math.max(1, w - 1).toFixed(1)}" height="${IH}" fill="${color(seg.name)}"></rect>` +
+        (shown ? `<text x="${(x + 6).toFixed(1)}" y="${IH / 2 + 4}" style="fill:${onColor(color(seg.name))}">${esc(shown)}</text>` : "") +
+        `</g>`;
+      x += w;
+      return html;
+    })
+    .join("");
+  ice.innerHTML = `<svg width="${W}" height="${IH}" viewBox="0 0 ${W} ${IH}">${iceSegs}</svg>`;
+  // strips: one per episode, largest first, the same segments in the same colours;
+  // past the cap they are sampled evenly unless the reader asked for all of them,
+  // which scroll inside the pane
+  const host = pane.querySelector(".tm-strips");
+  const all = state.metrics.allStrips.has(kind);
+  host.classList.toggle("scroll", all && rows.length > TM_MAX_STRIPS);
+  const step = all ? 1 : Math.max(1, rows.length / TM_MAX_STRIPS);
+  const shown = [];
+  for (let k = 0; k < rows.length; k += step) shown.push(rows[Math.floor(k)]);
+  const SH = 9, GAP = 3, PAD_L = 40, AX = 18;
+  const H = shown.length * (SH + GAP) + AX;
+  const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
+  const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
+  // a row's hover shows every part of that episode; a hit rect behind the segments
+  // catches the gaps and the label too
+  const strips = shown
+    .map((r, n) => {
+      const y = n * (SH + GAP);
+      let sxPos = PAD_L;
+      const parts = kids.length ? r.parts : [{ name: segments[0].name, v: r.total }];
+      const t = tip(
+        `<div class="tip-head">episode #${r.line} · ${fmt(r.total)}</div>` +
+          parts.map((p) => rowTip(p.name, `${fmt(p.v)} · ${Math.round((p.v / (r.total || 1)) * 100)}%`)).join("") +
+          `${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
+      );
+      const segs = parts
+        .map((p) => {
+          const w = sx(p.v);
+          if (w <= 0) return "";
+          const html = `<rect class="tm-strip-seg" data-tip="${t}" data-row="${n}" data-part="${esc(p.name)}" data-line="${r.line}" x="${sxPos.toFixed(1)}" y="${y}" width="${Math.max(1, w - 1).toFixed(1)}" height="${SH}" fill="${color(p.name)}"></rect>`;
+          sxPos += w;
+          return html;
+        })
+        .join("");
+      return (
+        `<rect class="tm-row-hit" data-tip="${t}" data-row="${n}" data-line="${r.line}" x="0" y="${y - GAP / 2}" width="${W}" height="${SH + GAP}"></rect>` +
+        `<text class="hax tm-line${r.err ? " err" : ""}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
+      );
+    })
+    .join("");
+  const ticks = niceTicks(0, maxTotal, W - PAD_L - 8, (v) => tickLabel(v, fmt), time)
+    .map((v) => {
+      const tx = (PAD_L + sx(v)).toFixed(1);
+      return `<line class="sw-grid" x1="${tx}" x2="${tx}" y1="0" y2="${H - AX}"></line><text class="hax" style="text-anchor:middle" x="${tx}" y="${H - 4}">${esc(tickLabel(v, fmt))}</text>`;
+    })
+    .join("");
+  host.innerHTML =
+    `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${ticks}<line class="sw-axis" x1="${PAD_L}" x2="${W}" y1="${H - AX + 0.5}" y2="${H - AX + 0.5}"></line>${strips}</svg>` +
+    (rows.length > TM_MAX_STRIPS
+      ? `<div class="muted tm-note">${all ? `all ${fmtCompact(rows.length)} episodes` : `${shown.length} of ${fmtCompact(rows.length)} episodes, evenly across the range`}` +
+        ` · <span class="tm-more" data-kind="${kind}">${all ? `show ${TM_MAX_STRIPS}` : "show all"}</span></div>`
+      : "");
+}
+
+/* hovering a legend entry or icicle segment lights that part up across the pane;
+   hovering an episode's strip lights up the whole row and dims the other rows */
+function highlightPart(pane, name) {
+  for (const el of pane.querySelectorAll("[data-part]")) el.classList.toggle("dim", name != null && el.dataset.part !== name);
+}
+
+function highlightRow(pane, row) {
+  for (const el of pane.querySelectorAll(".tm-strip-seg, .tm-line")) el.classList.toggle("dim", row != null && el.dataset.row !== row);
+  for (const el of pane.querySelectorAll(".tm-legend [data-part], .tm-seg")) el.classList.remove("dim");
+}
+
+/* the summary tiles: the run's headline numbers, each with its distribution on hover */
+/* a rate reads as a warning past 10% and as bad past 50% */
+function rateClass(rate) {
+  return rate > 0.5 ? " rate-bad" : rate > 0.1 ? " rate-warn" : "";
+}
+
+function summaryTilesHtml(idx, all, scoreEntries) {
+  const series = state.metrics.evalSeries || {};
+  const tip = (html) => paneTips.push(html) - 1;
+  const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+  const tiles = [];
+  const tile = (label, value, tipHtml, { cls = "", sub = "" } = {}) =>
+    tiles.push(
+      `<div class="stat-card sum-tile${cls}" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div>` +
+        (sub ? `<div class="sum-sub muted">${sub}</div>` : "") +
+        `</div>`
+    );
+  for (const entry of scoreEntries.filter(Boolean)) {
+    const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
+    tile(entry.label, entry.headline, `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} tasks</div>${rows.map(([k, v]) => rowTip(k, v)).join("")}`, { cls: " score" });
+  }
+  // failure rates count every landed episode, the errors filter notwithstanding
+  if (all.length) {
+    const errored = all.filter((i) => series.ok?.[i] === false || (series.num_errors?.[i] ?? 0) > 0).length;
+    const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
+    for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
+      const rate = n / all.length;
+      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: rateClass(rate) });
+    }
+  }
+  const turns = distStats(idx.map((i) => series.turns?.[i]));
+  const branches = distStats(idx.map((i) => series.branches?.[i]));
+  if (turns || branches) {
+    const block = (name, stats) => (stats ? `<div class="tip-head">${name} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtNum(stats[k]))).join("")}` : "");
+    tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"} / ${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
+  }
+  const duration = distStats(idx.map((i) => series.duration?.[i]));
+  if (duration) tile("mean episode time", fmtDuration(duration.mean), `<div class="tip-head">episode time · ${fmtCompact(duration.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtDuration(duration[k]))).join("")}`);
+  const tok = (v) => fmtCompact(Math.round(v));
+  const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
+  const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
+  if (inTok || outTok) {
+    const total = distStats(idx.map((i) => (series.input_tokens?.[i] ?? 0) + (series.output_tokens?.[i] ?? 0)));
+    tile(
+      "mean tokens",
+      tok(total.mean),
+      `<div class="tip-head">tokens · ${fmtCompact(total.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(total[k]))).join("")}`,
+      { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
+    );
+  }
+  // cost is spent whether or not an episode errored, so the total covers every landed one
+  const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));
+  if (costs.length) {
+    const total = costs.reduce((a, b) => a + b, 0);
+    tile("total cost", fmtCost(total), `<div class="tip-head">cost · ${fmtCompact(costs.length)} episodes</div>${rowTip("total", fmtCost(total))}${rowTip("mean per episode", fmtCost(total / costs.length))}`);
+  }
+  return tiles.length ? `<div class="stat-grid sum-grid">${tiles.join("")}</div>` : "";
+}
+
+
+function renderEvalPane(body) {
+  const m = state.metrics;
+  const series = m.evalSeries || {};
+  const filter = makeFilter(m.search.trim());
+  renderEvalEnvs();
+  const env = evalEnv();
+  $("#metrics-status").textContent = "";
+  $("#metrics-errors").checked = !!m.includeErrors;
+  $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors);
+  swarmRegistry.clear();
+  if (!env) {
+    body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
+    return;
+  }
+  const all = evalIndices(env);
+  const live = (state.traces.live || []).filter((r) => r.env === env);
+  body.insertAdjacentHTML("beforeend", evalProgressHtml(env, all, live));
+  // errored episodes stay out of the distributions unless asked in, where they read red
+  const idx = m.includeErrors ? all : all.filter((i) => series.ok?.[i] !== false);
+  const episodeEntry = (key, label, fmt, opts) =>
+    swarmEntry(
+      key,
+      label,
+      idx.map((i) => ({
+        v: series[key]?.[i],
+        line: series.line?.[i],
+        reward: series.reward?.[i],
+        err: series.ok?.[i] === false,
+      })),
+      fmt,
+      opts
+    );
+  const keyed = (prefix, fmt) =>
+    Object.keys(series)
+      .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
+      .sort()
+      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
+  // constants sit in a chip row above the section's panes: a pane for a value every
+  // episode shares would only take space
+  // sections are flat: a muted heading, the constants as chips, then the panes
+  const evalSection = (name, inner) => {
+    body.insertAdjacentHTML("beforeend", `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`);
+  };
+  const section = (name, entries) => {
+    const kept = entries.filter(Boolean);
+    if (!kept.length) return 0;
+    for (const entry of kept) swarmRegistry.set(entry.key, entry);
+    const constants = kept.filter((e) => e.shape === "constant");
+    const panes = kept.filter((e) => e.shape !== "constant");
+    evalSection(
+      name,
+      (constants.length ? `<div class="const-row">${constants.map(constChipHtml).join("")}</div>` : "") +
+        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : "")
+    );
+    return kept.length;
+  };
+  let shown = 0;
+  paneTips = [];
+  const scores = evalScoreEntries(idx, filter);
+  const summary = summaryTilesHtml(idx, all, scores);
+  if (summary) {
+    evalSection("summary", summary);
+    shown += 1;
+  }
+  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
+  const tokensHtml = tokensPaneHtml(idx);
+  const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
+  if (tokensHtml || cost) {
+    for (const entry of [cost].filter(Boolean)) swarmRegistry.set(entry.key, entry);
+    evalSection("usage", tokensHtml + (cost && cost.shape !== "constant" ? `<div class="chart-grid">${swarmCardHtml(cost)}</div>` : cost ? `<div class="const-row">${constChipHtml(cost)}</div>` : ""));
+    shown += 1;
+  }
+  const timingHtml = timingPaneHtml(idx);
+  if (timingHtml) {
+    evalSection("timing", timingHtml);
+    shown += 1;
+  }
+  if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
+  drawSwarms();
+  drawTiming();
+}
+
+$("#metrics-errors").addEventListener("change", (e) => {
+  state.metrics.includeErrors = e.target.checked;
+  savePrefs();
+  renderMetricsBody();
+});
+
+$("#metrics-body").addEventListener("mousemove", (e) => {
+  const tip = $("#swarm-tip");
+  const timed = e.target.closest("[data-tip]");
+  const pane = e.target.closest(".comp-pane");
+  const rowEl = e.target.closest("[data-row]");
+  const part = rowEl ? null : e.target.closest("[data-part]");
+  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => {
+    if (p === pane && rowEl) highlightRow(p, rowEl.dataset.row);
+    else highlightPart(p, p === pane && part ? part.dataset.part : null);
+  });
+  const svg = e.target.closest(".swarm");
+  const entry = svg && swarmRegistry.get(svg.closest(".swarm-card")?.dataset.key);
+  if (!entry && !timed) {
+    tip.hidden = true;
+    return;
+  }
+  if (timed) tip.innerHTML = paneTips[+timed.dataset.tip] ?? "";
+  else {
+    const dot = e.target.closest("circle");
+    tip.innerHTML = swarmTipHtml(entry, dot ? entry.points[+dot.dataset.i] : null);
+  }
+  tip.hidden = false;
+  const host = $("#tab-metrics").getBoundingClientRect();
+  const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${e.clientY - host.top + 14}px`;
+});
+$("#metrics-body").addEventListener("mouseleave", () => {
+  $("#swarm-tip").hidden = true;
+  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => highlightPart(p, null));
+});
+
+$("#metrics-env").addEventListener("change", (e) => {
+  state.metrics.evalEnv = e.target.value;
+  renderMetricsBody();
+});
+
+$("#metrics-body").addEventListener("click", (e) => {
+  const strip = e.target.closest(".tm-strip-seg[data-line], .tm-row-hit[data-line]");
+  if (strip) {
+    openEpisode(+strip.dataset.line);
+    return;
+  }
+  const more = e.target.closest(".tm-more[data-kind]");
+  if (more) {
+    const kinds = state.metrics.allStrips;
+    if (kinds.has(more.dataset.kind)) kinds.delete(more.dataset.kind);
+    else kinds.add(more.dataset.kind);
+    drawTiming();
+    return;
+  }
+  const dot = e.target.closest(".swarm circle");
+  if (dot) {
+    const entry = swarmRegistry.get(dot.closest(".swarm-card")?.dataset.key);
+    const line = entry?.points[+dot.dataset.i]?.line;
+    if (line != null) openEpisode(line);
+    return;
+  }
+  const cell = e.target.closest(".ep-cell[data-line], .ep-cell[data-live]");
+  if (!cell) return;
+  if (cell.dataset.live) openLiveTrace(cell.dataset.live);
+  else openEpisode(+cell.dataset.line);
+});
 
 async function fetchCompares() {
   const results = await Promise.all(
@@ -1167,7 +1955,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.meta?.type === "eval") return renderEvalCards(body);
+  if (state.meta?.type === "eval") return renderEvalPane(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");
@@ -1581,13 +2369,30 @@ async function fetchLogChunk(file, params) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/log?${qs}`);
 }
 
-const LOG_PANES = [
+const BASE_LOG_PANES = [
   { comp: "trainer", title: "trainer", match: (f) => f.component === "trainer" },
   { comp: "orch", title: "orchestrator", match: (f) => f.component === "orch" },
   { comp: "infer", title: "inference", match: (f) => f.component === "infer" },
-  { comp: "evals", title: "evals", match: (f) => f.component === "evals" },
-  { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
+  { comp: "eval", title: "eval", match: (f) => f.component === "eval" },
+  { comp: "envs", title: "all envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
+
+/* the panes this run can show: the fixed components plus one pane per env server
+   (`env:<name>`), so a single env's log can be read on its own; "all envs" merges
+   them all and is the default, the per-env panes are opted into */
+function logPanes() {
+  const envs = new Map();
+  for (const f of state.logs.files || [])
+    if (f.component.startsWith("env:") && !envs.has(f.component))
+      envs.set(f.component, { comp: f.component, title: f.label ?? f.component.slice(4), env: true, match: (g) => g.component === f.component });
+  return [...BASE_LOG_PANES, ...envs.values()];
+}
+
+function paneEnabled(pane) {
+  const components = state.logs.components;
+  if (components) return components.has(pane.comp);
+  return !pane.env; // per-env panes are opt-in
+}
 
 function paneFiles(pane) {
   return state.logs.files.filter(pane.match);
@@ -1611,22 +2416,23 @@ function allSelectedIds() {
 }
 
 function enabledPanes() {
-  return LOG_PANES.filter((p) => paneFiles(p).length && (state.logs.components?.has(p.comp) ?? true));
+  return logPanes().filter((p) => paneFiles(p).length && paneEnabled(p));
 }
 
 function renderLogCompMenu() {
-  const available = LOG_PANES.filter((p) => paneFiles(p).length);
+  const available = logPanes().filter((p) => paneFiles(p).length);
   const menu = $("#log-comp-menu");
   menu.innerHTML = available
     .map(
       (p) =>
-        `<label class="file-item"><input type="checkbox" data-comp="${p.comp}"` +
-        `${state.logs.components?.has(p.comp) ?? true ? " checked" : ""}><span>${p.title}</span></label>`
+        `<label class="file-item${p.env ? " sub" : ""}"><input type="checkbox" data-comp="${esc(p.comp)}"` +
+        `${paneEnabled(p) ? " checked" : ""}><span>${esc(p.title)}</span></label>`
     )
     .join("");
   const enabled = enabledPanes().length;
-  $("#log-comp-btn").textContent = enabled === available.length ? "components" : `components (${enabled})`;
-  $("#log-comp-btn").classList.toggle("active", enabled !== available.length);
+  const fixed = available.filter((p) => !p.env).length;
+  $("#log-comp-btn").textContent = enabled === fixed ? "components" : `components (${enabled})`;
+  $("#log-comp-btn").classList.toggle("active", enabled !== fixed);
 }
 
 function dressLogPaneSelects() {
@@ -1718,7 +2524,7 @@ function paneLines(pane, minRank, filter) {
 
 function compName(component) {
   if (component.startsWith("env:")) return component.slice(4);
-  return LOG_PANES.find((p) => p.comp === component)?.title ?? component;
+  return BASE_LOG_PANES.find((p) => p.comp === component)?.title ?? component;
 }
 
 function renderLogPane(el) {
@@ -1731,7 +2537,7 @@ function renderLogPane(el) {
     lines = enabledPanes().flatMap((pane) => paneLines(pane, minRank, filter));
     multi = true;
   } else {
-    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    const pane = logPanes().find((p) => p.comp === el.dataset.comp);
     if (!pane) return;
     lines = paneLines(pane, minRank, filter);
     multi = paneSelectedIds(pane).length > 1;
@@ -1792,7 +2598,7 @@ async function pollLogs(render = true) {
 /* only re-render the panes whose files actually grew */
 function renderChangedLogPanes(ids) {
   document.querySelectorAll("#log-panes .log-pane").forEach((el) => {
-    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    const pane = logPanes().find((p) => p.comp === el.dataset.comp);
     const paneIds = el.dataset.comp === "__merged__" ? [...allSelectedIds()] : pane ? paneSelectedIds(pane) : [];
     if (paneIds.some((id) => ids.has(id))) renderLogPane(el);
   });
@@ -1902,7 +2708,18 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
+}
+
+function traceStatusText(total) {
+  const live = state.traces.live?.length || 0;
+  const parts = [];
+  if (live && state.traces.status.live) parts.push(`${live} live`);
+  if (state.traces.status.done) {
+    const n = total ?? state.traces.total ?? 0;
+    parts.push(`${fmtCompact(n)} completed episode${n === 1 ? "" : "s"}`);
+  }
+  return parts.join(" · ");
 }
 
 const PAGE = 128;
@@ -1936,7 +2753,7 @@ function traceQuery(extra = {}) {
 
 function traceFiltered() {
   const t = state.traces;
-  return !!(activeKind() || t.env || t.errorsOnly || t.bin);
+  return !!(activeKind() || t.env || t.errorsOnly || t.bin || !(t.status.live && t.status.done));
 }
 
 /* what a loaded table answers to: the run and the exact query that produced it, so
@@ -1969,8 +2786,11 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
-    $("#trace-status").textContent = "";
-    showTraceEmpty("no traces yet");
+    // no finished stream yet: the live rollouts (if any) are the whole table
+    traces.episodes = [];
+    traces.total = 0;
+    $("#trace-status").textContent = traceStatusText(0);
+    renderEpisodeRows(fresh);
     syncTraceChart();
     return;
   }
@@ -1980,7 +2800,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   // while they are scrolled only the count moves. The etag is deliberately left
   // behind: the next poll after they return to the top refreshes for real.
   if (poll && !append && traces.key === key && $("#episode-table-wrap").scrollTop > 0) {
-    $("#trace-status").textContent = episodeCount(data.total);
+    $("#trace-status").textContent = traceStatusText(data.total);
     return;
   }
   traces.etag = data.etag;
@@ -1996,17 +2816,14 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
       data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
   syncDressedSelects();
   if (!data.total) {
-    $("#trace-status").textContent = "";
-    // an unfiltered run with nothing in it has not produced episodes yet; a filtered
-    // one has, and the reader needs to know it is their filter that is empty
-    if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
-    else showTraceEmpty("no traces yet");
+    $("#trace-status").textContent = traceStatusText(0);
+    renderEpisodeRows(fresh); // live rollouts, or the empty state
     return;
   }
   renderEpisodeRows(fresh);
   if (!$("#trace-modal").hidden) renderRolloutWindow();
   // the count is the run's, not the page's: a later page reports the pinned snapshot
-  if (fresh) $("#trace-status").textContent = episodeCount(data.total);
+  if (fresh) $("#trace-status").textContent = traceStatusText(data.total);
 }
 
 function episodeCount(n) {
@@ -2154,15 +2971,32 @@ function fmtStamp(epoch) {
   return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+/* "dispatched → arrived": the day once, then the times; a rollout still in flight has
+   no arrival yet */
+function fmtSpan(dispatched, arrived, elapsed) {
+  if (!dispatched && !arrived) return "";
+  const took = elapsed != null ? ` <span class="muted">(${fmtDuration(elapsed)})</span>` : "";
+  const time = { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+  const stamp = (epoch) => `<span class="day">${fmtDay(epoch)}</span>${new Date(epoch * 1000).toLocaleTimeString([], time)}`;
+  const from = dispatched ? new Date(dispatched * 1000) : null;
+  const to = arrived ? new Date(arrived * 1000) : null;
+  const left = from ? stamp(dispatched) : "–";
+  if (!to) return `${left} → –${took}`;
+  const sameDay = from && from.toDateString() === to.toDateString();
+  return `${left} → ${sameDay ? to.toLocaleTimeString([], time) : stamp(arrived)}${took}`;
+}
+
 function episodeRowHtml(ep) {
-  return `<tr data-line="${ep.line}">
+  const failed = !ep.ok || !!ep.num_errors;
+  const phase = failed ? "error" : "done";
+  const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
+  return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
         <td class="muted">${ep.line}</td>
-        <td class="muted nowrap">${ep.arrival ? fmtStamp(ep.arrival) : ""}</td>
-        <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
+        <td><span class="badge stage stage-${phase}">${phase}</span></td>
+        <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
-        <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
@@ -2171,8 +3005,42 @@ function episodeRowHtml(ep) {
         <td>${ep.turns ?? ""}</td>
         <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
-        <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
+        <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
       </tr>`;
+}
+
+/* a live rollout, streamed by its env server: the same columns, a pulsing dot for
+   its number, no arrival yet, counts that grow with every turn, no reward yet */
+function liveRowHtml(r) {
+  return `<tr class="live stage-${esc(r.stage)}${r.landedAt ? " landing" : ""}" ${r.trace && !r.landedAt ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
+        <td><span class="live-dot" title="live rollout"></span></td>
+        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
+        <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
+        <td class="muted">${esc(r.kind ?? "")}</td>
+        <td>${esc(r.env ?? "?")}</td>
+        <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : ""}</td>
+        <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
+        <td>${r.turns ?? ""}</td>
+        <td>${r.branches ?? ""}</td>
+        <td class="muted">${esc(r.stop_condition ?? "")}</td>
+        <td></td>
+      </tr>`;
+}
+
+/* the table's rows: live rollouts first (stream mode, newest dispatch on top),
+   then the finished episodes, as the status filter allows */
+function traceRows() {
+  const t = state.traces;
+  const streaming = t.status.live && t.mode === "stream";
+  // an episode already in the table hides its live row (the done event may trail it)
+  const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
+  const live = streaming ? [...(t.live || []), ...landingRows()].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status.done ? t.episodes || [] : [];
+  return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
+}
+
+function traceRowHtml(row) {
+  return row.live ? liveRowHtml(row.live) : episodeRowHtml(row.ep);
 }
 
 /* windowed table: only rows in (and around) the viewport exist in the DOM, spacer
@@ -2182,22 +3050,26 @@ let episodeRowH = 0;
 function renderEpisodeRows(reset = false) {
   const wrap = $("#episode-table-wrap");
   const tbody = $("#episode-table tbody");
-  const episodes = state.traces.episodes || [];
+  const rows = traceRows();
   if (reset) {
     wrap.scrollTop = 0;
     episodeRowH = 0;
   }
+  if (!rows.length) {
+    const t = state.traces;
+    if (!t.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
+    else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
+    else showTraceEmpty("no traces yet");
+    return;
+  }
   if (!episodeRowH) {
-    tbody.innerHTML = episodes.length ? episodeRowHtml(episodes[0]) : "";
+    tbody.innerHTML = traceRowHtml(rows[0]);
     episodeRowH = tbody.firstElementChild?.offsetHeight || 28;
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
-  const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
-  tbody.innerHTML =
-    pad(start * episodeRowH) +
-    episodes.slice(start, end).map(episodeRowHtml).join("") +
-    pad((episodes.length - end) * episodeRowH);
+  const end = Math.min(rows.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
+  tbody.innerHTML = pad(start * episodeRowH) + rows.slice(start, end).map(traceRowHtml).join("") + pad((rows.length - end) * episodeRowH);
 }
 
 async function initTraces() {
@@ -2205,11 +3077,141 @@ async function initTraces() {
   await refreshTraces();
 }
 
+/* ------------------------------------------------------------ live traces */
+
+/* the env servers stream every live rollout turn by turn; the run's file
+   monitor keeps one file of deltas per live trace and drops it when the episode
+   lands in the stream, so this table is exactly what is running right now */
+let liveInflight = false;
+async function loadLive({ render = true } = {}) {
+  const traces = state.traces;
+  if (liveInflight) return false; // one poll at a time: answers never land out of order
+  liveInflight = true;
+  let data;
+  try {
+    const qs = traces.liveEtag ? `?etag=${encodeURIComponent(traces.liveEtag)}` : "";
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/live${qs}`);
+  } catch {
+    return false; // a failed poll keeps the rows it had; the next one refreshes them
+  } finally {
+    liveInflight = false;
+  }
+  if (state.traces !== traces) return false;
+  if (!data.unchanged) {
+    // a live row that vanished has finished: it stays in place as "landing" until its
+    // episode is in the table, and the table is refreshed now rather than at the next poll
+    const rows = data.rows || [];
+    const still = new Set(rows.map((r) => r.trace));
+    let landed = false;
+    for (const r of traces.live || []) {
+      if (r.trace && !still.has(r.trace)) {
+        traces.landing.set(r.trace, { ...r, stage: "done", landedAt: Date.now() });
+        landed = true;
+      }
+    }
+    traces.live = rows;
+    traces.liveEtag = data.etag;
+    traces.liveAt = Date.now();
+    if (landed && render && !traces.fetching) loadEpisodes({ poll: true });
+  }
+  if (render) renderLiveRows(); // an unchanged set still ticks its elapsed times
+  return !data.unchanged;
+}
+
+const LANDING_MS = 15000;
+
+/* live rows whose episode has not reached the table yet; a row whose episode is
+   loaded, or that waited too long, is dropped */
+function landingRows() {
+  const t = state.traces;
+  const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
+  const now = Date.now();
+  for (const [trace, row] of t.landing) if (loaded.has(trace) || now - row.landedAt > LANDING_MS) t.landing.delete(trace);
+  return [...t.landing.values()];
+}
+
+/* the server stamps elapsed at the last full answer; the row keeps counting from there */
+function liveElapsed(r) {
+  return r.elapsed == null ? null : r.elapsed + (Date.now() - state.traces.liveAt) / 1000;
+}
+
+function renderLiveRows() {
+  renderEpisodeRows();
+  $("#trace-status").textContent = traceStatusText();
+  if (!$("#trace-modal").hidden) renderRolloutList(); // the sidebar lists the live rollouts too
+  // a live trace open in the viewer follows its stream, and once its episode is in
+  // the table the viewer moves over to the finished record
+  if (currentLive && !$("#trace-modal").hidden) {
+    if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
+    else {
+      const landed = (state.traces.episodes || []).find((ep) => (ep.trace_ids || []).includes(currentLive));
+      if (landed) openEpisode(landed.line);
+      else $("#tm-live-label").textContent = "finished · now in the stream";
+    }
+  }
+}
+
+let currentLive = null;
+let currentLiveEtag = null;
+
+async function openLiveTrace(traceId, { refresh = false } = {}) {
+  if (!refresh) {
+    currentLiveEtag = null;
+    traceView = "transcript"; // the timeline and token views read the finished stream
+    stopReplay();
+    episodeEnrichmentVersion++;
+    $("#trace-modal").hidden = false;
+    $("#drawer-backdrop").hidden = false;
+    currentLine = null;
+    currentEpisode = null;
+    currentTraceIdx = 0;
+    currentBranchIdx = 0;
+    currentEvidenceView = null;
+    currentTimeline = null;
+    pendingTimelineNode = null;
+    pendingTimelineCall = null;
+    semanticSelection = null;
+    semanticExpandedRuns.clear();
+    clearSemanticTranscriptOrigin();
+    $("#sg-inspector").hidden = true;
+    $("#tm-messages").innerHTML = `<div class="chart-empty">loading live trace…</div>`;
+    $("#tm-timeline").innerHTML = "";
+    $("#tm-meta").innerHTML = "";
+  }
+  currentLive = traceId;
+  const requestVersion = ++episodeOpenVersion;
+  let episode;
+  try {
+    const qs = refresh && currentLiveEtag ? `?etag=${encodeURIComponent(currentLiveEtag)}` : "";
+    episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}${qs}`);
+  } catch {
+    if (currentLive === traceId) $("#tm-live-label").textContent = "finished · now in the stream";
+    return;
+  }
+  if (currentLive !== traceId || requestVersion !== episodeOpenVersion || episode.unchanged) return;
+  currentLiveEtag = episode.etag;
+  currentEpisode = episode;
+  const live = episode.live || {};
+  $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
+  // follow the rollout: stay pinned to the newest turn unless the reader scrolled up, and
+  // keep the entries they folded or unfolded the way they left them
+  const messages = $("#tm-messages");
+  const pinned = !refresh || messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 40;
+  const scrollTop = messages.scrollTop;
+  const folded = new Map([...messages.querySelectorAll("details.entry[data-node]")].map((d) => [d.dataset.node, d.open]));
+  renderEpisode();
+  for (const entry of messages.querySelectorAll("details.entry[data-node]"))
+    if (folded.has(entry.dataset.node)) entry.open = folded.get(entry.dataset.node);
+  messages.scrollTop = pinned ? messages.scrollHeight : scrollTop;
+}
+
 async function refreshTraces() {
   const traces = state.traces;
   if (traces.fetching) return;
   traces.fetching = true;
   try {
+    await loadLive();
+    if (state.traces !== traces) return;
     await loadRollouts();
     if (state.traces !== traces) return;
     await loadEpisodes({ poll: true });
@@ -2264,13 +3266,31 @@ function copyText(text, el) {
     .catch(() => {});
 }
 
+/* the sidebar walks the same rows as the table: live rollouts first (stream
+   mode), then the finished episodes */
 function filteredRollouts() {
-  return state.traces.episodes || [];
+  const t = state.traces;
+  const live = t.mode === "stream" && t.status.live ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status.done ? t.episodes || [] : [];
+  return [...live.map((r) => ({ live: r })), ...episodes];
 }
 
-function tmItemHtml(e) {
+function rolloutActive(item) {
+  return item.live ? item.live.trace === currentLive : currentLine != null && item.line === currentLine;
+}
+
+function tmItemHtml(item) {
+  if (item.live) {
+    const r = item.live;
+    return (
+      `<div class="tm-item live ${rolloutActive(item) ? "active" : ""}" data-live="${esc(r.trace)}" title="${esc(r.last ?? "")}">` +
+      `<span class="tm-num"><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></span>` +
+      `<span class="tm-env muted" title="${esc(r.task ?? "")}">${esc(r.env ?? "")} · ${esc(r.task ?? "")}</span></div>`
+    );
+  }
+  const e = item;
   return (
-    `<div class="tm-item ${e.line === currentLine ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -2282,7 +3302,8 @@ let tmItemH = 0;
 function renderRolloutWindow() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  $("#tm-count").textContent = fmtCompact(state.traces.total || episodes.length);
+  const live = episodes.filter((item) => item.live).length;
+  $("#tm-count").textContent = (live ? `${live} live + ` : "") + fmtCompact(state.traces.total || episodes.length - live);
   if (!episodes.length) {
     list.innerHTML = "";
     return;
@@ -2302,7 +3323,7 @@ function renderRolloutWindow() {
 function renderRolloutList() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  const activeIdx = episodes.findIndex((e) => e.line === currentLine);
+  const activeIdx = episodes.findIndex(rolloutActive);
   if (activeIdx >= 0 && tmItemH) {
     const top = activeIdx * tmItemH;
     if (top < list.scrollTop || top + tmItemH > list.scrollTop + list.clientHeight)
@@ -2313,10 +3334,12 @@ function renderRolloutList() {
 
 function renderSemanticEpisodeNav() {
   const episodes = filteredRollouts();
-  const index = episodes.findIndex((episode) => episode.line === currentLine);
+  const index = episodes.findIndex(rolloutActive);
   const episode = episodes[index];
   $("#tm-episode-label").textContent = episode
-    ? `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
+    ? episode.live
+      ? `live · ${episode.live.task ?? episode.live.env ?? ""}`
+      : `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
     : "episode";
   $("#tm-episode-prev").disabled = index <= 0;
   const hasLoadedNext = index >= 0 && index < episodes.length - 1;
@@ -2326,13 +3349,15 @@ function renderSemanticEpisodeNav() {
 
 async function stepRollout(delta) {
   let episodes = filteredRollouts();
-  const idx = episodes.findIndex((e) => e.line === currentLine);
+  const idx = episodes.findIndex(rolloutActive);
   if (delta > 0 && idx + delta >= episodes.length) {
     await loadMoreEpisodes();
     episodes = filteredRollouts();
   }
   const next = episodes[idx + delta];
-  if (next) openEpisode(next.line);
+  if (!next) return;
+  if (next.live) openLiveTrace(next.live.trace);
+  else openEpisode(next.line);
 }
 
 function renderModalStep() {
@@ -2399,7 +3424,7 @@ async function ensureTimeline() {
 /* token strings multiply the payload of a big episode, so they are fetched only
    for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
-  if (!currentEpisode) return;
+  if (!currentEpisode || currentLive) return; // token enrichments come from the stream
   const wantsPieces = !!$("#token-signal").value;
   const wantsRendered = state.traces.viewMode === "rendered";
   if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
@@ -2415,6 +3440,8 @@ async function ensureTokens() {
 }
 
 async function openEpisode(line, target = {}) {
+  currentLive = null;
+  $("#tm-live-label").textContent = "";
   stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
@@ -2458,6 +3485,8 @@ async function openEpisode(line, target = {}) {
 }
 
 function closeDrawer() {
+  currentLive = null;
+  $("#tm-live-label").textContent = "";
   stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
@@ -3080,7 +4109,9 @@ function renderMessages(ep, trace, branches) {
   const CHUNK = 30;
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
   const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
-  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  // a live trace re-renders as it grows, so it renders whole: chunks loaded by scrolling
+  // would be dropped by the next refresh
+  let rendered = currentLive ? path.length : Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
   const unlinkedCallsHtml = indexedCalls
     .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
     .map(
@@ -3091,12 +4122,29 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
+  // a live trace's pending messages: the request in flight that no node holds yet
+  // (tool results, user turns), shown dimmed until the model's reply commits them
+  const pendingHtml = (currentLive ? trace.pending || [] : [])
+    .map((message, k) => {
+      const role = message?.role ?? "?";
+      const text = messageText(message);
+      return (
+        `<details class="entry pending ${esc(role)}" open><summary><span class="entry-num">${String(path.length + k + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(role)}</span><span class="entry-preview">${preview(text, 180)}</span>` +
+        `<span class="chip">awaiting model</span><span class="entry-chev">›</span></summary>` +
+        (text ? `<div class="entry-body">${esc(text)}</div>` : "") +
+        (message?.tool_calls || []).map(toolCallHtml).join("") +
+        `</details>`
+      );
+    })
+    .join("");
   container.innerHTML =
     errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml;
+    unlinkedCallsHtml +
+    pendingHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
@@ -3137,7 +4185,7 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "context_length"]);
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"]);
 
 /* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
    length-finished final response */
@@ -3221,20 +4269,24 @@ function renderMeta(ep, trace, branches) {
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
-      if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
-      else if (typeof obj.start === "number" && typeof obj.end === "number") durations.push([prefix, obj.end - obj.start]);
+      if (typeof obj.duration === "number") durations.push([prefix, obj.duration, false]);
+      else if (typeof obj.start === "number" && obj.start > 0) {
+        // an open span (no end yet) is still running: a live trace shows its elapsed time
+        if (obj.end) durations.push([prefix, obj.end - obj.start, false]);
+        else if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start, true]);
+      }
       for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
     })(trace.timing, "");
     if (durations.length) {
       parts.push(`<div class="meta-sec">timing</div>`);
-      for (const [name, secs] of durations) {
+      for (const [name, secs, running] of durations) {
         // nested phases (agent/model, agent/harness) render as a tree under their parent
         const segments = (name || "total").split("/");
         const depth = segments.length - 1;
         const label = depth
           ? `<span class="tree" style="padding-left:${depth * 12}px">└</span> ${esc(segments[segments.length - 1])}`
           : esc(name || "total");
-        parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s</span></div>`);
+        parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s${running ? ' <span class="muted">running</span>' : ""}</span></div>`);
       }
     }
   }
@@ -4438,14 +5490,26 @@ function renderEpisode() {
   semanticButton.title = semanticAvailable || currentTimeline == null
     ? "causal relationships between model calls"
     : "this episode has no semantic relationships";
+  // the other views and the token overlays read the finished stream: a live trace has
+  // its transcript only
+  const live = !!currentLive;
+  for (const button of $("#tm-view").querySelectorAll("[data-view]:not([data-view=transcript])")) {
+    if (live) {
+      button.disabled = true;
+      button.title = "available once the episode lands in the stream";
+    } else if (button.dataset.view !== "semantic") {
+      button.disabled = false;
+      button.title = "";
+    }
+  }
   $("#trace-modal").classList.toggle("semantic-view", semantic);
   $("#tm-semantic-nav").hidden = !semantic;
   if (semantic) renderSemanticEpisodeNav();
   $("#tm-tabs-row").hidden = graph || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
   $("#tm-messages").hidden = graph;
   $("#tm-timeline").hidden = !graph;
-  $("#trace-view-mode").hidden = graph || evidence || replaying;
-  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying;
+  $("#trace-view-mode").hidden = graph || evidence || replaying || live;
+  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying || live;
   $("#tm-collapse").hidden = graph || evidence || replaying;
   $("#tm-expand").hidden = graph || evidence || replaying;
   if (!semantic) {
@@ -5052,12 +6116,24 @@ $("#compare-menu").addEventListener("change", (e) => {
 // one delegated handler for every .dd-wrap dropdown: button toggles its menu,
 // clicking anywhere else closes them all (a dropdown nested inside another
 // menu, e.g. the env select in the trace filter, keeps its ancestors open)
-document.addEventListener("click", (e) => {
-  const wrap = e.target.closest(".dd-wrap");
+// The wrap is read in the capture phase: a click handler inside a menu may re-render
+// the clicked control before this runs, and a detached target has no wrap to find,
+// which would close the menu the reader is still using.
+let clickedWrap = null, clickedBtn = null;
+document.addEventListener(
+  "click",
+  (e) => {
+    clickedWrap = e.target.closest(".dd-wrap");
+    clickedBtn = e.target.closest(".dd-btn");
+  },
+  true
+);
+document.addEventListener("click", () => {
+  const wrap = clickedWrap;
   document.querySelectorAll(".dd-menu").forEach((menu) => {
     if (!wrap || !(wrap.contains(menu) || menu.contains(wrap))) menu.hidden = true;
   });
-  const btn = e.target.closest(".dd-btn");
+  const btn = clickedBtn;
   if (btn && wrap) {
     const menu = wrap.querySelector(".dd-menu");
     if (wrap.classList.contains("dd-select")) rebuildSelectMenu(wrap);
@@ -5157,9 +6233,11 @@ function syncTraceFilterControls() {
     }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
+  for (const button of document.querySelectorAll("#trace-status-filter button, #tm-status-filter button"))
+    button.classList.toggle("on", !!t.status[button.dataset.status]);
   for (const sel of ["#trace-sort", "#tm-sort"])
     $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
-  const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
+  const active = [t.env, activeKind(), t.errorsOnly, !(t.status.live && t.status.done)].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
   badge.hidden = !active;
@@ -5326,7 +6404,7 @@ $("#log-comp-menu").addEventListener("change", async (e) => {
   const box = e.target.closest("[data-comp]");
   if (!box) return;
   const logs = state.logs;
-  logs.components ??= new Set(LOG_PANES.filter((p) => paneFiles(p).length).map((p) => p.comp));
+  logs.components ??= new Set(enabledPanes().map((p) => p.comp));
   if (box.checked) logs.components.add(box.dataset.comp);
   else logs.components.delete(box.dataset.comp);
   renderLogPanes();
@@ -5407,7 +6485,7 @@ async function setTraceMode(mode, inModal = false) {
    it survives the filter, land on the first one otherwise */
 async function refreshModalList() {
   if ($("#trace-modal").hidden) return;
-  if (filteredRollouts().some((e) => e.line === currentLine)) renderRolloutList();
+  if (filteredRollouts().some(rolloutActive)) renderRolloutList();
   else await reopenFirstEpisode();
 }
 
@@ -5501,9 +6579,25 @@ for (const sel of ["#trace-sort", "#tm-sort"])
     await refreshModalList();
   });
 $("#episode-table").addEventListener("click", (e) => {
+  const live = e.target.closest("tr[data-live]");
+  if (live) return openLiveTrace(live.dataset.live);
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
+document.querySelectorAll("#trace-status-filter button, #tm-status-filter button").forEach((b) =>
+  b.addEventListener("click", async () => {
+    const status = state.traces.status;
+    const key = b.dataset.status;
+    const other = key === "live" ? "done" : "live";
+    if (status[key] && !status[other]) return; // never leave both off
+    status[key] = !status[key];
+    syncTraceFilterControls();
+    savePrefs();
+    renderEpisodeRows(true);
+    $("#trace-status").textContent = traceStatusText();
+    if (!$("#trace-modal").hidden) renderRolloutList(); // the viewer's sidebar follows the same filter
+  })
+);
 function rafThrottle(fn) {
   let pending = false;
   return () => {
@@ -5760,6 +6854,8 @@ $("#tm-evidence-tabs").addEventListener("click", (e) => {
   if (btn) { currentEvidenceView = btn.dataset.evidence; renderEpisode(); }
 });
 $("#tm-list").addEventListener("click", (e) => {
+  const live = e.target.closest("[data-live]");
+  if (live) return openLiveTrace(live.dataset.live);
   const item = e.target.closest("[data-line]");
   if (item) openEpisode(+item.dataset.line);
 });
@@ -5887,6 +6983,9 @@ $("#tm-meta").addEventListener("click", (e) => {
 });
 
 function resizeCharts() {
+  $("#metrics-body").style.setProperty("--pane-h", `${chartHeight()}px`);
+  drawSwarms();
+  drawTiming();
   for (const entry of state.metrics.charts) {
     if (entry.u) entry.u.setSize({ width: chartWidth(entry.card), height: chartHeight() });
     // unmounted (lazy) and no-data cards track the pane height too
@@ -5911,11 +7010,13 @@ function savePrefs() {
       allLayout: state.metrics.allLayout,
       paneMin: state.metrics.paneMin,
       paneH: state.metrics.paneH,
+      includeErrors: state.metrics.includeErrors,
       paneOrder: state.metrics.paneOrder,
       metricsMode: state.metrics.mode,
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
+      traceStatus: state.traces.status,
       traceMode: state.traces.mode,
       traceSortStream: state.traces.sorts.stream,
       traceSortStep: state.traces.sorts.step,
@@ -5973,6 +7074,16 @@ async function pollDashboard() {
 }
 
 setInterval(pollDashboard, POLL_MS);
+
+/* live rollouts change turn by turn; while the traces tab is open their rows
+   (and an open live trace) refresh once a second, the rest of the tab at POLL_MS */
+const LIVE_POLL_MS = 1000;
+async function pollLive() {
+  if (!state.live || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
+  if (state.traces.mode !== "stream" || !state.traces.status.live) return;
+  await loadLive();
+}
+setInterval(pollLive, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) pollDashboard();
 });
@@ -5988,7 +7099,7 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#trace-env", "#metrics-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);

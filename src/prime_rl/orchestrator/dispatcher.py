@@ -33,11 +33,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
+from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl import monitors
+from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -56,6 +58,10 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
+
+LIVE_INTERVAL_S = 0.5
+LIVE_EVENT_CAP = 20_000
+"""Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
 
 class DispatcherMode(Enum):
@@ -189,6 +195,9 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        self.live_events: list[dict[str, Any]] = []
+        self.live_dropped = False
+        self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
         self.source_indices_by_group: dict[str, int] = {}
 
@@ -331,6 +340,7 @@ class Dispatcher:
     async def start(self) -> None:
         """Single dispatch loop: schedule, wait, collect, repeat."""
         self.task = asyncio.current_task()
+        self.live_task = asyncio.create_task(self.publish_live())
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
@@ -356,9 +366,51 @@ class Dispatcher:
     async def stop(self) -> None:
         self.stopped.set()
         await self.cancel_inflight_episodes()
+        if self.live_task is not None:
+            await safe_cancel(self.live_task)
+            self.live_task = None
+            await self.flush_live()
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
+
+    def retire(self, meta: InflightEpisode) -> None:
+        """An episode left the in-flight set (finished, cancelled, dropped): its live
+        traces are over, and so is its pending placeholder if no trace ever streamed."""
+        if not meta.live:
+            self.live_events.append(live.dispatched_event(meta))
+        self.live_events.extend({"done": trace_id} for trace_id in meta.live)
+
+    def queue_live(self, event: dict[str, Any]) -> None:
+        """Buffer a delta for the next flush. The buffer is bounded: past the cap the
+        oldest deltas go (the live view of those traces misses a turn), never the
+        bookkeeping events that create or remove files."""
+        self.live_events.append(event)
+        if len(self.live_events) > LIVE_EVENT_CAP:
+            kept = [e for e in self.live_events if "delta" not in e]
+            deltas = [e for e in self.live_events if "delta" in e]
+            dropped = len(deltas) - LIVE_EVENT_CAP // 2
+            self.live_events = kept + deltas[dropped:]
+            if not self.live_dropped:
+                self.live_dropped = True
+                get_logger().warning(f"Live trace buffer over {LIVE_EVENT_CAP} events - dropping the oldest deltas")
+
+    async def flush_live(self) -> None:
+        if not self.live_events:
+            return
+        events, self.live_events = self.live_events, []
+        try:
+            await monitors.log_live(events)
+        except asyncio.CancelledError:
+            # stop() cancels the publisher mid-write and flushes once more: nothing is lost
+            self.live_events = events + self.live_events
+            raise
+
+    async def publish_live(self) -> None:
+        """Hand the streamed deltas to the monitors in batches, at most twice a second."""
+        while True:
+            await asyncio.sleep(LIVE_INTERVAL_S)
+            await self.flush_live()
 
     async def on_version_pending(self, step: int) -> None:
         """Drop train groups past ``max_off_policy_steps``: a group dispatched at
@@ -536,16 +588,7 @@ class Dispatcher:
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
-        task = asyncio.create_task(
-            env.run(
-                client=client,
-                model_name=model_name,
-                cache_salt=cache_salt,
-                task_data=group.task.data.model_dump(mode="json"),
-            )
-        )
-
-        self.inflight[task] = InflightEpisode(
+        meta = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
             group_id=group_id,
@@ -556,6 +599,27 @@ class Dispatcher:
             client_config=client,
             started_at=time.monotonic(),
         )
+
+        def on_delta(delta: dict) -> None:
+            first = not meta.live
+            live.apply(meta, delta)
+            self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
+            # after the delta, and only once a trace streams: a reader never sees the
+            # episode in neither place (a discard as the first delta streams nothing)
+            if first and meta.live:
+                self.live_events.append(live.dispatched_event(meta))
+
+        task = asyncio.create_task(
+            env.run(
+                client=client,
+                model_name=model_name,
+                cache_salt=cache_salt,
+                task_data=group.task.data.model_dump(mode="json"),
+                on_delta=on_delta,
+            )
+        )
+        self.inflight[task] = meta
+        self.live_events.append(live.pending_event(meta))
         return True
 
     async def acquire(self) -> None:
@@ -578,6 +642,7 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
+        self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
@@ -688,6 +753,7 @@ class Dispatcher:
                 continue
             del self.inflight[task]
             self.release()
+            self.retire(meta)
             claimed.append((task, meta))
 
         inflight_cancelled = len(claimed)
@@ -727,6 +793,7 @@ class Dispatcher:
         for meta in self.inflight.values():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
             self.release()
+            self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
@@ -746,6 +813,7 @@ class Dispatcher:
                 continue
             self.inflight.pop(task, None)
             self.release()
+            self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             cancelled += 1
             train_tasks.append(task)

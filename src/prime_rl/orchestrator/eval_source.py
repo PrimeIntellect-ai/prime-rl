@@ -15,7 +15,6 @@ from prime_rl.orchestrator.types import TaskRequest
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.configs.orchestrator import EvalConfig
     from prime_rl.orchestrator.envs import EvalEnvs
 
 
@@ -25,18 +24,21 @@ class EvalSource:
     def __init__(
         self,
         eval_envs: EvalEnvs,
-        eval_config: EvalConfig,
         *,
+        intervals: dict[str, int] | None = None,
+        skip_first_step: bool = False,
         is_resumed: bool = False,
     ) -> None:
+        """``intervals`` is the step interval per env of a training run's online evals;
+        a standalone eval has none and fires every env on its one trigger."""
         self.eval_envs = eval_envs
-        self.eval_config = eval_config
+        self.skip_first_step = skip_first_step
 
         self.tasks_by_env: dict[str, list[vf.Task]] = {}
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
-            self.intervals[env.name] = env.config.interval
+            self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
         self.cursor = 0
@@ -54,7 +56,7 @@ class EvalSource:
         ``force`` fires every env regardless of interval (e.g. the evals process's
         final-checkpoint eval)."""
         is_first, self.first_trigger = self.first_trigger, False
-        if is_first and self.eval_config.skip_first_step:
+        if is_first and self.skip_first_step:
             return []
         fired: list[str] = []
         for name, interval in self.intervals.items():

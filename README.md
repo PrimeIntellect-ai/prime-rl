@@ -212,7 +212,8 @@ Check out the [docs](docs) directory for in-depth guides on how to use prime-rl.
 
 - [**Overview**](docs/overview.md) - Architecture, install, and a copy-pasteable end-to-end RL run
 - [**Configuration**](docs/configuration.md) - TOML composition, CLI overrides, env vars, validation
-- [**Training**](docs/training.md) - RL, SFT, evals, checkpointing, observability, rules of thumb
+- [**Training**](docs/training.md) - RL, SFT, checkpointing, observability, rules of thumb
+- [**Eval**](docs/eval.md) - Standalone evals against any inference server, online evals, resume, platform upload
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
 - [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
 - [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA

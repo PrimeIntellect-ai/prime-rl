@@ -149,8 +149,13 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
 
 
 def build_sections(
-    train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft"] = "rl"
+    train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft", "eval"] = "rl"
 ) -> list[ws.Section]:
+    # A standalone eval run has no training signal: one section per eval env.
+    if flavor == "eval":
+        if eval_envs:
+            return [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
+        return [eval_section("eval", ".*")]
     # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
     # curves, eval sections are the same rollout-based ones as RL.
     if flavor == "sft":
@@ -225,7 +230,7 @@ def ensure_overview_view(
     name: str = OVERVIEW_NAME,
     train_envs: Sequence[str] = (),
     eval_envs: Sequence[str] = (),
-    flavor: Literal["rl", "sft"] = "rl",
+    flavor: Literal["rl", "sft", "eval"] = "rl",
 ) -> str | None:
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
