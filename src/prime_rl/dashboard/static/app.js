@@ -858,13 +858,30 @@ function phaseColor(name) {
 let timingModel = null;
 let timingTips = [];
 
+/* phases in the order a rollout runs them; anything unknown follows, by name */
+const PHASE_ORDER = ["boot", "setup", "agent", "model", "harness", "finalize", "scoring"];
+
+function phaseRank(name) {
+  const k = PHASE_ORDER.indexOf(name);
+  return k === -1 ? PHASE_ORDER.length : k;
+}
+
+function comparePhasePaths(a, b) {
+  const pa = a.split("/"), pb = b.split("/");
+  for (let k = 0; k < Math.min(pa.length, pb.length); k++) {
+    if (pa[k] === pb[k]) continue;
+    return phaseRank(pa[k]) - phaseRank(pb[k]) || pa[k].localeCompare(pb[k]);
+  }
+  return pa.length - pb.length;
+}
+
 /* the tree from the series keys: every `timing/a/b` is a node whose parent is `timing/a`
    (or the episode root); the root's own duration is the episode's wall time */
 function timingTree(series) {
   const paths = Object.keys(series)
     .filter((k) => k.startsWith("timing/"))
     .map((k) => k.slice("timing/".length))
-    .sort();
+    .sort(comparePhasePaths);
   const children = (path) => paths.filter((p) => (path ? p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/") : !p.includes("/")));
   return { paths, children };
 }
