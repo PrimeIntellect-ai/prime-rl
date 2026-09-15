@@ -209,9 +209,11 @@ class MoEComputeConfigBase(BaseConfig):
 
 
 class BF16MoEComputeConfig(MoEComputeConfigBase):
-    """Run routed-expert grouped GEMMs in bfloat16."""
+    """Run routed experts in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
+    backend: Literal["torch", "sonicmoe"] = "torch"
+    """Expert compute implementation."""
 
 
 class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
