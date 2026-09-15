@@ -108,6 +108,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "stop_condition": stop_condition,
         # when the episode landed and how long it was alive: the stream's x axis,
         # and the one duration worth sorting a stream by
+        "dispatch": (first_info.get("dispatch") or {}).get("time"),
         "arrival": (first_info.get("arrival") or {}).get("time"),
         "duration": _episode_duration(first_info, timing),
     }

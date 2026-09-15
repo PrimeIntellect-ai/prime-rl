@@ -2182,16 +2182,31 @@ function fmtStamp(epoch) {
   return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+/* "dispatched → arrived": the day once, then the times; a rollout still in flight has
+   no arrival yet */
+function fmtSpan(dispatched, arrived) {
+  if (!dispatched && !arrived) return "";
+  const time = { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+  const from = dispatched ? new Date(dispatched * 1000) : null;
+  const to = arrived ? new Date(arrived * 1000) : null;
+  const left = from ? fmtStamp(dispatched) : "–";
+  if (!to) return `${left} → –`;
+  const sameDay = from && from.toDateString() === to.toDateString();
+  const right = sameDay ? to.toLocaleTimeString([], time) : fmtStamp(arrived);
+  return `${left} → ${right}`;
+}
+
 function episodeRowHtml(ep) {
   const phase = ep.ok && !ep.num_errors ? "done" : "error";
+  const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
   return `<tr data-line="${ep.line}">
+        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted">${ep.line}</td>
-        <td class="muted nowrap">${ep.arrival ? fmtStamp(ep.arrival) : ""}</td>
+        <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival)}</td>
         <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
-        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
@@ -2205,18 +2220,18 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* an in-flight rollout, streamed by its env server: the same columns, its dispatch
-   in place of an arrival, its phase, counts that grow with every turn, no reward yet */
+/* an in-flight rollout, streamed by its env server: the same columns, a pulsing dot for
+   its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
   const label = r.trace ? `${esc(r.task ?? "")}${r.agent && r.agent !== "agent" ? ` · ${esc(r.agent)}` : ""}` : esc(r.task ?? "");
   return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.last ?? "")}">
-        <td class="muted">live</td>
-        <td class="muted nowrap">${r.started ? fmtStamp(r.started) : ""}</td>
+        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span> <span class="muted">${label}</span></td>
+        <td><span class="live-dot" title="in flight"></span></td>
+        <td class="muted nowrap">${fmtSpan(r.started, null)}</td>
         <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
         <td>${esc(r.env ?? "?")}</td>
         <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : "n/a"}</td>
-        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span> <span class="muted">${label}</span></td>
         <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
         <td>${r.turns ?? ""}</td>
         <td>${r.branches ?? ""}</td>
