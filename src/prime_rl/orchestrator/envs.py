@@ -23,6 +23,7 @@ import asyncio
 import time
 from collections.abc import Callable, Iterator, Sequence
 from itertools import islice
+from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
@@ -32,6 +33,7 @@ from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSour
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.pathing import env_address_file
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -39,13 +41,31 @@ from prime_rl.utils.logger import format_time, get_logger
 ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
 
+async def wait_for_address(path: Path, timeout: float) -> str:
+    """The address a launcher-managed env server published, polling for the file the
+    server writes once it has bound (it starts concurrently with this process)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if address := path.read_text().strip():
+                return address
+        except FileNotFoundError:
+            pass
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"env server never published its address to {path} within {timeout}s")
+        await asyncio.sleep(0.5)
+
+
 class Env:
     """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: EnvConfig, address: str):
+    def __init__(self, config: EnvConfig, address: str | None, address_file: Path):
         self.config = config
         self.address = address
+        self.address_file = address_file
+        """Where a launcher-managed server publishes its address; read when ``address``
+        is None."""
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
@@ -68,8 +88,10 @@ class Env:
 
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side."""
-        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
         t0 = time.perf_counter()
+        if self.address is None:
+            self.address = await wait_for_address(self.address_file, timeout=ENV_SERVER_STARTUP_TIMEOUT)
+        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
@@ -127,11 +149,12 @@ class TrainEnv(Env):
     def __init__(
         self,
         config: TrainSourceConfig,
-        address: str,
+        address: str | None,
+        address_file: Path,
         generation_source: GenerationSource,
         algorithm: Algorithm,
     ):
-        super().__init__(config, address)
+        super().__init__(config, address, address_file)
         self.generation_source = generation_source
         self.algorithm = algorithm
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
@@ -146,8 +169,8 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str):
-        super().__init__(config, address)
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
+        super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
 
@@ -207,7 +230,8 @@ class TrainEnvs(Envs[TrainEnv]):
     def __init__(
         self,
         configs: Sequence[TrainSourceConfig],
-        addresses: dict[tuple[str, str], str],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
         *,
         clients,
         renderer_config=None,
@@ -219,6 +243,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
+                env_address_file(config_dir, "train", config.resolved_name),
                 GenerationSource(config.algo.sampling, clients, renderer_config),
                 build_algorithm(config.algo, clients),
             )
@@ -228,8 +253,11 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str]):
+    def __init__(
+        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+    ):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
-            env = EvalEnv(config, addresses[("eval", config.resolved_name)])
+            name = config.resolved_name
+            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
             self._envs[env.name] = env

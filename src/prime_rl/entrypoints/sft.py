@@ -17,6 +17,7 @@ from prime_rl.utils.config import cli, dump_resolved_config, find_package_resour
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
+    env_address_file,
     format_log_message,
     get_broadcast_dir,
     get_ckpt_dir,
@@ -47,18 +48,12 @@ ONLINE_EVAL_CONFIG = "eval.json"
 ENVS_DIR = "envs"
 
 
-def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
-    """``(source, address)`` for every launcher-managed eval source. A source with
-    ``serve.address`` set is externally managed — the launcher neither writes its
-    config nor spawns a server for it."""
+def eval_env_servers(config: SFTConfig) -> list[EvalSourceConfig]:
+    """Every launcher-managed eval source. A source with ``serve.address`` set is
+    externally managed — the launcher neither writes its config nor spawns a server for it."""
     if config.eval is None:
         return []
-    addresses = config.eval.env_addresses
-    return [
-        (source, addresses[("eval", source.resolved_name)])
-        for source in config.eval.source
-        if source.serve.address is None
-    ]
+    return [source for source in config.eval.source if source.serve.address is None]
 
 
 def get_ckpt_base(config: SFTConfig) -> Path:
@@ -78,14 +73,11 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
 
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
-    fields filled from the SFT config. The launcher spawns the env servers itself, so each
-    source's derived address is stamped in, marking it externally managed for the
-    online-eval process."""
+    fields filled from the SFT config. The launcher spawns the env servers itself; the
+    online-eval process finds each one through the address it publishes in the shared
+    config attempt."""
     assert config.eval is not None
     eval_config = config.eval.model_copy(deep=True)
-    addresses = config.eval.env_addresses
-    for source in eval_config.source:
-        source.serve.address = addresses[("eval", source.resolved_name)]
     run_fields = dict(
         model=config.model.name,
         weight_broadcast=config.weight_broadcast,
@@ -123,15 +115,17 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
     with open(config_dir / ONLINE_EVAL_CONFIG, "w") as f:
         json.dump(dump_resolved_config(build_online_eval_config(config)), f, indent=2)
 
-    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>`
-    # binds at the source's deterministic address, where the online-eval process connects.
-    for source, address in eval_env_servers(config):
+    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>` binds an
+    # OS-assigned port and publishes it to the source's address file, where the
+    # online-eval process picks it up.
+    for source in eval_env_servers(config):
         env_dir = config_dir / ENVS_DIR / "eval"
         env_dir.mkdir(parents=True, exist_ok=True)
         source_dict = dump_resolved_config(source)
         env_server_dict = {
             "env": source_dict["env"],
-            "serve": {**(source_dict.get("serve") or {}), "address": address},
+            "serve": source_dict.get("serve") or {},
+            "address_file": env_address_file(config_dir, "eval", source.resolved_name).as_posix(),
             "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.json", "w") as f:
@@ -195,7 +189,7 @@ def write_slurm_script(
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
                 },
-                "eval_env_names": [source.resolved_name for source, _ in eval_env_servers(config)],
+                "eval_env_names": [source.resolved_name for source in eval_env_servers(config)],
             }
         script = template.render(
             **config.slurm.template_vars,
@@ -270,7 +264,7 @@ def sft_slurm(config: SFTConfig):
         num_train_nodes=num_nodes,
         online_eval=online_eval,
         inference=online_eval,
-        eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)] if online_eval else None,
+        eval_env_names=[source.resolved_name for source in eval_env_servers(config)] if online_eval else None,
         num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
     )
 
@@ -387,9 +381,9 @@ def sft_local(config: SFTConfig):
                 log_path=log_dir / "inference.log",
             )
 
-        # Start one env server per eval source. The online-eval process connects to each
-        # source's deterministic address, polling until the server is up.
-        for source, address in eval_env_servers(config):
+        # Start one env server per eval source. The online-eval process waits for each
+        # server's published address and polls until it answers.
+        for source in eval_env_servers(config):
             name = source.resolved_name
             logger.info(f"Starting {name} server")
             start_process(

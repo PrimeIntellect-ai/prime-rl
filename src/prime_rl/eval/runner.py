@@ -8,8 +8,8 @@ measurements and are never cancelled on load - a controller cut only blocks admi
 until the pool drains.
 
 Env servers: sources without an explicit ``serve.address`` get an env server spawned
-by this process at their derived address; sources with one are externally managed
-(e.g. spawned by the ``sft`` launcher, which stamps the derived addresses into the
+by this process, found through the address it publishes; sources with one are externally
+managed (e.g. spawned by the ``sft`` launcher, which spawns them itself and leaves the
 online config)."""
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_config_dir
+from prime_rl.utils.pathing import env_address_file, get_config_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes
 
 monkey_patch_oai_iterable_types()
@@ -94,7 +94,7 @@ class EvalRunner:
         self.spawn_env_servers()
 
         get_logger().info("Loading eval environment(s)")
-        self.eval_envs = EvalEnvs(config.source, config.env_addresses)
+        self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
         await self.eval_envs.start()
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
@@ -168,29 +168,30 @@ class EvalRunner:
         )
 
     def spawn_env_servers(self) -> None:
-        """Spawn one env server per source without an explicit ``serve.address``,
-        at the source's derived address."""
+        """Spawn one env server per source without an explicit ``serve.address``. Each
+        binds an OS-assigned port and publishes it to its address file, which the env
+        client reads."""
         config = self.config
-        addresses = config.env_addresses
-        config_dir = get_config_dir(self.run_dir) / "envs" / "eval"
+        config_dir = get_config_dir(self.run_dir)
+        env_config_dir = config_dir / "envs" / "eval"
         log_dir = self.log_dir / "envs" / "eval"
         for source in config.source:
             if source.serve.address is not None:
                 continue
             name = source.resolved_name
-            address = addresses[("eval", name)]
             source_dict = dump_resolved_config(source)
             server_config = {
                 "env": source_dict["env"],
-                "serve": {**(source_dict.get("serve") or {}), "address": address},
+                "serve": source_dict.get("serve") or {},
+                "address_file": env_address_file(config_dir, "eval", name).as_posix(),
                 "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
             }
-            config_dir.mkdir(parents=True, exist_ok=True)
-            config_path = config_dir / f"{name}.json"
+            env_config_dir.mkdir(parents=True, exist_ok=True)
+            config_path = env_config_dir / f"{name}.json"
             config_path.write_text(json.dumps(server_config, indent=2))
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / f"{name}.log"
-            get_logger().info(f"Starting env server {name} at {address} (logs: {log_path})")
+            get_logger().info(f"Starting env server {name} (logs: {log_path})")
             with open(log_path, "w") as log_file:
                 process = Popen(
                     ["env-server", "@", config_path.as_posix()],

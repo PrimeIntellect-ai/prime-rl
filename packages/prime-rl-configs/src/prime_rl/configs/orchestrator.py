@@ -161,7 +161,7 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServeConfig = vf.ServeConfig()
-    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config with an unset ``address`` filled in as the derived ``tcp://127.0.0.1:<env_server_base_port + index>``. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
+    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config; an unset ``address`` means the spawned server binds an OS-assigned port and publishes it for the orchestrator. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -561,9 +561,6 @@ class OrchestratorConfig(BaseConfig):
     tasks_per_minute: int | None = Field(None, ge=1)
     """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
 
-    env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
-
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
 
@@ -786,15 +783,9 @@ class OrchestratorConfig(BaseConfig):
         return sources
 
     @property
-    def env_addresses(self) -> dict[tuple[str, str], str]:
-        """Where each source's env server lives, keyed by ``(split, resolved_name)``:
-        the source's own ``serve.address`` when set (an externally managed server), else
-        ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
-        ``env_sources`` order. The launcher binds env servers at exactly these addresses
-        and the orchestrator connects to them, so both sides agree from the config
-        alone."""
-        return {
-            (split, source.resolved_name): source.serve.address
-            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
-            for index, (split, source) in enumerate(self.env_sources)
-        }
+    def env_addresses(self) -> dict[tuple[str, str], str | None]:
+        """Where each source's env server lives, keyed by ``(split, resolved_name)``: the
+        source's own ``serve.address`` when set (an externally managed server), else None —
+        the launcher spawns the server, which binds an OS-assigned port and publishes it
+        to the source's address file for the orchestrator to pick up."""
+        return {(split, source.resolved_name): source.serve.address for split, source in self.env_sources}

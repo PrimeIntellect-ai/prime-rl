@@ -1,5 +1,8 @@
 import os
+import queue
+import threading
 from functools import partial
+from pathlib import Path
 
 from verifiers.v1 import pool_serve_kwargs
 from verifiers.v1.runtimes import set_base_sandbox_labels
@@ -17,15 +20,30 @@ def setup_worker(log_level: str | None, json_logging: bool, sandbox_labels: list
     set_base_sandbox_labels(sandbox_labels)
 
 
+def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
+    """Write the bound address once serve_env reports it (it blocks in the server loop
+    afterwards). Atomic, so a waiting client never reads a partial line."""
+    address = addresses.get()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".address.tmp")
+    tmp.write_text(address)
+    tmp.replace(path)
+
+
 @clean_exit
 def run_server(config: EnvServerConfig):
     run_name = os.environ.get("PRL_RUN_NAME")
     sandbox_labels = [run_name] if run_name else []
+    addresses: queue.SimpleQueue | None = None
+    if config.address_file is not None:
+        addresses = queue.SimpleQueue()
+        threading.Thread(target=publish_address, args=(addresses, config.address_file), daemon=True).start()
     # ``serve.pool`` (static or elastic) sizes the server. serve_env applies the worker
     # setup in this process and in every spawned worker.
     serve_env(
         **pool_serve_kwargs(config.serve.pool),
-        address=config.serve.address,
+        address=config.serve.address or "tcp://127.0.0.1:0",
+        address_queue=addresses,
         log_setup=partial(setup_worker, config.log.level, config.log.json_logging, sandbox_labels),
         config_data=env_config_data(config.env),
         max_concurrent=config.serve.max_concurrent,

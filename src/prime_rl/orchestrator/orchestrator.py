@@ -78,7 +78,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -231,14 +231,16 @@ class Orchestrator:
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
 
+        config_dir = get_config_dir(config.output_dir)
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
+            config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
         if config.resume is not None:
             if config.resume.dir is not None:

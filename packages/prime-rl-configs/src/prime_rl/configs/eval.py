@@ -11,8 +11,8 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
 class ServedEvalConfig(EvalSourcesConfig):
-    """Eval sources run against a live inference server: the server's client, the
-    adaptive concurrency band, and the env-server port range."""
+    """Eval sources run against a live inference server: the server's client and the
+    adaptive concurrency band."""
 
     client: ClientConfig = ClientConfig()
     """Client of the inference server evals run against."""
@@ -21,22 +21,13 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the eval source at position ``i`` is
-    served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address``
-    keep it instead, without shifting the other sources' ports."""
-
     @property
-    def env_addresses(self) -> dict[tuple[str, str], str]:
+    def env_addresses(self) -> dict[tuple[str, str], str | None]:
         """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
-        Same contract as ``OrchestratorConfig.env_addresses``: sources with an explicit
-        ``serve.address`` are externally managed; the evals process spawns an env server at
-        the derived address for every other source."""
-        return {
-            ("eval", source.resolved_name): source.serve.address
-            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
-            for index, source in enumerate(self.source)
-        }
+        Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
+        is an externally managed server; None means the eval process spawns the server and
+        learns its address from the file it publishes."""
+        return {("eval", source.resolved_name): source.serve.address for source in self.source}
 
 
 class CheckpointConfig(BaseConfig):

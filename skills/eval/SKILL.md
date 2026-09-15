@@ -60,7 +60,7 @@ env.agent.runtime.type = "subprocess"
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Ready-made configs: `examples/basic/<env>/eval.toml` (the walkthroughs' baseline/final evals against a local server; `-m` swaps in a trained checkpoint) and `configs/debug/eval/{single-turn,multi-turn,resume,multi-env}.toml` (gsm8k on Prime Inference; terminal-bench-2 fix-git in sandboxes against a local `uv run inference` dp=2 deployment with the adaptive band, the command is in the file; an interruptible gsm8k run; and both envs together).
 
 - Entrypoint: `src/prime_rl/entrypoints/eval.py` (shorthand expansion), implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
-- Env servers: spawned by the eval process at `tcp://127.0.0.1:<env_server_base_port + index>` unless the source sets `serve.address` (externally managed).
+- Env servers: spawned by the eval process unless the source sets `serve.address` (externally managed); each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, so concurrent runs on one host never collide.
 - Platform: `--monitors.prime` (needs `PRIME_API_KEY` or `prime login`) creates one evaluation per source on app.primeintellect.ai once its epoch finishes and logs the URL.
 - Resume: cursor checkpoints are on by default (`[ckpt]`: `interval` counts completed task groups, `keep_last` prunes older cursors; `--no-ckpt` disables). Relaunch with the same `--run.name` and `--resume` (or `--resume.step N`); partially completed groups are retried.
 

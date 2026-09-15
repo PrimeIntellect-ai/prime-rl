@@ -20,6 +20,7 @@ from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
+    env_address_file,
     format_log_message,
     get_ckpt_dir,
     get_launcher_dir,
@@ -50,23 +51,18 @@ INFERENCE_CONFIG = "inference.json"
 ENVS_DIR = "envs"
 
 
-def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
-    """``(split, source, address)`` for every launcher-managed train/eval source. The
-    launcher runs one env server per source at its deterministic address; the
-    orchestrator connects there. A source with ``serve.address`` set is externally
-    managed — its server runs elsewhere and only the orchestrator connects to it — so
-    the launcher neither writes its TOML nor spawns a server for it."""
-    addresses = config.orchestrator.env_addresses
-    return [
-        (split, source, addresses[(split, source.resolved_name)])
-        for split, source in config.orchestrator.env_sources
-        if source.serve.address is None
-    ]
+def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
+    """``(split, source)`` for every launcher-managed train/eval source. The launcher
+    runs one env server per source; each binds an OS-assigned port and publishes it to
+    its address file, where the orchestrator picks it up. A source with ``serve.address``
+    set is externally managed — its server runs elsewhere and only the orchestrator
+    connects to it — so the launcher neither writes its TOML nor spawns a server for it."""
+    return [(split, source) for split, source in config.orchestrator.env_sources if source.serve.address is None]
 
 
 def env_server_names(config: RLConfig, split: str) -> list[str]:
     """Names of the launcher-managed env servers for one split."""
-    return [source.resolved_name for source_split, source, _ in env_servers(config) if source_split == split]
+    return [source.resolved_name for source_split, source in env_servers(config) if source_split == split]
 
 
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
@@ -96,17 +92,18 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_CONFIG, "w") as f:
             json.dump(inference_dict, f, indent=2)
 
-    # One EnvServerConfig TOML per launcher-managed source: `env-server @ <path>` binds
-    # at the source's deterministic address, where the orchestrator connects. The source's
-    # env/serve blocks carry over; its other knobs (sampling, algo, name, ...) are
-    # orchestrator-side.
-    for split, source, address in env_servers(config):
+    # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
+    # OS-assigned port and publishes it to the source's address file, where the
+    # orchestrator picks it up. The source's env/serve blocks carry over; its other knobs
+    # (sampling, algo, name, ...) are orchestrator-side.
+    for split, source in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
         source_dict = dump_resolved_config(source)
         env_server_dict = {
             "env": source_dict["env"],
-            "serve": {**source_dict.get("serve", {}), "address": address},
+            "serve": source_dict.get("serve", {}),
+            "address_file": env_address_file(output_dir, split, source.resolved_name).as_posix(),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.json", "w") as f:
@@ -248,10 +245,10 @@ def rl_local(config: RLConfig):
                 "otherwise rollouts will hang."
             )
 
-        # Start one env server per source. The orchestrator connects to each source's
-        # deterministic address, polling until the server is up, so the servers and the
+        # Start one env server per source. The orchestrator waits for each server's
+        # published address and polls until it answers, so the servers and the
         # orchestrator start in parallel.
-        for split, source, address in env_servers(config):
+        for split, source in env_servers(config):
             name = source.resolved_name
             env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()]
             logger.info(f"Starting {name} server")
