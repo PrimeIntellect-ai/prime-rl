@@ -5,7 +5,7 @@ description: Launch and monitor prime-rl evals — the `uv run eval` entrypoint 
 
 # Eval
 
-`uv run eval` evaluates one or more environments against a live inference server and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, concurrency pinned at 128 by default (adaptive on request), every episode streamed through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and a task cursor checkpointed after every completed group so an interrupted run resumes with `--resume`. Online evals of training runs (`[orchestrator.eval]` for RL, `[eval]` for SFT) share the same source shape — see the `training` skill for those.
+`uv run eval` evaluates a model in one or more environments and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, concurrency pinned at 128 by default (adaptive on request), every episode streamed through the monitors (file monitor + trace stream by default; W&B and the Prime platform on request), and a task cursor checkpointed after every completed group so an interrupted run resumes with `--resume`. Online evals of training runs (`[orchestrator.eval]` for RL, `[eval]` for SFT) share the same source shape — see the `training` skill for those.
 
 Two phases — start the eval, then read its results.
 

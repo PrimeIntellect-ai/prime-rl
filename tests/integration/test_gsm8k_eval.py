@@ -20,7 +20,7 @@ def run_dir(output_dir: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) -> ProcessResult:
-    """`uv run eval` of a multi-turn bash-harness rollout against Prime Inference (the
+    """`uv run eval` of single-turn null-harness rollouts against Prime Inference (the
     default client and model); needs `PRIME_API_KEY`, no GPU, no sandbox."""
     cmd = [
         "uv",
@@ -56,6 +56,5 @@ def test_eval_reward(summary: re.Match):
 
 
 def test_rollouts_are_one_branch(summary: re.Match):
-    """A replayed message must dedup onto its committed node, so a linear rollout is
-    exactly one branch however many turns it took."""
+    """A linear rollout is exactly one branch."""
     assert float(summary["branches"]) == 1.0
