@@ -1930,7 +1930,10 @@ function traceStatusText(total) {
   const live = state.traces.live?.length || 0;
   const parts = [];
   if (live && state.traces.status.live) parts.push(`${live} in flight`);
-  if (state.traces.status.done) parts.push(`${fmtCompact(total ?? state.traces.total ?? 0)} completed`);
+  if (state.traces.status.done) {
+    const n = total ?? state.traces.total ?? 0;
+    parts.push(`${fmtCompact(n)} completed episode${n === 1 ? "" : "s"}`);
+  }
   return parts.join(" · ");
 }
 

@@ -91,6 +91,12 @@
         </button>
         <div class="dd-menu dd-filters" id="trace-filter-menu" hidden>
           <div class="dd-sec">filter</div>
+          <div class="dd-row"><span class="t-label">status</span>
+            <div class="seg toggle-seg" id="trace-status-filter">
+              <button data-status="live" class="on" title="rollouts still running (streamed by the env servers)">in flight</button>
+              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
+            </div>
+          </div>
           <div class="dd-row"><span class="t-label">kind</span>
             <div class="seg toggle-seg" id="trace-kinds">
               <button data-kind="train" class="on">train</button>
@@ -100,12 +106,6 @@
           <label class="dd-row"><span class="t-label">env</span>
             <select id="trace-env"><option value="">all envs</option></select>
           </label>
-          <div class="dd-row"><span class="t-label">status</span>
-            <div class="seg toggle-seg" id="trace-status-filter">
-              <button data-status="live" class="on" title="rollouts still running (streamed by the env servers)">in flight</button>
-              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
-            </div>
-          </div>
           <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
         </div>
       </div>
