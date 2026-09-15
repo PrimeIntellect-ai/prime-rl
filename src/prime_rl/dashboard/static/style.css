@@ -393,7 +393,6 @@ details.eval-sec[open] > summary .sec-chev { transform: rotate(90deg); }
 .sum-tile { cursor: default; padding: 14px 16px; min-height: 96px; display: flex; flex-direction: column; justify-content: center; }
 .sum-tile .stat-label, .sum-tile .stat-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
-.sum-tile.score { border-color: var(--accent); }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
 .sum-sub { font-size: 11px; margin-top: 4px; }
