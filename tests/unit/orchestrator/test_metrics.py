@@ -26,6 +26,7 @@ def mk(
     has_error: bool = False,
     error_type: str = "error",
     stop_condition: str | None = None,
+    info: dict | None = None,
     metrics: dict | None = None,
     rewards: dict | None = None,
     env_name: str = "env",
@@ -56,6 +57,7 @@ def mk(
         last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
+        info=info or {},
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0])],
         timing=SimpleNamespace(
@@ -143,6 +145,18 @@ def test_to_wandb_distributions():
     assert out["train/agg/all/num_total_tokens/max"] == 20.0  # single-trace episodes: one value per rollout
     assert out["train/agg/all/num_input_tokens/mean"] == 5.0
     assert out["train/agg/all/num_output_tokens/mean"] == 6.0
+
+
+def test_to_wandb_logs_advantage_components():
+    out = train_wandb(
+        [
+            mk(info={"advantage": 0.3, "reward_advantage": 0.2, "length_penalty_advantage": 0.1}),
+            mk(info={"advantage": -0.3, "reward_advantage": -0.2, "length_penalty_advantage": -0.1}),
+        ]
+    )
+    assert out["train/agg/all/agent/advantage/total/p90"] == pytest.approx(0.24)
+    assert out["train/agg/all/agent/advantage/reward/p90"] == pytest.approx(0.16)
+    assert out["train/agg/all/agent/advantage/length_penalty/p90"] == pytest.approx(0.08)
 
 
 def test_episode_and_agent_levels():
