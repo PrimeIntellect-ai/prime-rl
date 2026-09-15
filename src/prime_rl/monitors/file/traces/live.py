@@ -15,6 +15,7 @@ in flight; finished traces are untouched (the stream and its index).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -173,10 +174,31 @@ def pending_row(dispatch: dict[str, Any]) -> dict[str, Any]:
 
 def live_rows(output_dir: Path) -> list[dict[str, Any]]:
     """Every in-flight rollout: dispatched-but-not-yet-streaming placeholders and the
-    streaming traces, oldest dispatch first."""
-    rows = [pending_row(dispatch) for dispatch in list_pending(output_dir)]
-    rows.extend(live_row(dispatch, trace) for dispatch, trace in list_live(output_dir))
+    streaming traces, oldest dispatch first. A placeholder whose episode already streams
+    a trace is on its way out and is not listed twice."""
+    live = list_live(output_dir)
+    streaming = {dispatch.get("id") for dispatch, _ in live}
+    rows = [pending_row(dispatch) for dispatch in list_pending(output_dir) if dispatch.get("id") not in streaming]
+    rows.extend(live_row(dispatch, trace) for dispatch, trace in live)
     return sorted(rows, key=lambda row: row.get("started") or 0)
+
+
+def live_etag(output_dir: Path) -> str:
+    """A fingerprint of the live directory that changes whenever any in-flight rollout
+    does: the set of files and their sizes. Cheap enough to answer a poll a second."""
+    live_dir = get_live_dir(output_dir)
+    if not live_dir.is_dir():
+        return "0"
+    entries = []
+    for directory in (live_dir, get_pending_dir(output_dir)):
+        if not directory.is_dir():
+            continue
+        for entry in directory.iterdir():
+            try:
+                entries.append(f"{entry.name}:{entry.stat().st_size}")
+            except FileNotFoundError:
+                continue  # unlinked between listing and stat: its episode finished
+    return hashlib.md5("\n".join(sorted(entries)).encode()).hexdigest()[:16]
 
 
 def main() -> None:

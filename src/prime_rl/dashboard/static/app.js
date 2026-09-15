@@ -216,7 +216,7 @@ async function selectRun(name, deferTab = false) {
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
-    key: null, total: 0, bin: null, hist: null,
+    key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0,
   };
   state.report = {
     ...state.report,
@@ -2230,7 +2230,7 @@ function liveRowHtml(r) {
   return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
         <td><span class="live-dot" title="in flight"></span></td>
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
-        <td class="muted nowrap">${fmtSpan(r.started, null, r.elapsed)}</td>
+        <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
         <td>${esc(r.env ?? "?")}</td>
         <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : "n/a"}</td>
@@ -2295,15 +2295,32 @@ async function initTraces() {
 /* the env servers stream every in-flight rollout turn by turn; the run's file
    monitor keeps one file of deltas per live trace and drops it when the episode
    lands in the stream, so this table is exactly what is running right now */
+let liveInflight = false;
 async function loadLive() {
+  const traces = state.traces;
+  if (liveInflight) return; // one poll at a time: answers never land out of order
+  liveInflight = true;
   let data;
   try {
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/live`);
+    const qs = traces.liveEtag ? `?etag=${encodeURIComponent(traces.liveEtag)}` : "";
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/live${qs}`);
   } catch {
-    data = { rows: [] };
+    return; // a failed poll keeps the rows it had; the next one refreshes them
+  } finally {
+    liveInflight = false;
   }
-  state.traces.live = data.rows || [];
-  renderLiveRows();
+  if (state.traces !== traces) return;
+  if (!data.unchanged) {
+    traces.live = data.rows || [];
+    traces.liveEtag = data.etag;
+    traces.liveAt = Date.now();
+  }
+  renderLiveRows(); // an unchanged set still ticks its elapsed times
+}
+
+/* the server stamps elapsed at the last full answer; the row keeps counting from there */
+function liveElapsed(r) {
+  return r.elapsed == null ? null : r.elapsed + (Date.now() - state.traces.liveAt) / 1000;
 }
 
 function renderLiveRows() {
@@ -2318,9 +2335,12 @@ function renderLiveRows() {
 }
 
 let currentLive = null;
+let currentLiveEtag = null;
 
 async function openLiveTrace(traceId, { refresh = false } = {}) {
   if (!refresh) {
+    currentLiveEtag = null;
+    traceView = "transcript"; // the timeline and token views read the finished stream
     stopReplay();
     episodeEnrichmentVersion++;
     $("#trace-modal").hidden = false;
@@ -2345,22 +2365,26 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
   const requestVersion = ++episodeOpenVersion;
   let episode;
   try {
-    episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}`);
+    const qs = refresh && currentLiveEtag ? `?etag=${encodeURIComponent(currentLiveEtag)}` : "";
+    episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}${qs}`);
   } catch {
     if (currentLive === traceId) $("#tm-live-label").textContent = "finished · now in the stream";
     return;
   }
-  if (currentLive !== traceId || requestVersion !== episodeOpenVersion) return;
+  if (currentLive !== traceId || requestVersion !== episodeOpenVersion || episode.unchanged) return;
+  currentLiveEtag = episode.etag;
   currentEpisode = episode;
-  traceView = "transcript"; // the timeline and token views read the finished stream
   const live = episode.live || {};
   $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
-  // follow the rollout: stay pinned to the newest turn unless the reader scrolled up
+  // follow the rollout: stay pinned to the newest turn unless the reader scrolled up, and
+  // keep the entries they folded or unfolded the way they left them
   const messages = $("#tm-messages");
   const pinned = !refresh || messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 40;
   const scrollTop = messages.scrollTop;
+  const folded = new Map([...messages.querySelectorAll("details.entry[data-node]")].map((d) => [d.dataset.node, d.open]));
   renderEpisode();
-  renderRolloutList();
+  for (const entry of messages.querySelectorAll("details.entry[data-node]"))
+    if (folded.has(entry.dataset.node)) entry.open = folded.get(entry.dataset.node);
   messages.scrollTop = pinned ? messages.scrollHeight : scrollTop;
 }
 
@@ -2584,7 +2608,7 @@ async function ensureTimeline() {
 /* token strings multiply the payload of a big episode, so they are fetched only
    for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
-  if (!currentEpisode) return;
+  if (!currentEpisode || currentLive) return; // token enrichments come from the stream
   const wantsPieces = !!$("#token-signal").value;
   const wantsRendered = state.traces.viewMode === "rendered";
   if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
@@ -3269,7 +3293,9 @@ function renderMessages(ep, trace, branches) {
   const CHUNK = 30;
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
   const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
-  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  // a live trace re-renders as it grows, so it renders whole: chunks loaded by scrolling
+  // would be dropped by the next refresh
+  let rendered = currentLive ? path.length : Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
   const unlinkedCallsHtml = indexedCalls
     .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
     .map(
@@ -4627,14 +4653,26 @@ function renderEpisode() {
   semanticButton.title = semanticAvailable || currentTimeline == null
     ? "causal relationships between model calls"
     : "this episode has no semantic relationships";
+  // the other views and the token overlays read the finished stream: a live trace has
+  // its transcript only
+  const live = !!currentLive;
+  for (const button of $("#tm-view").querySelectorAll("[data-view]:not([data-view=transcript])")) {
+    if (live) {
+      button.disabled = true;
+      button.title = "available once the episode lands in the stream";
+    } else if (button.dataset.view !== "semantic") {
+      button.disabled = false;
+      button.title = "";
+    }
+  }
   $("#trace-modal").classList.toggle("semantic-view", semantic);
   $("#tm-semantic-nav").hidden = !semantic;
   if (semantic) renderSemanticEpisodeNav();
   $("#tm-tabs-row").hidden = graph || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
   $("#tm-messages").hidden = graph;
   $("#tm-timeline").hidden = !graph;
-  $("#trace-view-mode").hidden = graph || evidence || replaying;
-  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying;
+  $("#trace-view-mode").hidden = graph || evidence || replaying || live;
+  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying || live;
   $("#tm-collapse").hidden = graph || evidence || replaying;
   $("#tm-expand").hidden = graph || evidence || replaying;
   if (!semantic) {
@@ -6186,16 +6224,10 @@ setInterval(pollDashboard, POLL_MS);
 /* in-flight rollouts change turn by turn; while the traces tab is open their rows
    (and an open live trace) refresh once a second, the rest of the tab at POLL_MS */
 const LIVE_POLL_MS = 1000;
-let livePolling = false;
 async function pollLive() {
-  if (!state.live || livePolling || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
+  if (!state.live || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
   if (state.traces.mode !== "stream" || !state.traces.status.live) return;
-  livePolling = true;
-  try {
-    await loadLive();
-  } finally {
-    livePolling = false;
-  }
+  await loadLive();
 }
 setInterval(pollLive, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", () => {

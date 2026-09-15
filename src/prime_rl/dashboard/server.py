@@ -28,7 +28,7 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
-from prime_rl.monitors.file.traces.live import live_path, live_rows, read_live, stage
+from prime_rl.monitors.file.traces.live import live_etag, live_path, live_rows, read_live, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_file_monitor_dir
@@ -1714,24 +1714,38 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
 
 
 @app.get("/api/runs/{run}/live")
-def live_traces(run: str) -> dict:
+def live_traces(run: str, etag: str | None = None) -> dict:
     """The run's in-flight traces, folded from the env servers' streamed deltas
     (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
     phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
-    gone has finished and sits in the stream."""
-    return {"time": time.time(), "rows": live_rows(get_run_dir(run))}
+    gone has finished and sits in the stream. ``etag`` is the fingerprint the client
+    last saw: an unchanged live set answers a poll with ``{unchanged}``."""
+    run_dir = get_run_dir(run)
+    current = live_etag(run_dir)
+    if etag is not None and etag == current:
+        return {"unchanged": True}
+    return {"time": time.time(), "etag": current, "rows": live_rows(run_dir)}
 
 
 @app.get("/api/runs/{run}/live/{trace_id}")
-def live_trace(run: str, trace_id: str) -> dict:
+def live_trace(run: str, trace_id: str, etag: str | None = None) -> dict:
     """One in-flight trace assembled from its deltas, shaped like a stream record (an
-    episode with this one trace) so the trace viewer renders it as it grows."""
-    folded = read_live(live_path(get_run_dir(run), trace_id))
+    episode with this one trace) so the trace viewer renders it as it grows. ``etag``
+    is the file size the client last folded: nothing appended means ``{unchanged}``."""
+    path = live_path(get_run_dir(run), trace_id)
+    try:
+        size = path.stat().st_size  # before the read: a delta landing in between shows up next poll
+    except FileNotFoundError:
+        raise HTTPException(404, "live trace not found - its episode finished or never streamed")
+    if etag is not None and etag == str(size):
+        return {"unchanged": True}
+    folded = read_live(path)
     if folded is None:
         raise HTTPException(404, "live trace not found - its episode finished or never streamed")
     dispatch, trace = folded
     return {
         "id": None,
+        "etag": str(size),
         "kind": dispatch.get("kind"),
         "env": {"name": dispatch.get("env")},
         "group": {"id": dispatch.get("group")},

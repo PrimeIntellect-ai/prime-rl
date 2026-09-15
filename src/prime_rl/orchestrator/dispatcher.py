@@ -578,10 +578,11 @@ class Dispatcher:
         )
 
         def on_delta(delta: dict) -> None:
-            if not meta.live:
-                self.live_events.append(live.dispatched_event(meta))
+            first = not meta.live
             live.apply(meta, delta)
             self.live_events.append({"delta": delta, "dispatch": live.dispatch_info(meta)})
+            if first:  # after the delta: a reader never sees the episode in neither place
+                self.live_events.append(live.dispatched_event(meta))
 
         task = asyncio.create_task(
             env.run(

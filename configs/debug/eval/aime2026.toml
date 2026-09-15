@@ -1,0 +1,15 @@
+# AIME 2026 at avg@16: every problem 16 times with the null harness (one chat
+# completion per rollout, no sandbox) against Prime Inference. Competition math
+# needs room to reason, so the completion budget is generous.
+#
+#   uv run eval @ configs/debug/eval/aime2026.toml
+
+group_size = 16
+
+[sampling]
+max_completion_tokens = 32768
+
+[[source]]
+env.taskset.id = "aime26"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
