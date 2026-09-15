@@ -680,17 +680,20 @@ mark.hit {
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
 #episode-table .vpad td { padding: 0; border: 0; }
-/* fixed columns: a poll that swaps rows in or out never reflows the table */
-#episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
-#episode-table col.c-line { width: 52px; }
-#episode-table col.c-phase { width: 78px; }
-#episode-table col.c-span { width: 340px; }
-#episode-table col.c-kind { width: 56px; }
-#episode-table col.c-group { width: 92px; }
-#episode-table col.c-tok { width: 170px; }
-#episode-table col.c-turns { width: 60px; }
-#episode-table col.c-branches { width: 84px; }
-#episode-table col.c-reward { width: 72px; }
+/* fixed columns: a poll that swaps rows in or out never reflows the table. The sized
+   columns hold mono text whose width follows the font, not the window, so they are
+   measured in characters; env and stop take what is left, and below the minimum the
+   wrap scrolls sideways instead of crushing them. */
+#episode-table { width: 100%; min-width: 170ch; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
+#episode-table col.c-line { width: 7.5ch; }
+#episode-table col.c-phase { width: 11.5ch; }
+#episode-table col.c-span { width: 50ch; }
+#episode-table col.c-kind { width: 8.5ch; }
+#episode-table col.c-group { width: 13.5ch; }
+#episode-table col.c-tok { width: 25ch; }
+#episode-table col.c-turns { width: 9ch; }
+#episode-table col.c-branches { width: 12.5ch; }
+#episode-table col.c-reward { width: 10.5ch; }
 #episode-table td, #episode-table th { overflow: hidden; text-overflow: ellipsis; }
 #episode-table th {
   text-align: left;
