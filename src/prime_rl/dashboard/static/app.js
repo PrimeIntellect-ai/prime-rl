@@ -2234,13 +2234,13 @@ function liveRowHtml(r) {
         <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
         <td>${esc(r.env ?? "?")}</td>
-        <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : "n/a"}</td>
+        <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : ""}</td>
         <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
         <td>${r.turns ?? ""}</td>
         <td>${r.branches ?? ""}</td>
         <td class="muted">${esc(r.stop_condition ?? "")}</td>
-        <td class="muted">n/a</td>
-        <td class="muted">n/a</td>
+        <td></td>
+        <td></td>
       </tr>`;
 }
 
