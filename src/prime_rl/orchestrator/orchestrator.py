@@ -824,6 +824,8 @@ class Orchestrator:
             env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         }
+        for env_name, expected in census.items():
+            await monitors.log_eval_plan(env_name, step, expected)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
