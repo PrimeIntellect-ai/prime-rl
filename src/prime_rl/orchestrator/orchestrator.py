@@ -862,7 +862,7 @@ class Orchestrator:
             train_batch_part += f" (+{train_buffered} buffered)"
 
         eval_batch_part = ""
-        for env, _step, eb, exp, _ebuf in eval_batches:
+        for env, _step, eb, exp in eval_batches:
             eval_pct = eb / exp if exp else 0.0
             eval_batch_part += f" | {env} {eb}/{exp} ({eval_pct:.1%})"
 

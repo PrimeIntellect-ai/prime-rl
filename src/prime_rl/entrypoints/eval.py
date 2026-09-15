@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import sys
 import tomllib
 import uuid
@@ -130,7 +131,7 @@ def main():
     os.environ["PRL_RUN_NAME"] = config.run.name
 
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume is not None, clean=clean)
+    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume, clean=clean)
     config.run_dir.mkdir(parents=True, exist_ok=True)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
@@ -178,6 +179,13 @@ def main():
                     stderr=log_file_handle,
                 )
             )
+
+    def sigterm_handler(signum, frame):
+        logger.warning("Received SIGTERM, terminating all processes...")
+        cleanup_processes(processes)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, sigterm_handler)
 
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.

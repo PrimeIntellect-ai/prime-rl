@@ -1,17 +1,18 @@
 """Evals: one epoch of every configured eval source against the weights the inference
 server currently serves.
 
-The progress cursor is checkpointed as task groups complete (``[ckpt]``, on by default),
-so an interrupted run resumes with ``--resume`` and skips the completed prefix. Every
-episode streams through the monitors as it arrives; a finished epoch also goes to the
-platform when ``monitors.prime`` is set."""
+Every episode streams through the monitors as it arrives; a finished epoch also goes to
+the platform when ``monitors.prime`` is set. An interrupted run resumes with
+``--resume`` from its trace stream: the landed episodes rejoin the epoch and only the
+rollouts still owed run (``prime_rl.eval.resume``)."""
 
 from __future__ import annotations
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
-from prime_rl.eval.ckpt import CheckpointManager
+from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
 
@@ -20,11 +21,14 @@ class Eval:
     def __init__(self, config: EvalConfig) -> None:
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.run_dir)
-        self.ckpt_manager = CheckpointManager(config.run_dir)
-        self.last_saved_cursor = 0
 
     async def run(self) -> None:
         config = self.config
+        landed: list[dict] = []
+        if config.resume:
+            # read before the monitors start: the resumed attempt writes a fresh stream
+            resume.check_config(resume.previous_config(config.run_dir), dump_resolved_config(config))
+            landed = resume.take_landed(config.run_dir)
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
@@ -37,38 +41,19 @@ class Eval:
             overview_flavor="eval",
         )
         await self.runner.setup()
-        eval_source = self.runner.eval_source
-        if config.resume is not None:
-            if config.resume.dir is not None:
-                self.ckpt_manager.load(config.resume.dir_step, eval_source, path=config.resume.dir / "eval")
-            else:
-                self.ckpt_manager.load(config.resume.step or self.ckpt_manager.latest_step(), eval_source)
-            self.last_saved_cursor = eval_source.cursor
-            get_logger().info(f"Resuming evals from task cursor {eval_source.cursor}")
+        restored: list = []
+        if config.resume:
+            restored, owed = resume.plan(landed, self.runner.eval_envs)
+            self.runner.eval_source.restore(owed)
+            get_logger().info(
+                f"Resuming from the trace stream: {len(restored)} episodes restored, "
+                f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed"
+            )
 
         await self.runner.start()
-        fired = eval_source.trigger(0)
-        if fired:
-            await self.runner.run_epoch(fired, 0, on_group_completed=self.on_group_completed)
-        else:
-            get_logger().info("Nothing to evaluate - every task group is already completed")
-        self.save_checkpoint(force=True)
+        fired = self.runner.eval_source.trigger(0)
+        await self.runner.run_epoch(fired, 0, restored=restored)
         await self.runner.drain()
-
-    def on_group_completed(self, source_index: int) -> None:
-        if self.runner.eval_source.mark_completed(source_index):
-            self.save_checkpoint()
-
-    def save_checkpoint(self, *, force: bool = False) -> None:
-        if self.config.ckpt is None:
-            return
-        cursor = self.runner.eval_source.cursor
-        if cursor <= 0 or cursor == self.last_saved_cursor:
-            return
-        if not force and cursor - self.last_saved_cursor < self.config.ckpt.interval:
-            return
-        self.ckpt_manager.save(self.runner.eval_source, keep_last=self.config.ckpt.keep_last)
-        self.last_saved_cursor = cursor
 
 
 @clean_exit

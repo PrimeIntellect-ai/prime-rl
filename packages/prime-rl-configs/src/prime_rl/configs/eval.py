@@ -5,9 +5,9 @@ from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
-from prime_rl.configs.shared import ClientConfig, LogConfig, ResumeConfig, RunConfig
+from prime_rl.configs.shared import ClientConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.utils.config import BaseConfig, default_output_dir
+from prime_rl.utils.config import default_output_dir
 
 
 class ServedEvalConfig(EvalSourcesConfig):
@@ -28,16 +28,6 @@ class ServedEvalConfig(EvalSourcesConfig):
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
         return {("eval", source.resolved_name): source.serve.address for source in self.source}
-
-
-class CheckpointConfig(BaseConfig):
-    """Checkpoint the eval progress cursor so an interrupted run can resume."""
-
-    interval: int = Field(1, ge=1)
-    """Save after the task cursor advances by N completed groups."""
-
-    keep_last: int | None = Field(1, ge=1)
-    """Keep at most this many cursor checkpoints on disk. None keeps all of them."""
 
 
 PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
@@ -83,12 +73,11 @@ class EvalConfig(ServedEvalConfig):
     dashboard: bool = True
     """Start (or reuse) the local dashboard daemon and print its URL."""
 
-    ckpt: CheckpointConfig | None = CheckpointConfig()
-    """Checkpoint the task cursor as groups complete. Disable with ``--no-ckpt``."""
-
-    resume: ResumeConfig | None = None
-    """Resume from a cursor checkpoint (point at it with the previous run's ``run.name``).
-    A bare ``--resume`` loads the latest checkpoint."""
+    resume: bool = False
+    """Continue the interrupted run named by ``run.name`` from its trace stream: the
+    landed episodes rejoin the epoch and only the rollouts still owed run. The model,
+    sampling and env config must match the interrupted run; ``num_examples`` and
+    ``group_size`` may change."""
 
     log: LogConfig = LogConfig()
 

@@ -8,7 +8,7 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 
 - [Launch](#launch)
 - [Configuration](#configuration)
-- [Checkpointing](#checkpointing)
+- [Resume](#resume)
 - [Monitors](#monitors)
   - [File](#file)
   - [Prime](#prime)
@@ -67,19 +67,17 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
-## Checkpointing
+## Resume
 
-The task cursor is checkpointed after every completed group (`[ckpt]`: `interval` counts completed groups, `keep_last` prunes older cursors; disable with `--no-ckpt`). Relaunch with the same `--run.name` and `--resume` (or `--resume.step N`) to skip the completed prefix; partially completed groups are retried:
-
-```bash
-uv run eval @ eval.toml --run.name my-eval
-uv run eval @ eval.toml --run.name my-eval --resume
-```
+An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes and the ones the interruption cut off run again.
 
 ```bash
 uv run eval @ eval.toml --run.name my-eval
+# <interrupted>
 uv run eval @ eval.toml --run.name my-eval --resume
 ```
+
+A landed episode counts toward the task with its `task.key`, so `num_examples` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The model, the sampling and each source's env must stay the same; a resume that changes them stops with the differing config paths. Use `--clean` to start over instead.
 
 ## Monitors
 

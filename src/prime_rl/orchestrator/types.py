@@ -81,7 +81,8 @@ class TaskRequest:
     env_name: str
     task: vf.Task
     step: int
-    source_index: int | None = None
+    rollouts: int | None = None
+    """Rollouts of the task this request asks for; None is the env's group size."""
 
 
 @dataclass
@@ -100,7 +101,6 @@ class InflightEpisode:
     task: vf.Task
     policy_version: int
     step: int
-    source_index: int | None = None
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
@@ -124,7 +124,6 @@ class GroupState:
     target_episodes: int
     emitted: int = 0
     policy_version_at_start: int = 0
-    source_index: int | None = None
 
 
 @dataclass

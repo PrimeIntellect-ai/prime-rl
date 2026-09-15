@@ -1,0 +1,79 @@
+from types import SimpleNamespace
+
+import pytest
+
+from prime_rl.eval import resume
+from prime_rl.orchestrator.eval_source import EvalSource
+
+
+def _task(key: str) -> SimpleNamespace:
+    return SimpleNamespace(key=key, hash=key)
+
+
+def _env(name: str, task_keys: list[str], *, group_size: int = 1) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name, examples=[_task(key) for key in task_keys], config=SimpleNamespace(group_size=group_size)
+    )
+
+
+def _record(env: str, key: str, *, ok: bool = True) -> dict:
+    return {
+        "env": {"id": env, "name": env},
+        "task": {"type": "Task", "data": {"idx": 0}, "key": key, "hash": key},
+        "ok": ok,
+        "traces": [],
+    }
+
+
+def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None:
+    envs = [_env("math", ["m0", "m1", "m2"], group_size=2), _env("code", ["c0"])]
+    landed = [
+        _record("math", "m0"),
+        _record("math", "m0"),
+        _record("math", "m0"),  # a third rollout of m0 exceeds group_size 2
+        _record("math", "m1"),
+        _record("math", "m9"),  # no longer selected (num_examples shrank)
+        _record("code", "c0", ok=False),  # errored: owed again
+    ]
+
+    kept, owed = resume.plan([record for record in landed if record["ok"]], envs)
+
+    assert [(episode.env.name, episode.task.key) for episode in kept] == [
+        ("math", "m0"),
+        ("math", "m0"),
+        ("math", "m1"),
+    ]
+    assert owed == {"math": {"m1": 1, "m2": 2}, "code": {"c0": 1}}
+
+
+def test_trigger_queues_only_owed_rollouts() -> None:
+    source = EvalSource([_env("math", ["m0", "m1", "m2"], group_size=2), _env("code", ["c0"])])
+    source.restore({"math": {"m1": 1, "m2": 2}, "code": {}})
+
+    assert source.trigger(0) == ["math", "code"]
+    assert [(request.env_name, request.task.key, request.rollouts) for request in source.queue] == [
+        ("math", "m1", 1),
+        ("math", "m2", 2),
+    ]
+
+
+def test_check_config_allows_selection_changes_only() -> None:
+    previous = {
+        "model": "a",
+        "num_examples": 8,
+        "group_size": 2,
+        "sampling": {"temperature": 1.0},
+        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "serve": {"address": None}}],
+    }
+    resized = {
+        **previous,
+        "num_examples": 16,
+        "group_size": 4,
+        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+    }
+    resume.check_config(previous, resized)
+
+    with pytest.raises(ValueError, match="model, sampling.temperature"):
+        resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
+    with pytest.raises(ValueError, match="source"):
+        resume.check_config(previous, {**previous, "source": previous["source"] * 2})

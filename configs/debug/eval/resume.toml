@@ -1,7 +1,7 @@
 # Single env, resume: gsm8k with a low pinned concurrency so the run can be
-# interrupted partway. The task cursor is checkpointed after every completed
-# group; relaunch with the same --run.name and --resume to skip the completed
-# prefix. Resuming a finished run has nothing left to do and exits.
+# interrupted partway. Relaunch with the same --run.name and --resume: the landed
+# episodes are restored from the trace stream and only the owed rollouts run.
+# Resuming a finished run restores everything and exits.
 #
 #   uv run eval @ configs/debug/eval/resume.toml --run.name resume-debug
 #   <Ctrl-C partway>

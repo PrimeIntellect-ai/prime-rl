@@ -5,7 +5,7 @@ description: Launch and monitor prime-rl evals — the `uv run eval` entrypoint,
 
 # Eval
 
-`uv run eval` evaluates a model in one or more environments and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, a concurrency band, every episode through the monitors, and a task cursor that `--resume` continues from. Online evals of training runs are the `training` skill.
+`uv run eval` evaluates a model in one or more environments and exits after one epoch per source. It reuses the orchestrator's eval pipeline: one env server per source, a concurrency band, every episode through the monitors, and a trace stream that `--resume` continues from. Online evals of training runs are the `training` skill.
 
 ## Start an eval
 
@@ -58,8 +58,7 @@ Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`; `ls -t out
 ├── logs/latest/
 │   ├── eval.log               # the eval process
 │   └── envs/eval/{name}.log   # one log per env server
-├── monitors/file/             # metrics.jsonl, the trace stream, traces/live/ (one file per live trace), plan.json
-└── checkpoints/step_{cursor}/eval/progress.pt   # task cursor
+└── monitors/file/             # metrics.jsonl, the trace stream, traces/live/ (one file per live trace), plan.json
 ```
 
 ```bash
@@ -73,4 +72,4 @@ The progress line in `eval.log` counts live rollouts by phase (`- boot 1 · runn
 
 Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
 
-Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` picks it up from the cursor. Env servers are children of the eval process and exit with it.
+Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed (`num_examples`/`group_size` may change, the model, sampling and env config may not). Env servers are children of the eval process and exit with it.

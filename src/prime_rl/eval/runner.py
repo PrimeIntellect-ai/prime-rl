@@ -17,8 +17,10 @@ import asyncio
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+
+import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
@@ -39,7 +41,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
-    episode_group_id,
     eval_work,
     intercept_vf_logging,
     set_default_executor,
@@ -170,32 +171,34 @@ class EvalRunner:
         fired: list[str],
         step: int,
         *,
-        on_group_completed: Callable[[int], None] | None = None,
+        restored: Sequence[vf.Episode] = (),
         superseding_step: Callable[[], int | None] | None = None,
     ) -> None:
         """Run the epoch ``EvalSource.trigger`` queued for ``step`` in the fired envs and
-        finalize each env's batch as it completes. ``on_group_completed`` receives the
-        source index of every finished group (offline cursor tracking); when
-        ``superseding_step`` returns a newer checkpoint, the unfinished episodes of this
-        epoch are cancelled so the caller can move on to it."""
+        finalize each env's batch as it completes. ``restored`` episodes of this epoch
+        landed before a resume and rejoin it first; when ``superseding_step`` returns a
+        newer checkpoint, the unfinished episodes of this epoch are cancelled so the
+        caller can move on to it."""
         for env_name in fired:
-            task_count = self.eval_source.triggered_task_count(env_name, step)
-            expected = task_count * self.eval_sink.group_size_for(env_name)
-            self.eval_sink.set_batch_size(env_name, step, expected)
-            await monitors.log_eval_plan(env_name, step, expected)
+            await monitors.log_eval_plan(env_name, step, self.eval_sink.batch_size_for(env_name))
 
         now = time.perf_counter()
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         total_rollouts = sum(
-            self.eval_envs.get(request.env_name).config.group_size
+            request.rollouts or 0
             for request in self.eval_source.queue
             if request.step == step and request.env_name in fired
         )
-        get_logger().info(f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts)")
+        restored_part = f", {len(restored)} restored" if restored else ""
+        get_logger().info(
+            f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts{restored_part})"
+        )
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=f"eval was triggered at step {step}")
 
-        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name, step) > 0}
+        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
+        for episode in restored:
+            await self.land(episode, pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
@@ -224,35 +227,31 @@ class EvalRunner:
 
             if isinstance(item, GroupCancellation):
                 eval_batch = self.eval_sink.cancel(item)
-                group_completed = False
-                group_id = item.group_id
             elif isinstance(item, DispatchFailure):
                 eval_batch = self.eval_sink.fail(item)
-                group_completed = not self.eval_sink.has_pending_group(item.group_id)
-                group_id = item.group_id
             else:
-                item_step = eval_work(item).step
-                stamp_arrival([item], "eval", item_step)
-                await monitors.log([item], item_step, "eval", "all")
-                eval_batch = self.eval_sink.add(item)
-                group_id = episode_group_id(item)
-                group_completed = not self.eval_sink.has_pending_group(group_id)
+                stamp_arrival([item], "eval", eval_work(item).step)
+                await self.land(item, pending)
+                continue
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
-            if group_completed:
-                source_index = self.dispatcher.pop_source_index(group_id)
-                if on_group_completed is None:
-                    continue
-                if source_index is None:
-                    raise RuntimeError(f"Eval group {group_id} is missing its source cursor")
-                on_group_completed(source_index)
 
         if cancellation_task is not None:
             cancelled = await cancellation_task
             get_logger().warning(
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
+
+    async def land(self, episode: vf.Episode, pending: set[str]) -> None:
+        """One episode of the epoch, arrived or restored: through the monitors and into
+        its env's batch, which is finalized once the epoch is complete."""
+        step = eval_work(episode).step
+        await monitors.log([episode], step, "eval", "all")
+        eval_batch = self.eval_sink.add(episode)
+        if eval_batch is not None:
+            await self.finalize_eval_batch(eval_batch)
+            pending.discard(eval_batch.env_name)
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
@@ -309,11 +308,8 @@ class EvalRunner:
         disp_drain = self.dispatcher.metrics.drained(train_envs=set(), eval_envs={env.name for env in self.eval_envs})
 
         parts = []
-        for env_name, _step, arrived, expected, buffered in sorted(self.eval_sink.batch_progress()):
-            part = f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name
-            if buffered:
-                part += f" (+{buffered} buffered)"
-            parts.append(part)
+        for env_name, _step, arrived, expected in sorted(self.eval_sink.batch_progress()):
+            parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
         progress_part = " | ".join(parts) if parts else "Idle"
 
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))
