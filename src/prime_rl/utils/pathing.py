@@ -244,6 +244,13 @@ def get_eval_plan_path(output_dir: Path) -> Path:
     return get_file_monitor_dir(output_dir) / "eval_plan.json"
 
 
+def get_platform_run_path(output_dir: Path) -> Path:
+    """What the prime monitor knows about the run on the platform: ``{"kind": "train",
+    "id", "url"}`` for a training run, ``{"kind": "eval", "run_id", "evaluations":
+    {env: {"step", "id", "url"}}}`` for an eval run, one entry per uploaded epoch."""
+    return output_dir / "monitors" / "prime" / "run.json"
+
+
 def get_file_monitor_dir(output_dir: Path) -> Path:
     """Everything the file monitor dumps locally: the metrics, and the traces with
     the annotations about them."""

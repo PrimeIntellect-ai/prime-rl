@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import orjson
 import prime_runs as pr
 from prime_cli.core.config import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -20,6 +23,21 @@ BASE_URL_VAR = "PRIME_API_BASE"
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
 FINISH_TIMEOUT = 60.0
+
+
+def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
+    """Leave the run's platform identity in the run directory for the dashboard's
+    "view on platform" link (atomic replace: a reader never sees a torn file)."""
+    path = get_platform_run_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_bytes(orjson.dumps(record, option=orjson.OPT_INDENT_2))
+    tmp.replace(path)
+
+
+def read_platform_record(output_dir: Path) -> dict[str, Any] | None:
+    path = get_platform_run_path(output_dir)
+    return orjson.loads(path.read_bytes()) if path.is_file() else None
 
 
 def _base_url() -> str | None:
@@ -46,7 +64,7 @@ class PrimeTrainMonitor(Monitor):
     config: PrimeTrainMonitorConfig
     run: pr.Run
 
-    async def init(self, config: BaseConfig | None = None) -> None:
+    async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         init_kwargs: dict[str, Any]
         if run_id := os.getenv("RUN_ID"):
             # A managed launch pre-created the platform run and injected its id -
@@ -87,6 +105,8 @@ class PrimeTrainMonitor(Monitor):
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to platform run {self.run.id} ({self.run.url}){attached}")
+            if output_dir is not None:
+                write_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
@@ -125,7 +145,7 @@ class PrimeEvalMonitor(Monitor):
 
     config: PrimeEvalMonitorConfig
 
-    async def init(self, config: BaseConfig | None = None) -> None:
+    async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.mode = os.getenv(pr.MODE_ENV) or "online"
         # A configured monitor must work: the SDK looks the key up at every epoch end,
         # which is too late to find out there is none.
@@ -134,9 +154,12 @@ class PrimeEvalMonitor(Monitor):
         self.model: str = config.model if config is not None else "unknown"
         self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
         self.run_id = os.getenv("PRL_RUN_ID")
+        self.output_dir = output_dir
         self._tasks: set[asyncio.Task] = set()
         if self.mode == "online":
             self.logger.info("Uploading finished eval epochs to the Prime platform")
+            if output_dir is not None:
+                write_platform_record(output_dir, {"kind": "eval", "run_id": self.run_id, "evaluations": {}})
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
@@ -185,6 +208,10 @@ class PrimeEvalMonitor(Monitor):
         with run:
             run.log_episodes(episodes)
             run.finish(pr.metrics.from_episodes(episodes))
+        if self.output_dir is not None and run.url:
+            record = read_platform_record(self.output_dir) or {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
+            record["evaluations"][env_name] = {"step": step, "id": run.id, "url": run.url}
+            write_platform_record(self.output_dir, record)
         return run.url
 
     async def finalize(self) -> None:

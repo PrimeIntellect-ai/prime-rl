@@ -97,6 +97,8 @@ The file monitor is on by default and feeds the [dashboard](training.md#dashboar
 uv run eval gsm8k -n 32 -r 4 -c 8 --monitors.prime
 ```
 
+With the prime monitor on, the run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per uploaded eval epoch), and the dashboard's top bar shows a `view on platform` link: a direct link for a training run or a single uploaded evaluation, a menu when several epochs uploaded, and a disabled button until the first upload lands.
+
 ## Online Evals
 
 Training runs evaluate the live policy on a step interval with the same eval sources:

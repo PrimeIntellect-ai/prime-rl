@@ -90,6 +90,13 @@ body {
 #tabs button:hover { color: var(--grey-6); }
 #tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 #topbar .toggle { margin-left: auto; }
+#topbar .toggle + .toggle { margin-left: 0; }
+#platform-wrap { margin-left: 14px; }
+#platform-wrap .platform { color: var(--accent); text-decoration: none; }
+#platform-wrap .platform.disabled { color: var(--grey-4); cursor: default; }
+#platform-menu { left: auto; right: 0; min-width: 180px; }
+#platform-menu .dd-opt { display: block; color: var(--grey-5); text-decoration: none; }
+#platform-menu .dd-opt:hover { color: var(--grey-6); }
 
 select, .search, .btn {
   background: transparent;

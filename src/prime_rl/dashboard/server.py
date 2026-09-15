@@ -31,7 +31,7 @@ from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
-from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
+from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
 
 try:
@@ -338,11 +338,14 @@ def run_meta(run_dir: Path) -> dict:
     finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
     plan_path = get_eval_plan_path(run_dir)
     eval_plan = orjson.loads(plan_path.read_bytes()) if plan_path.is_file() else {}
+    platform_path = get_platform_run_path(run_dir)
+    platform = orjson.loads(platform_path.read_bytes()) if platform_path.is_file() else None
     return {
         "name": run_dir.name,
         "type": run_type,
         "finished": finished,
         "eval_plan": eval_plan,
+        "platform": platform,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "has_validation": run_type == "sft" and config.get("val") is not None,

@@ -275,9 +275,36 @@ function envListField(envs, empty = "n/a") {
   return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
 }
 
+/* the top bar's link to the run on the Prime platform, from what the prime monitor left
+   in monitors/prime/run.json: one link for a training run or a single uploaded
+   evaluation, a menu when several epochs uploaded, a disabled button while none has */
+function renderPlatformLink(meta) {
+  const wrap = $("#platform-wrap"), link = $("#platform-link"), button = $("#platform-btn"), menu = $("#platform-menu");
+  const platform = meta?.platform;
+  wrap.hidden = !platform;
+  if (!platform) return;
+  const targets =
+    platform.kind === "train"
+      ? platform.url ? [["training run", platform.url]] : []
+      : Object.entries(platform.evaluations || {}).map(([env, e]) => [env, e.url]).filter(([, url]) => url);
+  const single = targets.length <= 1;
+  link.hidden = !single;
+  button.hidden = single;
+  if (single) {
+    const url = targets[0]?.[1];
+    link.classList.toggle("disabled", !url);
+    link.title = url ? "" : "the evaluation uploads when its epoch finishes";
+    if (url) link.href = url;
+    else link.removeAttribute("href");
+  } else {
+    menu.innerHTML = targets.map(([env, url]) => `<a class="dd-opt" href="${esc(url)}" target="_blank" rel="noopener">${esc(env)}</a>`).join("");
+  }
+}
+
 function renderOverview() {
   const el = $("#run-overview");
   const meta = state.meta;
+  renderPlatformLink(meta);
   if (!meta) {
     el.hidden = true;
     return;
