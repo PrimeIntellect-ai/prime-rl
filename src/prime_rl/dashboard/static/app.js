@@ -54,6 +54,7 @@ const state = {
     bin: null,
     episodes: [],
     live: [],
+    landing: new Map(),
     // both on means no filter; exactly one narrows to it (the last one on stays on)
     status: { live: prefs.traceStatus?.live ?? true, done: prefs.traceStatus?.done ?? true },
     total: 0,
@@ -219,7 +220,7 @@ async function selectRun(name, deferTab = false) {
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
-    key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0,
+    key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
   state.report = {
     ...state.report,
@@ -2984,7 +2985,7 @@ function episodeRowHtml(ep) {
 /* an in-flight rollout, streamed by its env server: the same columns, a pulsing dot for
    its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
-  return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
+  return `<tr class="live stage-${esc(r.stage)}${r.landedAt ? " landing" : ""}" ${r.trace && !r.landedAt ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
         <td><span class="live-dot" title="in flight"></span></td>
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
         <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
@@ -3003,7 +3004,10 @@ function liveRowHtml(r) {
    then the finished episodes, as the status filter allows */
 function traceRows() {
   const t = state.traces;
-  const live = t.status.live && t.mode === "stream" ? [...(t.live || [])].sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const streaming = t.status.live && t.mode === "stream";
+  // an episode already in the table hides its live row (the done event may trail it)
+  const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
+  const live = streaming ? [...(t.live || []), ...landingRows()].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
   const episodes = t.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
 }
@@ -3067,12 +3071,36 @@ async function loadLive({ render = true } = {}) {
   }
   if (state.traces !== traces) return false;
   if (!data.unchanged) {
-    traces.live = data.rows || [];
+    // a live row that vanished has finished: it stays in place as "landing" until its
+    // episode is in the table, and the table is refreshed now rather than at the next poll
+    const rows = data.rows || [];
+    const still = new Set(rows.map((r) => r.trace));
+    let landed = false;
+    for (const r of traces.live || []) {
+      if (r.trace && !still.has(r.trace)) {
+        traces.landing.set(r.trace, { ...r, stage: "done", landedAt: Date.now() });
+        landed = true;
+      }
+    }
+    traces.live = rows;
     traces.liveEtag = data.etag;
     traces.liveAt = Date.now();
+    if (landed && render && !traces.fetching) loadEpisodes({ poll: true });
   }
   if (render) renderLiveRows(); // an unchanged set still ticks its elapsed times
   return !data.unchanged;
+}
+
+const LANDING_MS = 15000;
+
+/* live rows whose episode has not reached the table yet; a row whose episode is
+   loaded, or that waited too long, is dropped */
+function landingRows() {
+  const t = state.traces;
+  const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
+  const now = Date.now();
+  for (const [trace, row] of t.landing) if (loaded.has(trace) || now - row.landedAt > LANDING_MS) t.landing.delete(trace);
+  return [...t.landing.values()];
 }
 
 /* the server stamps elapsed at the last full answer; the row keeps counting from there */

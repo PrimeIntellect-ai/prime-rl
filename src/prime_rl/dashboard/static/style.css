@@ -1687,6 +1687,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
    place of their number set them apart */
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: live-pulse 2s ease-out infinite; }
 #episode-table tr.err td:first-child { border-left: 2px solid var(--negative); }
+#episode-table tr.live.landing .live-dot { animation: none; opacity: 0.45; }
 .badge.stage { font-size: 9px; padding: 2px 5px; line-height: 12px; border-radius: 3px; background: var(--hairline); border-color: transparent; color: var(--accent); }
 #tm-live-label { margin-left: 8px; }
 #log-comp-menu .file-item.sub { padding-left: 22px; }
