@@ -206,7 +206,7 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null, timingPath: "", allStrips: new Set(),
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null, allStrips: new Set(),
   };
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
@@ -915,74 +915,57 @@ function comparePhasePaths(a, b) {
   return pa.length - pb.length;
 }
 
-/* the tree from the series keys: every `timing/a/b` is a node whose parent is `timing/a`
-   (or the episode root); the root's own duration is the episode's wall time */
-function timingTree(series) {
+/* the leaf phases of the timing hierarchy: a phase with children (agent → model,
+   harness) is shown as its children, so the pane is flat; the episode's wall time
+   minus every leaf is `other` */
+function timingLeaves(series) {
   const paths = Object.keys(series)
     .filter((k) => k.startsWith("timing/"))
     .map((k) => k.slice("timing/".length))
     .sort(comparePhasePaths);
-  const children = (path) => paths.filter((p) => (path ? p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/") : !p.includes("/")));
-  return { paths, children };
+  return paths.filter((p) => !paths.some((q) => q.startsWith(`${p}/`)));
 }
 
-function timingValue(series, path, i) {
-  return path ? series[`timing/${path}`]?.[i] : series.duration?.[i];
-}
-
-/* the node the pane is zoomed to; a path the current series does not have snaps back to
-   the episode */
-function timingPath() {
-  const path = state.metrics.timingPath || "";
-  return path && !state.metrics.evalSeries?.[`timing/${path}`] ? "" : path;
+/* a composition pane's shell: title, headline, a horizontal legend, then the plots */
+function compositionPaneHtml(cls, title, headline, parts, color) {
+  const legend = parts
+    .map((name) => `<span class="tm-node child" data-part="${esc(name)}"><span class="phase-dot" style="background:${color(name)}"></span>${esc(name)}</span>`)
+    .join("");
+  return (
+    `<div class="chart-card comp-pane ${cls}"><div class="chart-head"><div class="tm-crumbs"><span class="tm-crumb current">${esc(title)}</span></div>` +
+    `<div class="chart-last">${headline}</div></div>` +
+    `<div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`
+  );
 }
 
 function timingPaneHtml(idx) {
   const series = state.metrics.evalSeries || {};
-  const tree = timingTree(series);
-  if (!tree.paths.length) return "";
-  const path = timingPath();
-  const kids = tree.children(path);
-  // per-episode rows: the node's duration, each child's, and what is left over
+  const leaves = timingLeaves(series);
+  if (!leaves.length) return "";
+  const names = [...leaves.map((p) => p.split("/").pop()), "other"];
   const rows = idx
     .map((i) => {
-      const total = timingValue(series, path, i);
+      const total = series.duration?.[i];
       if (total == null) return null;
-      const parts = kids.map((kid) => ({ name: kid.split("/").pop(), path: kid, v: timingValue(series, kid, i) ?? 0 }));
-      const other = Math.max(0, total - parts.reduce((a, p) => a + p.v, 0));
-      if (kids.length) parts.push({ name: "other", path: null, v: other });
+      const parts = leaves.map((p) => ({ name: p.split("/").pop(), v: series[`timing/${p}`]?.[i] ?? 0 }));
+      parts.push({ name: "other", v: Math.max(0, total - parts.reduce((a, p) => a + p.v, 0)) });
       return { i, line: series.line?.[i], err: series.ok?.[i] === false, total, parts };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
   if (!rows.length) return "";
-  const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
-  const meanTotal = mean(rows.map((r) => r.total));
-  const segments = (kids.length ? [...kids.map((k) => ({ name: k.split("/").pop(), path: k })), { name: "other", path: null }] : [{ name: path.split("/").pop() || "episode", path }]).map((seg, k) => {
-    const values = rows.map((r) => (kids.length ? r.parts[k].v : r.total));
-    const stats = distStats(values);
-    return { ...seg, values, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: !!seg.path && seg.path !== path && tree.children(seg.path).length > 0 };
+  const meanTotal = rows.reduce((a, r) => a + r.total, 0) / rows.length;
+  const segments = names.map((name, k) => {
+    const stats = distStats(rows.map((r) => r.parts[k].v));
+    return { name, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
-  timingModel = { path, rows, segments, meanTotal, kids, tree };
-  const crumbs = ["", ...path.split("/").filter(Boolean).map((_, k, all) => all.slice(0, k + 1).join("/"))];
-  const crumbHtml = crumbs
-    .map((p, k) => `<span class="tm-crumb${p === path ? " current" : ""}" data-path="${esc(p)}">${esc(p ? p.split("/").pop() : "episode")}</span>`)
-    .join(`<span class="muted"> › </span>`);
-  // the legend is the whole tree, indented, with the zoomed node marked
-  const treeHtml = ["", ...tree.paths]
-    .map((p) => {
-      const depth = p ? p.split("/").length : 0;
-      const name = p ? p.split("/").pop() : "episode";
-      const onPath = path === p || path.startsWith(`${p}/`) || p === "";
-      const kid = kids.includes(p);
-      const cls = p === path ? " current" : kid ? " child" : onPath ? " ancestor" : "";
-      return `<div class="tm-node${cls}" data-path="${esc(p)}" data-part="${esc(name)}" style="padding-left:${depth * 12}px"><span class="phase-dot" style="background:${p ? phaseColor(name) : "var(--grey-6)"}"></span>${esc(name)}</div>`;
-    })
-    .join("");
-  return (
-    `<div class="chart-card comp-pane timing-pane"><div class="chart-head"><div class="tm-crumbs">${crumbHtml}</div>` +
-    `<div class="chart-last">${fmtDuration(meanTotal)} <span class="muted">mean · ${fmtCompact(rows.length)} episodes</span></div></div>` +
-    `<div class="tm-body"><div class="tm-plots"><div class="tm-icicle"></div><div class="tm-strips"></div></div><div class="tm-tree">${treeHtml}</div></div></div>`
+  timingModel = { rows, segments, meanTotal, kids: names };
+  return compositionPaneHtml(
+    "timing-pane",
+    "mean episode time",
+    `${fmtDuration(meanTotal)} <span class="muted">· ${fmtCompact(rows.length)} episodes</span>`,
+    names,
+    phaseColor
   );
 }
 
@@ -1005,14 +988,12 @@ function tokensPaneHtml(idx) {
     return { name, path: null, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
   tokensModel = { rows, segments, meanTotal, kids: ["input", "output"] };
-  const fmtTok = (v) => fmtCompact(Math.round(v));
-  const treeHtml = ["input", "output"]
-    .map((name) => `<div class="tm-node child" data-part="${name}"><span class="phase-dot" style="background:${TOKEN_COLORS[name]}"></span>${name}</div>`)
-    .join("");
-  return (
-    `<div class="chart-card comp-pane tokens-pane"><div class="chart-head"><div class="tm-crumbs"><span class="tm-crumb current">tokens</span></div>` +
-    `<div class="chart-last">${fmtTok(meanTotal)} <span class="muted">mean · ${fmtCompact(rows.length)} episodes</span></div></div>` +
-    `<div class="tm-body"><div class="tm-plots"><div class="tm-icicle"></div><div class="tm-strips"></div></div><div class="tm-tree">${treeHtml}</div></div></div>`
+  return compositionPaneHtml(
+    "tokens-pane",
+    "mean tokens",
+    `${fmtCompact(Math.round(meanTotal))} <span class="muted">· ${fmtCompact(rows.length)} episodes</span>`,
+    ["input", "output"],
+    (n) => TOKEN_COLORS[n]
   );
 }
 
@@ -1230,7 +1211,6 @@ function renderEvalPane(body) {
     evalSection("summary", summary);
     shown += 1;
   }
-  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)], { collapsible: true });
   const tokensHtml = tokensPaneHtml(idx);
   const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
   if (tokensHtml || cost) {
@@ -1243,6 +1223,7 @@ function renderEvalPane(body) {
     evalSection("timing breakdown", timingHtml);
     shown += 1;
   }
+  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)], { collapsible: true });
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
   drawSwarms();
   drawTiming();
@@ -1295,15 +1276,6 @@ $("#metrics-env").addEventListener("change", (e) => {
 });
 
 $("#metrics-body").addEventListener("click", (e) => {
-  const zoom = e.target.closest("[data-zoom], .tm-crumb[data-path], .tm-node[data-path]");
-  if (zoom) {
-    const target = zoom.dataset.zoom ?? zoom.dataset.path;
-    if (target !== timingPath()) {
-      state.metrics.timingPath = target;
-      renderMetricsBody();
-    }
-    return;
-  }
   const strip = e.target.closest(".tm-strip-seg[data-line]");
   if (strip) {
     openEpisode(+strip.dataset.line);

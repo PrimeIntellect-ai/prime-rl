@@ -376,15 +376,10 @@ details.eval-sec[open] > summary .sec-chev { transform: rotate(90deg); }
 .phase-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .timing-pane .chart-head { cursor: default; }
 .tm-crumbs { font-size: 12px; color: var(--grey-5); }
-.tm-crumb { cursor: pointer; }
-.tm-crumb:hover { color: var(--grey-6); }
-.tm-crumb.current { color: var(--grey-6); cursor: default; }
-.tm-body { display: flex; gap: 16px; margin-top: 8px; }
-.tm-plots { flex: 1; min-width: 0; }
+.tm-crumb.current { color: var(--grey-6); }
+.tm-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 10px; font-size: 11px; color: var(--grey-5); }
 .tm-icicle svg { display: block; margin-bottom: 10px; }
 .tm-seg text { fill: #111; font-size: 10px; pointer-events: none; }
-.tm-seg.zoomable rect { cursor: pointer; }
-.tm-seg.zoomable:hover rect { filter: brightness(1.15); }
 .tm-strip-seg { cursor: pointer; }
 .tm-strip-seg:hover { filter: brightness(1.25); }
 .tm-line.err { fill: var(--negative); }
@@ -403,12 +398,8 @@ details.eval-sec[open] > summary .sec-chev { transform: rotate(90deg); }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }
 .tm-strips.scroll { max-height: 560px; overflow-y: auto; }
-.tm-tree { width: 150px; flex-shrink: 0; font-size: 11px; color: var(--grey-4); }
-.tm-node { padding: 2px 0; cursor: pointer; white-space: nowrap; }
+.tm-node { white-space: nowrap; cursor: default; }
 .tm-node:hover { color: var(--grey-6); }
-.tm-node.ancestor { color: var(--grey-5); }
-.tm-node.child { color: var(--grey-5); }
-.tm-node.current { color: var(--grey-6); font-weight: 500; cursor: default; }
 /* constants as chips; counted dot plots for few-valued metrics */
 .const-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .const-chip { font-size: 12px; color: var(--grey-6); background: var(--grey-2); border: 1px solid var(--hairline); padding: 4px 10px; }
