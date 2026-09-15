@@ -1191,17 +1191,11 @@ function renderEvalPane(body) {
       .map((k) => episodeEntry(k, k.slice(prefix.length), fmt, { shape: "swarm" }));
   // constants sit in a chip row above the section's panes: a pane for a value every
   // episode shares would only take space
-  // sections are flat: a muted heading, the constants as chips, then the panes; a
-  // collapsible one folds under the same heading and starts closed
-  const evalSection = (name, inner, { collapsible = false } = {}) => {
-    body.insertAdjacentHTML(
-      "beforeend",
-      collapsible
-        ? `<details class="eval-sec"><summary class="eval-sec-title">${esc(name)}<span class="sec-chev">›</span></summary>${inner}</details>`
-        : `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`
-    );
+  // sections are flat: a muted heading, the constants as chips, then the panes
+  const evalSection = (name, inner) => {
+    body.insertAdjacentHTML("beforeend", `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`);
   };
-  const section = (name, entries, opts) => {
+  const section = (name, entries) => {
     const kept = entries.filter(Boolean);
     if (!kept.length) return 0;
     for (const entry of kept) swarmRegistry.set(entry.key, entry);
@@ -1210,8 +1204,7 @@ function renderEvalPane(body) {
     evalSection(
       name,
       (constants.length ? `<div class="const-row">${constants.map(constChipHtml).join("")}</div>` : "") +
-        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : ""),
-      opts
+        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : "")
     );
     return kept.length;
   };
@@ -1223,6 +1216,7 @@ function renderEvalPane(body) {
     evalSection("summary", summary);
     shown += 1;
   }
+  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
   const tokensHtml = tokensPaneHtml(idx);
   const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
   if (tokensHtml || cost) {
@@ -1235,7 +1229,6 @@ function renderEvalPane(body) {
     evalSection("timing", timingHtml);
     shown += 1;
   }
-  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)], { collapsible: true });
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
   drawSwarms();
   drawTiming();
@@ -1274,13 +1267,6 @@ $("#metrics-body").addEventListener("mousemove", (e) => {
   tip.style.left = `${Math.max(4, left)}px`;
   tip.style.top = `${e.clientY - host.top + 14}px`;
 });
-$("#metrics-body").addEventListener(
-  "toggle",
-  (e) => {
-    if (e.target.matches("details.eval-sec") && e.target.open) drawSwarms();
-  },
-  true
-);
 $("#metrics-body").addEventListener("mouseleave", () => {
   $("#swarm-tip").hidden = true;
   document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => highlightPart(p, null));

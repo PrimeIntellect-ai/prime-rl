@@ -368,11 +368,6 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 /* eval metrics sections: flat, a muted heading each */
 .eval-sec { margin-bottom: 18px; }
 .eval-sec-title { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--grey-4); border-bottom: 1px solid var(--hairline); padding-bottom: 4px; margin-bottom: 10px; }
-details.eval-sec > summary.eval-sec-title { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; }
-details.eval-sec > summary::-webkit-details-marker { display: none; }
-details.eval-sec > summary:hover { color: var(--grey-5); }
-details.eval-sec:not([open]) > summary.eval-sec-title { margin-bottom: 0; }
-details.eval-sec[open] > summary .sec-chev { transform: rotate(90deg); }
 .phase-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .timing-pane .chart-head { cursor: default; }
 .tm-crumbs { font-size: 12px; color: var(--grey-5); }
