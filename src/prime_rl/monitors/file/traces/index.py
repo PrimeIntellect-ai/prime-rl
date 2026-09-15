@@ -109,7 +109,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "id": rec.get("id"),
         "kind": episode_kind(rec),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
-        "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
+        # the env's name is the orchestrator's key for it (two sources can share a taskset
+        # id); a record without one, e.g. from a verifiers eval, falls back to the id
+        "env": (rec.get("env") or {}).get("name") or (rec.get("env") or {}).get("id"),
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
         "num_errors": len(rec.get("errors") or []),
