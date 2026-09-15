@@ -1131,11 +1131,14 @@ function summaryTilesHtml(idx, all, scoreEntries) {
       tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: rateClass(rate) });
     }
   }
-  for (const [key, label, fmt] of [["turns", "mean turns", fmtNum], ["branches", "mean branches", fmtNum], ["duration", "mean episode time", fmtDuration]]) {
-    const stats = distStats(idx.map((i) => series[key]?.[i]));
-    if (!stats) continue;
-    tile(label, fmt(stats.mean), `<div class="tip-head">${esc(label.replace("mean ", ""))} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmt(stats[k]))).join("")}`);
+  const turns = distStats(idx.map((i) => series.turns?.[i]));
+  const branches = distStats(idx.map((i) => series.branches?.[i]));
+  if (turns || branches) {
+    const block = (name, stats) => (stats ? `<div class="tip-head">${name} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtNum(stats[k]))).join("")}` : "");
+    tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"} / ${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
   }
+  const duration = distStats(idx.map((i) => series.duration?.[i]));
+  if (duration) tile("mean episode time", fmtDuration(duration.mean), `<div class="tip-head">episode time · ${fmtCompact(duration.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtDuration(duration[k]))).join("")}`);
   const tok = (v) => fmtCompact(Math.round(v));
   const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
   const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
