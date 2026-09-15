@@ -138,16 +138,17 @@ class PrimeTrainMonitor(Monitor):
 
 
 class PrimeEvalMonitor(Monitor):
-    """Uploads each finished eval epoch as an evaluation on the Prime platform through
-    ``prime_runs``: one run per source, opened when its epoch ends, fed every episode of
-    the epoch and finished with the epoch's aggregates. Metrics and streamed episodes are
-    not forwarded; the platform evaluation is the finished epoch."""
+    """Streams each eval epoch to the Prime platform through ``prime_runs``: one
+    evaluation per env and step, opened when the epoch starts (``log_eval_plan``), fed
+    every episode as it lands (``log_episodes``) and finished with the epoch's aggregates
+    (``log_eval_epoch``), so the platform page follows the run from its first episode.
+    Metrics are not forwarded; the evaluation is the epoch."""
 
     config: PrimeEvalMonitorConfig
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.mode = os.getenv(pr.MODE_ENV) or "online"
-        # A configured monitor must work: the SDK looks the key up at every epoch end,
+        # A configured monitor must work: the SDK looks the key up when an epoch opens,
         # which is too late to find out there is none.
         if self.mode == "online" and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
             raise RuntimeError("API key not found - set PRIME_API_KEY or run `prime login`")
@@ -155,9 +156,12 @@ class PrimeEvalMonitor(Monitor):
         self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
         self.run_id = os.getenv("PRL_RUN_ID")
         self.output_dir = output_dir
-        self._tasks: set[asyncio.Task] = set()
+        # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
+        # episodes do not retry the platform on every arrival
+        self.runs: dict[tuple[str, int], pr.Run | None] = {}
+        self._lock = asyncio.Lock()
         if self.mode == "online":
-            self.logger.info("Uploading finished eval epochs to the Prime platform")
+            self.logger.info("Streaming eval epochs to the Prime platform")
             if output_dir is not None:
                 write_platform_record(output_dir, {"kind": "eval", "run_id": self.run_id, "evaluations": {}})
         else:
@@ -166,29 +170,11 @@ class PrimeEvalMonitor(Monitor):
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         pass
 
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        pass
-
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
-        async def upload() -> None:
-            try:
-                url = await asyncio.to_thread(self.upload, env_name, step, episodes)
-            except Exception as e:
-                self.logger.warning(f"Failed to upload {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
-                return
-            if url:
-                self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {url}")
-
-        task = asyncio.get_running_loop().create_task(upload())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    def upload(self, env_name: str, step: int, episodes: list[vf.Episode]) -> str | None:
-        """Open the evaluation, queue its episodes and finish it with the epoch's
-        aggregates; return the viewer URL. Blocking: runs in a worker thread."""
+    def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
+        """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
         source = self.sources[env_name]
         name = self.config.name if len(self.sources) == 1 else f"{self.config.name}--{env_name}"
-        run = pr.init(
+        return pr.init(
             kind="eval",
             mode=self.mode,
             base_url=_base_url(),
@@ -196,24 +182,74 @@ class PrimeEvalMonitor(Monitor):
             environments=[source.env.taskset.id],
             model=self.model,
             framework="prime-rl",
+            finish_timeout=FINISH_TIMEOUT,
             config={
                 "model": self.model,
                 "step": step,
                 "run_id": self.run_id,
-                "num_examples": len({episode.task.data.idx for episode in episodes}),
+                "num_examples": expected // source.group_size if expected else None,
                 "rollouts_per_example": source.group_size,
             },
         )
-        # The context manager fails the run if anything below raises.
-        with run:
-            run.log_episodes(episodes)
-            run.finish(pr.metrics.from_episodes(episodes))
-        if self.output_dir is not None and run.url:
-            record = read_platform_record(self.output_dir) or {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
-            record["evaluations"][env_name] = {"step": step, "id": run.id, "url": run.url}
-            write_platform_record(self.output_dir, record)
-        return run.url
+
+    async def run_for(self, env_name: str, step: int, expected: int | None = None) -> pr.Run | None:
+        """The epoch's evaluation, opened on first use."""
+        key = (env_name, step)
+        async with self._lock:
+            if key in self.runs:
+                return self.runs[key]
+            try:
+                run = await asyncio.to_thread(self.open, env_name, step, expected)
+            except Exception as e:
+                self.logger.warning(f"Failed to open the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+                self.runs[key] = None
+                return None
+            self.runs[key] = run
+        if run.url:
+            self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}")
+            if self.output_dir is not None:
+                record = read_platform_record(self.output_dir) or {
+                    "kind": "eval",
+                    "run_id": self.run_id,
+                    "evaluations": {},
+                }
+                record["evaluations"][env_name] = {"step": step, "id": run.id, "url": run.url}
+                write_platform_record(self.output_dir, record)
+        return run
+
+    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
+        await self.run_for(env_name, step, expected)
+
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+        """Every eval episode as it lands (the ``all`` subset is the arrival stream)."""
+        if kind != "eval" or subset != "all":
+            return
+        by_env: dict[str, list[vf.Episode]] = {}
+        for episode in episodes:
+            if episode.env.name is not None:
+                by_env.setdefault(episode.env.name, []).append(episode)
+        for env_name, batch in by_env.items():
+            run = await self.run_for(env_name, step)
+            if run is not None:
+                await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
+
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+        run = await self.run_for(env_name, step)
+        if run is None:
+            return
+        try:
+            await asyncio.to_thread(run.finish, pr.metrics.from_episodes(episodes))
+        except Exception as e:
+            self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+            return
+        self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
 
     async def finalize(self) -> None:
-        # Drain in-flight uploads before the process exits.
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
+        for (env_name, step), run in self.runs.items():
+            if run is None or run.finished:
+                continue
+            try:
+                await asyncio.to_thread(run.finish, status=pr.RunStatus.CANCELLED, error="interrupted")
+            except Exception as e:
+                self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
