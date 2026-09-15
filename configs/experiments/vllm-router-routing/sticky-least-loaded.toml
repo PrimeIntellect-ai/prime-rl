@@ -13,7 +13,7 @@
 # Concurrency is fully default: the controller derives its start from the measured KV budget and
 # adapts from there.
 
-max_steps = 1000
+max_steps = 200
 seq_len = 131072
 
 # Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid
@@ -34,8 +34,8 @@ num_infer_nodes = 1
 num_infer_replicas = 3
 
 [monitors.wandb]
-project = "swe-ablations"
-name = "glm45air-swe-sticky-least-loaded"
+project = "vllm-router-routing"
+name = "sticky-least-loaded"
 
 [weight_broadcast]
 type = "nccl"
