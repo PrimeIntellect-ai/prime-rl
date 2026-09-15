@@ -127,6 +127,7 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/$USER/$SLURM_JOB_ID/flashinfer-cache"
 max_model_len = 131072
 tensor_parallel_size = 8
 enable_return_routed_experts = true
+compilation_config = { pass_config = { fuse_allreduce_rms = false } }
 
 [inference.router]
 type = "vllm-router"

@@ -205,7 +205,8 @@ def inference_local(config: InferenceConfig):
     # Apply the inference env (defaults + [inference.env_vars]) in-process so a standalone
     # `uv run inference` gets the same environment the rl/SLURM launchers inject into the
     # server subprocess. config.env_vars wins over the defaults; existing os.environ loses.
-    os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
+    inference_env = {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars}
+    os.environ.update({key: os.path.expandvars(value) for key, value in inference_env.items()})
 
     setup_vllm_env(config)
 
