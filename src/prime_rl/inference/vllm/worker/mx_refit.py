@@ -19,7 +19,12 @@ from prime_rl.utils.mx_verification import perturb_weights, snapshot_weights, ve
 def _step_of(version_uid: str) -> int:
     """Parse the step suffix from a ModelExpress version ID."""
     _, _, suffix = version_uid.rpartition(":")
-    return int(suffix) if suffix.isdigit() else -1
+    if not suffix.isdigit():
+        # We construct these ids ourselves, so an unparseable one is a bug
+        # rather than input to tolerate. Returning -1 let it reach the timing
+        # record as though it were a real step.
+        raise ValueError(f"Malformed ModelExpress version id: {version_uid!r}")
+    return int(suffix)
 
 
 if TYPE_CHECKING:
@@ -109,7 +114,11 @@ class MXRefitUpdateWorker(Worker):
                 record.update(
                     version_uid=version_uid, rank=self.rank, replica=int(os.environ.get("MX_REFIT_REPLICA_ID", "0"))
                 )
-                if record["passed"]:
-                    self._initial_snapshot = None
+                # Drop the snapshot either way. The server turns a failed record
+                # into a 500 naming the real cause; keeping it on failure only
+                # means the next refit fails instead on the unrelated startup
+                # version check, which reports step numbering for what was
+                # actually a verification mismatch.
+                self._initial_snapshot = None
                 return record
         return None

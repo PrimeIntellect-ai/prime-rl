@@ -11,9 +11,14 @@ MODELEXPRESS_REF="v0.3.0"
 REDIS_VERSION="7.4.2"
 REDIS_SHA256="4ddebbf09061cbb589011786febdb34f29767dd7f89dbe712d2b68e808af6a1f"
 
-if [[ $# -gt 0 ]]; then
-    echo "This installer does not accept arguments" >&2
+if [[ $# -gt 1 ]]; then
+    echo "Usage: $(basename "$0") [modelexpress-ref]" >&2
     exit 1
+elif [[ $# -eq 1 ]]; then
+    # mx_refit needs a server carrying RefitService, which the default tag does
+    # not have. Callers must be able to build the server from the same commit as
+    # the client, or the pair fails with UNIMPLEMENTED.
+    MODELEXPRESS_REF="$1"
 fi
 
 BIN_DIR="$PROJECT_DIR/third_party/modelexpress/bin"

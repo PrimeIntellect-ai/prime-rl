@@ -223,6 +223,7 @@ class MXRefitWeightSender(WeightSender):
         polls = sleeps = 0
         try:
             deadline = time.monotonic() + self.timeout
+            observed = False
             while True:
                 rpc_started = time.perf_counter()
                 polls += 1
@@ -230,8 +231,22 @@ class MXRefitWeightSender(WeightSender):
                     state = self._control.get_weight_version(uid).state
                 except grpc.RpcError as error:
                     if version_missing(error):
-                        return  # already retired == generator done
+                        # NOT_FOUND after we have seen the version means a
+                        # generator consumed and retired it. NOT_FOUND before
+                        # that means it never existed -- a failed publish or a
+                        # uid mismatch between the two sides -- and reporting a
+                        # successful broadcast would credit weights that were
+                        # never transferred.
+                        if observed:
+                            return
+                        raise RuntimeError(
+                            f"Version {uid} was never visible to the control plane. "
+                            "The publish did not land, or the trainer and inference "
+                            "sides disagree on the run identity."
+                        ) from error
                     raise
+                else:
+                    observed = True
                 finally:
                     rpc_s += time.perf_counter() - rpc_started
                 if state is WeightVersionState.RELEASING:

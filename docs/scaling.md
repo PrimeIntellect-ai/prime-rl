@@ -259,20 +259,20 @@ By default, the trainer and inference worker each allocate one transfer arena. S
 
 Set `[weight_broadcast] type = "mx_refit"` to have ModelExpress reshard the weights rather than transferring them rank-to-rank. The trainer publishes each rank's FSDP shard under a per-step version and inference pulls the slices it needs, so the two sides do not have to agree on a parallelism layout.
 
-The pinned `modelexpress==0.3.0` package does not provide the `modelexpress_rl` API required by this transport. Install a compatible ModelExpress checkout alongside the service binaries:
+The pinned `modelexpress==0.3.0` package does not provide the `modelexpress_rl` API required by this transport, and the `v0.3.0` server does not register `RefitService` at all. Build the server and the client from the same compatible commit:
 
 ```bash
-bash scripts/install_modelexpress.sh
-uv pip install --no-deps <modelexpress-checkout>/modelexpress_client/python
+MX_REF=<modelexpress-commit>            # must carry RefitService
+bash scripts/install_modelexpress.sh "$MX_REF"
+git clone https://github.com/ai-dynamo/modelexpress.git /tmp/mx && git -C /tmp/mx checkout "$MX_REF"
+uv pip install --no-deps /tmp/mx/modelexpress_client/python
 ```
 
-Selecting `mx_refit` without it fails immediately. Other transports do not import the client.
-
-The client and the ModelExpress server must be compatible. Both come from the same repository, and running a server older than the client risks `UNIMPLEMENTED` on newer control-plane calls, so build them from the same commit.
+Passing no argument to the installer builds the default `v0.3.0` server, which a newer client cannot use: `RegisterWorker` fails with `UNIMPLEMENTED`. Selecting `mx_refit` without the client installed fails immediately instead. Other transports do not import the client.
 
 Weight versions use `{run_uid}.{attempt}:{step}` IDs. `run_uid` separates runs on a long-lived server; the per-offer token permits a restarted trainer to republish a step.
 
-`mx_refit` enables Gloo for CPU metadata collectives while CUDA tensors use NCCL.
+The default `handshake_mode = "object"` broadcasts the offer token over the collective device torch already selects, so it needs no CPU backend. Setting `handshake_mode = "tensor"` requires Gloo, which the trainer then enables automatically.
 Set `MX_REFIT_STAGING_BYTES` to a positive byte budget to stream complete modules
 through a reusable GPU arena. A failed streaming installation requires restarting
 the inference engine. `MX_REFIT_TIMING_STDOUT=1` emits per-rank phase records to

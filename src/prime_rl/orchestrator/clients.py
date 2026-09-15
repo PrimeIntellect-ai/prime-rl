@@ -212,6 +212,17 @@ class AdminPlane:
         finally:
             if updated or transport != "mx_refit":
                 await _resume_engines(self.clients, phase_timer=phase_timer)
+            else:
+                # A failed mx_refit update can leave weights partially installed,
+                # so resuming would serve a mix of versions. Staying paused is
+                # deliberate, but it must not be silent: the trainer is released
+                # by the receiver's own cleanup and would otherwise advance while
+                # inference never serves again.
+                get_logger().error(
+                    "mx_refit weight update failed; inference engines remain paused to avoid "
+                    "serving partially installed weights. Restart the trainer and inference "
+                    "together to recover."
+                )
         if verify_initial:
             try:
                 with span("admin_initial_generation_after"):
