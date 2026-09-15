@@ -90,8 +90,7 @@ def format_log_message(
     eval: bool = False,
     inference: bool = False,
     job_log: bool = False,
-    train_env_names: list[str] | None = None,
-    eval_env_names: list[str] | None = None,
+    env_names: dict[str, list[str]] | None = None,
     num_train_nodes: int = 1,
     num_infer_nodes: int = 0,
 ) -> str:
@@ -118,25 +117,19 @@ def format_log_message(
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    if train_env_names or eval_env_names:
+    # Env servers, by split (``envs/<split>/<name>.log``); one split lists its envs
+    # directly, several list them under the split.
+    splits = {split: names for split, names in (env_names or {}).items() if names}
+    if splits:
         env_log_dir = log_dir / "envs"
         log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
-        if eval_env_names and not train_env_names:
-            # A standalone eval has one split: list its env servers directly under Envs.
-            for name in eval_env_names:
+        for split, names in splits.items():
+            indent, width = (i2, col - 1) if len(splits) == 1 else (i3, col - 2)
+            if len(splits) > 1:
+                log_lines.append(f"{i2}{f'{split.capitalize()}:':<{col - 1}}tail -F {env_log_dir}/{split}/*.log")
+            for name in names:
                 short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i2}{f'{short}:':<{col - 1}}tail -F {env_log_dir}/eval/{name}.log")
-            return "Logs:\n" + "\n".join(log_lines)
-        if train_env_names:
-            log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
-            for name in train_env_names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
-        if eval_env_names:
-            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*.log")
-            for name in eval_env_names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}.log")
+                log_lines.append(f"{indent}{f'{short}:':<{width}}tail -F {env_log_dir}/{split}/{name}.log")
     return "Logs:\n" + "\n".join(log_lines)
 
 
@@ -201,8 +194,12 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
-    # A label starting with a space is a sub-entry (an env server under its split).
-    lines.extend(f"  {f'{label}:':<{col}}{path}" for label, path in components)
+    # A label starting with a space is a sub-entry (an env server under its split);
+    # long names are cut like the Logs block cuts them so the paths stay aligned.
+    for label, path in components:
+        if len(label) > col - 2:
+            label = label[: col - 5] + "..."
+        lines.append(f"  {f'{label}:':<{col}}{path}")
     return "\n".join(lines)
 
 

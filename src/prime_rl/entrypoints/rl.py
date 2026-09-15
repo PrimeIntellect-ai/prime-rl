@@ -147,8 +147,7 @@ def rl_local(config: RLConfig):
             trainer=True,
             orchestrator=True,
             inference=config.inference is not None,
-            train_env_names=env_server_names(config, "train"),
-            eval_env_names=env_server_names(config, "eval"),
+            env_names={split: env_server_names(config, split) for split in ("train", "eval")},
         )
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
@@ -543,8 +542,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
-            train_env_names=train_env_names,
-            eval_env_names=eval_env_names,
+            env_names={"train": train_env_names, "eval": eval_env_names},
             **modelexpress_vars,
         )
     else:
@@ -584,8 +582,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
-            train_env_names=train_env_names,
-            eval_env_names=eval_env_names,
+            env_names={"train": train_env_names, "eval": eval_env_names},
             **modelexpress_vars,
         )
 
@@ -616,8 +613,7 @@ def rl_slurm(config: RLConfig):
             trainer=True,
             orchestrator=True,
             inference=True,
-            train_env_names=train_env_names,
-            eval_env_names=eval_env_names,
+            env_names={"train": train_env_names, "eval": eval_env_names},
         )
     else:
         write_subconfigs(config, config_dir)
@@ -632,8 +628,7 @@ def rl_slurm(config: RLConfig):
             trainer=True,
             orchestrator=has_infer,
             inference=has_infer,
-            train_env_names=train_env_names,
-            eval_env_names=eval_env_names,
+            env_names={"train": train_env_names, "eval": eval_env_names},
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes if has_infer else 0,
         )
