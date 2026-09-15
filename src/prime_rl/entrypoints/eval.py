@@ -144,9 +144,13 @@ def main():
     log_dashboard_url(logger, dashboard_url)
     from prime_rl.eval.eval import run_eval
 
-    # The console shows results and problems from here on; the log file keeps everything.
-    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="SUCCESS")
+    # Like the rl/sft launchers, the console stays quiet while the eval runs: results
+    # live in the dashboard and the log file, only errors surface here.
+    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
     asyncio.run(run_eval(config, log_dir))
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
+    logger.success("Eval finished!")
+    log_dashboard_url(logger, dashboard_url)
 
 
 if __name__ == "__main__":

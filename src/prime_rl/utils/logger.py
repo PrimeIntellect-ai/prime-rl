@@ -108,7 +108,7 @@ def setup_logger(
     """Install the prime-rl logger: a console sink (colorized, or JSON lines with
     ``json_logging``) and, with ``log_file``, a plain-text file sink for processes that
     no launcher redirects. ``console_level`` raises the console sink's threshold above
-    ``log_level`` (the file keeps everything), e.g. to show only results and warnings."""
+    ``log_level`` (the file keeps everything), e.g. to surface only errors while a run is in flight."""
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
 

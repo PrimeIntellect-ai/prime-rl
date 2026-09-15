@@ -69,13 +69,13 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process at `tcp://127.0.0.1:<env_server_base_port + index>` unless the source sets `serve.address`, in which case the server is externally managed.
 
-The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval), one per shape: single turn, multi turn (a sandboxed terminal task), resume, and multi env.
+The basic examples ship an `eval.toml` next to their `sft.toml` and `rl.toml` (e.g. [`examples/basic/reverse-text/eval.toml`](../examples/basic/reverse-text/eval.toml)) for the baseline and final evals of the walkthrough; override the model with `-m` to evaluate a trained checkpoint. Smoke configs against Prime Inference live in [`configs/debug/eval/`](../configs/debug/eval), one per shape: single turn, multi turn (a sandboxed terminal task against a local vLLM deployment with the adaptive band), resume, and multi env.
 
 ### Run Directory and Resume
 
 The run writes to `output_dir / run.name` (auto-generated as `<envs>--<model>--<short-id>`) with the same layout as training runs: `configs/attempt_<n>/` (the launch command, TOML, and resolved `eval.json`), `logs/attempt_<n>/eval.log` plus one `envs/eval/<name>.log` per source, and `monitors/file/` with `metrics.jsonl` and the trace stream. `--clean` wipes a used run directory, `--dry-run` writes the config and exits, `--no-dashboard` skips the dashboard daemon.
 
-The console shows the start line, log paths and dashboard URL, then only per-env results and warnings; `eval.log` keeps everything.
+Like the training launchers, the console shows the start line, log paths and dashboard URL, stays quiet while the eval runs (only errors surface), and ends with the success line and the dashboard URL again. Results and progress are in the dashboard; `eval.log` keeps everything.
 
 The task cursor is checkpointed after every completed group (`[ckpt]`: `interval` counts completed groups, `keep_last` prunes older cursors; disable with `--no-ckpt`). Relaunch with the same `--run.name` and `--resume` (or `--resume.step N`) to skip the completed prefix; partially completed groups are retried:
 

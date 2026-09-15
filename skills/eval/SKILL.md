@@ -57,7 +57,7 @@ env.agent.runtime.type = "subprocess"
 [monitors.prime]    # optional: upload each source's epoch as a platform evaluation
 ```
 
-Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Ready-made configs: `examples/basic/<env>/eval.toml` (the walkthroughs' baseline/final evals against a local server; `-m` swaps in a trained checkpoint) and `configs/debug/eval/{single-turn,multi-turn,resume,multi-env}.toml` (gsm8k, terminal-bench-2 fix-git in a sandbox, an interruptible gsm8k run, and both envs together, all against Prime Inference).
+Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Ready-made configs: `examples/basic/<env>/eval.toml` (the walkthroughs' baseline/final evals against a local server; `-m` swaps in a trained checkpoint) and `configs/debug/eval/{single-turn,multi-turn,resume,multi-env}.toml` (gsm8k on Prime Inference; terminal-bench-2 fix-git in sandboxes against a local `uv run inference` dp=2 deployment with the adaptive band, the command is in the file; an interruptible gsm8k run; and both envs together).
 
 - Entrypoint: `src/prime_rl/entrypoints/eval.py` (shorthand expansion), implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
 - Env servers: spawned by the eval process at `tcp://127.0.0.1:<env_server_base_port + index>` unless the source sets `serve.address` (externally managed).
@@ -72,7 +72,7 @@ Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`; `ls -t out
 {run_dir}/
 ├── configs/latest/            # command.txt, the launch TOML, resolved/eval.json
 ├── logs/latest/
-│   ├── eval.log               # the eval process (everything; the console only shows results + warnings)
+│   ├── eval.log               # the eval process (everything; the console only shows errors + the final success line)
 │   └── envs/eval/{name}.log   # one log per env server
 ├── monitors/file/             # metrics.jsonl + the trace stream (dashboard reads these)
 └── checkpoints/step_{cursor}/eval/progress.pt   # task cursor, newest kept
@@ -83,7 +83,7 @@ Check-in:
 ```bash
 tail -F {run_dir}/logs/latest/eval.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/eval.log {run_dir}/logs/latest/envs/eval/*.log
-grep SUCCESS {run_dir}/logs/latest/eval.log            # one "Evaluated <env> ... Reward 0.xxxx" line per source
+grep SUCCESS {run_dir}/logs/latest/eval.log            # one "Evaluated <env> ... Reward 0.xxxx" line per source (file only; the console is quiet while it runs)
 ```
 
 Metrics (`monitors/file/metrics.jsonl`, W&B, dashboard) live under `eval/<env>/all/<agent>/…`: `reward/mean`, `is_truncated/mean` (rollouts cut by the length limit — raise `sampling.max_completion_tokens`), `has_error/mean`, plus the taskset's own metrics; `eval/<env>/all/seq_len/mean` is the episode length. Validate a result by reading a few traces in the dashboard (`dashboard` skill) rather than trusting the mean alone.
