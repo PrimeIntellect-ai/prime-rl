@@ -241,7 +241,7 @@ def get_batch_dir(output_dir: Path) -> Path:
 
 def get_eval_plan_path(output_dir: Path) -> Path:
     """``{env: {step: expected episodes}}`` for every eval epoch the run has started."""
-    return get_file_monitor_dir(output_dir) / "eval_plan.json"
+    return get_file_monitor_dir(output_dir) / "plan.json"
 
 
 def get_platform_run_path(output_dir: Path) -> Path:
