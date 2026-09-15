@@ -1,24 +1,10 @@
 # Single env, multi turn: terminal-bench-2's fix-git task with the bash harness
 # in prime sandboxes (PRIME_API_KEY authenticates sandbox creation), 16 rollouts
-# against a local vLLM deployment with the adaptive concurrency band: it starts
-# at 2 in-flight episodes and grows with the engines' KV headroom. Completions go
-# through the router (8000); the model check and the /metrics polls that drive
-# the band hit the engine directly (8100).
+# against Prime Inference on the default model.
 #
-#   uv run inference --vllm.model Qwen/Qwen3.5-9B --vllm.data-parallel-size 2
 #   uv run eval @ configs/debug/eval/multi-turn.toml
 
-model = "Qwen/Qwen3.5-9B"
 group_size = 16
-
-[client]
-base_url = "http://localhost:8000/v1"
-admin_base_url = ["http://localhost:8100/v1"]
-
-[concurrency]
-initial_inflight = 2
-min_inflight = 1
-max_inflight = 64
 
 [[source]]
 env.taskset.id = "terminal-bench-2"
