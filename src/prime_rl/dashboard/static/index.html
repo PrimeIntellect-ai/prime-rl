@@ -35,11 +35,6 @@
 <main>
   <section id="tab-metrics">
     <div class="controls">
-      <div class="seg" id="metrics-mode">
-        <button data-mode="overview" class="active">Overview</button>
-        <button data-mode="all">All</button>
-      </div>
-      <div class="seg" id="eval-envs" hidden></div>
       <div id="metrics-filter-wrap" class="dd-wrap" hidden>
         <button id="metrics-filter-btn" class="btn dd-btn" title="filter">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
@@ -47,8 +42,15 @@
         </button>
         <div class="dd-menu dd-filters" id="metrics-filter-menu" hidden>
           <div class="dd-sec">filter</div>
+          <div class="dd-row"><span class="t-label">env</span>
+            <div class="seg toggle-seg" id="metrics-env-filter"></div>
+          </div>
           <label class="toggle dd-row"><input type="checkbox" id="metrics-errors"><span class="dot"></span>include errors</label>
         </div>
+      </div>
+      <div class="seg" id="metrics-mode">
+        <button data-mode="overview" class="active">Overview</button>
+        <button data-mode="all">All</button>
       </div>
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>

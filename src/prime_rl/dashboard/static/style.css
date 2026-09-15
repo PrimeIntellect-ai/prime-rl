@@ -338,7 +338,13 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 0; }
 /* eval progress: one cell per expected episode */
 .eval-progress { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-.ep-head { display: flex; align-items: baseline; gap: 12px; }
+.ep-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.ep-env { font-size: 12px; color: var(--grey-6); display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
+.env-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.ep-row { display: flex; align-items: center; gap: 12px; }
+.ep-row .ep-blocks { flex: 1; }
+.ep-pct { font-size: 13px; color: var(--grey-6); min-width: 4ch; text-align: right; }
+#metrics-env-filter button { display: inline-flex; align-items: center; }
 .ep-head .name { font-size: 14px; color: var(--grey-6); }
 .ep-blocks { display: flex; gap: 2px; height: 28px; }
 .ep-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); }
