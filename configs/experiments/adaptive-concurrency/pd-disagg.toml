@@ -1,26 +1,26 @@
 [run]
-name = "terminal-lego-pd-disagg-v2"
+name = "terminal-lego-pd-disagg-v3"
 
 [env_vars]
 TMPDIR = "/tmp/adaptive-concurrency-pd"
 TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-pd/triton"
 
 [slurm]
-job_name = "ac-pd-terminal-lego-v2"
-pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-pd ; timeout 120 prime sandbox delete --label "ac-pd-terminal-lego-v2" -y || true'
+job_name = "ac-pd-terminal-lego-v3"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-pd ; timeout 120 prime sandbox delete --label "ac-pd-terminal-lego-v3" -y || true'
 
 [deployment]
 num_infer_nodes = 2
 num_infer_replicas = 1
 
 [monitors.wandb]
-name = "terminal-lego-pd-disagg-v2"
+name = "terminal-lego-pd-disagg-v3"
 
 [[orchestrator.train.source]]
 name = "terminal-lego"
 env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["ac-pd-terminal-lego-v2"]
+env.agent.runtime.labels = ["ac-pd-terminal-lego-v3"]
 
 [inference.deployment]
 type = "disaggregated"

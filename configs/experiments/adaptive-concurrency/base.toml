@@ -45,6 +45,9 @@ batch_size = 128
 group_size = 8
 max_off_policy_steps = 32
 
+[orchestrator.concurrency]
+max_inflight = 2048
+
 [orchestrator.algo]
 type = "grpo"
 

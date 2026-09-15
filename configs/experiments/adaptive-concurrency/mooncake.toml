@@ -1,26 +1,26 @@
 [run]
-name = "terminal-lego-mooncake-v2"
+name = "terminal-lego-mooncake-v3"
 
 [env_vars]
 TMPDIR = "/tmp/adaptive-concurrency-mooncake"
 TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-mooncake/triton"
 
 [slurm]
-job_name = "ac-mooncake-terminal-lego-v2"
-pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-mooncake ; timeout 120 prime sandbox delete --label "ac-mooncake-terminal-lego-v2" -y || true'
+job_name = "ac-mooncake-terminal-lego-v3"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-mooncake ; timeout 120 prime sandbox delete --label "ac-mooncake-terminal-lego-v3" -y || true'
 
 [deployment]
 num_infer_nodes = 1
-num_infer_replicas = 2
+num_infer_replicas = 1
 
 [monitors.wandb]
-name = "terminal-lego-mooncake-v2"
+name = "terminal-lego-mooncake-v3"
 
 [[orchestrator.train.source]]
 name = "terminal-lego"
 env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["ac-mooncake-terminal-lego-v2"]
+env.agent.runtime.labels = ["ac-mooncake-terminal-lego-v3"]
 
 [inference.kv_cache_offload]
 type = "mooncake"
