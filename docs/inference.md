@@ -17,6 +17,7 @@ This page covers the inference configuration and the supported features/deployme
     - [KV Cache Offload](#kv-cache-offload)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
+    - [FP8 KV Cache](#fp8-kv-cache)
     - [Router Replay](#router-replay)
 
 
@@ -280,6 +281,19 @@ max_num_seqs = 256
 ```
 
 On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (or `--vllm.max-num-seqs 256` for the standalone inference entrypoint); dict-valued arguments take a JSON string, e.g. `--vllm.compilation-config '{"cudagraph_mode": "NONE"}'`.
+
+### FP8 KV Cache
+
+`inference.vllm.kv_cache_dtype` selects the storage dtype of the attention KV cache. Quantized dtypes such as `"fp8"` (or `"fp8_e4m3"` / `"fp8_e5m2"`) store K/V projections in 8 bits, halving the KV memory per token and doubling the rollout token budget — at the cost of a small accuracy drop in generation, since cached K/V tensors are rounded to 8-bit precision.
+
+```toml
+[inference.vllm]
+kv_cache_dtype = "fp8"
+```
+
+Everything downstream adapts automatically: the orchestrator derives rollout concurrency from the engines' live `kv_cache_size_tokens` metric, so the doubled budget flows into dispatching without extra config. For hybrid models (e.g. Qwen3.5's linear-attention layers) only the full-attention layers allocate KV cache; the linear-attention state is unaffected.
+
+The trainer needs no matching knob: it recomputes logprobs with full forward passes (no KV cache), and the GRPO importance ratios absorb the small inference-side drift from the quantized cache — the same mechanism that absorbs other trainer↔inference numerics differences (FP32 LM head, router replay). On the trainer, FP8 memory savings come from weight/compute quantization instead (`trainer.model.quantization = "fp8"`).
 
 ### Router Replay
 

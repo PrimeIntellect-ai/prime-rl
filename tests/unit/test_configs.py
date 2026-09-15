@@ -925,6 +925,21 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
+def test_kv_cache_dtype_reaches_vllm_namespace():
+    """inference.vllm.kv_cache_dtype must land on the vLLM serve namespace, and unknown
+    values must be rejected at parse time (typed Literal, not blind pass-through)."""
+    config = InferenceConfig(vllm={"kv_cache_dtype": "fp8"})
+    assert config.vllm.kv_cache_dtype == "fp8"
+    namespace = config.to_namespace()
+    assert namespace.kv_cache_dtype == "fp8"
+
+    # Default stays vLLM's own default.
+    assert InferenceConfig().to_namespace().kv_cache_dtype == "auto"
+
+    with pytest.raises(ValidationError):
+        InferenceConfig(vllm={"kv_cache_dtype": "fp8_e9m10"})
+
+
 def test_combined_replay_uses_v2_runner(monkeypatch):
     from prime_rl.inference.server import setup_vllm_env
 
