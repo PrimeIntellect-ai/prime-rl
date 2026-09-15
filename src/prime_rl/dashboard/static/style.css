@@ -1602,3 +1602,5 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .badge.stage.stage-error { color: #ef4444; }
 #tm-live-label { margin-left: 8px; }
 #log-comp-menu .file-item.sub { padding-left: 22px; }
+#tm-list .tm-item.live { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+#tm-list .tm-item.live.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }

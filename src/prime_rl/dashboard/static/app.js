@@ -2292,6 +2292,7 @@ async function loadLive() {
 function renderLiveRows() {
   renderEpisodeRows();
   $("#trace-status").textContent = traceStatusText();
+  if (!$("#trace-modal").hidden) renderRolloutList(); // the sidebar lists the live rollouts too
   // a live trace open in the viewer follows its stream
   if (currentLive && !$("#trace-modal").hidden) {
     if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
@@ -2337,11 +2338,13 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
   traceView = "transcript"; // the timeline and token views read the finished stream
   const live = episode.live || {};
   $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
-  // a refresh redraws the transcript under the reader; keep their place in it
+  // follow the rollout: stay pinned to the newest turn unless the reader scrolled up
   const messages = $("#tm-messages");
-  const scrollTop = refresh ? messages.scrollTop : 0;
+  const pinned = !refresh || messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 40;
+  const scrollTop = messages.scrollTop;
   renderEpisode();
-  if (refresh) messages.scrollTop = scrollTop;
+  renderRolloutList();
+  messages.scrollTop = pinned ? messages.scrollHeight : scrollTop;
 }
 
 async function refreshTraces() {
@@ -2405,13 +2408,32 @@ function copyText(text, el) {
     .catch(() => {});
 }
 
+/* the sidebar walks the same rows as the table: in-flight rollouts first (stream
+   mode), then the finished episodes */
 function filteredRollouts() {
-  return state.traces.episodes || [];
+  const t = state.traces;
+  const live = t.mode === "stream" && t.status !== "done" ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status !== "live" ? t.episodes || [] : [];
+  return [...live.map((r) => ({ live: r })), ...episodes];
 }
 
-function tmItemHtml(e) {
+function rolloutActive(item) {
+  return item.live ? item.live.trace === currentLive : currentLine != null && item.line === currentLine;
+}
+
+function tmItemHtml(item) {
+  if (item.live) {
+    const r = item.live;
+    return (
+      `<div class="tm-item live ${rolloutActive(item) ? "active" : ""}" data-live="${esc(r.trace)}" title="${esc(r.last ?? "")}">` +
+      `<span class="tm-num"><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></span>` +
+      `<span class="tm-env muted" title="${esc(r.task ?? "")}">${esc(r.env ?? "")} · ${esc(r.task ?? "")}</span>` +
+      `<span class="tm-reward muted">t${r.turns ?? 0}</span></div>`
+    );
+  }
+  const e = item;
   return (
-    `<div class="tm-item ${e.line === currentLine ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -2423,7 +2445,8 @@ let tmItemH = 0;
 function renderRolloutWindow() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  $("#tm-count").textContent = fmtCompact(state.traces.total || episodes.length);
+  const live = episodes.filter((item) => item.live).length;
+  $("#tm-count").textContent = (live ? `${live} live + ` : "") + fmtCompact(state.traces.total || episodes.length - live);
   if (!episodes.length) {
     list.innerHTML = "";
     return;
@@ -2443,7 +2466,7 @@ function renderRolloutWindow() {
 function renderRolloutList() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  const activeIdx = episodes.findIndex((e) => e.line === currentLine);
+  const activeIdx = episodes.findIndex(rolloutActive);
   if (activeIdx >= 0 && tmItemH) {
     const top = activeIdx * tmItemH;
     if (top < list.scrollTop || top + tmItemH > list.scrollTop + list.clientHeight)
@@ -2454,10 +2477,12 @@ function renderRolloutList() {
 
 function renderSemanticEpisodeNav() {
   const episodes = filteredRollouts();
-  const index = episodes.findIndex((episode) => episode.line === currentLine);
+  const index = episodes.findIndex(rolloutActive);
   const episode = episodes[index];
   $("#tm-episode-label").textContent = episode
-    ? `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
+    ? episode.live
+      ? `live · ${episode.live.task ?? episode.live.env ?? ""}`
+      : `#${episode.line}${episode.env ? ` · ${episode.env}` : ""}`
     : "episode";
   $("#tm-episode-prev").disabled = index <= 0;
   const hasLoadedNext = index >= 0 && index < episodes.length - 1;
@@ -2467,13 +2492,15 @@ function renderSemanticEpisodeNav() {
 
 async function stepRollout(delta) {
   let episodes = filteredRollouts();
-  const idx = episodes.findIndex((e) => e.line === currentLine);
+  const idx = episodes.findIndex(rolloutActive);
   if (delta > 0 && idx + delta >= episodes.length) {
     await loadMoreEpisodes();
     episodes = filteredRollouts();
   }
   const next = episodes[idx + delta];
-  if (next) openEpisode(next.line);
+  if (!next) return;
+  if (next.live) openLiveTrace(next.live.trace);
+  else openEpisode(next.line);
 }
 
 function renderModalStep() {
@@ -5554,7 +5581,7 @@ async function setTraceMode(mode, inModal = false) {
    it survives the filter, land on the first one otherwise */
 async function refreshModalList() {
   if ($("#trace-modal").hidden) return;
-  if (filteredRollouts().some((e) => e.line === currentLine)) renderRolloutList();
+  if (filteredRollouts().some(rolloutActive)) renderRolloutList();
   else await reopenFirstEpisode();
 }
 
@@ -5918,6 +5945,8 @@ $("#tm-evidence-tabs").addEventListener("click", (e) => {
   if (btn) { currentEvidenceView = btn.dataset.evidence; renderEpisode(); }
 });
 $("#tm-list").addEventListener("click", (e) => {
+  const live = e.target.closest("[data-live]");
+  if (live) return openLiveTrace(live.dataset.live);
   const item = e.target.closest("[data-line]");
   if (item) openEpisode(+item.dataset.line);
 });
