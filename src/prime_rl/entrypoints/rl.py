@@ -20,7 +20,6 @@ from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
-    env_address_file,
     format_config_message,
     format_log_message,
     get_ckpt_dir,
@@ -29,6 +28,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
+    write_env_server_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -108,20 +108,9 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
-    # orchestrator picks it up. The source's env/serve blocks carry over; its other knobs
-    # (sampling, algo, name, ...) are orchestrator-side.
+    # orchestrator picks it up.
     for split, source in env_servers(config):
-        env_dir = output_dir / ENVS_DIR / split
-        env_dir.mkdir(parents=True, exist_ok=True)
-        source_dict = dump_resolved_config(source)
-        env_server_dict = {
-            "env": source_dict["env"],
-            "serve": source_dict.get("serve", {}),
-            "address_file": env_address_file(output_dir, split, source.resolved_name).as_posix(),
-            "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
-        }
-        with open(env_dir / f"{source.resolved_name}.json", "w") as f:
-            json.dump(env_server_dict, f, indent=2)
+        write_env_server_config(output_dir, split, source, config.orchestrator.log)
 
 
 def rl_local(config: RLConfig):

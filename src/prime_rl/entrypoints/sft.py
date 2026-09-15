@@ -17,7 +17,6 @@ from prime_rl.utils.config import cli, dump_resolved_config, find_package_resour
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
-    env_address_file,
     format_config_message,
     format_log_message,
     get_broadcast_dir,
@@ -27,6 +26,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
+    write_env_server_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -133,17 +133,7 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
     # OS-assigned port and publishes it to the source's address file, where the
     # online-eval process picks it up.
     for source in eval_env_servers(config):
-        env_dir = config_dir / ENVS_DIR / "eval"
-        env_dir.mkdir(parents=True, exist_ok=True)
-        source_dict = dump_resolved_config(source)
-        env_server_dict = {
-            "env": source_dict["env"],
-            "serve": source_dict.get("serve") or {},
-            "address_file": env_address_file(config_dir, "eval", source.resolved_name).as_posix(),
-            "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
-        }
-        with open(env_dir / f"{source.resolved_name}.json", "w") as f:
-            json.dump(env_server_dict, f, indent=2)
+        write_env_server_config(config_dir, "eval", source, config.log)
 
 
 def write_slurm_script(

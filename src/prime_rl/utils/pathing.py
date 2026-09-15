@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -7,6 +8,9 @@ import tempfile
 import time
 from pathlib import Path
 
+from prime_rl.configs.orchestrator import EnvConfig
+from prime_rl.configs.shared import LogConfig
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
 
@@ -221,6 +225,25 @@ def env_address_file(config_dir: Path, split: str, name: str) -> Path:
     OS-assigned port, so two runs on one host never race for the same one; a client
     waits for this file instead of assuming a port."""
     return config_dir / "envs" / split / f"{name}.address"
+
+
+def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
+    """Write the ``EnvServerConfig`` of a launcher-managed source
+    (``envs/<split>/<name>.json``) and return its path. The source's env and serve
+    blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
+    server publishes the OS-assigned port it binds to the address file next to it."""
+    env_dir = config_dir / "envs" / split
+    env_dir.mkdir(parents=True, exist_ok=True)
+    source_dict = dump_resolved_config(source)
+    server_config = {
+        "env": source_dict["env"],
+        "serve": source_dict.get("serve") or {},
+        "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
+        "log": {"level": log.vf_level, "json_logging": log.json_logging},
+    }
+    path = env_dir / f"{source.resolved_name}.json"
+    path.write_text(json.dumps(server_config, indent=2))
+    return path
 
 
 def get_launcher_dir(output_dir: Path) -> Path:

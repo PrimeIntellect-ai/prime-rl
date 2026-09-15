@@ -7,21 +7,18 @@ admits episodes under the adaptive ``ConcurrencyController``, fed by the
 measurements and are never cancelled on load - a controller cut only blocks admission
 until the pool drains.
 
-Env servers: sources without an explicit ``serve.address`` get an env server spawned
-by this process, found through the address it publishes; sources with one are externally
-managed (e.g. spawned by the ``sft`` launcher, which spawns them itself and leaves the
-online config)."""
+Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
+``rl``: a source without an explicit ``serve.address`` is found through the address file
+its server publishes; one with an address is reached directly."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from subprocess import Popen
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
@@ -47,10 +44,8 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     set_default_executor,
 )
-from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import env_address_file, get_config_dir
-from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes
+from prime_rl.utils.pathing import get_config_dir
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
@@ -60,14 +55,12 @@ POLL_INTERVAL_S = 2.0
 
 
 class EvalRunner:
-    def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path, log_dir: Path) -> None:
+    def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        self.log_dir = log_dir
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
-        self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
         # Assigned in setup(); None-initialized so stop() can tear down a
@@ -90,8 +83,6 @@ class EvalRunner:
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
         self.admin_plane = AdminPlane(config.client)
-
-        self.spawn_env_servers()
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
@@ -169,40 +160,6 @@ class EvalRunner:
             interval=config.log.interval,
             wandb_enabled=wandb_enabled,
         )
-
-    def spawn_env_servers(self) -> None:
-        """Spawn one env server per source without an explicit ``serve.address``. Each
-        binds an OS-assigned port and publishes it to its address file, which the env
-        client reads."""
-        config = self.config
-        config_dir = get_config_dir(self.run_dir)
-        env_config_dir = config_dir / "envs" / "eval"
-        log_dir = self.log_dir / "envs" / "eval"
-        for source in config.source:
-            if source.serve.address is not None:
-                continue
-            name = source.resolved_name
-            source_dict = dump_resolved_config(source)
-            server_config = {
-                "env": source_dict["env"],
-                "serve": source_dict.get("serve") or {},
-                "address_file": env_address_file(config_dir, "eval", name).as_posix(),
-                "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
-            }
-            env_config_dir.mkdir(parents=True, exist_ok=True)
-            config_path = env_config_dir / f"{name}.json"
-            config_path.write_text(json.dumps(server_config, indent=2))
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = log_dir / f"{name}.log"
-            get_logger().info(f"Starting env server {name} (logs: {log_path})")
-            with open(log_path, "w") as log_file:
-                process = Popen(
-                    ["env-server", "@", config_path.as_posix()],
-                    env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            self.env_server_procs.append(process)
 
     async def start(self) -> None:
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
@@ -385,4 +342,3 @@ class EvalRunner:
             await self.clients.aclose()
         if self.admin_plane is not None:
             await self.admin_plane.aclose()
-        cleanup_processes(self.env_server_procs)

@@ -12,11 +12,12 @@ import sys
 import tomllib
 import uuid
 from pathlib import Path
+from subprocess import Popen
 from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.utils.config import cli, dump_resolved_config
-from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, set_proc_title
 
 USAGE = """\
 usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [options]
@@ -118,6 +119,7 @@ def main():
         format_log_message,
         prepare_attempt_dirs,
         validate_run_dir,
+        write_env_server_config,
         write_launch_artifacts,
     )
 
@@ -140,10 +142,17 @@ def main():
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
-    env_names = [source.resolved_name for source in config.source if source.serve.address is None]
-    if env_names:
+    # One env server per source without an explicit `serve.address`, like the rl launcher's:
+    # `env-server @ <path>` binds an OS-assigned port and publishes it to the source's
+    # address file, where the eval picks it up.
+    env_servers = [source for source in config.source if source.serve.address is None]
+    env_names = [source.resolved_name for source in env_servers]
+    if env_servers:
         components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
-        components.extend((f" {name}", config_dir / "envs" / "eval" / f"{name}.json") for name in env_names)
+        for source in env_servers:
+            components.append(
+                (f" {source.resolved_name}", write_env_server_config(config_dir, "eval", source, config.log))
+            )
     logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
     if config.dry_run:
         logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
@@ -154,10 +163,29 @@ def main():
     log_dashboard_url(logger, dashboard_url)
     from prime_rl.eval.eval import run_eval
 
+    processes: list[Popen] = []
+    for source in env_servers:
+        name = source.resolved_name
+        logger.info(f"Starting {name} server")
+        env_server_log = log_dir / "envs" / "eval" / f"{name}.log"
+        env_server_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(env_server_log, "w") as log_file_handle:
+            processes.append(
+                Popen(
+                    ["env-server", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
+                    env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
+                    stdout=log_file_handle,
+                    stderr=log_file_handle,
+                )
+            )
+
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
-    asyncio.run(run_eval(config, log_dir))
+    try:
+        asyncio.run(run_eval(config))
+    finally:
+        cleanup_processes(processes)
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).success("Eval finished!")
 
 

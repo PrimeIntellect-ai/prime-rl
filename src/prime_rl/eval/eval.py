@@ -8,8 +8,6 @@ platform when ``monitors.prime`` is set."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval.ckpt import CheckpointManager
@@ -19,9 +17,9 @@ from prime_rl.utils.utils import clean_exit
 
 
 class Eval:
-    def __init__(self, config: EvalConfig, log_dir: Path) -> None:
+    def __init__(self, config: EvalConfig) -> None:
         self.config = config
-        self.runner = EvalRunner(config, run_dir=config.run_dir, log_dir=log_dir)
+        self.runner = EvalRunner(config, run_dir=config.run_dir)
         self.ckpt_manager = CheckpointManager(config.run_dir)
         self.last_saved_cursor = 0
 
@@ -74,8 +72,8 @@ class Eval:
 
 
 @clean_exit
-async def run_eval(config: EvalConfig, log_dir: Path) -> None:
-    evaluation = Eval(config, log_dir)
+async def run_eval(config: EvalConfig) -> None:
+    evaluation = Eval(config)
     try:
         await evaluation.run()
         # Finalize only on a clean exit — a crashed run must not mark itself completed.

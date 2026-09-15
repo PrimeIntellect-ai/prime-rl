@@ -25,8 +25,8 @@ class ServedEvalConfig(EvalSourcesConfig):
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
         """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: an explicit ``serve.address``
-        is an externally managed server; None means the eval process spawns the server and
-        learns its address from the file it publishes."""
+        is an externally managed server; None means the launcher spawns the server and the
+        eval learns its address from the file it publishes."""
         return {("eval", source.resolved_name): source.serve.address for source in self.source}
 
 

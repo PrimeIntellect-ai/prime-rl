@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 
 from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
@@ -34,10 +33,10 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class OnlineEval:
-    def __init__(self, config: SFTOnlineEvalConfig, log_dir: Path) -> None:
+    def __init__(self, config: SFTOnlineEvalConfig) -> None:
         assert config.model is not None, "the sft launcher fills eval.model"
         self.config = config
-        self.runner = EvalRunner(config, run_dir=config.output_dir, log_dir=log_dir)
+        self.runner = EvalRunner(config, run_dir=config.output_dir)
         # The last weight-broadcast step already handled (evaluated or skipped).
         self.last_step = config.resume_step or 0
         self.receiver: WeightReceiver | None = None
@@ -199,8 +198,8 @@ class OnlineEval:
 
 
 @clean_exit
-async def run_online_eval(config: SFTOnlineEvalConfig, log_dir: Path) -> None:
-    evaluation = OnlineEval(config, log_dir)
+async def run_online_eval(config: SFTOnlineEvalConfig) -> None:
+    evaluation = OnlineEval(config)
     try:
         await evaluation.run()
         # Finalize only on a clean exit — a crashed run must not mark the run completed.
@@ -217,7 +216,7 @@ def main():
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     setup_logger(config.log.level, json_logging=config.log.json_logging)
-    asyncio.run(run_online_eval(config, log_dir))
+    asyncio.run(run_online_eval(config))
 
 
 if __name__ == "__main__":
