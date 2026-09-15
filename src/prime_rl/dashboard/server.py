@@ -260,8 +260,7 @@ def step_numbers(run_dir: Path) -> list[int]:
 
 
 def eval_env(config: dict) -> str | None:
-    """The taskset(s) of an eval run: prime-rl's ``[[source]]`` list, else the single
-    ``[env]`` of a verifiers run."""
+    """The taskset(s) of an eval run: the ``[[source]]`` list, else a single ``[env]``."""
     sources = config.get("source") or []
     if sources:
         return "+".join(((s.get("env") or {}).get("taskset") or {}).get("id") or "?" for s in sources)
@@ -581,8 +580,7 @@ def _file_size(path: Path) -> int:
 
 def traces_file(run_dir: Path) -> Path | None:
     """The run's episode stream: the chunk directory the file monitor writes, browsed
-    through its index, or the single ``traces.jsonl`` a verifiers ``uv run eval`` run
-    writes at the run root."""
+    through its index, or a bare ``traces.jsonl`` at the run root."""
     stream = get_trace_stream(run_dir)
     if _file_size(get_index_path(stream)) > 0:
         return stream

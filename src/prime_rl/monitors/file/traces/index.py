@@ -21,8 +21,7 @@ def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
 
 def episode_kind(rec: dict) -> str:
     """The kind of work an episode did. The file monitor stamps it as the episode
-    lands; a stream written by another producer (a verifiers ``uv run eval`` run) is
-    read off its run info instead."""
+    lands; a record without the stamp is read off its run info instead."""
     for trace in rec.get("traces") or []:
         if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval"):
             return kind
@@ -110,7 +109,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "kind": episode_kind(rec),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
         # the env's name is the orchestrator's key for it (two sources can share a taskset
-        # id); a record without one, e.g. from a verifiers eval, falls back to the id
+        # id); a record without one falls back to the id
         "env": (rec.get("env") or {}).get("name") or (rec.get("env") or {}).get("id"),
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
