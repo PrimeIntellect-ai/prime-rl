@@ -57,7 +57,7 @@ env.agent.runtime.type = "subprocess"
 [monitors.prime]    # optional: upload each source's epoch as a platform evaluation
 ```
 
-Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Ready-made configs: `examples/basic/<env>/eval.toml` (the walkthroughs' baseline/final evals against a local server; `-m` swaps in a trained checkpoint) and `configs/debug/eval/{single-turn,multi-turn,resume,multi-env,aime2026,tb2}.toml`, all on Prime Inference (gsm8k; terminal-bench-2 fix-git in sandboxes; an interruptible gsm8k run; both envs together; AIME 2026 at avg@16; the full Terminal-Bench 2 at avg@4).
+Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Ready-made configs: `examples/basic/<env>/eval.toml` (the walkthroughs' baseline/final evals against a local server; `-m` swaps in a trained checkpoint) and `configs/debug/eval/{single-turn,multi-turn,resume,multi-env,aime2026,tb2}.toml`, all on Prime Inference (gsm8k; 16 terminal-bench-2 tasks in sandboxes; an interruptible gsm8k run; both envs together; AIME 2026 at avg@16; the full Terminal-Bench 2 at avg@4).
 
 - Entrypoint: `src/prime_rl/entrypoints/eval.py` (shorthand expansion), implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
 - Env servers: spawned by the eval process unless the source sets `serve.address` (externally managed); each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, so concurrent runs on one host never collide.

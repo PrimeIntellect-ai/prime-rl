@@ -1,14 +1,13 @@
-# Single env, multi turn: terminal-bench-2's fix-git task with the bash harness
-# in prime sandboxes (PRIME_API_KEY authenticates sandbox creation), 16 rollouts
-# against Prime Inference on the default model.
+# Single env, multi turn: 16 terminal-bench-2 tasks with the bash harness in
+# prime sandboxes (PRIME_API_KEY authenticates sandbox creation), one rollout
+# each, against Prime Inference on the default model.
 #
 #   uv run eval @ configs/debug/eval/multi-turn.toml
 
-group_size = 16
+num_examples = 16
 
 [[source]]
 env.taskset.id = "terminal-bench-2"
-env.taskset.tasks = ["fix-git"]
 env.agent.harness.id = "bash"
 env.agent.timeout.rollout = 3600
 env.agent.retries.max_retries = 2
