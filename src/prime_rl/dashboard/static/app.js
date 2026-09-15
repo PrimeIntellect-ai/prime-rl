@@ -54,7 +54,8 @@ const state = {
     bin: null,
     episodes: [],
     live: [],
-    status: ["all", "live", "done"].includes(prefs.traceStatus) ? prefs.traceStatus : "all",
+    // both on means no filter; exactly one narrows to it (the last one on stays on)
+    status: { live: prefs.traceStatus?.live ?? true, done: prefs.traceStatus?.done ?? true },
     total: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
@@ -1928,8 +1929,8 @@ function showTraceEmpty(title, detail) {
 function traceStatusText(total) {
   const live = state.traces.live?.length || 0;
   const parts = [];
-  if (live && state.traces.status !== "done") parts.push(`${live} in flight`);
-  if (state.traces.status !== "live") parts.push(`${fmtCompact(total ?? state.traces.total ?? 0)} completed`);
+  if (live && state.traces.status.live) parts.push(`${live} in flight`);
+  if (state.traces.status.done) parts.push(`${fmtCompact(total ?? state.traces.total ?? 0)} completed`);
   return parts.join(" · ");
 }
 
@@ -1964,7 +1965,7 @@ function traceQuery(extra = {}) {
 
 function traceFiltered() {
   const t = state.traces;
-  return !!(activeKind() || t.env || t.errorsOnly || t.bin || t.status !== "all");
+  return !!(activeKind() || t.env || t.errorsOnly || t.bin || !(t.status.live && t.status.done));
 }
 
 /* what a loaded table answers to: the run and the exact query that produced it, so
@@ -2244,8 +2245,8 @@ function liveRowHtml(r) {
    then the finished episodes, as the status filter allows */
 function traceRows() {
   const t = state.traces;
-  const live = t.status !== "done" && t.mode === "stream" ? [...(t.live || [])].sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
-  const episodes = t.status !== "live" ? t.episodes || [] : [];
+  const live = t.status.live && t.mode === "stream" ? [...(t.live || [])].sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
 }
 
@@ -2267,7 +2268,7 @@ function renderEpisodeRows(reset = false) {
   }
   if (!rows.length) {
     const t = state.traces;
-    if (t.status === "live") showTraceEmpty("nothing in flight", "rollouts show here while their env servers stream them");
+    if (!t.status.done) showTraceEmpty("nothing in flight", "rollouts show here while their env servers stream them");
     else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
     else showTraceEmpty("no traces yet");
     return;
@@ -2426,8 +2427,8 @@ function copyText(text, el) {
    mode), then the finished episodes */
 function filteredRollouts() {
   const t = state.traces;
-  const live = t.mode === "stream" && t.status !== "done" ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
-  const episodes = t.status !== "live" ? t.episodes || [] : [];
+  const live = t.mode === "stream" && t.status.live ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes];
 }
 
@@ -5344,10 +5345,10 @@ function syncTraceFilterControls() {
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
   for (const button of document.querySelectorAll("#trace-status-filter button"))
-    button.classList.toggle("active", button.dataset.status === t.status);
+    button.classList.toggle("on", !!t.status[button.dataset.status]);
   for (const sel of ["#trace-sort", "#tm-sort"])
     $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
-  const active = [t.env, activeKind(), t.errorsOnly, t.status !== "all"].filter(Boolean).length;
+  const active = [t.env, activeKind(), t.errorsOnly, !(t.status.live && t.status.done)].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
   badge.hidden = !active;
@@ -5696,7 +5697,11 @@ $("#episode-table").addEventListener("click", (e) => {
 });
 document.querySelectorAll("#trace-status-filter button").forEach((b) =>
   b.addEventListener("click", async () => {
-    state.traces.status = b.dataset.status;
+    const status = state.traces.status;
+    const key = b.dataset.status;
+    const other = key === "live" ? "done" : "live";
+    if (status[key] && !status[other]) return; // never leave both off
+    status[key] = !status[key];
     syncTraceFilterControls();
     savePrefs();
     renderEpisodeRows(true);
@@ -6182,7 +6187,7 @@ const LIVE_POLL_MS = 1000;
 let livePolling = false;
 async function pollLive() {
   if (!state.live || livePolling || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
-  if (state.traces.mode !== "stream" || state.traces.status === "done") return;
+  if (state.traces.mode !== "stream" || !state.traces.status.live) return;
   livePolling = true;
   try {
     await loadLive();
