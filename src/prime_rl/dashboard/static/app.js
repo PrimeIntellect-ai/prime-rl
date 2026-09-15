@@ -586,7 +586,7 @@ function evalProgressHtml(env, idx, live) {
   let cells;
   if (n <= EP_CELL_CAP) {
     // one cell per episode: landed ones in arrival order (click opens it), the
-    // in-flight ones (click follows it), then what is still to come
+    // live ones (click follows it), then what is still to come
     cells =
       idx
         .map((i) => {
@@ -615,7 +615,7 @@ function evalProgressHtml(env, idx, live) {
       `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
   // the toolbar line reads like the traces tab's
-  $("#metrics-status").textContent = [...(live.length ? [`${live.length} in flight`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
+  $("#metrics-status").textContent = [...(live.length ? [`${live.length} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
   return (
     `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span></div>` +
     `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
@@ -2714,7 +2714,7 @@ function showTraceEmpty(title, detail) {
 function traceStatusText(total) {
   const live = state.traces.live?.length || 0;
   const parts = [];
-  if (live && state.traces.status.live) parts.push(`${live} in flight`);
+  if (live && state.traces.status.live) parts.push(`${live} live`);
   if (state.traces.status.done) {
     const n = total ?? state.traces.total ?? 0;
     parts.push(`${fmtCompact(n)} completed episode${n === 1 ? "" : "s"}`);
@@ -2786,7 +2786,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
-    // no finished stream yet: the in-flight rollouts (if any) are the whole table
+    // no finished stream yet: the live rollouts (if any) are the whole table
     traces.episodes = [];
     traces.total = 0;
     $("#trace-status").textContent = traceStatusText(0);
@@ -2817,7 +2817,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   syncDressedSelects();
   if (!data.total) {
     $("#trace-status").textContent = traceStatusText(0);
-    renderEpisodeRows(fresh); // in-flight rollouts, or the empty state
+    renderEpisodeRows(fresh); // live rollouts, or the empty state
     return;
   }
   renderEpisodeRows(fresh);
@@ -3009,11 +3009,11 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* an in-flight rollout, streamed by its env server: the same columns, a pulsing dot for
+/* a live rollout, streamed by its env server: the same columns, a pulsing dot for
    its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
   return `<tr class="live stage-${esc(r.stage)}${r.landedAt ? " landing" : ""}" ${r.trace && !r.landedAt ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
-        <td><span class="live-dot" title="in flight"></span></td>
+        <td><span class="live-dot" title="live rollout"></span></td>
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
         <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
@@ -3027,7 +3027,7 @@ function liveRowHtml(r) {
       </tr>`;
 }
 
-/* the table's rows: in-flight rollouts first (stream mode, newest dispatch on top),
+/* the table's rows: live rollouts first (stream mode, newest dispatch on top),
    then the finished episodes, as the status filter allows */
 function traceRows() {
   const t = state.traces;
@@ -3057,7 +3057,7 @@ function renderEpisodeRows(reset = false) {
   }
   if (!rows.length) {
     const t = state.traces;
-    if (!t.status.done) showTraceEmpty("nothing in flight", "rollouts show here while their env servers stream them");
+    if (!t.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
     else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
     else showTraceEmpty("no traces yet");
     return;
@@ -3079,7 +3079,7 @@ async function initTraces() {
 
 /* ------------------------------------------------------------ live traces */
 
-/* the env servers stream every in-flight rollout turn by turn; the run's file
+/* the env servers stream every live rollout turn by turn; the run's file
    monitor keeps one file of deltas per live trace and drops it when the episode
    lands in the stream, so this table is exactly what is running right now */
 let liveInflight = false;
@@ -3266,7 +3266,7 @@ function copyText(text, el) {
     .catch(() => {});
 }
 
-/* the sidebar walks the same rows as the table: in-flight rollouts first (stream
+/* the sidebar walks the same rows as the table: live rollouts first (stream
    mode), then the finished episodes */
 function filteredRollouts() {
   const t = state.traces;
@@ -7075,7 +7075,7 @@ async function pollDashboard() {
 
 setInterval(pollDashboard, POLL_MS);
 
-/* in-flight rollouts change turn by turn; while the traces tab is open their rows
+/* live rollouts change turn by turn; while the traces tab is open their rows
    (and an open live trace) refresh once a second, the rest of the tab at POLL_MS */
 const LIVE_POLL_MS = 1000;
 async function pollLive() {

@@ -5,165 +5,48 @@ description: Find, start, use, and stop the local run dashboard for metrics, con
 
 # Run dashboard
 
-`uv sync --extra dashboard && uv run dashboard [output_dir ...]` (default
-`outputs/`, or `$PRL_OUTPUT_DIR` if set) serves a web UI at `http://localhost:7788`. It only reads run
-dirs — safe against live runs — and installs anywhere (cluster head node,
-laptop against a mounted outputs dir): GPU dependencies live behind the
-`gpu` extra.
+`uv sync --extra dashboard && uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR`) serves a web UI at `http://localhost:7788`. It only reads run dirs, so it is safe against live runs and installs anywhere: GPU dependencies live behind the `gpu` extra.
 
-The Config and Logs views default to `latest (attempt <n>)`. Select an attempt
-to inspect the immutable config or log files from an earlier launch. The Config
-view shows a copyable launch command above the launch TOML or resolved JSON.
+What is not obvious from the UI:
 
-The trace viewer has separate **Transcript**, **Timeline**, **Replay**, and
-**Semantic** views. Timeline is a wall-clock Gantt of physical prefix branches.
-Replay renders the selected agent branch as a terminal session with play/pause,
-seek, restart, and speed controls. It preserves recorded model-call and
-tool-result delays. Since the trace schema records a complete model-call span
-but no per-token timestamps, response text is paced evenly across that measured
-span and labeled as inferred; events without timestamps remain ordered and are
-labeled untimed. Semantic projects Verifiers `MessageNode.semantic_parents` as a
-top-to-bottom causal graph of model calls, including subagent calls, returns,
-compactions, and custom edge types. Calls occupy compact causal ranks within
-bounded agent lanes: the root stays centered, concurrent children fan out
-symmetrically, and child slots are reused after return, so graph width reflects
-peak agent concurrency rather than total subagents. Compaction starts a visibly
-separate context segment. For display only, a missing continuation is recovered
-when the physical parent chain proves a completed tool round-trip; fragments
-that still cannot be placed are shown explicitly as unlinked instead of being
-presented as contexts. Hover or click an agent or context label to see its
-latest and peak prompt lengths first, followed by cumulative token processing
-and cost. Exact timing remains available on model-call hover and in Timeline.
-Traces without semantic parents keep the other views and disable Semantic.
+- Config and Logs default to `latest (attempt <n>)`; select an attempt to inspect an earlier launch. The Config view shows a copyable launch command.
+- Trace viewer views: **Transcript**, **Timeline** (wall-clock Gantt of prefix branches), **Replay** (the branch as a terminal session; response text is paced evenly across the recorded model-call span and labelled inferred; default 8×; **Skip inference** collapses model calls but keeps tool delays; **T** toggles thinking, never advertise Ctrl+T) and **Semantic** (`semantic_parents` as a causal graph of model calls; width reflects peak agent concurrency; unplaceable fragments show as unlinked). Traces without semantic parents disable Semantic.
+- Live rollouts appear in the traces table with a pulsing dot and a phase badge, and open in the viewer, which follows them (pinned to the newest turn until you scroll up; the request in flight's uncommitted messages render dimmed as `awaiting model`). They come from `monitors/file/traces/live/*.jsonl`, polled once a second.
+- For an eval run the metrics tab shows one env at a time (filter → env, `include errors`): a block progress bar (one cell per expected episode, from `monitors/file/plan.json`), summary tiles (avg@k, pass@k, error and truncation rate coloured >10% yellow / >50% red, turns / branches, episode time, tokens, cost), env metrics as dot plots or beeswarms (hover a dot for its episode, click to open it; hover the background for the quantiles), and usage / timing composition panes (icicle of the mean split over per-episode strips; `other` is wall time no phase accounts for; hover a part to dim the rest; 40 strips by default, `show all` for every one).
+- `view on platform` in the top bar links to the run on the Prime platform when `--monitors.prime` was on (`monitors/prime/run.json`); an eval's evaluation opens at epoch start, so the link is live from the first episode.
+- An eval reads `completed` once its stream is sealed by a clean exit; a crashed or interrupted one reads `stopped` after its files go quiet.
 
-With `--monitors.prime` the top bar has a `view on platform` link (from `monitors/prime/run.json`: train id/url, or per-env evaluation urls; an eval's evaluation opens at epoch start and streams episodes as they land). For an eval run the metrics tab shows one env at a time; its toolbar is a filter button (env select, no all-envs option; `include errors`) and a muted progress line; sections are flat with muted headings (no collapse); a block bar with one cell per expected episode (landed = env colour, errored = red, in flight = pulsing outline, click opens the episode or follows the live trace; percent beside the bar; the expected count comes from `monitors/file/plan.json`, written when the epoch starts, else from the config), then sections — summary tiles (avg@k, pass@k; error/truncation rate coloured >10% yellow, >50% red; mean turns / branches (one tile), mean episode time, mean tokens in+out, total cost if present; distribution on hover), `usage` (tokens: input | output) and `timing` (leaf phases boot/setup/model/harness/finalize/scoring + `other` = wall time minus phases) as composition panes: horizontal legend, icicle of the mean split, per-episode strips (click opens the trace; hover a part to dim the others; 40 strips by default, `show all` scrolls them all); env metrics (`rewards/*`, `metrics/*`) sit between summary and usage as beeswarm panes (resizable chart cards). Constants render as chips above a section, ≤8 distinct values as a counted dot plot, else a beeswarm (env metrics included). Phases use a ramp of the accent. A dot is an episode or task: hover for its value, click to open the trace; hover the background for min/p10/median/p90/max (a faint boxplot sits behind the dots). The filter button's `include errors` (default off) adds errored episodes, drawn red. The traces tab shows in-flight rollouts in the episode table (pulsing dot in `#`, phase badge, `dispatched → arrived (elapsed)`, counts that grow per turn, reward empty until the episode lands; errored episodes carry a red left border in place of a status column; status toggles in flight / completed; click one to follow it in the viewer, transcript only, pinned to the newest turn until you scroll up, the request in flight's uncommitted messages dimmed as `awaiting model`), polled once a second with an etag (`?etag=` answers `{unchanged}`), folded from `monitors/file/traces/live/*.jsonl` at `/api/runs/<run>/live` and `/api/runs/<run>/live/<trace_id>`. The logs tab's components menu lists every env server under `all envs`, so one env's log can be toggled into its own pane. Replay defaults to 8× so long coding-agent model waits remain watchable; select
-1× for exact wall time or up to 32× for faster review. In-flight calls display
-their measured progress and recorded output-token usage even when they produce
-only tool calls. Enable **Skip inference** to collapse model calls to immediate
-responses while preserving the recorded command-to-tool-output delays. This is
-distinct from the speed control, which scales every delay uniformly. Recorded
-model thinking is shown by default. Toggle **Thinking** in the replay controls
-or press **T** while Replay is open to hide or show it without changing playback
-timing. Do not advertise Ctrl+T: browsers reserve it for a new tab before the
-page can handle the keypress. Use **Top** or the **Home** key to scroll to the
-beginning without pausing the replay. Use **Live** or **End** to resume
-following newly rendered output. Prompt-context nodes that were committed at
-response time are placed at the linked call's start so their serialization
-timestamp does not create a false blank wait before the replay.
+Every dashboard instance serves the dirs it was started with plus every dir in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`). Launchers register their output dir on every start and, in interactive sessions, auto-start a dashboard only when none is live; `--no-dashboard` opts a run out, non-interactive launches never spawn one. `--isolated` serves only the given dirs and ignores the registry.
 
-Every dashboard instance serves the dirs it was started with **plus** every dir
-in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`, re-read
-live). Launchers (`rl`, `sft`) register their output dir on every
-start and, in interactive sessions, auto-start a dashboard only when none is
-live — an already-running one absorbs the new dir automatically, whatever port
-it is on. `--no-dashboard` opts a run out; non-interactive launches (CI, nohup)
-register their dir but never spawn.
+## Finding, stopping, restarting
 
-## Isolated mode
-
-`--isolated` serves only the given dirs: no registry read or write, no
-discovery claim, and launchers ignore the instance. Use it for focused views
-(demos, debugging one run dir) or to keep a scratch dir out of the registry.
-
-## Finding the live dashboard
-
-The live port can differ from 7788 (a taken port bumps to the next free one),
-so read the discovery file:
+The port can differ from 7788 (a taken port bumps to the next free one), so read the discovery file and hand the researcher its `url`; launcher logs also end with a `Dashboard · <url>` banner.
 
 ```bash
-cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
-curl -sf $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/runs > /dev/null && echo live
-ps aux | grep PRL::Dashboard             # process title
+cat ~/.cache/prime-rl/dashboard/daemon.json                   # {"pid": ..., "url": "http://localhost:<port>"}
+kill $(jq -r .pid ~/.cache/prime-rl/dashboard/daemon.json)   # stop; the next launch (or `uv run dashboard`) restarts it
 ```
 
-Hand the researcher the `url` from `daemon.json`. Launcher logs also print it:
-startup ends with a `Dashboard · <url>` banner. The auto-started instance logs
-to `~/.cache/prime-rl/dashboard/daemon.log`.
-
-## Stopping / restarting
-
-```bash
-kill $(jq -r .pid ~/.cache/prime-rl/dashboard/daemon.json)   # the discovered instance
-pkill -f PRL::Dashboard                                 # every dashboard on the host
-```
-
-A clean exit releases `daemon.json`; a stale file from a dead process is taken
-over by the next start. Killing a dashboard never affects runs (it only reads),
-and killing a run never takes the dashboard down (it runs in its own session).
-Restart by launching any run, or directly: `uv run dashboard`.
-The daemon serves the code of the checkout that started it (`readlink /proc/$(jq -r .pid ~/.cache/prime-rl/dashboard/daemon.json)/cwd`); after switching branches or worktrees, kill it so the next launch restarts it on the current code.
+Killing a dashboard never affects runs and killing a run never takes the dashboard down. The daemon serves the code of the checkout that started it (`readlink /proc/<pid>/cwd`): after switching branches or worktrees, kill it so the next launch restarts it on the current code. Its log is `~/.cache/prime-rl/dashboard/daemon.log`.
 
 ## Point the open dashboard
 
-Use `POST /api/view` to show relevant run data in every connected dashboard
-tab:
+`POST /api/view` shows run data in every connected tab. `run` is required; the other fields leave unspecified state alone. For trace evidence pass `step`, `kind` and `subset` together and address the episode by its stable `id` (`subset: "effective"` narrows the traces tab to the cohort shipped at that step); `highlight` entries are `{node, quote, reason, field?}`. On `409`, tell the user to open the returned `url`.
 
 ```bash
 curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view \
-  -H 'content-type: application/json' -d '{
-    "run": "demo-rl", "tab": "traces",
-    "step": 0, "kind": "train", "subset": "effective",
-    "episode": "ep-s00-reverse-text-0",
-    "highlight": [{"node": 3, "quote": "hint: reverse the words", "reason": "tool result the policy conditioned on"}]
-  }'
+  -H 'content-type: application/json' -d '{"run": "demo-rl", "tab": "traces", "step": 0, "kind": "train", "subset": "effective",
+    "episode": "ep-s00-reverse-text-0", "highlight": [{"node": 3, "quote": "hint: reverse the words", "reason": "the tool result the policy conditioned on"}]}'
 ```
 
-`run` is required; other fields are optional and leave unspecified UI state
-unchanged. For trace evidence, supply `step`, `kind`, and `subset` together and
-address the episode by stable `id`. The traces tab opens on the whole stream;
-`subset: "effective"` switches it to the cohort that shipped at one step. Use
-optional `trace` and `branch` indices
-for multi-agent traces and `highlight` entries shaped as `{node, quote,
-reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
-command applies when the tab connects.
+## Reports, only when asked
 
-## Write a report only when asked
-
-Create a report only when the user explicitly asks for one. Otherwise answer
-normally; use `/api/view` when showing trace evidence would help.
-
-Write requested reports to `<run>/reports/<slug>.md`, then POST `{"run": ...,
-"tab": "report", "report": "<slug>"}`. Use Markdown with a frontmatter
-`title` and one-line JSON citation definitions:
+Write a requested report to `<run>/reports/<slug>.md`, then POST `{"run": ..., "tab": "report", "report": "<slug>"}`. Markdown with a frontmatter `title` (rendered as the H1, do not repeat it) and one-line JSON citations:
 
 ```markdown
----
-title: Why does reward dip at step 4?
----
-
 The dip is provider errors, not policy regression [^err].
 
 [^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "The failed call that emptied this step's batch."}
 ```
 
-The frontmatter `title` is rendered as the report H1; do not repeat it with a
-Markdown `#` heading. The inline renderer supports only HTTP(S) and anchor
-links. Relative Markdown links render as literal text, so identify local source
-files with inline code paths or link to a supported HTTP endpoint.
-
-Each citation requires `step`, `kind`, `subset`, `episode`, `quote`, and `note`.
-Use the top-level rollout record `id` returned by the dashboard episode-list
-API—not a nested `traces[*].id`, and never `line`. Copy a short, distinctive
-quote exactly; matching is case-sensitive and whitespace-insensitive. Keep
-`note` to 1–2 sentences explaining why the quote supports the claim.
-
-Cite major empirical, comparative, and diagnostic conclusions, but not routine
-explanation. Use exact trace citations for trajectory-level claims. For
-aggregate statistics, identify the run and source file; do not imply that one
-example trajectory proves the aggregate.
-
-Use adjacent markers (`[^a] [^b]`) only when one claim genuinely depends on
-distinct passages, such as a comparison or corroboration. Use one citation
-when one passage is sufficient.
-
-Optional fields are `run`, `trace`, `branch`, `node`, `field`, `prefix`, and
-`suffix`. Use `field: "content"` or `"reasoning"` only to disambiguate message
-parts. Use verbatim adjacent `prefix`/`suffix` only when a quote repeats.
-Ambiguous or mismatched citations remain broken and do not navigate.
-
-Use Markdown; raw HTML is escaped.
-
-Before handoff, reload the report and verify through the dashboard API that
-every referenced citation resolves uniquely to its episode, node, and quote.
-Confirm zero broken citations, one rendered title, and no unsupported relative
-links.
+A citation needs `step`, `kind`, `subset`, `episode` (the top-level record `id`, never `line` or a `traces[*].id`), an exact short `quote` (case-sensitive, whitespace-insensitive) and a one-sentence `note`; optional `trace`, `branch`, `node`, `field`, `prefix`, `suffix` disambiguate. Cite empirical and diagnostic claims, not routine explanation; one citation per passage. Only HTTP(S) and anchor links render. Before handing over, verify through the API that every citation resolves.
