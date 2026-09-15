@@ -9,7 +9,7 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 # The rope types whose inverse frequencies are fixed once computed. The two left out,
 # `dynamic` and `longrope`, rescale theirs per forward against the running sequence length,
 # which the buffers below, written once in `__init__`, never do.
-_SUPPORTED_ROPE_TYPES = frozenset({"default", "linear", "llama3", "proportional", "yarn"})
+SUPPORTED_ROPE_TYPES = frozenset({"default", "linear", "llama3", "proportional", "yarn"})
 
 
 def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
@@ -63,7 +63,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
 
     `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
     `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
-    outside `_SUPPORTED_ROPE_TYPES` is refused at construction, rather than rotating at
+    outside `SUPPORTED_ROPE_TYPES` is refused at construction, rather than rotating at
     frequencies that were meant to be rescaled and never were.
     """
 
@@ -78,10 +78,10 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         self.rope_type: dict[str, str] = {}
         for layer_type in self.layer_types:
             self.rope_type[layer_type] = config.rope_parameters[layer_type]["rope_type"]
-            if self.rope_type[layer_type] not in _SUPPORTED_ROPE_TYPES:
+            if self.rope_type[layer_type] not in SUPPORTED_ROPE_TYPES:
                 raise ValueError(
                     f"rope type {self.rope_type[layer_type]!r} on {layer_type!r} is not supported; "
-                    f"the supported types are {sorted(_SUPPORTED_ROPE_TYPES)}, whose inverse "
+                    f"the supported types are {sorted(SUPPORTED_ROPE_TYPES)}, whose inverse "
                     "frequencies are computed once here and never rescaled per forward"
                 )
             inv_freq, attention_scaling = self._rope_init_fn(layer_type)(config, device, layer_type=layer_type)

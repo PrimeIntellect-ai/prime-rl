@@ -78,7 +78,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
 # the `selection_bias` prime-rl's router keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
-_KEEP_IN_FP32_MODULES = (
+KEEP_IN_FP32_MODULES = (
     "attn_hc",
     "ffn_hc",
     "hc_head",
@@ -100,11 +100,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV4DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention is eager-only, as in HF: FlashAttention caps the head dim at 256 while
-    # V4 uses 512, SDPA carries no per-head sink logit, and FlexAttention's BlockMask
-    # cannot grow to cover the compressed entries the block concatenates onto the KV axis.
-    # `DeepseekV4Attention` reads no dispatch table, so `config._attn_implementation` is
-    # inert here; these flags only keep transformers from advertising a backend we lack.
+    # V4 attention runs its own fused kernel; no transformers backend can serve it.
     _supports_flash_attn = False
     _supports_sdpa = False
     _supports_flex_attn = False
@@ -116,9 +112,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
-            frozenset(),
-            "its sliding window is a dense local mask built from post-shard document boundaries, "
-            "which CP's global (pre-shard) boundaries cannot address",
+            frozenset({"ring"}),
+            "currently only supporting the minimal ring strategy where all keys, or tensors "
+            "required to form the keys are all-gathered in the CP region.",
         )
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -133,7 +129,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return any(module_name in name for module_name in _KEEP_IN_FP32_MODULES)
+        return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -233,19 +229,26 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Rejected: the
-            window mask is dense and local, so global boundaries cannot address it.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4 shards the
+            queries alone and keeps every key, entry and index value global, so it needs the
+            whole row's boundaries: this must be set exactly when context parallelism is on.
         """
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if seq_lens_are_pre_shard:
-            raise NotImplementedError(
-                "DeepSeek V4 does not support context parallelism: pre-shard document boundaries "
-                "do not address the local sliding-window mask."
-            )
+        assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
+
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
+            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
+        )
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
+        total_tokens = int(seq_lens.sum())
+        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
+            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
+            f"{inputs_embeds.shape[1]} tokens each"
+        )
 
         # Every layer type attends over the same local window; the compressed variants add their
         # own out-of-window entries and the per-query bias that gates them. One layout per distinct
@@ -256,6 +259,8 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             seq_lens=seq_lens,
             dtype=inputs_embeds.dtype,
             device=inputs_embeds.device,
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
         )
         if position_ids is not None:
             packed.check_position_ids(position_ids)

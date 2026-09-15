@@ -4,6 +4,8 @@ from typing import Literal
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.utils.cp import CPContext
+
 CPStyle = Literal["ring", "ulysses"]
 ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
 
@@ -25,6 +27,8 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     after loading with meta device.
     """
 
+    cp_context: CPContext = CPContext()
+
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         """CP styles this architecture supports, given its config.
@@ -44,7 +48,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         return False
 
     @classmethod
-    def from_config(cls, config, **kwargs):
+    def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
         """Public from_config that mirrors the Auto class API."""
         return cls._from_config(config, **kwargs)
 

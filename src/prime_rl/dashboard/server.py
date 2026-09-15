@@ -884,6 +884,7 @@ def activity_spans(
         if reasoning_tokens is None:
             reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         text = " ".join(message_text(node.get("message") or {}).split())
+        mask = node.get("mask")
         spans.append(
             {
                 "kind": "model_call",
@@ -901,6 +902,7 @@ def activity_spans(
                 "output_tokens": output_tokens,
                 "reasoning_tokens": reasoning_tokens,
                 "cost": usage.get("cost"),
+                "trainable": any(mask) if isinstance(mask, list) and mask else None,
             }
         )
     return sorted(spans, key=lambda span: span["started_at"] if span["started_at"] is not None else float("inf"))
@@ -1085,8 +1087,9 @@ def semantic_context_lanes(
     """Project continuation components as execution-context timeline lanes.
 
     ``continuation`` keeps calls in one context. ``subagent_call`` creates a child
-    agent, while ``compaction`` starts a new context for the same agent. Other edge
-    labels remain visible but do not invent session semantics.
+    agent, ``compaction_attempt`` creates a summary leaf beside its source context,
+    and ``compaction`` starts a new context for the same agent. Other edge labels
+    remain visible but do not invent session semantics.
     """
     nodes = trace.get("nodes") or []
     call_nodes = {
@@ -1139,7 +1142,9 @@ def semantic_context_lanes(
     ordered_components = sorted(components, key=lambda component: (component_start(component), component))
     cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
     created_components = {
-        component_for[edge["target_node"]] for edge in cross_edges if edge["type"] in {"subagent_call", "compaction"}
+        component_for[edge["target_node"]]
+        for edge in cross_edges
+        if edge["type"] in {"subagent_call", "compaction_attempt", "compaction"}
     }
     root_components = [component for component in ordered_components if component not in created_components]
 
@@ -1165,6 +1170,8 @@ def semantic_context_lanes(
             if edge["type"] == "subagent_call":
                 subagent_number += 1
                 identities[target] = (f"subagent {subagent_number}", depth + 1, 0)
+            elif edge["type"] == "compaction_attempt":
+                identities[target] = (agent_label, depth, context_index)
             elif edge["type"] == "compaction":
                 identities[target] = (agent_label, depth, context_index + 1)
             else:
@@ -1179,6 +1186,16 @@ def semantic_context_lanes(
             unlinked_components.add(component)
 
     lanes = []
+    accepted_attempt_nodes = {edge["source_node"] for edge in cross_edges if edge["type"] == "compaction"}
+    attempt_by_component = {
+        component_for[edge["target_node"]]: {
+            "source_node": edge["source_node"],
+            "target_node": edge["target_node"],
+            "accepted": edge["target_node"] in accepted_attempt_nodes,
+        }
+        for edge in cross_edges
+        if edge["type"] == "compaction_attempt"
+    }
     for component in ordered_components:
         agent_label, depth, context_index = identities[component]
         activities = component_activities[component]
@@ -1223,6 +1240,8 @@ def semantic_context_lanes(
         }
         if component in unlinked_components:
             lane["context"]["unlinked"] = True
+        if component in attempt_by_component:
+            lane["compaction_attempt"] = attempt_by_component[component]
         lanes.append(lane)
     return lanes
 

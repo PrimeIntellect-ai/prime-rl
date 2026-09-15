@@ -34,10 +34,7 @@ micro_batch_size = 1       # required for VLM SFT
 seq_len = 16384
 
 [data.loss_mask]
-system = false
-user = false
-assistant = true
-tool = false
+assistant = true # only assistant turns contribute to the loss; system/user/tool default to false
 
 [optim]
 lr = 1e-5
