@@ -4062,12 +4062,29 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
+  // a live trace's pending messages: the request in flight that no node holds yet
+  // (tool results, user turns), shown dimmed until the model's reply commits them
+  const pendingHtml = (currentLive ? trace.pending || [] : [])
+    .map((message, k) => {
+      const role = message?.role ?? "?";
+      const text = messageText(message);
+      return (
+        `<details class="entry pending ${esc(role)}" open><summary><span class="entry-num">${String(path.length + k + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(role)}</span><span class="entry-preview">${preview(text, 180)}</span>` +
+        `<span class="chip">awaiting model</span><span class="entry-chev">›</span></summary>` +
+        (text ? `<div class="entry-body">${esc(text)}</div>` : "") +
+        (message?.tool_calls || []).map(toolCallHtml).join("") +
+        `</details>`
+      );
+    })
+    .join("");
   container.innerHTML =
     errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml;
+    unlinkedCallsHtml +
+    pendingHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders

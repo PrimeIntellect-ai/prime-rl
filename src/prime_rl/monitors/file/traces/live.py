@@ -144,6 +144,7 @@ def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
         "cost": sum(costs) if costs else None,
         "stop_condition": trace.get("stop_condition"),
         "errors": len(trace.get("errors") or []),
+        "pending": len(trace.get("pending") or []),
         "last": last[:SNIPPET_CHARS],
     }
 
@@ -168,6 +169,7 @@ def pending_row(dispatch: dict[str, Any]) -> dict[str, Any]:
         "cost": None,
         "stop_condition": None,
         "errors": 0,
+        "pending": 0,
         "last": "",
     }
 

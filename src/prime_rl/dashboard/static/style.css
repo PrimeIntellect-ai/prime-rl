@@ -1193,6 +1193,7 @@ mark.hit {
 
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
+details.entry.pending { opacity: 0.55; border-style: dashed; }
 details.entry.semantic-origin {
   border-color: var(--accent);
   outline: 1px solid rgba(182, 255, 60, 0.55);
