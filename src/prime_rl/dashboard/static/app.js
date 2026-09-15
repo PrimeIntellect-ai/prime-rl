@@ -1923,7 +1923,7 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="13">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
 }
 
 function traceStatusText(total) {
@@ -2188,16 +2188,17 @@ function fmtStamp(epoch) {
 
 /* "dispatched → arrived": the day once, then the times; a rollout still in flight has
    no arrival yet */
-function fmtSpan(dispatched, arrived) {
+function fmtSpan(dispatched, arrived, elapsed) {
   if (!dispatched && !arrived) return "";
+  const took = elapsed != null ? ` <span class="muted">(${fmtDuration(elapsed)})</span>` : "";
   const time = { hour: "2-digit", minute: "2-digit", second: "2-digit" };
   const stamp = (epoch) => `<span class="day">${fmtDay(epoch)}</span>${new Date(epoch * 1000).toLocaleTimeString([], time)}`;
   const from = dispatched ? new Date(dispatched * 1000) : null;
   const to = arrived ? new Date(arrived * 1000) : null;
   const left = from ? stamp(dispatched) : "–";
-  if (!to) return `${left} → –`;
+  if (!to) return `${left} → –${took}`;
   const sameDay = from && from.toDateString() === to.toDateString();
-  return `${left} → ${sameDay ? to.toLocaleTimeString([], time) : stamp(arrived)}`;
+  return `${left} → ${sameDay ? to.toLocaleTimeString([], time) : stamp(arrived)}${took}`;
 }
 
 function episodeRowHtml(ep) {
@@ -2206,8 +2207,7 @@ function episodeRowHtml(ep) {
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
         <td><span class="badge stage stage-${phase}">${phase}</span></td>
-        <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival)}</td>
-        <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
+        <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
@@ -2230,8 +2230,7 @@ function liveRowHtml(r) {
   return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
         <td><span class="live-dot" title="in flight"></span></td>
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
-        <td class="muted nowrap">${fmtSpan(r.started, null)}</td>
-        <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
+        <td class="muted nowrap">${fmtSpan(r.started, null, r.elapsed)}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
         <td>${esc(r.env ?? "?")}</td>
         <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : "n/a"}</td>
@@ -2282,7 +2281,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(rows.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="13" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML = pad(start * episodeRowH) + rows.slice(start, end).map(traceRowHtml).join("") + pad((rows.length - end) * episodeRowH);
 }
 
