@@ -5888,12 +5888,24 @@ $("#compare-menu").addEventListener("change", (e) => {
 // one delegated handler for every .dd-wrap dropdown: button toggles its menu,
 // clicking anywhere else closes them all (a dropdown nested inside another
 // menu, e.g. the env select in the trace filter, keeps its ancestors open)
-document.addEventListener("click", (e) => {
-  const wrap = e.target.closest(".dd-wrap");
+// The wrap is read in the capture phase: a click handler inside a menu may re-render
+// the clicked control before this runs, and a detached target has no wrap to find,
+// which would close the menu the reader is still using.
+let clickedWrap = null, clickedBtn = null;
+document.addEventListener(
+  "click",
+  (e) => {
+    clickedWrap = e.target.closest(".dd-wrap");
+    clickedBtn = e.target.closest(".dd-btn");
+  },
+  true
+);
+document.addEventListener("click", () => {
+  const wrap = clickedWrap;
   document.querySelectorAll(".dd-menu").forEach((menu) => {
     if (!wrap || !(wrap.contains(menu) || menu.contains(wrap))) menu.hidden = true;
   });
-  const btn = e.target.closest(".dd-btn");
+  const btn = clickedBtn;
   if (btn && wrap) {
     const menu = wrap.querySelector(".dd-menu");
     if (wrap.classList.contains("dd-select")) rebuildSelectMenu(wrap);
