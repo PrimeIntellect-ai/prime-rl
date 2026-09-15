@@ -837,7 +837,8 @@ function evalScoreEntries(idx, filter) {
   const entries = [];
   const byTask = new Map();
   for (const i of idx) {
-    const reward = series.reward?.[i];
+    // an errored episode carries no reward; when the filter lets it in, it scores 0
+    const reward = series.reward?.[i] ?? (series.ok?.[i] === false ? 0 : null);
     if (reward == null) continue;
     const task = series.group?.[i] ?? String(i);
     if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
