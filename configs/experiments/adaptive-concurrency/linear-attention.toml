@@ -1,0 +1,40 @@
+[run]
+name = "terminal-lego-linear-attention-v3"
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TMPDIR = "/tmp/adaptive-concurrency-linear"
+TRITON_CACHE_DIR = "/tmp/adaptive-concurrency-linear/triton"
+
+[slurm]
+job_name = "ac-linear-terminal-lego-v3"
+pre_run_command = 'mkdir -p /tmp/adaptive-concurrency-linear ; timeout 120 prime sandbox delete --label "ac-linear-terminal-lego-v3" -y || true'
+
+[deployment]
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[monitors.wandb]
+name = "terminal-lego-linear-attention-v3"
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[trainer.model]
+cp = 1
+
+[orchestrator.renderer]
+name = "qwen3.5"
+
+[[orchestrator.train.source]]
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["ac-linear-terminal-lego-v3"]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/adaptive-concurrency-linear/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/adaptive-concurrency-linear/flashinfer"
+
+[inference.vllm]
+enable_prefix_caching = true
