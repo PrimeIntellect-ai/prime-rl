@@ -519,7 +519,7 @@ function evalEnv() {
 function renderEvalEnvs() {
   const envs = evalEnvs();
   const current = evalEnv();
-  $("#metrics-env-row").hidden = envs.length < 2;
+  $("#metrics-env-row").hidden = !envs.length;
   $("#metrics-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
   syncDressedSelects();
 }
