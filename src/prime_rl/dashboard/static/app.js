@@ -640,13 +640,76 @@ function distStats(values) {
 const swarmRegistry = new Map();
 const SWARM_MAX_POINTS = 1500;
 
+const DOTPLOT_MAX_VALUES = 8;
+
+/* a distribution renders by its shape: one value is a chip, up to eight distinct
+   values a counted dot plot, anything wider a beeswarm */
 function swarmEntry(key, label, points, fmt, { headline, rows } = {}) {
   const sorted = points.filter((p) => typeof p.v === "number" && isFinite(p.v)).sort((a, b) => a.v - b.v);
   if (!sorted.length) return null;
   const stats = distStats(sorted.map((p) => p.v));
   stats.p25 = quantile(stats.sorted, 0.25);
   stats.p75 = quantile(stats.sorted, 0.75);
-  return { key, label, points: sorted, fmt, stats, headline: headline ?? fmt(stats.mean), rows };
+  const distinct = [...new Set(sorted.map((p) => p.v))];
+  const shape = distinct.length === 1 ? "constant" : distinct.length <= DOTPLOT_MAX_VALUES ? "dots" : "swarm";
+  return { key, label, points: sorted, fmt, stats, headline: headline ?? fmt(stats.mean), rows, shape, distinct };
+}
+
+function constChipHtml(entry) {
+  return (
+    `<span class="const-chip" title="${esc(entry.label)} is ${esc(entry.fmt(entry.stats.min))} on every one of ${fmtCompact(entry.stats.n)} episodes">` +
+    `<span class="k">${esc(entry.label)}</span>${entry.fmt(entry.stats.min)}</span>`
+  );
+}
+
+/* one column group per distinct value, dots stacked from the axis and wrapping into
+   neighbouring columns when a stack outgrows the height, with the count and share
+   of each value above its block */
+function dotPlotSvg(entry, W, H) {
+  const { points, distinct } = entry;
+  const plotH = H - SWARM_AXIS_H - 16; // room for the count labels above
+  const slotW = W / distinct.length;
+  const counts = new Map(distinct.map((v) => [v, points.filter((p) => p.v === v).length]));
+  const biggest = Math.max(...counts.values());
+  // the largest radius at which the biggest block fits its slot, else sample
+  let r = 3.5;
+  for (const cand of [3.5, 3, 2.5, 2, 1.5]) {
+    r = cand;
+    const perCol = Math.floor(plotH / (2 * cand + 1));
+    const cols = Math.floor((slotW - 8) / (2 * cand + 1));
+    if (perCol * cols >= biggest) break;
+  }
+  const perCol = Math.max(1, Math.floor(plotH / (2 * r + 1)));
+  const cols = Math.max(1, Math.floor((slotW - 8) / (2 * r + 1)));
+  const capacity = perCol * cols;
+  const top = 16;
+  const parts = distinct.map((v, k) => {
+    const mine = points.map((p, i) => [p, i]).filter(([p]) => p.v === v);
+    const step = Math.max(1, mine.length / capacity);
+    const shown = [];
+    for (let j = 0; j < mine.length; j += step) shown.push(mine[Math.floor(j)]);
+    const used = Math.ceil(shown.length / perCol);
+    const x0 = k * slotW + slotW / 2 - (used * (2 * r + 1)) / 2 + r;
+    const dots = shown
+      .map(([p, i], j) => {
+        const col = Math.floor(j / perCol), rowN = j % perCol;
+        const cx = x0 + col * (2 * r + 1);
+        const cy = top + plotH - r - rowN * (2 * r + 1);
+        const style = !p.err && p.color ? ` style="fill:${p.color}"` : "";
+        return `<circle data-i="${i}" class="${p.err ? "err" : ""}"${style} cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
+      })
+      .join("");
+    const n = counts.get(v);
+    const blockTop = top + plotH - Math.min(shown.length, perCol) * (2 * r + 1);
+    const label = `<text class="dp-count" style="text-anchor:middle" x="${(k * slotW + slotW / 2).toFixed(1)}" y="${(blockTop - 4).toFixed(1)}">${fmtCompact(n)} · ${Math.round((n / points.length) * 100)}%</text>`;
+    const tick = `<text class="hax" style="text-anchor:middle" x="${(k * slotW + slotW / 2).toFixed(1)}" y="${H - 4}">${esc(entry.fmt(v))}</text>`;
+    return dots + label + tick;
+  });
+  const axisY = top + plotH + 0.5;
+  return (
+    `<svg class="swarm dotplot" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>` +
+    `<line class="sw-axis" x1="0" x2="${W}" y1="${axisY}" y2="${axisY}"></line><g class="sw-pts">${parts.join("")}</g></svg>`
+  );
 }
 
 function swarmCardHtml(entry) {
@@ -763,7 +826,7 @@ function drawSwarms() {
     const entry = swarmRegistry.get(card.dataset.key);
     const host = card.querySelector(".swarm-host");
     if (!entry || !host?.clientWidth) continue;
-    host.innerHTML = swarmSvg(entry, host.clientWidth, host.clientHeight);
+    host.innerHTML = (entry.shape === "dots" ? dotPlotSvg : swarmSvg)(entry, host.clientWidth, host.clientHeight);
   }
 }
 
@@ -844,15 +907,24 @@ function evalScoreEntries(idx, filter, many) {
    every level sums to its parent with an `other` remainder, and the pane zooms
    into a node — an icicle of mean composition above per-episode strips */
 
+/* phases are an ordered sequence, so they take a ramp of the accent hue, dark to
+   light, and leave the categorical palette to the envs; `other` is the grey remainder */
 const PHASE_COLORS = {
-  agent: "#b6ff3c", boot: "#b7a6fa", setup: "#fcdaa4", finalize: "#4a9eff", scoring: "#78f8a5",
-  model: "#78f8a5", harness: "#fcdaa4", other: "#3a3a3a",
+  boot: "#3f5c1f", setup: "#6a9a2b", agent: "#b6ff3c", finalize: "#d9ff96", scoring: "#eeffd0",
+  model: "#b6ff3c", harness: "#6a9a2b", other: "#3a3a3a",
 };
+const PHASE_RAMP = ["#3f5c1f", "#6a9a2b", "#8fcc33", "#b6ff3c", "#d9ff96", "#eeffd0"];
 
 function phaseColor(name) {
   if (PHASE_COLORS[name]) return PHASE_COLORS[name];
-  const names = Object.keys(state.metrics.evalSeries || {}).filter((k) => k.startsWith("timing/")).map((k) => k.split("/").pop());
-  return PALETTE[[...new Set(names)].sort().indexOf(name) % PALETTE.length];
+  const names = [...new Set(Object.keys(state.metrics.evalSeries || {}).filter((k) => k.startsWith("timing/")).map((k) => k.split("/").pop()))].sort();
+  return PHASE_RAMP[names.indexOf(name) % PHASE_RAMP.length];
+}
+
+/* label text dark on light segments, light on dark ones */
+function onColor(hex) {
+  const [r, g, b] = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? "#111" : "#eee";
 }
 
 let timingModel = null;
@@ -975,25 +1047,47 @@ function drawTiming() {
       const html =
         `<g class="tm-seg${seg.zoomable ? " zoomable" : ""}" data-tip="${t}" ${seg.zoomable ? `data-zoom="${esc(seg.path)}"` : ""}>` +
         `<rect x="${x.toFixed(1)}" y="0" width="${Math.max(1, w - 1).toFixed(1)}" height="${IH}" fill="${phaseColor(seg.name)}"></rect>` +
-        (shown ? `<text x="${(x + 6).toFixed(1)}" y="${IH / 2 + 4}">${esc(shown)}</text>` : "") +
+        (shown ? `<text x="${(x + 6).toFixed(1)}" y="${IH / 2 + 4}" style="fill:${onColor(phaseColor(seg.name))}">${esc(shown)}</text>` : "") +
         `</g>`;
       x += w;
       return html;
     })
     .join("");
   ice.innerHTML = `<svg width="${W}" height="${IH}" viewBox="0 0 ${W} ${IH}">${iceSegs}</svg>`;
-  // strips: one per episode, longest first, the same segments in the same colours
+  // strips: one per episode, longest first, the same segments in the same colours;
+  // a run with several envs groups them by env under a header with the env's mean
   const host = pane.querySelector(".tm-strips");
-  const step = Math.max(1, rows.length / TM_MAX_STRIPS);
-  const shown = [];
-  for (let k = 0; k < rows.length; k += step) shown.push(rows[Math.floor(k)]);
-  const SH = 9, GAP = 3, PAD_L = 40, AX = 18;
-  const H = shown.length * (SH + GAP) + AX;
+  const groups = many
+    ? evalEnvs()
+        .map((env) => ({ env, rows: rows.filter((r) => r.env === env) }))
+        .filter((g) => g.rows.length)
+    : [{ env: null, rows }];
+  const perGroup = Math.max(4, Math.floor(TM_MAX_STRIPS / groups.length));
+  const SH = 9, GAP = 3, PAD_L = 40, AX = 18, GH = 18;
+  const items = []; // {header} or {row}, in draw order
+  for (const g of groups) {
+    const step = Math.max(1, g.rows.length / perGroup);
+    if (g.env) items.push({ header: g.env, mean: g.rows.reduce((a, r) => a + r.total, 0) / g.rows.length, n: g.rows.length });
+    for (let k = 0; k < g.rows.length; k += step) items.push({ row: g.rows[Math.floor(k)] });
+  }
+  const shown = items.filter((it) => it.row).map((it) => it.row);
+  const H = items.reduce((h, it) => h + (it.header ? GH : SH + GAP), 0) + AX;
   const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
   const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
-  const strips = shown
-    .map((r, n) => {
-      const y = n * (SH + GAP);
+  let yPos = 0;
+  const strips = items
+    .map((it) => {
+      if (it.header) {
+        const y = yPos;
+        yPos += GH;
+        return (
+          `<circle cx="${PAD_L + 4}" cy="${y + 9}" r="3.5" fill="${envColor(it.header)}"></circle>` +
+          `<text class="tm-group" x="${PAD_L + 12}" y="${y + 13}">${esc(it.header)} <tspan class="muted">· ${fmtCompact(it.n)} episodes · mean ${fmtDuration(it.mean)}</tspan></text>`
+        );
+      }
+      const r = it.row;
+      const y = yPos;
+      yPos += SH + GAP;
       let sxPos = PAD_L;
       const parts = kids.length ? r.parts : [{ name: segments[0].name, v: r.total }];
       const segs = parts
@@ -1009,7 +1103,8 @@ function drawTiming() {
           return html;
         })
         .join("");
-      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`;
+      const labelColor = r.err ? "" : many ? `fill:${envColor(r.env)};` : "";
+      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end;${labelColor}">#${r.line}</text>${segs}`;
     })
     .join("");
   const ticks = niceTicks(0, maxTotal, W - PAD_L - 8, (v) => tickLabel(v, fmtDuration), true)
@@ -1072,12 +1167,18 @@ function renderEvalPane(body) {
       .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
       .sort()
       .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
+  // constants sit in a chip row above the section's panes: a pane for a value every
+  // episode shares would only take space
   const section = (name, entries) => {
     const kept = entries.filter(Boolean);
     if (!kept.length) return 0;
     for (const entry of kept) swarmRegistry.set(entry.key, entry);
-    const { grid } = addSection(body, name);
-    grid.innerHTML = kept.map(swarmCardHtml).join("");
+    const constants = kept.filter((e) => e.shape === "constant");
+    const panes = kept.filter((e) => e.shape !== "constant");
+    const { div, grid } = addSection(body, name);
+    if (constants.length) grid.insertAdjacentHTML("beforebegin", `<div class="const-row">${constants.map(constChipHtml).join("")}</div>`);
+    grid.innerHTML = panes.map(swarmCardHtml).join("");
+    if (!panes.length) grid.remove();
     return kept.length;
   };
   let shown = 0;

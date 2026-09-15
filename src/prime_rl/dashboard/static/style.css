@@ -391,6 +391,13 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tm-node.ancestor { color: var(--grey-5); }
 .tm-node.child { color: var(--grey-5); }
 .tm-node.current { color: var(--grey-6); font-weight: 500; cursor: default; }
+.tm-group { fill: var(--grey-5); font-size: 11px; }
+.tm-group .muted { fill: var(--grey-4); }
+/* constants as chips; counted dot plots for few-valued metrics */
+.const-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.const-chip { font-size: 12px; color: var(--grey-6); background: var(--grey-2); border: 1px solid var(--hairline); padding: 4px 10px; }
+.const-chip .k { color: var(--grey-4); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 8px; }
+.dp-count { fill: var(--grey-5); font-size: 10px; }
 #swarm-tip {
   position: absolute;
   z-index: 50;
