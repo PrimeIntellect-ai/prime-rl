@@ -927,16 +927,13 @@ function timingLeaves(series) {
   return paths.filter((p) => !paths.some((q) => q.startsWith(`${p}/`)));
 }
 
-/* a composition pane's shell: title, headline, a horizontal legend, then the plots */
-function compositionPaneHtml(cls, title, headline, parts, color) {
+/* a composition pane's shell: a horizontal legend, then the plots (the section's
+   heading names it, the summary tiles carry its mean) */
+function compositionPaneHtml(cls, parts, color) {
   const legend = parts
     .map((name) => `<span class="tm-node child" data-part="${esc(name)}"><span class="phase-dot" style="background:${color(name)}"></span>${esc(name)}</span>`)
     .join("");
-  return (
-    `<div class="chart-card comp-pane ${cls}"><div class="chart-head"><div class="tm-crumbs"><span class="tm-crumb current">${esc(title)}</span></div>` +
-    `<div class="chart-last">${headline}</div></div>` +
-    `<div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`
-  );
+  return `<div class="chart-card comp-pane ${cls}"><div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`;
 }
 
 function timingPaneHtml(idx) {
@@ -961,13 +958,7 @@ function timingPaneHtml(idx) {
     return { name, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
   timingModel = { rows, segments, meanTotal, kids: names };
-  return compositionPaneHtml(
-    "timing-pane",
-    "mean episode time",
-    fmtDuration(meanTotal),
-    names,
-    phaseColor
-  );
+  return compositionPaneHtml("timing-pane", names, phaseColor);
 }
 
 /* usage: the same composition view over an episode's tokens, input beside output */
@@ -989,13 +980,7 @@ function tokensPaneHtml(idx) {
     return { name, path: null, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
   tokensModel = { rows, segments, meanTotal, kids: ["input", "output"] };
-  return compositionPaneHtml(
-    "tokens-pane",
-    "mean tokens",
-    fmtCompact(Math.round(meanTotal)),
-    ["input", "output"],
-    (n) => TOKEN_COLORS[n]
-  );
+  return compositionPaneHtml("tokens-pane", ["input", "output"], (n) => TOKEN_COLORS[n]);
 }
 
 const TM_MAX_STRIPS = 40;
@@ -1137,6 +1122,20 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   if (turns || branches) {
     const block = (name, stats) => (stats ? `<div class="tip-head">${name} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtNum(stats[k]))).join("")}` : "");
     tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"} / ${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
+  }
+  const duration = distStats(idx.map((i) => series.duration?.[i]));
+  if (duration) tile("mean episode time", fmtDuration(duration.mean), `<div class="tip-head">episode time · ${fmtCompact(duration.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtDuration(duration[k]))).join("")}`);
+  const tok = (v) => fmtCompact(Math.round(v));
+  const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
+  const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
+  if (inTok || outTok) {
+    const total = distStats(idx.map((i) => (series.input_tokens?.[i] ?? 0) + (series.output_tokens?.[i] ?? 0)));
+    tile(
+      "mean tokens",
+      tok(total.mean),
+      `<div class="tip-head">tokens · ${fmtCompact(total.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(total[k]))).join("")}`,
+      { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
+    );
   }
   // cost is spent whether or not an episode errored, so the total covers every landed one
   const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));
