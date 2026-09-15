@@ -1590,16 +1590,15 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   border-bottom: 1px solid var(--hairline);
 }
 
-/* live traces (traces tab): what the env servers are streaming right now */
-#live-wrap { margin: 0 0 12px; }
-#live-wrap .live-head { display: flex; gap: 8px; align-items: baseline; margin: 4px 0 6px; }
-#live-table td.snippet { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#live-table tr[data-live] { cursor: pointer; }
-#live-table tr[data-live]:hover td { background: var(--hairline-faint); }
+/* in-flight rollouts share the episode table; a tint and the phase badge set them apart */
+#episode-table tr.live td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+#episode-table tr.live:hover td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#episode-table tr.live td:first-child { border-left: 2px solid var(--accent); }
 .badge.stage { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--hairline); }
-.stage-running > .badge.stage, .badge.stage.stage-running { color: var(--accent); }
+.badge.stage.stage-running { color: var(--accent); }
 .badge.stage.stage-boot, .badge.stage.stage-setup, .badge.stage.stage-pending { color: var(--muted, #888); }
 .badge.stage.stage-scoring, .badge.stage.stage-finalize { color: #a855f7; }
 .badge.stage.stage-done { color: #22c55e; }
 .badge.stage.stage-error { color: #ef4444; }
 #tm-live-label { margin-left: 8px; }
+#log-comp-menu .file-item.sub { padding-left: 22px; }

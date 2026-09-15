@@ -54,6 +54,7 @@ const state = {
     bin: null,
     episodes: [],
     live: [],
+    status: ["all", "live", "done"].includes(prefs.traceStatus) ? prefs.traceStatus : "all",
     total: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
@@ -1582,13 +1583,30 @@ async function fetchLogChunk(file, params) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/log?${qs}`);
 }
 
-const LOG_PANES = [
+const BASE_LOG_PANES = [
   { comp: "trainer", title: "trainer", match: (f) => f.component === "trainer" },
   { comp: "orch", title: "orchestrator", match: (f) => f.component === "orch" },
   { comp: "infer", title: "inference", match: (f) => f.component === "infer" },
   { comp: "eval", title: "eval", match: (f) => f.component === "eval" },
-  { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
+  { comp: "envs", title: "all envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
+
+/* the panes this run can show: the fixed components plus one pane per env server
+   (`env:<name>`), so a single env's log can be read on its own; "all envs" merges
+   them all and is the default, the per-env panes are opted into */
+function logPanes() {
+  const envs = new Map();
+  for (const f of state.logs.files || [])
+    if (f.component.startsWith("env:") && !envs.has(f.component))
+      envs.set(f.component, { comp: f.component, title: f.label ?? f.component.slice(4), env: true, match: (g) => g.component === f.component });
+  return [...BASE_LOG_PANES, ...envs.values()];
+}
+
+function paneEnabled(pane) {
+  const components = state.logs.components;
+  if (components) return components.has(pane.comp);
+  return !pane.env; // per-env panes are opt-in
+}
 
 function paneFiles(pane) {
   return state.logs.files.filter(pane.match);
@@ -1612,22 +1630,23 @@ function allSelectedIds() {
 }
 
 function enabledPanes() {
-  return LOG_PANES.filter((p) => paneFiles(p).length && (state.logs.components?.has(p.comp) ?? true));
+  return logPanes().filter((p) => paneFiles(p).length && paneEnabled(p));
 }
 
 function renderLogCompMenu() {
-  const available = LOG_PANES.filter((p) => paneFiles(p).length);
+  const available = logPanes().filter((p) => paneFiles(p).length);
   const menu = $("#log-comp-menu");
   menu.innerHTML = available
     .map(
       (p) =>
-        `<label class="file-item"><input type="checkbox" data-comp="${p.comp}"` +
-        `${state.logs.components?.has(p.comp) ?? true ? " checked" : ""}><span>${p.title}</span></label>`
+        `<label class="file-item${p.env ? " sub" : ""}"><input type="checkbox" data-comp="${esc(p.comp)}"` +
+        `${paneEnabled(p) ? " checked" : ""}><span>${esc(p.title)}</span></label>`
     )
     .join("");
   const enabled = enabledPanes().length;
-  $("#log-comp-btn").textContent = enabled === available.length ? "components" : `components (${enabled})`;
-  $("#log-comp-btn").classList.toggle("active", enabled !== available.length);
+  const fixed = available.filter((p) => !p.env).length;
+  $("#log-comp-btn").textContent = enabled === fixed ? "components" : `components (${enabled})`;
+  $("#log-comp-btn").classList.toggle("active", enabled !== fixed);
 }
 
 function dressLogPaneSelects() {
@@ -1719,7 +1738,7 @@ function paneLines(pane, minRank, filter) {
 
 function compName(component) {
   if (component.startsWith("env:")) return component.slice(4);
-  return LOG_PANES.find((p) => p.comp === component)?.title ?? component;
+  return BASE_LOG_PANES.find((p) => p.comp === component)?.title ?? component;
 }
 
 function renderLogPane(el) {
@@ -1732,7 +1751,7 @@ function renderLogPane(el) {
     lines = enabledPanes().flatMap((pane) => paneLines(pane, minRank, filter));
     multi = true;
   } else {
-    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    const pane = logPanes().find((p) => p.comp === el.dataset.comp);
     if (!pane) return;
     lines = paneLines(pane, minRank, filter);
     multi = paneSelectedIds(pane).length > 1;
@@ -1793,7 +1812,7 @@ async function pollLogs(render = true) {
 /* only re-render the panes whose files actually grew */
 function renderChangedLogPanes(ids) {
   document.querySelectorAll("#log-panes .log-pane").forEach((el) => {
-    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    const pane = logPanes().find((p) => p.comp === el.dataset.comp);
     const paneIds = el.dataset.comp === "__merged__" ? [...allSelectedIds()] : pane ? paneSelectedIds(pane) : [];
     if (paneIds.some((id) => ids.has(id))) renderLogPane(el);
   });
@@ -1903,7 +1922,15 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="13">${emptyState(title, detail)}</td></tr>`;
+}
+
+function traceStatusText(total) {
+  const live = state.traces.live?.length || 0;
+  const parts = [];
+  if (live && state.traces.status !== "done") parts.push(`${live} in flight`);
+  if (state.traces.status !== "live") parts.push(episodeCount(total ?? state.traces.total ?? 0));
+  return parts.join(" · ");
 }
 
 const PAGE = 128;
@@ -1937,7 +1964,7 @@ function traceQuery(extra = {}) {
 
 function traceFiltered() {
   const t = state.traces;
-  return !!(activeKind() || t.env || t.errorsOnly || t.bin);
+  return !!(activeKind() || t.env || t.errorsOnly || t.bin || t.status !== "all");
 }
 
 /* what a loaded table answers to: the run and the exact query that produced it, so
@@ -1981,7 +2008,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   // while they are scrolled only the count moves. The etag is deliberately left
   // behind: the next poll after they return to the top refreshes for real.
   if (poll && !append && traces.key === key && $("#episode-table-wrap").scrollTop > 0) {
-    $("#trace-status").textContent = episodeCount(data.total);
+    $("#trace-status").textContent = traceStatusText(data.total);
     return;
   }
   traces.etag = data.etag;
@@ -1997,17 +2024,14 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
       data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
   syncDressedSelects();
   if (!data.total) {
-    $("#trace-status").textContent = "";
-    // an unfiltered run with nothing in it has not produced episodes yet; a filtered
-    // one has, and the reader needs to know it is their filter that is empty
-    if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
-    else showTraceEmpty("no traces yet");
+    $("#trace-status").textContent = traceStatusText(0);
+    renderEpisodeRows(fresh); // in-flight rollouts, or the empty state
     return;
   }
   renderEpisodeRows(fresh);
   if (!$("#trace-modal").hidden) renderRolloutWindow();
   // the count is the run's, not the page's: a later page reports the pinned snapshot
-  if (fresh) $("#trace-status").textContent = episodeCount(data.total);
+  if (fresh) $("#trace-status").textContent = traceStatusText(data.total);
 }
 
 function episodeCount(n) {
@@ -2156,6 +2180,7 @@ function fmtStamp(epoch) {
 }
 
 function episodeRowHtml(ep) {
+  const phase = ep.ok && !ep.num_errors ? "done" : "error";
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
         <td class="muted nowrap">${ep.arrival ? fmtStamp(ep.arrival) : ""}</td>
@@ -2163,7 +2188,7 @@ function episodeRowHtml(ep) {
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
-        <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
+        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
@@ -2173,7 +2198,42 @@ function episodeRowHtml(ep) {
         <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
+        <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
       </tr>`;
+}
+
+/* an in-flight rollout, streamed by its env server: the same columns, its dispatch
+   in place of an arrival, its phase, counts that grow with every turn, no reward yet */
+function liveRowHtml(r) {
+  const label = r.trace ? `${esc(r.task ?? "")}${r.agent && r.agent !== "agent" ? ` · ${esc(r.agent)}` : ""}` : esc(r.task ?? "");
+  return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.last ?? "")}">
+        <td class="muted">live</td>
+        <td class="muted nowrap">${r.started ? fmtStamp(r.started) : ""}</td>
+        <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
+        <td class="muted">${esc(r.kind ?? "")}</td>
+        <td>${esc(r.env ?? "?")}</td>
+        <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : "n/a"}</td>
+        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span> <span class="muted">${label}</span></td>
+        <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
+        <td>${r.turns ?? ""}</td>
+        <td>${r.branches ?? ""}</td>
+        <td class="muted">${esc(r.stop_condition ?? "")}</td>
+        <td class="muted">in flight</td>
+        <td class="muted">n/a</td>
+      </tr>`;
+}
+
+/* the table's rows: in-flight rollouts first (stream mode, newest dispatch on top),
+   then the finished episodes, as the status filter allows */
+function traceRows() {
+  const t = state.traces;
+  const live = t.status !== "done" && t.mode === "stream" ? [...(t.live || [])].sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = t.status !== "live" ? t.episodes || [] : [];
+  return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
+}
+
+function traceRowHtml(row) {
+  return row.live ? liveRowHtml(row.live) : episodeRowHtml(row.ep);
 }
 
 /* windowed table: only rows in (and around) the viewport exist in the DOM, spacer
@@ -2183,22 +2243,26 @@ let episodeRowH = 0;
 function renderEpisodeRows(reset = false) {
   const wrap = $("#episode-table-wrap");
   const tbody = $("#episode-table tbody");
-  const episodes = state.traces.episodes || [];
+  const rows = traceRows();
   if (reset) {
     wrap.scrollTop = 0;
     episodeRowH = 0;
   }
+  if (!rows.length) {
+    const t = state.traces;
+    if (t.status === "live") showTraceEmpty("nothing in flight", "rollouts show here while their env servers stream them");
+    else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
+    else showTraceEmpty("no traces yet");
+    return;
+  }
   if (!episodeRowH) {
-    tbody.innerHTML = episodes.length ? episodeRowHtml(episodes[0]) : "";
+    tbody.innerHTML = traceRowHtml(rows[0]);
     episodeRowH = tbody.firstElementChild?.offsetHeight || 28;
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
-  const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
-  tbody.innerHTML =
-    pad(start * episodeRowH) +
-    episodes.slice(start, end).map(episodeRowHtml).join("") +
-    pad((episodes.length - end) * episodeRowH);
+  const end = Math.min(rows.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="13" style="height:${h}px"></td></tr>` : "");
+  tbody.innerHTML = pad(start * episodeRowH) + rows.slice(start, end).map(traceRowHtml).join("") + pad((rows.length - end) * episodeRowH);
 }
 
 async function initTraces() {
@@ -2223,32 +2287,11 @@ async function loadLive() {
 }
 
 function renderLiveRows() {
-  const wrap = $("#live-wrap");
-  const rows = state.traces.live || [];
-  wrap.hidden = !rows.length;
-  $("#live-count").textContent = rows.length ? `${rows.length} in flight` : "";
-  const tokens = (r) =>
-    r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : "";
-  $("#live-table tbody").innerHTML = rows
-    .map(
-      (r) => `<tr ${r.trace ? `data-live="${esc(r.trace)}"` : ""} class="stage-${esc(r.stage)}">
-        <td class="muted nowrap">${r.started ? fmtStamp(r.started) : ""}</td>
-        <td class="muted">${esc(r.kind ?? "")}</td>
-        <td>${esc(r.env ?? "")}</td>
-        <td class="muted" title="${esc(r.task ?? "")}">${esc(r.task ?? "")}</td>
-        <td class="muted">${esc(r.agent ?? "")}</td>
-        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span>${r.stop_condition ? ` <span class="muted">${esc(r.stop_condition)}</span>` : ""}</td>
-        <td>${r.turns ?? ""}</td>
-        <td>${tokens(r)}</td>
-        <td class="muted">${r.cost != null ? fmtCost(r.cost) : ""}</td>
-        <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
-        <td class="muted snippet" title="${esc(r.last ?? "")}">${esc(r.last ?? "")}</td>
-      </tr>`
-    )
-    .join("");
+  renderEpisodeRows();
+  $("#trace-status").textContent = traceStatusText();
   // a live trace open in the viewer follows its stream
   if (currentLive && !$("#trace-modal").hidden) {
-    if (rows.some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
+    if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
     else $("#tm-live-label").textContent = "finished · now in the stream";
   }
 }
@@ -5256,9 +5299,11 @@ function syncTraceFilterControls() {
     }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
+  for (const button of document.querySelectorAll("#trace-status-filter button"))
+    button.classList.toggle("active", button.dataset.status === t.status);
   for (const sel of ["#trace-sort", "#tm-sort"])
     $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
-  const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
+  const active = [t.env, activeKind(), t.errorsOnly, t.status !== "all"].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
   badge.hidden = !active;
@@ -5425,7 +5470,7 @@ $("#log-comp-menu").addEventListener("change", async (e) => {
   const box = e.target.closest("[data-comp]");
   if (!box) return;
   const logs = state.logs;
-  logs.components ??= new Set(LOG_PANES.filter((p) => paneFiles(p).length).map((p) => p.comp));
+  logs.components ??= new Set(enabledPanes().map((p) => p.comp));
   if (box.checked) logs.components.add(box.dataset.comp);
   else logs.components.delete(box.dataset.comp);
   renderLogPanes();
@@ -5600,13 +5645,20 @@ for (const sel of ["#trace-sort", "#tm-sort"])
     await refreshModalList();
   });
 $("#episode-table").addEventListener("click", (e) => {
+  const live = e.target.closest("tr[data-live]");
+  if (live) return openLiveTrace(live.dataset.live);
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
-$("#live-table").addEventListener("click", (e) => {
-  const row = e.target.closest("tr[data-live]");
-  if (row) openLiveTrace(row.dataset.live);
-});
+document.querySelectorAll("#trace-status-filter button").forEach((b) =>
+  b.addEventListener("click", async () => {
+    state.traces.status = b.dataset.status;
+    syncTraceFilterControls();
+    savePrefs();
+    renderEpisodeRows(true);
+    $("#trace-status").textContent = traceStatusText();
+  })
+);
 function rafThrottle(fn) {
   let pending = false;
   return () => {
@@ -6019,6 +6071,7 @@ function savePrefs() {
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
+      traceStatus: state.traces.status,
       traceMode: state.traces.mode,
       traceSortStream: state.traces.sorts.stream,
       traceSortStep: state.traces.sorts.step,

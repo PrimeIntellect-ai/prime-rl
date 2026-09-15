@@ -115,6 +115,7 @@ def main():
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
+        format_log_message,
         prepare_attempt_dirs,
         validate_run_dir,
         write_launch_artifacts,
@@ -139,14 +140,16 @@ def main():
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
-    if any(source.serve.address is None for source in config.source):
-        components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
+    env_names = [source.resolved_name for source in config.source if source.serve.address is None]
+    if env_names:
+        components.append(("Envs", f"{config_dir}/envs/eval/"))
+        components.extend((f" {name}", config_dir / "envs" / "eval" / f"{name}.json") for name in env_names)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
     if config.dry_run:
         logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
         return
 
-    logger.info(f"Logs:\n  {'Eval:':<18}tail -F {log_file}\n  {'Envs:':<18}tail -F {log_dir}/envs/eval/*.log")
+    logger.info(format_log_message(log_dir, eval=True, eval_env_names=env_names))
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     log_dashboard_url(logger, dashboard_url)
     from prime_rl.eval.eval import run_eval

@@ -130,11 +130,14 @@ def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
         if message.get("role") == "assistant" and (last := " ".join(message_text(message).split())):
             break
     costs = [u["cost"] for u in usage if u.get("cost") is not None]
+    nodes = trace.get("nodes") or []
+    parents = {node.get("parent") for node in nodes if node.get("parent") is not None}
     return {
         "trace": trace.get("id"),
         "agent": (trace.get("agent") or {}).get("name", "agent"),
         "stage": stage(trace),
         "turns": len(calls),
+        "branches": sum(1 for index in range(len(nodes)) if index not in parents),
         "input_tokens": sum(u.get("prompt_tokens") or 0 for u in usage),
         "output_tokens": sum(u.get("completion_tokens") or 0 for u in usage),
         "cost": sum(costs) if costs else None,
@@ -158,6 +161,7 @@ def pending_row(dispatch: dict[str, Any]) -> dict[str, Any]:
         "agent": None,
         "stage": "pending",
         "turns": 0,
+        "branches": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "cost": None,

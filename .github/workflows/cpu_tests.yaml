@@ -44,7 +44,7 @@ jobs:
         run: rm -rf /tmp/outputs
 
   eval-test:
-    name: Eval test (reverse-text on Prime Inference)
+    name: Eval test (gsm8k on Prime Inference)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -70,7 +70,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
-        run: uv run pytest tests/integration/test_reverse_text_eval.py
+        run: uv run pytest tests/integration/test_gsm8k_eval.py
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
 

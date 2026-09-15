@@ -88,6 +88,7 @@ def format_log_message(
     trainer: bool = False,
     orchestrator: bool = False,
     online_eval: bool = False,
+    eval: bool = False,
     inference: bool = False,
     job_log: bool = False,
     train_env_names: list[str] | None = None,
@@ -114,6 +115,8 @@ def format_log_message(
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
     if online_eval:
         log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/eval.log")
+    if eval:
+        log_lines.append(f"{i1}{'Eval:':<{col}}tail -F {log_dir}/eval.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
@@ -121,6 +124,12 @@ def format_log_message(
     if train_env_names or eval_env_names:
         env_log_dir = log_dir / "envs"
         log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
+        if eval_env_names and not train_env_names:
+            # A standalone eval has one split: list its env servers directly under Envs.
+            for name in eval_env_names:
+                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+                log_lines.append(f"{i2}{f'{short}:':<{col - 1}}tail -F {env_log_dir}/eval/{name}.log")
+            return "Logs:\n" + "\n".join(log_lines)
         if train_env_names:
             log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
             for name in train_env_names:
@@ -195,6 +204,7 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
+    # A label starting with a space is a sub-entry (an env server under its split).
     lines.extend(f"  {f'{label}:':<{col}}{path}" for label, path in components)
     return "\n".join(lines)
 

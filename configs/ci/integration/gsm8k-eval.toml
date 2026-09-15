@@ -1,0 +1,13 @@
+# CI eval smoke: gsm8k with the bash harness in a local subprocess runtime against the
+# default model on Prime Inference — the eval path end to end without a GPU or sandbox.
+num_examples = 4
+dashboard = false
+
+[sampling]
+max_completion_tokens = 8192
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "subprocess"
+env.agent.max_turns = 12

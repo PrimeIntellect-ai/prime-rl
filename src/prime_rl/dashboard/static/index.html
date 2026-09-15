@@ -100,6 +100,13 @@
           <label class="dd-row"><span class="t-label">env</span>
             <select id="trace-env"><option value="">all envs</option></select>
           </label>
+          <div class="dd-row"><span class="t-label">status</span>
+            <div class="seg" id="trace-status-filter">
+              <button data-status="all" class="active">all</button>
+              <button data-status="live" title="rollouts still running (streamed by the env servers)">in flight</button>
+              <button data-status="done" title="episodes in the finished stream">finished</button>
+            </div>
+          </div>
           <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
         </div>
       </div>
@@ -128,20 +135,11 @@
       <div id="trace-hist"></div>
       <div id="hist-tip" hidden></div>
     </div>
-    <div id="live-wrap" hidden>
-      <div class="live-head"><span class="chart-title">Live</span> <span id="live-count" class="muted"></span></div>
-      <table id="live-table" class="md-table">
-        <thead><tr>
-          <th>dispatched</th><th>kind</th><th>env</th><th>task</th><th>agent</th><th>stage</th><th>turns</th><th>tok</th><th>cost</th><th>elapsed</th><th>last message</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
         <thead><tr>
-          <th>#</th><th>arrived</th><th>took</th><th>kind</th><th>env</th><th>group</th><th>reward</th>
-          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th>
+          <th>#</th><th title="arrival of a finished episode; dispatch of one in flight">arrived</th><th>took</th><th>kind</th><th>env</th><th>group</th><th>phase</th>
+          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th><th>reward</th>
         </tr></thead>
         <tbody></tbody>
       </table>

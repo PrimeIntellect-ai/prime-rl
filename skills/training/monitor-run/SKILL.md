@@ -106,7 +106,7 @@ grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 
 ### Live rollouts
 
-`{run_dir}/monitors/file/traces/live/<trace_id>.jsonl` holds the env server's streamed deltas of one in-flight rollout (train or eval) and disappears when its episode lands in the stream, so the directory is the in-flight set. `uv run python -m prime_rl.monitors.file.traces {run_dir}` prints one row per live trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), turns, tokens, elapsed and the latest message; with a trace id it prints the assembled trace. The dashboard's traces tab lists them above the finished episodes and opens them in the viewer.
+`{run_dir}/monitors/file/traces/live/<trace_id>.jsonl` holds the env server's streamed deltas of one in-flight rollout (train or eval) and disappears when its episode lands in the stream, so the directory is the in-flight set. `uv run python -m prime_rl.monitors.file.traces {run_dir}` prints one row per live trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), turns, tokens, elapsed and the latest message; with a trace id it prints the assembled trace. The dashboard's traces tab shows them in the episode table (tinted, phase badge, growing counts; filter status → in flight) and opens them in the viewer.
 
 ### Metrics
 
