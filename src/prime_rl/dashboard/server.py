@@ -297,10 +297,17 @@ def run_meta(run_dir: Path) -> dict:
                 started = orjson.loads(f.readline()).get("time")
             except orjson.JSONDecodeError:
                 started = None
+    # Liveness reads every artifact the processes touch: an eval ships its metrics at
+    # epoch end and its first episode can take minutes, but its log ticks every few
+    # seconds. The launch itself is the start until a metrics row says otherwise.
     stream = traces_file(run_dir)
-    if updated is None and stream is not None:  # eval runs have no metrics
-        updated = stream.stat().st_mtime
-        started = configs.stat().st_mtime if configs.is_dir() else None
+    touched = [path.stat().st_mtime for path in (run_dir / "logs" / "latest").glob("*.log")]
+    if stream is not None:
+        touched.append(stream.stat().st_mtime)
+    if touched:
+        updated = max(touched + ([updated] if updated is not None else []))
+    if started is None and resolved.is_dir():
+        started = resolved.stat().st_mtime
     return {
         "name": run_dir.name,
         "type": run_type,

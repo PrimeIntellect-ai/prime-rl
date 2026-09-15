@@ -91,6 +91,7 @@ A clean exit releases `daemon.json`; a stale file from a dead process is taken
 over by the next start. Killing a dashboard never affects runs (it only reads),
 and killing a run never takes the dashboard down (it runs in its own session).
 Restart by launching any run, or directly: `uv run dashboard`.
+The daemon serves the code of the checkout that started it (`readlink /proc/$(jq -r .pid ~/.cache/prime-rl/dashboard/daemon.json)/cwd`); after switching branches or worktrees, kill it so the next launch restarts it on the current code.
 
 ## Point the open dashboard
 
