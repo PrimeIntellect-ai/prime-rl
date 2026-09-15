@@ -684,7 +684,7 @@ mark.hit {
    columns hold mono text whose width follows the font, not the window, so they are
    measured in characters; env and stop take what is left, and below the minimum the
    wrap scrolls sideways instead of crushing them. */
-#episode-table { width: 100%; min-width: 170ch; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
+#episode-table { width: 100%; min-width: 190ch; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
 #episode-table col.c-line { width: 7.5ch; }
 #episode-table col.c-phase { width: 11.5ch; }
 #episode-table col.c-span { width: 50ch; }
