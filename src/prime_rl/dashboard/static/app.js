@@ -281,8 +281,17 @@ function envListField(envs, empty = "n/a") {
 function renderPlatformLink(meta) {
   const wrap = $("#platform-wrap"), link = $("#platform-link"), button = $("#platform-btn"), menu = $("#platform-menu");
   const platform = meta?.platform;
-  wrap.hidden = !platform;
-  if (!platform) return;
+  wrap.hidden = !meta;
+  if (!meta) return;
+  if (!platform) {
+    // no prime monitor on this run: the button stays, and says what would light it up
+    link.hidden = false;
+    button.hidden = true;
+    link.classList.add("disabled");
+    link.removeAttribute("href");
+    link.title = "enable the prime monitor (--monitors.prime) to sync this run to the platform";
+    return;
+  }
   const targets =
     platform.kind === "train"
       ? platform.url ? [["training run", platform.url]] : []
