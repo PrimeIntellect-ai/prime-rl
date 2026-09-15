@@ -3510,10 +3510,16 @@ function traceBranches(trace) {
   const hasChild = new Set();
   nodes.forEach((n) => { if ("parent" in n) hasChild.add(n.parent); });
   const leaves = nodes.map((_, i) => i).filter((i) => !hasChild.has(i));
-  return leaves.map((leaf) => {
+  const paths = leaves.map((leaf) => {
     const path = [];
     for (let i = leaf; i != null; i = "parent" in nodes[i] ? nodes[i].parent : null) path.push(i);
     return path.reverse();
+  });
+  // in fork order rather than leaf order, so a branch keeps its number while the
+  // trace is still growing (a sub-agent's leaf can land before the root's)
+  return paths.sort((a, b) => {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
   });
 }
 
