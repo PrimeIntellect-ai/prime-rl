@@ -1138,20 +1138,6 @@ function summaryTilesHtml(idx, all, scoreEntries) {
     const block = (name, stats) => (stats ? `<div class="tip-head">${name} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtNum(stats[k]))).join("")}` : "");
     tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"} / ${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
   }
-  const duration = distStats(idx.map((i) => series.duration?.[i]));
-  if (duration) tile("mean episode time", fmtDuration(duration.mean), `<div class="tip-head">episode time · ${fmtCompact(duration.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtDuration(duration[k]))).join("")}`);
-  const tok = (v) => fmtCompact(Math.round(v));
-  const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
-  const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
-  if (inTok || outTok) {
-    const total = distStats(idx.map((i) => (series.input_tokens?.[i] ?? 0) + (series.output_tokens?.[i] ?? 0)));
-    tile(
-      "mean tokens",
-      tok(total.mean),
-      `<div class="tip-head">tokens · ${fmtCompact(total.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(total[k]))).join("")}`,
-      { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
-    );
-  }
   // cost is spent whether or not an episode errored, so the total covers every landed one
   const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));
   if (costs.length) {
