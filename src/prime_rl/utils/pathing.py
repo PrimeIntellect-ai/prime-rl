@@ -83,6 +83,11 @@ def latest_log_dir(run_dir: Path) -> Path:
     return get_log_dir(run_dir) / "latest"
 
 
+def shorten(name: str, max_len: int) -> str:
+    """A name cut to fit a label column, the same way in every launcher block."""
+    return name if len(name) <= max_len else name[: max_len - 3] + "..."
+
+
 def format_log_message(
     log_dir: Path,
     trainer: bool = False,
@@ -128,8 +133,9 @@ def format_log_message(
             if len(splits) > 1:
                 log_lines.append(f"{i2}{f'{split.capitalize()}:':<{col - 1}}tail -F {env_log_dir}/{split}/*.log")
             for name in names:
-                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{indent}{f'{short}:':<{width}}tail -F {env_log_dir}/{split}/{name}.log")
+                log_lines.append(
+                    f"{indent}{f'{shorten(name, max_name)}:':<{width}}tail -F {env_log_dir}/{split}/{name}.log"
+                )
     return "Logs:\n" + "\n".join(log_lines)
 
 
@@ -194,11 +200,11 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     launch_toml = attempt_dir / f"{name}.toml"
     if launch_toml.is_file():
         lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
-    # A label starting with a space is a sub-entry (an env server under its split);
-    # long names are cut like the Logs block cuts them so the paths stay aligned.
+    # A label starting with a space is a sub-entry (an env server under its split), cut
+    # to the column like the Logs block cuts env names.
     for label, path in components:
-        if len(label) > col - 2:
-            label = label[: col - 5] + "..."
+        if label.startswith(" "):
+            label = " " + shorten(label[1:], col - 4)
         lines.append(f"  {f'{label}:':<{col}}{path}")
     return "\n".join(lines)
 
