@@ -963,7 +963,7 @@ function timingPaneHtml(idx) {
   return compositionPaneHtml(
     "timing-pane",
     "mean episode time",
-    `${fmtDuration(meanTotal)} <span class="muted">· ${fmtCompact(rows.length)} episodes</span>`,
+    fmtDuration(meanTotal),
     names,
     phaseColor
   );
@@ -991,7 +991,7 @@ function tokensPaneHtml(idx) {
   return compositionPaneHtml(
     "tokens-pane",
     "mean tokens",
-    `${fmtCompact(Math.round(meanTotal))} <span class="muted">· ${fmtCompact(rows.length)} episodes</span>`,
+    fmtCompact(Math.round(meanTotal)),
     ["input", "output"],
     (n) => TOKEN_COLORS[n]
   );
