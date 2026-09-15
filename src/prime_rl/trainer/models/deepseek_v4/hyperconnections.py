@@ -46,7 +46,7 @@ class DeepseekV4HyperConnection(nn.Module):
         self.hc_mult = config.hc_mult
         self.hc_sinkhorn_iters = config.hc_sinkhorn_iters
         self.hc_eps = config.hc_eps
-        self.input_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps)
+        self.input_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps, out_dtype=torch.float32)
         mix = (2 + self.hc_mult) * self.hc_mult
         self.fn = nn.Parameter(torch.empty(mix, self.hc_mult * config.hidden_size))
         self.base = nn.Parameter(torch.empty(mix))
@@ -55,7 +55,7 @@ class DeepseekV4HyperConnection(nn.Module):
 
     def forward(self, hidden_streams: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
-        flat = self.input_norm(hidden_streams.flatten(start_dim=2).float())
+        flat = self.input_norm(hidden_streams.flatten(start_dim=2))
         pre_w, post_w, comb_w = F.linear(flat, self.fn.float()).split([hc, hc, hc * hc], dim=-1)
         pre_b, post_b, comb_b = self.base.split([hc, hc, hc * hc])
         pre_scale, post_scale, comb_scale = self.scale.unbind(0)
@@ -84,14 +84,14 @@ class DeepseekV4HyperHead(nn.Module):
     def __init__(self, config: DeepseekV4Config):
         super().__init__()
         self.hc_mult = config.hc_mult
-        self.input_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps)
+        self.input_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps, out_dtype=torch.float32)
         self.eps = config.hc_eps
         self.hc_fn = nn.Parameter(torch.empty(self.hc_mult, self.hc_mult * config.hidden_size))
         self.hc_base = nn.Parameter(torch.empty(self.hc_mult))
         self.hc_scale = nn.Parameter(torch.empty(1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        flat = self.input_norm(x.flatten(2).float())
+        flat = self.input_norm(x.flatten(2))
         mixes = F.linear(flat, self.hc_fn.float())
         pre = torch.sigmoid(mixes * self.hc_scale.float() + self.hc_base.float()) + self.eps
         return (pre.unsqueeze(-1) * x).sum(dim=2).to(x.dtype)
