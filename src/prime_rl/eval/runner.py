@@ -220,7 +220,9 @@ class EvalRunner:
         epoch are cancelled so the caller can move on to it."""
         for env_name in fired:
             task_count = self.eval_source.triggered_task_count(env_name, step)
-            self.eval_sink.set_batch_size(env_name, step, task_count * self.eval_sink.group_size_for(env_name))
+            expected = task_count * self.eval_sink.group_size_for(env_name)
+            self.eval_sink.set_batch_size(env_name, step, expected)
+            await monitors.log_eval_plan(env_name, step, expected)
 
         now = time.perf_counter()
         for env_name in fired:

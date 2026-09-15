@@ -119,3 +119,5 @@ Eval metrics mirror the training rollout hierarchy under the `eval/<env>` scope:
 | `eval/<env>/policy_version` | the policy the epoch measured (online evals) |
 
 Task-specific env metrics (e.g. `correct_answer`, `format`) appear under the same prefix. The console summary line per source (`Evaluated <env> ... Reward 0.8125`) reports the epoch mean.
+
+The dashboard's metrics tab reads the trace stream directly and shows one env at a time (switch envs with the buttons in the toolbar). A block bar has one cell per expected episode: landed episodes in the accent color (errored ones in red; click one to open it), in-flight rollouts as pulsing outlines (click one to follow it), and the rest empty. The expected count is what the eval runner wrote to `monitors/file/eval_plan.json` when it counted the epoch's tasks. Below the bar, each distribution the episodes carry gets a beeswarm with its min, p10, median, mean, p90 and max: avg@k and pass@k over tasks and reward over episodes, the env's own rewards and metrics, rollout time, input and output tokens, turns, branches and cost, and the timing phases.

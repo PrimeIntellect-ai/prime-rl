@@ -239,6 +239,11 @@ def get_batch_dir(output_dir: Path) -> Path:
     return output_dir / "batches"
 
 
+def get_eval_plan_path(output_dir: Path) -> Path:
+    """``{env: {step: expected episodes}}`` for every eval epoch the run has started."""
+    return get_file_monitor_dir(output_dir) / "eval_plan.json"
+
+
 def get_file_monitor_dir(output_dir: Path) -> Path:
     """Everything the file monitor dumps locally: the metrics, and the traces with
     the annotations about them."""

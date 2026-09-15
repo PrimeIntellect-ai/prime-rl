@@ -181,6 +181,7 @@ async function toggleCompare(name, on) {
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
   $("#metrics-mode").hidden = isEval;
+  $("#eval-envs").hidden = !isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -202,9 +203,8 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null,
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null,
   };
-  if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
     files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
@@ -226,6 +226,7 @@ async function selectRun(name, deferTab = false) {
   renderOverview();
   renderCompareMenu();
   updateHash();
+  if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   if (!deferTab) await activateTab(state.tab, true);
 }
 
@@ -462,15 +463,20 @@ async function fetchMetrics() {
    grid of stat cards showing the running average over the episodes so far */
 async function fetchEvalSeries() {
   const m = state.metrics;
+  const liveChanged = await loadLive({ render: state.tab === "traces" });
+  if (state.metrics !== m) return 0;
   let data;
   try {
     const qs = new URLSearchParams({ after: m.evalCount || 0 });
     if (m.evalEtag) qs.set("etag", m.evalEtag);
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/series?${qs}`);
   } catch {
+    data = { unchanged: true };
+  }
+  if (data.unchanged) {
+    if (liveChanged && m.loaded && state.tab === "metrics") renderMetricsBody();
     return 0;
   }
-  if (data.unchanged) return 0;
   m.evalEtag = data.etag;
   // merge the increment: keys new to this batch backfill nulls for earlier episodes
   m.evalSeries ??= {};
@@ -489,59 +495,297 @@ async function fetchEvalSeries() {
   return data.count;
 }
 
-const EVAL_CARD_GROUPS = [
-  ["rewards", (k) => k === "reward" || k === "advantage" || k.startsWith("rewards/")],
-  ["metrics", (k) => k.startsWith("metrics/")],
-  ["usage", (k) => ["cost", "input_tokens", "output_tokens", "turns", "branches"].includes(k)],
-  ["timing", (k) => k.startsWith("timing/")],
+/* ------------------------------------------------------------ eval metrics */
+/* an eval run's metrics view is per env: a block bar with one cell per expected
+   episode, then the distributions of everything the episodes carry (scores, env
+   metrics, usage, timing) as swarms with their summary stats */
+
+function evalEnvs() {
+  const meta = state.meta || {};
+  const streamed = (state.metrics.evalSeries?.env || []).filter(Boolean);
+  return [...new Set([...(meta.eval_envs || []), ...Object.keys(meta.eval_plan || {}), ...streamed])];
+}
+
+function evalEnv() {
+  const envs = evalEnvs();
+  if (!envs.includes(state.metrics.evalEnv)) state.metrics.evalEnv = envs[0] ?? null;
+  return state.metrics.evalEnv;
+}
+
+function renderEvalEnvs() {
+  const envs = evalEnvs();
+  const current = evalEnv();
+  const seg = $("#eval-envs");
+  seg.hidden = state.meta?.type !== "eval" || envs.length < 2;
+  seg.innerHTML = envs.map((env) => `<button data-env="${esc(env)}" class="${env === current ? "active" : ""}">${esc(env)}</button>`).join("");
+}
+
+/* the episodes of one env, as indices into the series */
+function evalIndices(env) {
+  const envs = state.metrics.evalSeries?.env || [];
+  const out = [];
+  for (let i = 0; i < envs.length; i++) if (envs[i] === env) out.push(i);
+  return out;
+}
+
+function evalExpected(env) {
+  const plan = state.meta?.eval_plan?.[env];
+  if (plan) return Object.values(plan).reduce((a, b) => a + b, 0);
+  return state.meta?.eval_totals?.[env] ?? null; // no plan yet: what the config promises
+}
+
+const EP_CELL_CAP = 400;
+
+function evalProgressHtml(env, idx, live) {
+  const series = state.metrics.evalSeries || {};
+  const done = idx.length;
+  const total = evalExpected(env);
+  const n = Math.max(total ?? 0, done + live.length);
+  const pct = total ? Math.min(100, (done / total) * 100) : null;
+  const errors = idx.filter((i) => series.ok?.[i] === false).length;
+  let cells;
+  if (n <= EP_CELL_CAP) {
+    // one cell per episode: landed ones in arrival order (click opens it), the
+    // in-flight ones (click follows it), then what is still to come
+    cells =
+      idx
+        .map((i) => {
+          const err = series.ok?.[i] === false;
+          const reward = series.reward?.[i];
+          return `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}" title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`;
+        })
+        .join("") +
+      live
+        .map((r) => `<span class="ep-cell live" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"></span>`)
+        .join("") +
+      `<span class="ep-cell"></span>`.repeat(Math.max(0, n - done - live.length));
+  } else {
+    // past the cap a cell stands for a share of the episodes
+    const doneCells = Math.round((done / n) * EP_CELL_CAP);
+    const liveCells = Math.round((live.length / n) * EP_CELL_CAP);
+    cells =
+      `<span class="ep-cell done"></span>`.repeat(doneCells) +
+      `<span class="ep-cell live"></span>`.repeat(liveCells) +
+      `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
+  }
+  const parts = [`${done}/${total ?? "?"} episodes`];
+  if (pct != null) parts.push(`${Math.round(pct)}%`);
+  if (live.length) parts.push(`${live.length} in flight`);
+  if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+  return (
+    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span>` +
+    `<span class="muted">${parts.join(" · ")}</span></div><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div></div>`
+  );
+}
+
+function quantile(sorted, q) {
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+function distStats(values) {
+  const sorted = values.filter((v) => typeof v === "number" && isFinite(v)).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return {
+    n: sorted.length,
+    sorted,
+    min: sorted[0],
+    p10: quantile(sorted, 0.1),
+    median: quantile(sorted, 0.5),
+    mean: sorted.reduce((a, b) => a + b, 0) / sorted.length,
+    p90: quantile(sorted, 0.9),
+    max: sorted[sorted.length - 1],
+  };
+}
+
+const SWARM_W = 320, SWARM_H = 72, SWARM_PAD = 8, SWARM_MAX_POINTS = 1500;
+
+/* a beeswarm: every value a dot along x, stacked where they crowd, with the
+   summary stats drawn through as ticks */
+function swarmSvg(stats) {
+  const { sorted, min, max } = stats;
+  const span = max - min || 1;
+  const x = (v) => SWARM_PAD + ((v - min) / span) * (SWARM_W - 2 * SWARM_PAD);
+  const pts =
+    sorted.length > SWARM_MAX_POINTS
+      ? Array.from({ length: SWARM_MAX_POINTS }, (_, k) => sorted[Math.floor((k * sorted.length) / SWARM_MAX_POINTS)])
+      : sorted;
+  const r = pts.length > 600 ? 1.5 : pts.length > 200 ? 2 : 3;
+  const mid = SWARM_H / 2;
+  const placed = []; // [x, y], sorted by x like the values
+  const circles = pts.map((v) => {
+    const px = x(v);
+    // the lowest |y| that clears the neighbours already placed within 2r in x
+    const candidates = [0];
+    for (let j = placed.length - 1; j >= 0 && px - placed[j][0] < 2 * r; j--) {
+      const dx = px - placed[j][0];
+      const dy = Math.sqrt(4 * r * r - dx * dx);
+      candidates.push(placed[j][1] + dy, placed[j][1] - dy);
+    }
+    let best = 0, bestAbs = Infinity;
+    for (const c of candidates) {
+      if (Math.abs(c) >= bestAbs) continue;
+      let clear = true;
+      for (let j = placed.length - 1; j >= 0 && px - placed[j][0] < 2 * r; j--) {
+        const dx = px - placed[j][0], dy = c - placed[j][1];
+        if (dx * dx + dy * dy < 4 * r * r - 1e-6) { clear = false; break; }
+      }
+      if (clear) { best = c; bestAbs = Math.abs(c); }
+    }
+    placed.push([px, best]);
+    const y = Math.max(r, Math.min(SWARM_H - r, mid + best));
+    return `<circle cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+  });
+  const tick = (v, cls) => `<line class="sw-tick ${cls}" x1="${x(v).toFixed(1)}" x2="${x(v).toFixed(1)}" y1="1" y2="${SWARM_H - 1}"></line>`;
+  return (
+    `<svg class="swarm" viewBox="0 0 ${SWARM_W} ${SWARM_H}" preserveAspectRatio="xMidYMid meet">` +
+    `${tick(stats.p10, "q")}${tick(stats.p90, "q")}${tick(stats.mean, "mean")}${tick(stats.median, "median")}` +
+    `<g class="sw-pts">${circles.join("")}</g></svg>`
+  );
+}
+
+const SWARM_STATS = ["min", "p10", "median", "mean", "p90", "max"];
+
+function swarmCard(key, label, values, fmt, { headline, sub } = {}) {
+  const stats = distStats(values);
+  if (!stats) return ""; // nothing of this kind landed for the env (yet)
+  const head = `<div class="sw-head"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>`;
+  return (
+    `<div class="stat-card swarm-card" data-key="${esc(key)}">${head}<div class="stat-value">${headline ?? fmt(stats.mean)}</div></div>` +
+    `<div class="muted sw-sub">${sub ?? `${fmtCompact(stats.n)} episodes`}</div>${swarmSvg(stats)}` +
+    `<div class="sw-stats">${SWARM_STATS.map((k) => `<span class="sw-stat ${k}"><span class="k">${k}</span>${fmt(stats[k])}</span>`).join("")}</div></div>`
+  );
+}
+
+/* unbiased pass@k for one task's binary rewards, k over the powers of two up to n
+   (the orchestrator's compute_pass_metrics) */
+function passAtK(rewards) {
+  const n = rewards.length, c = rewards.filter((r) => r === 1).length;
+  const comb = (a, b) => {
+    if (b < 0 || b > a) return 0;
+    b = Math.min(b, a - b);
+    let out = 1;
+    for (let i = 1; i <= b; i++) out = (out * (a - b + i)) / i;
+    return out;
+  };
+  const out = {};
+  for (let k = 1; k <= n; k *= 2) out[k] = 1 - comb(n - c, k) / comb(n, k);
+  return out;
+}
+
+function taskCount(n) {
+  return `${fmtCompact(n)} task${n === 1 ? "" : "s"}`;
+}
+
+function evalScoreCards(idx, filter) {
+  const series = state.metrics.evalSeries || {};
+  const cards = [];
+  const rewards = idx.map((i) => series.reward?.[i]).filter((v) => v != null);
+  const byTask = new Map();
+  for (const i of idx) {
+    const reward = series.reward?.[i];
+    if (reward == null) continue;
+    const task = series.group?.[i] ?? String(i);
+    if (!byTask.has(task)) byTask.set(task, []);
+    byTask.get(task).push(reward);
+  }
+  const groups = [...byTask.values()];
+  const k = groups.length ? Math.max(...groups.map((g) => g.length)) : 0;
+  if (groups.length && (!filter || filter.test("avg@k"))) {
+    const perTask = groups.map((g) => g.reduce((a, b) => a + b, 0) / g.length);
+    cards.push(swarmCard("avg@k", `avg@${k}`, perTask, fmtReward, { sub: `${taskCount(groups.length)} · mean reward per task` }));
+  }
+  if (groups.length && (!filter || filter.test("pass@k"))) {
+    if (rewards.every((r) => r === 0 || r === 1)) {
+      const perTask = groups.map(passAtK);
+      const ks = [...new Set(perTask.flatMap((p) => Object.keys(p).map(Number)))].sort((a, b) => a - b);
+      const mean = (kk) => {
+        const vals = perTask.map((p) => p[kk]).filter((v) => v != null);
+        return vals.reduce((a, b) => a + b, 0) / vals.length;
+      };
+      const top = ks[ks.length - 1];
+      const stats = distStats(perTask.map((p) => p[top]).filter((v) => v != null));
+      cards.push(
+        `<div class="stat-card swarm-card" data-key="pass@k"><div class="sw-head"><div class="stat-label">pass@${top}</div><div class="stat-value">${fmtReward(mean(top))}</div></div>` +
+          `<div class="muted sw-sub">${taskCount(groups.length)} · any of ${top} rollouts solved</div>${stats ? swarmSvg(stats) : ""}` +
+          `<div class="sw-stats">${ks.map((kk) => `<span class="sw-stat"><span class="k">pass@${kk}</span>${fmtReward(mean(kk))}</span>`).join("")}</div></div>`
+      );
+    } else {
+      cards.push(
+        `<div class="stat-card swarm-card" data-key="pass@k"><div class="sw-head"><div class="stat-label">pass@k</div><div class="stat-value muted">n/a</div></div>` +
+          `<div class="muted sw-sub">rewards are not binary</div></div>`
+      );
+    }
+  }
+  if (rewards.length && (!filter || filter.test("reward"))) {
+    const errors = idx.filter((i) => series.ok?.[i] === false).length;
+    cards.push(swarmCard("reward", "reward", rewards, fmtReward, { sub: `${fmtCompact(rewards.length)} episodes${errors ? ` · ${errors} with errors` : ""}` }));
+  }
+  return cards;
+}
+
+const EVAL_USAGE_CARDS = [
+  ["duration", "rollout time", fmtDuration],
+  ["input_tokens", "input tokens", (v) => fmtCompact(Math.round(v))],
+  ["output_tokens", "output tokens", (v) => fmtCompact(Math.round(v))],
+  ["turns", "turns", fmtNum],
+  ["branches", "branches", fmtNum],
+  ["cost", "cost", fmtCost],
 ];
 
-function renderEvalCards(body) {
+function renderEvalPane(body) {
   const m = state.metrics;
   const series = m.evalSeries || {};
   const filter = makeFilter(m.search.trim());
-  const total = state.meta?.total_episodes;
-  const done = m.evalCount || 0;
-  if (total) {
-    const pct = Math.min(100, (done / total) * 100);
-    body.insertAdjacentHTML(
-      "beforeend",
-      `<div class="eval-progress"><div class="ep-bar"><div class="ep-fill" style="width:${pct}%"></div></div>` +
-        `<span class="ep-label">${done}/${total} episodes · ${Math.round(pct)}%</span></div>`
-    );
+  renderEvalEnvs();
+  const env = evalEnv();
+  $("#metrics-status").textContent = "";
+  if (!env) {
+    body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
+    return;
   }
-  const fmtVal = (key, v) => {
-    if (v == null) return "n/a";
-    if (key === "cost") return fmtCost(v);
-    if (key.startsWith("timing/")) return fmtDuration(v);
-    if (key.endsWith("tokens")) return fmtCompact(Math.round(v));
-    return fmtNum(v);
-  };
-  let shown = 0;
-  for (const [name, match] of EVAL_CARD_GROUPS) {
-    const keys = Object.keys(series)
-      .filter(match)
-      .filter((k) => !filter || filter.test(k))
-      .sort();
-    if (!keys.length) continue;
-    shown += keys.length;
+  const idx = evalIndices(env);
+  const live = (state.traces.live || []).filter((r) => r.env === env);
+  body.insertAdjacentHTML("beforeend", evalProgressHtml(env, idx, live));
+  const pick = (key) => idx.map((i) => series[key]?.[i]);
+  const section = (name, all) => {
+    const cards = all.filter(Boolean);
+    if (!cards.length) return 0;
     const { grid } = addSection(body, name);
-    grid.className = "stat-grid";
-    grid.innerHTML = keys
-      .map((key) => {
-        const values = series[key].filter((v) => v != null);
-        const avg = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-        const label = /^(rewards|metrics|timing)\//.test(key) ? key.split("/").slice(1).join("/") : key;
-        return (
-          `<div class="stat-card"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>` +
-          `<div class="stat-value">${fmtVal(key, avg)}</div></div>`
-        );
-      })
-      .join("");
-  }
-  $("#metrics-status").textContent = total || !m.evalCount ? "" : `running avg over ${m.evalCount} episodes`;
-  if (!shown) body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
+    grid.className = "swarm-grid";
+    grid.innerHTML = cards.join("");
+    return cards.length;
+  };
+  const keyed = (prefix, fmt) =>
+    Object.keys(series)
+      .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
+      .sort()
+      .map((k) => swarmCard(k, k.slice(prefix.length), pick(k), fmt));
+  let shown = 0;
+  shown += section("scores", evalScoreCards(idx, filter));
+  shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
+  shown += section(
+    "usage",
+    EVAL_USAGE_CARDS.filter(([key]) => series[key] && (!filter || filter.test(key))).map(([key, label, fmt]) => swarmCard(key, label, pick(key), fmt))
+  );
+  shown += section("timing", keyed("timing/", fmtDuration));
+  if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
 }
+
+$("#eval-envs").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-env]");
+  if (!button || button.dataset.env === state.metrics.evalEnv) return;
+  state.metrics.evalEnv = button.dataset.env;
+  renderMetricsBody();
+});
+
+$("#metrics-body").addEventListener("click", (e) => {
+  const cell = e.target.closest(".ep-cell[data-line], .ep-cell[data-live]");
+  if (!cell) return;
+  if (cell.dataset.live) openLiveTrace(cell.dataset.live);
+  else openEpisode(+cell.dataset.line);
+});
 
 async function fetchCompares() {
   const results = await Promise.all(
@@ -1171,7 +1415,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.meta?.type === "eval") return renderEvalCards(body);
+  if (state.meta?.type === "eval") return renderEvalPane(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");
@@ -2297,26 +2541,27 @@ async function initTraces() {
    monitor keeps one file of deltas per live trace and drops it when the episode
    lands in the stream, so this table is exactly what is running right now */
 let liveInflight = false;
-async function loadLive() {
+async function loadLive({ render = true } = {}) {
   const traces = state.traces;
-  if (liveInflight) return; // one poll at a time: answers never land out of order
+  if (liveInflight) return false; // one poll at a time: answers never land out of order
   liveInflight = true;
   let data;
   try {
     const qs = traces.liveEtag ? `?etag=${encodeURIComponent(traces.liveEtag)}` : "";
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/live${qs}`);
   } catch {
-    return; // a failed poll keeps the rows it had; the next one refreshes them
+    return false; // a failed poll keeps the rows it had; the next one refreshes them
   } finally {
     liveInflight = false;
   }
-  if (state.traces !== traces) return;
+  if (state.traces !== traces) return false;
   if (!data.unchanged) {
     traces.live = data.rows || [];
     traces.liveEtag = data.etag;
     traces.liveAt = Date.now();
   }
-  renderLiveRows(); // an unchanged set still ticks its elapsed times
+  if (render) renderLiveRows(); // an unchanged set still ticks its elapsed times
+  return !data.unchanged;
 }
 
 /* the server stamps elapsed at the last full answer; the row keeps counting from there */

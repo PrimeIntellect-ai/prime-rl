@@ -16,7 +16,7 @@ from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import update_index_row
-from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -59,6 +59,15 @@ class FileMonitor(Monitor):
         if self.producer is not None:
             row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
+
+    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
+        """Merge the epoch's expected count into ``eval_plan.json`` (atomic replace)."""
+        path = get_eval_plan_path(self.output_dir)
+        plan = orjson.loads(path.read_bytes()) if path.is_file() else {}
+        plan.setdefault(env_name, {})[str(step)] = expected
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_bytes(orjson.dumps(plan))
+        tmp.replace(path)
 
     async def log_live(self, events: list[dict[str, Any]]) -> None:
         """Append each delta to its trace's file under ``traces/live/`` (the first line

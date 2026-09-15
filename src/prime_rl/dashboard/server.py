@@ -31,7 +31,7 @@ from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.live import live_etag, live_path, live_rows, read_live, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
-from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.process import set_proc_title
 
 try:
@@ -268,13 +268,29 @@ def eval_env(config: dict) -> str | None:
     return ((config.get("env") or {}).get("taskset") or {}).get("id")
 
 
+def source_total_episodes(source: dict) -> int | None:
+    """What one ``[[source]]`` will produce, from its config alone: ``num_examples = -1``
+    means the whole taskset, unknown up front unless the source names its tasks."""
+    tasks = ((source.get("env") or {}).get("taskset") or {}).get("tasks")
+    count = source.get("num_examples") or -1
+    if count < 0 and not tasks:
+        return None
+    return (count if count >= 0 else len(tasks)) * (source.get("group_size") or 1)
+
+
+def eval_totals(config: dict) -> dict[str, int | None]:
+    """Expected episodes per eval env (a source's name, else its taskset id)."""
+    return {
+        s.get("name") or ((s.get("env") or {}).get("taskset") or {}).get("id") or "?": source_total_episodes(s)
+        for s in config.get("source") or []
+    }
+
+
 def eval_total_episodes(config: dict) -> int | None:
     sources = config.get("source") or []
     if sources:
-        # ``num_examples = -1`` means the whole taskset: unknown up front.
-        if any((s.get("num_examples") or -1) < 0 for s in sources):
-            return None
-        return sum(s["num_examples"] * (s.get("group_size") or 1) for s in sources) or None
+        totals = [source_total_episodes(s) for s in sources]
+        return None if any(t is None for t in totals) else sum(totals) or None
     return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
 
 
@@ -312,15 +328,19 @@ def run_meta(run_dir: Path) -> dict:
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
     finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
+    plan_path = get_eval_plan_path(run_dir)
+    eval_plan = orjson.loads(plan_path.read_bytes()) if plan_path.is_file() else {}
     return {
         "name": run_dir.name,
         "type": run_type,
         "finished": finished,
+        "eval_plan": eval_plan,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": eval_env(config),
         "total_episodes": eval_total_episodes(config),
+        "eval_totals": eval_totals(config),
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
@@ -1773,7 +1793,20 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     for s in summaries:
         keys.update(
             k
-            for k in ("reward", "advantage", "cost", "turns", "branches", "input_tokens", "output_tokens")
+            for k in (
+                "env",
+                "group",
+                "line",
+                "ok",
+                "duration",
+                "reward",
+                "advantage",
+                "cost",
+                "turns",
+                "branches",
+                "input_tokens",
+                "output_tokens",
+            )
             if s.get(k) is not None
         )
         for group in ("rewards", "metrics", "timing"):
