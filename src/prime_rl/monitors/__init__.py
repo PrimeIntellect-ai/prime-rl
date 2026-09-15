@@ -139,11 +139,11 @@ async def log_annotations(updates: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def log_inflight(rows: list[dict[str, Any]]) -> None:
-    """Log the live in-flight view to all registered monitors."""
+async def log_live(events: list[dict[str, Any]]) -> None:
+    """Log live-trace events to all registered monitors."""
     for monitor in MONITORS:
         try:
-            await monitor.log_inflight(rows)
+            await monitor.log_live(events)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 

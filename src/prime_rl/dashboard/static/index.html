@@ -128,6 +128,15 @@
       <div id="trace-hist"></div>
       <div id="hist-tip" hidden></div>
     </div>
+    <div id="live-wrap" hidden>
+      <div class="live-head"><span class="chart-title">Live</span> <span id="live-count" class="muted"></span></div>
+      <table id="live-table" class="md-table">
+        <thead><tr>
+          <th>kind</th><th>env</th><th>task</th><th>agent</th><th>stage</th><th>turns</th><th>tok</th><th>cost</th><th>elapsed</th><th>last message</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
         <thead><tr>
@@ -179,7 +188,7 @@
   <aside id="tm-left">
     <div class="tm-head tm-stephead" id="tm-stephead">
       <button id="tm-step-prev" class="btn tm-nav" title="previous step">‹</button>
-      <span id="tm-step-label"></span>
+      <span id="tm-step-label"></span><span id="tm-live-label" class="muted"></span>
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
     </div>
     <div class="tm-head tm-ctlrow">

@@ -106,7 +106,7 @@ grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 
 ### Live rollouts
 
-`{run_dir}/monitors/file/inflight.json` is the dispatcher's live view of every in-flight rollout (train and eval), rewritten twice a second from the env servers' turn-by-turn stream: one row per trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), `turns`, `input_tokens`/`output_tokens`, `cost`, `elapsed` and `last` (the latest message). The dashboard's metrics tab renders it as a live table; `/api/runs/<run>/inflight` serves it.
+`{run_dir}/monitors/file/traces/live/<trace_id>.jsonl` holds the env server's streamed deltas of one in-flight rollout (train or eval) and disappears when its episode lands in the stream, so the directory is the in-flight set. `uv run python -m prime_rl.monitors.file.traces {run_dir}` prints one row per live trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), turns, tokens, elapsed and the latest message; with a trace id it prints the assembled trace. The dashboard's traces tab lists them above the finished episodes and opens them in the viewer.
 
 ### Metrics
 

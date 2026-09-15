@@ -193,7 +193,7 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
-        self.live_dirty = False
+        self.live_events: list[dict[str, Any]] = []
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
         self.source_indices_by_group: dict[str, int] = {}
@@ -366,23 +366,26 @@ class Dispatcher:
         if self.live_task is not None:
             await safe_cancel(self.live_task)
             self.live_task = None
-            await monitors.log_inflight([])
+            await self.flush_live()
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
 
-    def live_rows(self) -> list[dict[str, Any]]:
-        """One row per in-flight trace: its phase, turns, tokens and last message."""
-        return live.rows(list(self.inflight.values()))
+    def retire(self, meta: InflightEpisode) -> None:
+        """An episode left the in-flight set (finished, cancelled, dropped): its live
+        traces are over."""
+        self.live_events.extend({"done": trace_id} for trace_id in meta.live)
+
+    async def flush_live(self) -> None:
+        if self.live_events:
+            events, self.live_events = self.live_events, []
+            await monitors.log_live(events)
 
     async def publish_live(self) -> None:
-        """Push the live rows to the monitors whenever they changed, at most twice a second."""
+        """Hand the streamed deltas to the monitors in batches, at most twice a second."""
         while True:
             await asyncio.sleep(LIVE_INTERVAL_S)
-            if not self.live_dirty:
-                continue
-            self.live_dirty = False
-            await monitors.log_inflight(self.live_rows())
+            await self.flush_live()
 
     async def on_version_pending(self, step: int) -> None:
         """Drop train groups past ``max_off_policy_steps``: a group dispatched at
@@ -572,9 +575,9 @@ class Dispatcher:
             started_at=time.monotonic(),
         )
 
-        def on_update(assembly) -> None:
-            meta.assembly = assembly
-            self.live_dirty = True
+        def on_delta(delta: dict) -> None:
+            live.apply(meta, delta)
+            self.live_events.append({"delta": delta, "dispatch": live.dispatch_info(meta)})
 
         task = asyncio.create_task(
             env.run(
@@ -582,11 +585,10 @@ class Dispatcher:
                 model_name=model_name,
                 cache_salt=cache_salt,
                 task_data=group.task.data.model_dump(mode="json"),
-                on_update=on_update,
+                on_delta=on_delta,
             )
         )
         self.inflight[task] = meta
-        self.live_dirty = True
         return True
 
     async def acquire(self) -> None:
@@ -609,7 +611,7 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
-        self.live_dirty = True
+        self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
@@ -720,6 +722,7 @@ class Dispatcher:
                 continue
             del self.inflight[task]
             self.release()
+            self.retire(meta)
             claimed.append((task, meta))
 
         inflight_cancelled = len(claimed)
@@ -759,6 +762,7 @@ class Dispatcher:
         for meta in self.inflight.values():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
             self.release()
+            self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
@@ -778,6 +782,7 @@ class Dispatcher:
                 continue
             self.inflight.pop(task, None)
             self.release()
+            self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             cancelled += 1
             train_tasks.append(task)

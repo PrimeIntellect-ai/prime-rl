@@ -353,7 +353,7 @@ class EvalRunner:
             parts.append(part)
         progress_part = " | ".join(parts) if parts else "Idle"
 
-        stages = live.stage_counts(self.dispatcher.live_rows())
+        stages = live.stage_counts(list(self.dispatcher.inflight.values()))
         body = (
             f"{progress_part}; {self.dispatcher.inflight_eval_count} inflight episodes "
             f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"

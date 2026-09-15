@@ -75,7 +75,7 @@ Run dir: `output_dir / run.name` (auto `<envs>--<model>--<short-id>`; `ls -t out
 │   ├── eval.log               # the eval process (everything; the console only shows errors + the final success line)
 │   └── envs/eval/{name}.log   # one log per env server
 ├── monitors/file/             # metrics.jsonl + the trace stream (dashboard reads these)
-│   └── inflight.json          # live rows of in-flight rollouts (phase, turns, tokens, last message), rewritten twice a second
+│   └── traces/live/{trace_id}.jsonl   # the env server's deltas of one in-flight trace; deleted when its episode lands in the stream
 └── checkpoints/step_{cursor}/eval/progress.pt   # task cursor, newest kept
 ```
 
@@ -85,10 +85,11 @@ Check-in:
 tail -F {run_dir}/logs/latest/eval.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/eval.log {run_dir}/logs/latest/envs/eval/*.log
 grep SUCCESS {run_dir}/logs/latest/eval.log            # one "Evaluated <env> ... Reward 0.xxxx" line per source (file only; the console is quiet while it runs)
-python -c "import json; [print(r['task'], r['stage'], r['turns'], r['last'][:80]) for r in json.load(open('{run_dir}/monitors/file/inflight.json'))['rows']]"   # what every live rollout is doing right now
+uv run python -m prime_rl.monitors.file.traces {run_dir}              # every live rollout: phase, turns, tokens, elapsed, last message
+uv run python -m prime_rl.monitors.file.traces {run_dir} <trace_id>   # one in-flight trace, assembled from its deltas
 ```
 
-Env servers stream each rollout turn by turn, so the progress line in `eval.log` counts the in-flight rollouts by phase (`- boot 1 · running 3`) and the dashboard's metrics tab shows a live table (env, task, agent, stage, turns, tokens, cost, elapsed, last message) while the run is in flight. A rollout stuck in `boot` for minutes is waiting on its sandbox; one stuck in `running` with a growing turn count is working, one with a frozen turn count is waiting on a model call or tool.
+Env servers stream each rollout turn by turn as deltas; the file monitor keeps one file per in-flight trace under `monitors/file/traces/live/` and drops it when the episode finishes, so `ls` there is the in-flight set. The progress line in `eval.log` counts the in-flight rollouts by phase (`- boot 1 · running 3`) and the dashboard's traces tab lists the live traces above the finished ones and opens them in the viewer mid-flight. A rollout stuck in `boot` for minutes is waiting on its sandbox; one stuck in `running` with a growing turn count is working, one with a frozen turn count is waiting on a model call or tool.
 
 Metrics (`monitors/file/metrics.jsonl`, W&B, dashboard) live under `eval/<env>/all/<agent>/…`: `reward/mean`, `is_truncated/mean` (rollouts cut by the length limit — raise `sampling.max_completion_tokens`), `has_error/mean`, plus the taskset's own metrics; `eval/<env>/all/seq_len/mean` is the episode length. Validate a result by reading a few traces in the dashboard (`dashboard` skill) rather than trusting the mean alone.
 

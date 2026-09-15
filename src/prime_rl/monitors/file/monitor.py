@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
@@ -13,6 +14,7 @@ from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
+from prime_rl.monitors.file.traces.live import get_live_dir
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
@@ -37,6 +39,8 @@ class FileMonitor(Monitor):
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A previous attempt's live traces are stale: nothing streams into them again.
+        shutil.rmtree(get_live_dir(output_dir), ignore_errors=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
@@ -56,14 +60,27 @@ class FileMonitor(Monitor):
             row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
-    async def log_inflight(self, rows: list[dict[str, Any]]) -> None:
-        """``inflight.json`` next to the metrics: the live rows, replaced whole so a
-        reader never sees a torn view."""
-        path = get_file_monitor_dir(self.output_dir) / "inflight.json"
-        data = orjson.dumps({"time": time.time(), "rows": rows})
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+    async def log_live(self, events: list[dict[str, Any]]) -> None:
+        """Append each delta to its trace's file under ``traces/live/`` (the first line
+        carrying the dispatch identity); a finished or discarded trace's file goes away."""
+        live_dir = get_live_dir(self.output_dir)
+
+        def write() -> None:
+            live_dir.mkdir(parents=True, exist_ok=True)
+            for event in events:
+                if "done" in event:
+                    (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
+                    continue
+                delta = event["delta"]
+                path = live_dir / f"{delta['trace']}.jsonl"
+                if delta.get("discard"):
+                    path.unlink(missing_ok=True)
+                    continue
+                line = {**delta, "dispatch": event["dispatch"]} if "open" in delta else delta
+                with path.open("ab") as f:
+                    f.write(orjson.dumps(line, default=str, option=OPTS) + b"\n")
+
+        await asyncio.to_thread(write)
 
     def _stream(self, directory: Path) -> tuple[ChunkedJsonl, BinaryIO]:
         """A stream and its index, opened on first use and kept open. Writers flush the

@@ -57,9 +57,10 @@ class Monitor(ABC):
         """Log trace updates — post-hoc facts about traces this run already logged.
         Monitors that only carry scalars ignore them."""
 
-    async def log_inflight(self, rows: list[dict[str, Any]]) -> None:
-        """Log the live view of in-flight episodes (``orchestrator.live.rows``); replaces
-        the previous view. Monitors that only carry finished work ignore it."""
+    async def log_live(self, events: list[dict[str, Any]]) -> None:
+        """Log the env servers' stream of in-flight traces: ``{"delta", "dispatch"}`` for
+        each delta as it arrived, ``{"done": trace_id}`` when a trace's episode finished.
+        Monitors that only carry finished work ignore it."""
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
         """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,

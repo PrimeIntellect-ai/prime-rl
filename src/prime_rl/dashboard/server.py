@@ -28,6 +28,7 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
+from prime_rl.monitors.file.traces.live import list_live, live_path, live_row, read_live, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_file_monitor_dir
@@ -1712,16 +1713,32 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
     }
 
 
-@app.get("/api/runs/{run}/inflight")
-def inflight(run: str) -> dict:
-    """The live view of the run's in-flight episodes, as the dispatcher last published it
-    (``monitors/file/inflight.json``): one row per live trace with its phase, turns,
-    tokens and last message. ``age`` is how old the view is in seconds."""
-    path = get_file_monitor_dir(get_run_dir(run)) / "inflight.json"
-    if not path.is_file():
-        return {"time": None, "age": None, "rows": []}
-    data = read_json(path)
-    return {**data, "age": time.time() - data["time"]}
+@app.get("/api/runs/{run}/live")
+def live_traces(run: str) -> dict:
+    """The run's in-flight traces, folded from the env servers' streamed deltas
+    (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
+    phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
+    gone has finished and sits in the stream."""
+    rows = [live_row(dispatch, trace) for dispatch, trace in list_live(get_run_dir(run))]
+    return {"time": time.time(), "rows": rows}
+
+
+@app.get("/api/runs/{run}/live/{trace_id}")
+def live_trace(run: str, trace_id: str) -> dict:
+    """One in-flight trace assembled from its deltas, shaped like a stream record (an
+    episode with this one trace) so the trace viewer renders it as it grows."""
+    folded = read_live(live_path(get_run_dir(run), trace_id))
+    if folded is None:
+        raise HTTPException(404, "live trace not found - its episode finished or never streamed")
+    dispatch, trace = folded
+    return {
+        "id": None,
+        "kind": dispatch.get("kind"),
+        "env": {"name": dispatch.get("env")},
+        "group": {"id": dispatch.get("group")},
+        "live": {**dispatch, "stage": stage(trace)},
+        "traces": [trace],
+    }
 
 
 @app.get("/api/runs/{run}/episodes/series")

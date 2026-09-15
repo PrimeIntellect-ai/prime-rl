@@ -53,6 +53,7 @@ const state = {
     kinds: { train: true, eval: true },
     bin: null,
     episodes: [],
+    live: [],
     total: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
@@ -415,64 +416,7 @@ function ingestInto(store, rows, meta) {
 /* the server caps each /metrics response, so a huge run streams in chunks: the
    first charts paint immediately and a progress readout ticks up while the rest
    loads, with the main thread yielding between chunks */
-/* the dispatcher publishes its in-flight episodes as the env servers stream them
-   turn by turn; stale or empty views (a finished run) hide the table */
-async function fetchInflight() {
-  try {
-    state.inflight = await api(`/api/runs/${encodeURIComponent(state.run)}/inflight`);
-  } catch {
-    state.inflight = null;
-  }
-  renderInflight();
-}
-
-const INFLIGHT_STALE_S = 60;
-
-function renderInflight() {
-  const body = $("#metrics-body");
-  if (!body) return;
-  let el = body.querySelector("#inflight");
-  const data = state.inflight;
-  const rows = data?.rows ?? [];
-  if (!rows.length || data.age == null || data.age > INFLIGHT_STALE_S) {
-    el?.remove();
-    return;
-  }
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "inflight";
-    el.className = "section inflight";
-    body.prepend(el);
-  }
-  const cell = (v) => `<td>${esc(v == null ? "" : String(v))}</td>`;
-  const tokens = (r) =>
-    r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : "";
-  el.innerHTML =
-    `<div class="section-title">live · ${rows.length} in flight <span class="muted">(${Math.round(data.age)}s ago)</span></div>` +
-    `<div class="md-table-wrap"><table class="md-table inflight-table"><thead><tr>` +
-    ["env", "task", "agent", "stage", "turns", "tokens", "cost", "elapsed", "last message"].map((h) => `<th>${h}</th>`).join("") +
-    `</tr></thead><tbody>` +
-    rows
-      .map(
-        (r) =>
-          `<tr class="stage-${esc(r.stage)}">` +
-          cell(r.env) +
-          cell(r.task) +
-          cell(r.agent ?? "") +
-          `<td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span>${r.stop_condition ? ` <span class="muted">${esc(r.stop_condition)}</span>` : ""}</td>` +
-          cell(r.turns ?? "") +
-          `<td>${tokens(r)}</td>` +
-          cell(r.cost != null ? fmtCost(r.cost) : "") +
-          cell(r.elapsed != null ? fmtDuration(r.elapsed) : "") +
-          `<td class="muted snippet" title="${esc(r.last ?? "")}">${esc(r.last ?? "")}</td>` +
-          `</tr>`
-      )
-      .join("") +
-    `</tbody></table></div>`;
-}
-
 async function fetchMetrics() {
-  fetchInflight();
   if (state.meta?.type === "eval") return fetchEvalSeries();
   const m = state.metrics;
   if (m.fetching) return 0;
@@ -1224,12 +1168,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.meta?.type === "eval") {
-    renderEvalCards(body);
-    renderInflight();
-    return;
-  }
-  renderInflight();
+  if (state.meta?.type === "eval") return renderEvalCards(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");
@@ -2267,11 +2206,100 @@ async function initTraces() {
   await refreshTraces();
 }
 
+/* ------------------------------------------------------------ live traces */
+
+/* the env servers stream every in-flight rollout turn by turn; the run's file
+   monitor keeps one file of deltas per live trace and drops it when the episode
+   lands in the stream, so this table is exactly what is running right now */
+async function loadLive() {
+  let data;
+  try {
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/live`);
+  } catch {
+    data = { rows: [] };
+  }
+  state.traces.live = data.rows || [];
+  renderLiveRows();
+}
+
+function renderLiveRows() {
+  const wrap = $("#live-wrap");
+  const rows = state.traces.live || [];
+  wrap.hidden = !rows.length;
+  $("#live-count").textContent = rows.length ? `${rows.length} in flight` : "";
+  const tokens = (r) =>
+    r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : "";
+  $("#live-table tbody").innerHTML = rows
+    .map(
+      (r) => `<tr data-live="${esc(r.trace)}" class="stage-${esc(r.stage)}">
+        <td class="muted">${esc(r.kind ?? "")}</td>
+        <td>${esc(r.env ?? "")}</td>
+        <td class="muted" title="${esc(r.task ?? "")}">${esc(r.task ?? "")}</td>
+        <td class="muted">${esc(r.agent ?? "")}</td>
+        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span>${r.stop_condition ? ` <span class="muted">${esc(r.stop_condition)}</span>` : ""}</td>
+        <td>${r.turns ?? ""}</td>
+        <td>${tokens(r)}</td>
+        <td class="muted">${r.cost != null ? fmtCost(r.cost) : ""}</td>
+        <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
+        <td class="muted snippet" title="${esc(r.last ?? "")}">${esc(r.last ?? "")}</td>
+      </tr>`
+    )
+    .join("");
+  // a live trace open in the viewer follows its stream
+  if (currentLive && !$("#trace-modal").hidden) {
+    if (rows.some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
+    else $("#tm-live-label").textContent = "finished · now in the stream";
+  }
+}
+
+let currentLive = null;
+
+async function openLiveTrace(traceId, { refresh = false } = {}) {
+  if (!refresh) {
+    stopReplay();
+    episodeEnrichmentVersion++;
+    $("#trace-modal").hidden = false;
+    $("#drawer-backdrop").hidden = false;
+    currentLine = null;
+    currentEpisode = null;
+    currentTraceIdx = 0;
+    currentBranchIdx = 0;
+    currentEvidenceView = null;
+    currentTimeline = null;
+    pendingTimelineNode = null;
+    pendingTimelineCall = null;
+    semanticSelection = null;
+    semanticExpandedRuns.clear();
+    clearSemanticTranscriptOrigin();
+    $("#sg-inspector").hidden = true;
+    $("#tm-messages").innerHTML = `<div class="chart-empty">loading live trace…</div>`;
+    $("#tm-timeline").innerHTML = "";
+    $("#tm-meta").innerHTML = "";
+  }
+  currentLive = traceId;
+  const requestVersion = ++episodeOpenVersion;
+  let episode;
+  try {
+    episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}`);
+  } catch {
+    if (currentLive === traceId) $("#tm-live-label").textContent = "finished · now in the stream";
+    return;
+  }
+  if (currentLive !== traceId || requestVersion !== episodeOpenVersion) return;
+  currentEpisode = episode;
+  traceView = "transcript"; // the timeline and token views read the finished stream
+  const live = episode.live || {};
+  $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
+  renderEpisode();
+}
+
 async function refreshTraces() {
   const traces = state.traces;
   if (traces.fetching) return;
   traces.fetching = true;
   try {
+    await loadLive();
+    if (state.traces !== traces) return;
     await loadRollouts();
     if (state.traces !== traces) return;
     await loadEpisodes({ poll: true });
@@ -2477,6 +2505,8 @@ async function ensureTokens() {
 }
 
 async function openEpisode(line, target = {}) {
+  currentLive = null;
+  $("#tm-live-label").textContent = "";
   stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
@@ -2520,6 +2550,8 @@ async function openEpisode(line, target = {}) {
 }
 
 function closeDrawer() {
+  currentLive = null;
+  $("#tm-live-label").textContent = "";
   stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
@@ -5565,6 +5597,10 @@ for (const sel of ["#trace-sort", "#tm-sort"])
 $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
+});
+$("#live-table").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-live]");
+  if (row) openLiveTrace(row.dataset.live);
 });
 function rafThrottle(fn) {
   let pending = false;

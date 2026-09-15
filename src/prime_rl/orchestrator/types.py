@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from prime_rl.transports.batch import TrainingSample
@@ -85,6 +85,12 @@ class TaskRequest:
 
 
 @dataclass
+class LiveTrace:
+    stage: str = "pending"
+    turns: int = 0
+
+
+@dataclass
 class InflightEpisode:
     """Scheduling state for one in-flight environment run."""
 
@@ -98,9 +104,9 @@ class InflightEpisode:
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
-    assembly: Any = None
-    """The env server's streamed picture of the episode so far (an
-    ``EpisodeAssembly``), None until its first delta lands."""
+    live: dict[str, LiveTrace] = field(default_factory=dict)
+    """The episode's in-flight traces by id, as far as the env server's stream has
+    told: which phase each is in and how many turns it has committed."""
 
 
 @dataclass

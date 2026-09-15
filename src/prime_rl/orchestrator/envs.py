@@ -26,7 +26,7 @@ from itertools import islice
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient, EpisodeAssembly
+from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
@@ -98,18 +98,18 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
-        on_update: Callable[[EpisodeAssembly], None] | None = None,
+        on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
         """Run and return one typed episode. A failed multi-trace episode marks
         its otherwise-clean traces failed so partial episodes never train.
-        ``on_update`` sees the episode's streamed assembly after every turn and
-        phase change."""
+        ``on_delta`` sees each delta of the env server's stream — a turn or a phase
+        change of one of the episode's traces — as it lands."""
         episode = await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
-            on_update=on_update,
+            on_delta=on_delta,
         )
         for trace in episode.traces:
             if not episode.ok and trace.ok:
