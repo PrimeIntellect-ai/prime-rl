@@ -391,10 +391,10 @@ details.eval-sec[open] > summary .sec-chev { transform: rotate(90deg); }
 .comp-pane [data-part].dim { opacity: 0.2; }
 .comp-pane .tm-node.dim { opacity: 0.35; }
 /* the summary is one row whatever the count: the tiles share the width equally */
-.sum-grid { margin-bottom: 4px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; }
+.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; }
 .sum-tile { cursor: default; padding: 14px 16px; min-height: 96px; display: flex; flex-direction: column; justify-content: center; }
-.sum-tile .stat-label, .sum-tile .stat-value, .sum-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sum-tile .stat-value { font-size: 24px; margin-top: 8px; }
+.sum-tile .stat-label, .sum-tile .stat-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
 .sum-tile.score { border-color: var(--accent); }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
