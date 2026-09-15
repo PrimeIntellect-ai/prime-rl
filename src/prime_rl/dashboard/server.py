@@ -28,7 +28,7 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
-from prime_rl.monitors.file.traces.live import live_etag, live_path, live_rows, read_live, stage
+from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
@@ -76,6 +76,8 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
+"""Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
 _index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
@@ -317,7 +319,12 @@ def run_meta(run_dir: Path) -> dict:
     # epoch end and its first episode can take minutes, but its log ticks every few
     # seconds. The launch itself is the start until a metrics row says otherwise.
     stream = traces_file(run_dir)
-    touched = [path.stat().st_mtime for path in (run_dir / "logs" / "latest").glob("*.log")]
+    touched = []
+    for path in (run_dir / "logs" / "latest").glob("*.log"):
+        try:
+            touched.append(path.stat().st_mtime)
+        except FileNotFoundError:
+            continue  # rotated away between the listing and the stat
     if stream is not None:
         touched.append(stream.stat().st_mtime)
     if touched:
@@ -1737,6 +1744,10 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
     }
 
 
+_live_folds = LiveFolds()
+"""The dashboard's incremental folds of every run's live files."""
+
+
 @app.get("/api/runs/{run}/live")
 def live_traces(run: str, etag: str | None = None) -> dict:
     """The run's in-flight traces, folded from the env servers' streamed deltas
@@ -1748,7 +1759,7 @@ def live_traces(run: str, etag: str | None = None) -> dict:
     current = live_etag(run_dir)
     if etag is not None and etag == current:
         return {"unchanged": True}
-    return {"time": time.time(), "etag": current, "rows": live_rows(run_dir)}
+    return {"time": time.time(), "etag": current, "rows": live_rows(run_dir, _live_folds)}
 
 
 @app.get("/api/runs/{run}/live/{trace_id}")
@@ -1763,7 +1774,7 @@ def live_trace(run: str, trace_id: str, etag: str | None = None) -> dict:
         raise HTTPException(404, "live trace not found - its episode finished or never streamed")
     if etag is not None and etag == str(size):
         return {"unchanged": True}
-    folded = read_live(path)
+    folded = _live_folds.read(path)
     if folded is None:
         raise HTTPException(404, "live trace not found - its episode finished or never streamed")
     dispatch, trace = folded
@@ -1789,8 +1800,12 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
     summaries = [s for s in episode_summaries(path) if not kind or s.get("kind") == kind]
-    keys: set[str] = set()
-    for s in summaries:
+    # the key set only grows: rescan the summaries past the ones already scanned
+    with _lock:
+        scanned, keys = _series_keys.get((path, kind)) or (0, set())
+        if scanned > len(summaries):
+            scanned, keys = 0, set()
+    for s in summaries[scanned:]:
         keys.update(
             k
             for k in (
@@ -1814,6 +1829,8 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
         )
         for group in ("rewards", "metrics", "timing"):
             keys.update(f"{group}/{name}" for name in s.get(group) or {})
+    with _lock:
+        _series_keys[(path, kind)] = (len(summaries), keys)
 
     def value(s: dict, key: str):
         group, _, name = key.partition("/")

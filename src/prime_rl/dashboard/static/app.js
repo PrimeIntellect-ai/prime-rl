@@ -657,8 +657,10 @@ function dotPlotSvg(entry, W, H) {
   const cols = Math.max(1, Math.floor((slotW - 8) / (2 * r + 1)));
   const capacity = perCol * cols;
   const top = 16;
+  const byValue = new Map(distinct.map((v) => [v, []]));
+  points.forEach((p, i) => byValue.get(p.v).push([p, i]));
   const parts = distinct.map((v, k) => {
-    const mine = points.map((p, i) => [p, i]).filter(([p]) => p.v === v);
+    const mine = byValue.get(v);
     const step = Math.max(1, mine.length / capacity);
     const shown = [];
     for (let j = 0; j < mine.length; j += step) shown.push(mine[Math.floor(j)]);
@@ -742,28 +744,17 @@ function swarmSvg(entry, W, H) {
   for (let k = 0; k < points.length; k += step) shown.push(Math.floor(k));
   const r = Math.max(1.5, Math.min(plotH / 28, shown.length > 600 ? 2 : shown.length > 200 ? 2.5 : 3.5));
   const mid = plotH / 2;
-  const placed = []; // [x, y], in value order
+  // dots stack in columns one diameter wide, alternating above and below the midline,
+  // so placement is one pass whatever the values look like
+  const d = 2 * r + 1;
+  const stacks = new Map();
   const circles = shown.map((i) => {
     const px = x(points[i].v);
-    // the lowest |y| that clears the neighbours already placed within 2r in x
-    const candidates = [0];
-    for (let j = placed.length - 1; j >= 0 && px - placed[j][0] < 2 * r; j--) {
-      const dx = px - placed[j][0];
-      const dy = Math.sqrt(4 * r * r - dx * dx);
-      candidates.push(placed[j][1] + dy, placed[j][1] - dy);
-    }
-    let best = 0, bestAbs = Infinity;
-    for (const c of candidates) {
-      if (Math.abs(c) >= bestAbs) continue;
-      let clear = true;
-      for (let j = placed.length - 1; j >= 0 && px - placed[j][0] < 2 * r; j--) {
-        const dx = px - placed[j][0], dy = c - placed[j][1];
-        if (dx * dx + dy * dy < 4 * r * r - 1e-6) { clear = false; break; }
-      }
-      if (clear) { best = c; bestAbs = Math.abs(c); }
-    }
-    placed.push([px, best]);
-    const y = Math.max(r, Math.min(plotH - r, mid + best));
+    const column = Math.round(px / d);
+    const k = stacks.get(column) || 0;
+    stacks.set(column, k + 1);
+    const offset = Math.ceil(k / 2) * d * (k % 2 ? -1 : 1);
+    const y = Math.max(r, Math.min(plotH - r, mid + offset));
     return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
   // the x axis: a baseline under the plot, round-valued ticks with grid lines
@@ -3112,10 +3103,15 @@ function renderLiveRows() {
   renderEpisodeRows();
   $("#trace-status").textContent = traceStatusText();
   if (!$("#trace-modal").hidden) renderRolloutList(); // the sidebar lists the live rollouts too
-  // a live trace open in the viewer follows its stream
+  // a live trace open in the viewer follows its stream, and once its episode is in
+  // the table the viewer moves over to the finished record
   if (currentLive && !$("#trace-modal").hidden) {
     if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
-    else $("#tm-live-label").textContent = "finished · now in the stream";
+    else {
+      const landed = (state.traces.episodes || []).find((ep) => (ep.trace_ids || []).includes(currentLive));
+      if (landed) openEpisode(landed.line);
+      else $("#tm-live-label").textContent = "finished · now in the stream";
+    }
   }
 }
 
@@ -4153,7 +4149,7 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "context_length"]);
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"]);
 
 /* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
    length-finished final response */

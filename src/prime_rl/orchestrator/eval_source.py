@@ -38,7 +38,7 @@ class EvalSource:
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
-            self.intervals[env.name] = (intervals or {}).get(env.name, 1)
+            self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
         self.cursor = 0

@@ -59,36 +59,85 @@ def list_pending(output_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def fold_lines(data: bytes, dispatch: dict[str, Any], assembly: EpisodeAssembly) -> tuple[int, dict[str, Any]]:
+    """Apply the whole lines in ``data``; returns how many bytes were consumed (a line
+    torn by an append in progress waits for the next read) and the dispatch identity."""
+    end = data.rfind(b"\n") + 1
+    for line in data[:end].splitlines():
+        if not line.strip():
+            continue
+        delta = orjson.loads(line)
+        dispatch = delta.pop("dispatch", dispatch)
+        assembly.apply(delta)  # KeyError("open") when a file lost its header line
+    return end, dispatch
+
+
 def read_live(path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """``(dispatch, trace)`` folded from one live file, None when the file vanished
-    (its episode finished) or nothing has landed in it yet."""
+    (its episode finished), nothing has landed in it yet, or it does not fold."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return None
     assembly = EpisodeAssembly()
-    dispatch: dict[str, Any] = {}
-    for line in data.splitlines():
-        if not line.strip():
-            continue
-        try:
-            delta = orjson.loads(line)
-        except orjson.JSONDecodeError:
-            break  # the last line, caught mid-append
-        dispatch = delta.pop("dispatch", dispatch)
-        assembly.apply(delta)
+    try:
+        _, dispatch = fold_lines(data, {}, assembly)
+    except (orjson.JSONDecodeError, KeyError):
+        return None
     if not assembly.traces:
         return None
     (trace,) = assembly.traces.values()
     return dispatch, trace
 
 
-def list_live(output_dir: Path) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+class LiveFolds:
+    """Incremental folds of a run's live files: a poll reads only the bytes a file gained
+    since the last one and applies them to the assembly it already holds. Kept per process
+    by a long-lived reader (the dashboard); the CLI folds from scratch."""
+
+    def __init__(self) -> None:
+        self._folds: dict[Path, tuple[int, dict[str, Any], EpisodeAssembly]] = {}
+
+    def read(self, path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            self._folds.pop(path, None)
+            return None
+        consumed, dispatch, assembly = self._folds.get(path) or (0, {}, EpisodeAssembly())
+        if size < consumed:  # replaced by a new attempt's file
+            consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
+        if size > consumed:
+            with path.open("rb") as f:
+                f.seek(consumed)
+                data = f.read()
+            try:
+                read, dispatch = fold_lines(data, dispatch, assembly)
+            except (orjson.JSONDecodeError, KeyError):
+                self._folds.pop(path, None)
+                return None
+            consumed += read
+            self._folds[path] = (consumed, dispatch, assembly)
+        if not assembly.traces:
+            return None
+        (trace,) = assembly.traces.values()
+        return dispatch, trace
+
+    def forget_missing(self, live_dir: Path) -> None:
+        present = set(live_dir.glob("*.jsonl")) if live_dir.is_dir() else set()
+        for path in [path for path in self._folds if path not in present]:
+            del self._folds[path]
+
+
+def list_live(output_dir: Path, folds: LiveFolds | None = None) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Every in-flight trace with its dispatch identity, oldest dispatch first."""
     live_dir = get_live_dir(output_dir)
     if not live_dir.is_dir():
         return []
-    folded = [read_live(path) for path in sorted(live_dir.glob("*.jsonl"))]  # not the pending/ subdir
+    if folds is not None:
+        folds.forget_missing(live_dir)
+    read = folds.read if folds is not None else read_live
+    folded = [read(path) for path in sorted(live_dir.glob("*.jsonl"))]  # not the pending/ subdir
     return sorted((item for item in folded if item is not None), key=lambda item: item[0].get("started") or 0)
 
 
@@ -174,11 +223,11 @@ def pending_row(dispatch: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def live_rows(output_dir: Path) -> list[dict[str, Any]]:
+def live_rows(output_dir: Path, folds: LiveFolds | None = None) -> list[dict[str, Any]]:
     """Every in-flight rollout: dispatched-but-not-yet-streaming placeholders and the
     streaming traces, oldest dispatch first. A placeholder whose episode already streams
     a trace is on its way out and is not listed twice."""
-    live = list_live(output_dir)
+    live = list_live(output_dir, folds)
     streaming = {dispatch.get("id") for dispatch, _ in live}
     rows = [pending_row(dispatch) for dispatch in list_pending(output_dir) if dispatch.get("id") not in streaming]
     rows.extend(live_row(dispatch, trace) for dispatch, trace in live)
@@ -192,10 +241,10 @@ def live_etag(output_dir: Path) -> str:
     if not live_dir.is_dir():
         return "0"
     entries = []
-    for directory in (live_dir, get_pending_dir(output_dir)):
+    for directory, pattern in ((live_dir, "*.jsonl"), (get_pending_dir(output_dir), "*.json")):
         if not directory.is_dir():
             continue
-        for entry in directory.iterdir():
+        for entry in directory.glob(pattern):
             try:
                 entries.append(f"{entry.name}:{entry.stat().st_size}")
             except FileNotFoundError:

@@ -60,6 +60,8 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
 LIVE_INTERVAL_S = 0.5
+LIVE_EVENT_CAP = 20_000
+"""Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
 
 class DispatcherMode(Enum):
@@ -194,6 +196,7 @@ class Dispatcher:
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.live_events: list[dict[str, Any]] = []
+        self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
         self.source_indices_by_group: dict[str, int] = {}
@@ -378,10 +381,30 @@ class Dispatcher:
             self.live_events.append(live.dispatched_event(meta))
         self.live_events.extend({"done": trace_id} for trace_id in meta.live)
 
+    def queue_live(self, event: dict[str, Any]) -> None:
+        """Buffer a delta for the next flush. The buffer is bounded: past the cap the
+        oldest deltas go (the live view of those traces misses a turn), never the
+        bookkeeping events that create or remove files."""
+        self.live_events.append(event)
+        if len(self.live_events) > LIVE_EVENT_CAP:
+            kept = [e for e in self.live_events if "delta" not in e]
+            deltas = [e for e in self.live_events if "delta" in e]
+            dropped = len(deltas) - LIVE_EVENT_CAP // 2
+            self.live_events = kept + deltas[dropped:]
+            if not self.live_dropped:
+                self.live_dropped = True
+                get_logger().warning(f"Live trace buffer over {LIVE_EVENT_CAP} events - dropping the oldest deltas")
+
     async def flush_live(self) -> None:
-        if self.live_events:
-            events, self.live_events = self.live_events, []
+        if not self.live_events:
+            return
+        events, self.live_events = self.live_events, []
+        try:
             await monitors.log_live(events)
+        except asyncio.CancelledError:
+            # stop() cancels the publisher mid-write and flushes once more: nothing is lost
+            self.live_events = events + self.live_events
+            raise
 
     async def publish_live(self) -> None:
         """Hand the streamed deltas to the monitors in batches, at most twice a second."""
@@ -580,8 +603,10 @@ class Dispatcher:
         def on_delta(delta: dict) -> None:
             first = not meta.live
             live.apply(meta, delta)
-            self.live_events.append({"delta": delta, "dispatch": live.dispatch_info(meta)})
-            if first:  # after the delta: a reader never sees the episode in neither place
+            self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
+            # after the delta, and only once a trace streams: a reader never sees the
+            # episode in neither place (a discard as the first delta streams nothing)
+            if first and meta.live:
                 self.live_events.append(live.dispatched_event(meta))
 
         task = asyncio.create_task(

@@ -39,8 +39,7 @@ class FileMonitor(Monitor):
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # A previous attempt's live traces are stale: nothing streams into them again.
-        shutil.rmtree(get_live_dir(output_dir), ignore_errors=True)
+        self._live_cleared = False
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
@@ -76,11 +75,19 @@ class FileMonitor(Monitor):
         first trace streams."""
         live_dir = get_live_dir(self.output_dir)
         pending_dir = get_pending_dir(self.output_dir)
+        # A previous attempt's live traces are stale: nothing streams into them again. Only
+        # the process that streams clears them - every process of a run shares this monitor.
+        clear = not self._live_cleared
+        self._live_cleared = True
 
         def write() -> None:
+            if clear:
+                shutil.rmtree(live_dir, ignore_errors=True)
             pending_dir.mkdir(parents=True, exist_ok=True)
+            appends: dict[Path, list[bytes]] = {}
             for event in events:
                 if "done" in event:
+                    appends.pop(live_dir / f"{event['done']}.jsonl", None)
                     (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
                     continue
                 if "pending" in event:
@@ -95,12 +102,18 @@ class FileMonitor(Monitor):
                 delta = event["delta"]
                 path = live_dir / f"{delta['trace']}.jsonl"
                 if delta.get("discard"):
+                    appends.pop(path, None)
                     path.unlink(missing_ok=True)
                     continue
                 line = {**delta, "dispatch": event["dispatch"]} if "open" in delta else delta
-                # deltas key semantic links and the mm token map by node index (int)
+                # deltas key semantic links by node index (int)
+                appends.setdefault(path, []).append(
+                    orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
+                )
+            # one open per file per batch: a trace's deltas of the last half second land together
+            for path, lines in appends.items():
                 with path.open("ab") as f:
-                    f.write(orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS) + b"\n")
+                    f.write(b"".join(line + b"\n" for line in lines))
 
         await asyncio.to_thread(write)
 
