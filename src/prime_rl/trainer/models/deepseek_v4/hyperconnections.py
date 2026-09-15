@@ -3,17 +3,24 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.layers import norms
 
 
 class DeepseekV4UnweightedRMSNorm(nn.Module):
     """RMS normalization without a learnable gain, computed in fp32."""
 
-    def __init__(self, eps: float = 1e-6):
+    def __init__(self, eps: float = 1e-6, out_dtype: torch.dtype | None = None):
         super().__init__()
         self.eps = eps
+        self.out_dtype = out_dtype
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + self.eps).to(x.dtype)
+        out_dtype = self.out_dtype if self.out_dtype is not None else x.dtype
+        quack_fn = norms._get_quack_rmsnorm() if x.is_cuda else None
+        if quack_fn is not None:
+            return quack_fn(x, eps=self.eps, out_dtype=out_dtype)
+        x = x.float()
+        return (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + self.eps)).to(out_dtype)
 
 
 class DeepseekV4HyperConnection(nn.Module):
