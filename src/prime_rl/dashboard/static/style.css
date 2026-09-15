@@ -1595,12 +1595,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
    place of their number set them apart */
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: live-pulse 2s ease-out infinite; }
 #episode-table tr.live td:first-child { border-left: 2px solid var(--accent); }
-.badge.stage { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--hairline); }
-.badge.stage.stage-running { color: var(--accent); }
-.badge.stage.stage-boot, .badge.stage.stage-setup, .badge.stage.stage-pending { color: var(--muted, #888); }
-.badge.stage.stage-scoring, .badge.stage.stage-finalize { color: #a855f7; }
-.badge.stage.stage-done { color: #22c55e; }
-.badge.stage.stage-error { color: #ef4444; }
+.badge.stage { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--hairline); color: var(--accent); }
 #tm-live-label { margin-left: 8px; }
 #log-comp-menu .file-item.sub { padding-left: 22px; }
 #episode-table .day { margin-right: 8px; }
