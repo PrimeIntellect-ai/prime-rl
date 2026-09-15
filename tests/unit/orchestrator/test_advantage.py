@@ -215,6 +215,18 @@ def test_linear_completion_term_penalizes_longer():
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_linear_length_penalty_records_advantage_components():
+    """The recorded components reconstruct the advantage that reaches the loss."""
+    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    group = _make_group(rewards=[1.0, 0.4, 0.8], completion_lengths=[10, 20, 30])
+    advantages = _grpo(group, length_penalty=cfg)
+
+    for episode, advantage in zip(group, advantages, strict=True):
+        info = episode.traces[0].info
+        assert info["advantage"] == pytest.approx(advantage)
+        assert info["reward_advantage"] + info["length_penalty_advantage"] == pytest.approx(advantage)
+
+
 def test_linear_context_term_penalizes_more_context():
     """The context term penalizes non-completion (prompt / tool-response) tokens: at
     equal completion length, more context tokens yields a lower advantage."""

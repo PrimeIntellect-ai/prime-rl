@@ -25,9 +25,11 @@ class GRPOAlgorithm(Algorithm):
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
+        reward_advantages = rewards - rewards.mean()
+        length_penalty_advantages = torch.zeros_like(rewards)
         length_penalty = self.length_penalty
         if length_penalty is None:
-            advantages = rewards - rewards.mean()
+            advantages = reward_advantages
         else:
             output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
             total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
@@ -41,5 +43,17 @@ class GRPOAlgorithm(Algorithm):
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
             advantages = shaped_rewards - shaped_rewards.mean()
-        for trace, advantage in zip(traces, advantages.tolist(), strict=True):
+            length_penalty_advantages = advantages - reward_advantages
+        for trace, advantage, reward_advantage, length_penalty_advantage in zip(
+            traces,
+            advantages.tolist(),
+            reward_advantages.tolist(),
+            length_penalty_advantages.tolist(),
+            strict=True,
+        ):
+            trace.info.update(
+                advantage=advantage,
+                reward_advantage=reward_advantage,
+                length_penalty_advantage=length_penalty_advantage,
+            )
             assign_advantages(trace, advantage)

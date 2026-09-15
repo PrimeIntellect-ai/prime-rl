@@ -198,6 +198,11 @@ class TraceMetrics(StatGroup):
         "num_branches",
     )
     RATES = ("is_truncated", "is_completed")
+    ADVANTAGE_COMPONENTS = {
+        "total": "advantage",
+        "reward": "reward_advantage",
+        "length_penalty": "length_penalty_advantage",
+    }
 
     def stats(self) -> dict[str, Stat]:
         return {
@@ -216,6 +221,20 @@ class TraceMetrics(StatGroup):
     @property
     def rewards(self) -> CustomMetrics:
         return CustomMetrics(self.records, "rewards", value=lambda reward: reward.value)
+
+    @property
+    def advantages(self) -> dict[str, Stat]:
+        """Group-relative credit before and after GRPO reward shaping.
+
+        The length-penalty component includes its configured weights and is
+        centered with the total advantage, so it sums with the reward component.
+        """
+        components: dict[str, Stat] = {}
+        for name, key in self.ADVANTAGE_COMPONENTS.items():
+            values = [float(info[key]) for trace in self.traces if key in (info := getattr(trace, "info", {}))]
+            if values:
+                components[name] = Stat(values)
+        return components
 
     @property
     def has_error(self) -> Stat:
@@ -265,6 +284,8 @@ class TraceMetrics(StatGroup):
         out |= self.timing.to_dict(f"{prefix}/timing")
         out |= self.metrics.to_dict(f"{prefix}/metrics")
         out |= self.rewards.to_dict(f"{prefix}/rewards")
+        for name, stat in self.advantages.items():
+            out |= stat.to_dict(f"{prefix}/advantage/{name}")
         if subset == "all":
             out[f"{prefix}/has_error/mean"] = self.has_error.mean()
             out[f"{prefix}/cancelled/mean"] = self.cancelled.mean()
