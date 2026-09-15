@@ -2283,7 +2283,7 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
 }
 
 function traceStatusText(total) {
@@ -2562,9 +2562,10 @@ function fmtSpan(dispatched, arrived, elapsed) {
 }
 
 function episodeRowHtml(ep) {
-  const phase = ep.ok && !ep.num_errors ? "done" : "error";
+  const failed = !ep.ok || !!ep.num_errors;
+  const phase = failed ? "error" : "done";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
-  return `<tr data-line="${ep.line}">
+  return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
         <td class="muted">${ep.line}</td>
         <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
@@ -2579,7 +2580,6 @@ function episodeRowHtml(ep) {
         <td>${ep.turns ?? ""}</td>
         <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
-        <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
       </tr>`;
 }
@@ -2598,7 +2598,6 @@ function liveRowHtml(r) {
         <td>${r.turns ?? ""}</td>
         <td>${r.branches ?? ""}</td>
         <td class="muted">${esc(r.stop_condition ?? "")}</td>
-        <td></td>
         <td></td>
       </tr>`;
 }
@@ -2641,7 +2640,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(rows.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML = pad(start * episodeRowH) + rows.slice(start, end).map(traceRowHtml).join("") + pad((rows.length - end) * episodeRowH);
 }
 
