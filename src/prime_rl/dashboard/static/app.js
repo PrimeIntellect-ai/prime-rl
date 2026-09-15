@@ -1049,25 +1049,31 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
   const H = shown.length * (SH + GAP) + AX;
   const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
   const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
+  // a row's hover shows every part of that episode; a hit rect behind the segments
+  // catches the gaps and the label too
   const strips = shown
     .map((r, n) => {
       const y = n * (SH + GAP);
       let sxPos = PAD_L;
       const parts = kids.length ? r.parts : [{ name: segments[0].name, v: r.total }];
+      const t = tip(
+        `<div class="tip-head">episode #${r.line} · ${fmt(r.total)}</div>` +
+          parts.map((p) => rowTip(p.name, `${fmt(p.v)} · ${Math.round((p.v / (r.total || 1)) * 100)}%`)).join("") +
+          `${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
+      );
       const segs = parts
         .map((p) => {
           const w = sx(p.v);
           if (w <= 0) return "";
-          const t = tip(
-            `<div class="tip-head">episode #${r.line}</div>${rowTip(p.name, fmt(p.v))}` +
-              `${rowTip("share", `${Math.round((p.v / (r.total || 1)) * 100)}%`)}${rowTip("total", fmt(r.total))}${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
-          );
-          const html = `<rect class="tm-strip-seg" data-tip="${t}" data-part="${esc(p.name)}" data-line="${r.line}" x="${sxPos.toFixed(1)}" y="${y}" width="${Math.max(1, w - 1).toFixed(1)}" height="${SH}" fill="${color(p.name)}"></rect>`;
+          const html = `<rect class="tm-strip-seg" data-tip="${t}" data-row="${n}" data-part="${esc(p.name)}" data-line="${r.line}" x="${sxPos.toFixed(1)}" y="${y}" width="${Math.max(1, w - 1).toFixed(1)}" height="${SH}" fill="${color(p.name)}"></rect>`;
           sxPos += w;
           return html;
         })
         .join("");
-      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`;
+      return (
+        `<rect class="tm-row-hit" data-tip="${t}" data-row="${n}" data-line="${r.line}" x="0" y="${y - GAP / 2}" width="${W}" height="${SH + GAP}"></rect>` +
+        `<text class="hax tm-line${r.err ? " err" : ""}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
+      );
     })
     .join("");
   const ticks = niceTicks(0, maxTotal, W - PAD_L - 8, (v) => tickLabel(v, fmt), time)
@@ -1084,9 +1090,15 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
       : "");
 }
 
-/* hovering a part lights it up across its pane and dims the rest */
+/* hovering a legend entry or icicle segment lights that part up across the pane;
+   hovering an episode's strip lights up the whole row and dims the other rows */
 function highlightPart(pane, name) {
   for (const el of pane.querySelectorAll("[data-part]")) el.classList.toggle("dim", name != null && el.dataset.part !== name);
+}
+
+function highlightRow(pane, row) {
+  for (const el of pane.querySelectorAll(".tm-strip-seg, .tm-line")) el.classList.toggle("dim", row != null && el.dataset.row !== row);
+  for (const el of pane.querySelectorAll(".tm-legend [data-part], .tm-seg")) el.classList.remove("dim");
 }
 
 /* the summary tiles: the run's headline numbers, each with its distribution on hover */
@@ -1239,8 +1251,12 @@ $("#metrics-body").addEventListener("mousemove", (e) => {
   const tip = $("#swarm-tip");
   const timed = e.target.closest("[data-tip]");
   const pane = e.target.closest(".comp-pane");
-  const part = e.target.closest("[data-part]");
-  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => highlightPart(p, p === pane && part ? part.dataset.part : null));
+  const rowEl = e.target.closest("[data-row]");
+  const part = rowEl ? null : e.target.closest("[data-part]");
+  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => {
+    if (p === pane && rowEl) highlightRow(p, rowEl.dataset.row);
+    else highlightPart(p, p === pane && part ? part.dataset.part : null);
+  });
   const svg = e.target.closest(".swarm");
   const entry = svg && swarmRegistry.get(svg.closest(".swarm-card")?.dataset.key);
   if (!entry && !timed) {
@@ -1276,7 +1292,7 @@ $("#metrics-env").addEventListener("change", (e) => {
 });
 
 $("#metrics-body").addEventListener("click", (e) => {
-  const strip = e.target.closest(".tm-strip-seg[data-line]");
+  const strip = e.target.closest(".tm-strip-seg[data-line], .tm-row-hit[data-line]");
   if (strip) {
     openEpisode(+strip.dataset.line);
     return;
