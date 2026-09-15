@@ -1,14 +1,16 @@
 # GLM-4.5-Air
 
-RL on [`zai-org/GLM-4.5-Air`](https://huggingface.co/zai-org/GLM-4.5-Air) — a 100B MoE — at 131k context, across three agentic domains: web search, SWE, and terminal. Rollouts run in sandboxes ([Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default — see [Requirements](#requirements) for using your own), driven either by the `rlm` agent harness (with its `search` skill, or ipython-only) or a plain `bash` harness. All three configs share the same recipe: GRPO with a linear length penalty on input tokens (and turns, for SWE/terminal), the custom MoE trainer implementation with `cp = 4` (ulysses) context parallelism, router replay, NCCL weight broadcast, checkpoints every 50 steps (`keep_last = 1`), and evals every 20 steps (including step 0).
+RL on [`zai-org/GLM-4.5-Air`](https://huggingface.co/zai-org/GLM-4.5-Air) — a 100B MoE — at 131k context, across three agentic domains: web search, SWE, and terminal. Rollouts run in sandboxes ([Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default — see [Requirements](#requirements) for using your own), driven either by the `rlm` agent harness (with its `search` skill, or ipython-only) or a plain `bash` harness. All three configs share the same recipe: GRPO with a linear length penalty on input tokens (and turns, for SWE/terminal), the custom MoE trainer implementation with `cp = 4` (ulysses) context parallelism, router replay, NCCL weight broadcast, checkpoints every 50 steps (`keep_last = 1`), and evals every 20 steps (including step 0). The SWE configs also ship budget variants: `swe-4-node.toml` (1 train + 3 infer) and `swe-2-node.toml` — train a 100B+ MoE on only two nodes.
 
 | Config | Trains on | Evals on | Topology |
 |---|---|---|---|
 | [`search.toml`](search.toml) | `openseeker` + `redsearcher` (search QA, `rlm` harness + `search` skill) | `browsecomp` (500 examples) | 2 train + 4 infer nodes |
-| [`swe.toml`](swe.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 3 infer nodes |
+| [`swe.toml`](swe.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 2 train + 4 infer nodes |
+| [`swe-4-node.toml`](swe-4-node.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 3 infer nodes |
+| [`swe-2-node.toml`](swe-2-node.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 1 infer node |
 | [`terminal.toml`](terminal.toml) | `tmax` (per-task Docker image, `rlm` ipython harness) | `swebench-verified` + `terminal-bench-2` (avg@4) | 2 train + 4 infer nodes |
 
-Inference serves the bf16 checkpoint as-is (no quantization), with `tensor_parallel_size = 8`. `search.toml` and `terminal.toml` train with Muon on 2 nodes; `swe.toml` fits the trainer on a single node with full optimizer offload and the stateless sign-SGD optimizer. Search answers are scored by a reference judge (`Qwen/Qwen3-235B-A22B-Instruct-2507`).
+Inference serves the bf16 checkpoint as-is (no quantization), with `tensor_parallel_size = 8` (plus expert parallelism on `swe.toml`). `search.toml`, `swe.toml`, and `terminal.toml` train with Muon on 2 trainer nodes. The budget variants instead fit the trainer on a single node with full optimizer offload and the stateless sign-SGD optimizer; `swe-2-node.toml` cuts the batch size to 64 (4 groups of 16) to match the throughput of its single inference replica. Search answers are scored by a reference judge (`Qwen/Qwen3-235B-A22B-Instruct-2507`).
 
 ## Requirements
 
@@ -54,7 +56,7 @@ uv run rl @ examples/advanced/glm-4.5-air/swe.toml \
   --run.name glm45air-swe
 ```
 
-Swap `swe.toml` for `search.toml` or `terminal.toml` to run the other domains. Pass `--run.name`: the run directory is `<output_dir>/<run_name>` and you need a stable name to resume later (unset, it auto-generates as `<envs>--<model>--<short-id>`).
+Swap `swe.toml` for `search.toml` or `terminal.toml` to run the other domains, or for `swe-4-node.toml` / `swe-2-node.toml` to run SWE on a smaller budget — `swe-2-node.toml` trains the 100B+ MoE on only two nodes. Pass `--run.name`: the run directory is `<output_dir>/<run_name>` and you need a stable name to resume later (unset, it auto-generates as `<envs>--<model>--<short-id>`).
 
 ## Monitor with the dashboard
 
