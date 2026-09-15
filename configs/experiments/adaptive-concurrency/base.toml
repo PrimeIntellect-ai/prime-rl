@@ -1,4 +1,4 @@
-max_steps = 20
+max_steps = 50
 seq_len = 65536
 output_dir = "outputs/adaptive-concurrency-improvs"
 
