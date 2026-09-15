@@ -47,6 +47,12 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
 - NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
+- MX initial restoration checks include registered parameters and MLA derived
+  tensors. A derived tensor already registered under the same name is counted
+  once when it is the identical object; aliases and addresses are still checked.
+  FP8 snapshots retain their native dtype, with exact FP32 widening only for the
+  CPU finiteness check. Qualify registered MLA and FP8 tensors in the GPU startup
+  probe before a large model launch.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
@@ -131,6 +137,14 @@ interval = 10        # completed task groups between cursor saves
 - External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `configs/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
 - Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
+
+## DSA indexer compilation
+
+Quantization scalar arguments must stay FP32. Inductor may lower Python float
+kernel arguments as FP64; promotion of the quantization expression then fails
+on the FP64-to-FP8 conversion. The indexer kernel casts its epsilon and FP8
+limits to FP32 explicitly. Verify compiled and eager results on the target GPU;
+do not change model optimization or reduction dtypes to work around this.
 
 ## Exporting checkpoints
 

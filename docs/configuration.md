@@ -258,3 +258,11 @@ reads `configs/latest/resolved/trainer.json`.
 `configs/latest/command.txt` records the shell-safe launch command and its CLI
 overrides. Each launch also remains under `configs/attempt_<n>/`. To compare
 configs, dry-run a known-good base and your overlay. Then diff the two attempts.
+
+Expert-parallel inference with Ray can use one tensor-parallel group across all
+nodes of an inference replica. Set `inference.vllm.distributed_executor_backend`
+to `"ray"`, `data_parallel_size` to `1`, and `tensor_parallel_size` to the replica's
+total GPU count. This topology requires a custom `slurm.template_path` that starts
+the Ray cluster and one API driver per replica. Local DP resolves to one; the
+default API server count is one. The bundled Slurm launcher uses local DP servers
+and does not launch a tensor-parallel group spanning nodes.

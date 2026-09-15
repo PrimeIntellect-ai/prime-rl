@@ -255,6 +255,44 @@ ModelExpress exchanges peer metadata during startup. Weight updates reuse prepar
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
+### ModelExpress refit weight broadcast
+
+Set `[weight_broadcast] type = "mx_refit"` to have ModelExpress reshard the weights rather than transferring them rank-to-rank. The trainer publishes each rank's FSDP shard under a per-step version and inference pulls the slices it needs, so the two sides do not have to agree on a parallelism layout.
+
+The pinned `modelexpress==0.3.0` package does not provide the `modelexpress_rl` API required by this transport, and the `v0.3.0` server does not register `RefitService` at all. Build the server and the client from the same compatible commit:
+
+```bash
+MX_REF=<branch, tag, or full commit SHA>   # must carry RefitService
+bash scripts/install_modelexpress.sh "$MX_REF"
+# Install the client from the same commit the server was built from:
+cat third_party/modelexpress/bin/modelexpress-server.source-sha
+uv pip install --no-deps <modelexpress-checkout>/modelexpress_client/python
+```
+
+The installer fetches the ref explicitly rather than cloning a branch, so a full commit SHA works, and it records the built commit in `modelexpress-server.source-sha` — the server's `--version` reports a package version and cannot distinguish two commits on one tag. `MODELEXPRESS_REPOSITORY` may also point at a local checkout or bundle, so a preserved source tree can be built without publishing it.
+
+Passing no argument builds the default `v0.3.0` server, which registers no `RefitService`: a newer client then fails `RegisterWorker` with `UNIMPLEMENTED`. Selecting `mx_refit` without the client installed fails immediately instead. Other transports do not import the client.
+
+Weight versions use `{run_uid}.{attempt}:{step}` IDs. `run_uid` separates runs on a long-lived server; the per-offer token permits a restarted trainer to republish a step.
+
+`mx_refit` enables a Gloo CPU backend alongside NCCL. `handshake_mode = "tensor"` requires it outright, and the default `handshake_mode = "object"` routes through torch's object-collective device selection, which prefers CPU whenever a CPU backend exists — so the token exchange runs on Gloo in both modes.
+Set `MX_REFIT_STAGING_BYTES` to a positive byte budget to stream complete modules
+through a reusable GPU arena. A failed streaming installation requires restarting
+the inference engine. `MX_REFIT_TIMING_STDOUT=1` emits per-rank phase records to
+stdout for torchrun/Ray log collection; `MX_REFIT_REPLICA_ID` identifies each
+independent inference replica. Records include independent elapsed time and
+completion status, with detailed streaming metrics in `marks`.
+
+`MX_VERIFY_INITIAL_REFIT=1` enables startup controls for version `:0`: fixed
+greedy generation, paused-engine CPU snapshots and NaN perturbation, exact
+restoration checks, then a second generation comparison with a fresh prefix
+cache. Snapshot storage is capped by `MX_VERIFY_CPU_BYTES` (64 GiB per rank by
+default); provision this across all local workers. It covers every named
+parameter and MLA derived weight, including FP32 values, aliases, strides and
+storage addresses. Receiver records are consolidated by the inference API server
+and one generation record is emitted by the orchestrator. Any failed MX update
+or restoration remains paused and is not retried in the same engine.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

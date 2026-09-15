@@ -1,8 +1,11 @@
 import asyncio
+import json
 from pathlib import Path
+from runpy import run_path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -85,6 +88,111 @@ def test_admin_plane_initializes_nccl():
         },
     )
     asyncio.run(admin_plane.aclose())
+
+
+@pytest.mark.parametrize("failure_path", [None, "/pause", "/update_weights", "/resume"])
+@pytest.mark.parametrize("timed", [False, True])
+def test_mx_update_resumes_only_after_every_engine_succeeds(failure_path, timed):
+    calls = []
+    phase_timer = run_path(Path(__file__).parents[3] / "src/prime_rl/transports/weights/mx_phases.py")["PhaseTimer"]
+    timer = phase_timer("orchestrator", 1, "test:1")
+
+    async def handle(request):
+        calls.append((request.url.host, request.url.path))
+        if request.url.path == "/update_weights":
+            assert json.loads(request.content) == {"weight_dir": None, "version_uid": "test:1"}
+        status = (500 if failure_path == "/update_weights" else 400) if request.url.path == failure_path else 200
+        return httpx.Response(status, json={"status": "ok"})
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [
+            httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url=f"http://worker-{rank}")
+            for rank in range(2)
+        ]
+        try:
+            with timer.phase("update_rpc", timeline=True):
+                await admin.update_weights(
+                    None, transport="mx_refit", step=1, version_uid="test:1", phase_timer=timer if timed else None
+                )
+        finally:
+            await admin.aclose()
+
+    if failure_path:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    paths = ["/pause", "/update_weights", "/resume"]
+    reached = paths[: paths.index(failure_path) + 1] if failure_path else paths
+    assert calls == [(f"worker-{rank}", path) for path in reached for rank in range(2)]
+    if timed:
+        spans = timer.payload()["spans"]
+        assert [span["name"] for span in spans] == [
+            {"/pause": "admin_pause", "/update_weights": "admin_update", "/resume": "admin_resume"}[path]
+            for path in reached
+        ] + ["update_rpc"]
+        assert spans[-1]["status"] == ("failed" if failure_path else "complete")
+        assert spans[-2]["status"] == ("failed" if failure_path else "complete")
+        assert all(span["status"] == "complete" for span in spans[:-2])
+        assert all(left["end_offset_s"] <= right["start_offset_s"] for left, right in zip(spans[:-2], spans[1:-1]))
+        assert set(timer.phases) == {"update_rpc"}
+        assert timer.marks["admin_initial_verification_enabled"] == 0
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_mx_initial_verification_spans_preserve_recovery_pause(changed, monkeypatch):
+    monkeypatch.setenv("MX_VERIFY_INITIAL_REFIT", "1")
+    phase_timer = run_path(Path(__file__).parents[3] / "src/prime_rl/transports/weights/mx_phases.py")["PhaseTimer"]
+    timer = phase_timer("orchestrator", 0, "test:0")
+    calls = []
+
+    async def handle(request):
+        calls.append(request.url.path)
+        result = {"status": "ok"}
+        if request.url.path == "/mx_generation_control":
+            result = {"replica": 0, "tokens": [int(changed and calls.count(request.url.path) > 1)]}
+        return httpx.Response(200, json=result)
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://worker")]
+        try:
+            with timer.phase("update_rpc", timeline=True):
+                await admin.update_weights(None, transport="mx_refit", step=0, version_uid="test:0", phase_timer=timer)
+        finally:
+            await admin.aclose()
+
+    if changed:
+        with pytest.raises(RuntimeError, match="Initial greedy generation changed"):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    expected_paths = [
+        "/mx_generation_control",
+        "/pause",
+        "/mx_prepare_initial_refit",
+        "/update_weights",
+        "/resume",
+        "/mx_generation_control",
+    ]
+    expected_spans = [
+        "admin_initial_generation_before",
+        "admin_pause",
+        "admin_initial_prepare",
+        "admin_update",
+        "admin_resume",
+        "admin_initial_generation_after",
+    ]
+    if changed:
+        expected_paths.append("/pause")
+        expected_spans.append("admin_initial_recovery_pause")
+    assert calls == expected_paths
+    assert [span["name"] for span in timer.spans] == expected_spans + ["update_rpc"]
+    assert timer.spans[-1]["status"] == ("failed" if changed else "complete")
+    assert timer.marks["admin_initial_verification_enabled"] == 1
 
 
 def test_setup_client_creates_renderer_client():

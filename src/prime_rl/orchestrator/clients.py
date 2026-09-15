@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 import verifiers.v1 as vf
@@ -16,6 +19,9 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.transports.weights.mx_phases import PhaseTimer
 
 
 class PrefillScorer:
@@ -153,30 +159,101 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["filesystem", "nccl", "nixl", "mx_refit"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        version_uid: str | None = None,
+        phase_timer: PhaseTimer | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+        span = phase_timer.span if phase_timer is not None else lambda _: nullcontext()
+        verify_initial = transport == "mx_refit" and step == 0 and os.environ.get("MX_VERIFY_INITIAL_REFIT") == "1"
+        if phase_timer is not None:
+            phase_timer.mark("admin_initial_verification_enabled", int(verify_initial))
+        before = None
+        if verify_initial:
+            with span("admin_initial_generation_before"):
+                before = await self._mx_generation_control()
 
-        await _pause_engines(self.clients, step=step)
+        await _pause_engines(self.clients, step=step, phase_timer=phase_timer)
+        updated = False
         try:
             if on_paused is not None:
-                on_paused()
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                with span("admin_on_paused"):
+                    on_paused()
+            if verify_initial:
+                with span("admin_initial_prepare"):
+                    await asyncio.gather(
+                        *[
+                            _admin_post(
+                                client,
+                                "/mx_prepare_initial_refit",
+                                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                                retry_errors=False,
+                            )
+                            for client in self.clients
+                        ]
                     )
-                    for admin_client in self.clients
-                ]
-            )
+            with span("admin_update"):
+                await asyncio.gather(
+                    *[
+                        _admin_post(
+                            admin_client,
+                            "/update_weights",
+                            json={"weight_dir": weight_dir_posix, "version_uid": version_uid},
+                            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                            retry_errors=transport != "mx_refit",
+                        )
+                        for admin_client in self.clients
+                    ]
+                )
+            updated = True
         finally:
-            await _resume_engines(self.clients)
+            if updated or transport != "mx_refit":
+                await _resume_engines(self.clients, phase_timer=phase_timer)
+            else:
+                # A failed mx_refit update can leave weights partially installed,
+                # so resuming would serve a mix of versions. Staying paused is
+                # deliberate, but it must not be silent: the trainer is released
+                # by the receiver's own cleanup and would otherwise advance while
+                # inference never serves again.
+                get_logger().error(
+                    "mx_refit weight update failed; inference engines remain paused to avoid "
+                    "serving partially installed weights. Restart the trainer and inference "
+                    "together to recover."
+                )
+        if verify_initial:
+            try:
+                with span("admin_initial_generation_after"):
+                    after = await self._mx_generation_control()
+                replicas = [item["replica"] for item in after]
+                passed = before == after and sorted(replicas) == list(range(len(self.clients)))
+                record = {
+                    "record": "mx-initial-generation-control-v1",
+                    "passed": passed,
+                    "replicas": len(self.clients),
+                    "version_uid": version_uid,
+                    "before": before,
+                    "after": after,
+                }
+                sys.stdout.write(json.dumps(record) + "\n")
+                sys.stdout.flush()
+                if not passed:
+                    raise RuntimeError("Initial greedy generation changed after refit; restart the engines")
+            except BaseException:
+                await _pause_engines(
+                    self.clients, step=step, phase_timer=phase_timer, span_name="admin_initial_recovery_pause"
+                )
+                raise
+
+    async def _mx_generation_control(self) -> list[dict]:
+        async def control(client):
+            response = await client.post("/mx_generation_control", timeout=UPDATE_WEIGHTS_TIMEOUT_S)
+            response.raise_for_status()
+            return response.json()
+
+        return await asyncio.gather(*(control(client) for client in self.clients))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -339,11 +416,19 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
+    if not retry_errors:
+        response = await client.post(
+            path, timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0), **kwargs
+        )
+        response.raise_for_status()
+        return
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error),
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
@@ -359,24 +444,35 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
+async def _pause_engines(
+    admin_clients: list[AsyncClient],
+    *,
+    step: int,
+    phase_timer: PhaseTimer | None = None,
+    span_name: str = "admin_pause",
+) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
+    with phase_timer.span(span_name) if phase_timer is not None else nullcontext():
+        await asyncio.gather(
+            *[
+                _admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"})
+                for client in admin_clients
+            ]
+        )
     logger.debug("All inference engines paused")
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+async def _resume_engines(admin_clients: list[AsyncClient], *, phase_timer: PhaseTimer | None = None) -> None:
     """Resume all inference engines after weight update.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
+    with phase_timer.span("admin_resume") if phase_timer is not None else nullcontext():
+        await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -466,6 +562,26 @@ async def init_nixl_broadcast(
     await asyncio.gather(
         *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
     )
+
+
+async def init_mx_refit_broadcast(
+    admin_plane: AdminPlane,
+    host: str,
+    port: int,
+    timeout: int,
+) -> None:
+    """Initialize the ModelExpress client on every vLLM worker."""
+    admin_clients = admin_plane.clients
+
+    async def initialize(admin_client: AsyncClient) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            json={"host": host, "port": port},
+        )
+
+    await asyncio.gather(*[initialize(admin_client) for admin_client in admin_clients])
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
