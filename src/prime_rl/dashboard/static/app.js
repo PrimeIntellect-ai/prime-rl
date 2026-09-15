@@ -1148,6 +1148,12 @@ function summaryTilesHtml(idx, all, scoreEntries) {
       { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
     );
   }
+  // cost is spent whether or not an episode errored, so the total covers every landed one
+  const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));
+  if (costs.length) {
+    const total = costs.reduce((a, b) => a + b, 0);
+    tile("total cost", fmtCost(total), `<div class="tip-head">cost · ${fmtCompact(costs.length)} episodes</div>${rowTip("total", fmtCost(total))}${rowTip("mean per episode", fmtCost(total / costs.length))}`);
+  }
   return tiles.length ? `<div class="stat-grid sum-grid">${tiles.join("")}</div>` : "";
 }
 
