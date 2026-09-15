@@ -347,19 +347,33 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .ep-cell.done:hover { filter: brightness(1.2); }
 .ep-cell.live { border-color: var(--accent); background: rgba(182, 255, 60, 0.18); animation: live-pulse 1.6s ease-in-out infinite; cursor: pointer; }
 
-/* distributions: a beeswarm per metric with its summary stats */
-.swarm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
-.swarm-card .sw-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.swarm-card .stat-value { margin: 0; }
-.sw-sub { font-size: 11px; margin-top: 2px; }
-.swarm { width: 100%; height: auto; display: block; margin: 8px 0 6px; }
-.swarm circle { fill: var(--accent); fill-opacity: 0.7; }
-.sw-tick { stroke: var(--grey-3); stroke-width: 1; }
-.sw-tick.median { stroke: var(--grey-6); stroke-width: 1.5; }
-.sw-tick.mean { stroke: var(--grey-5); stroke-dasharray: 3 3; }
-.sw-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; font-size: 11px; color: var(--grey-5); }
-.sw-stat { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sw-stats .k { color: var(--grey-4); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+/* distributions: a beeswarm per metric, a faint boxplot behind it, stats on hover */
+#tab-metrics { position: relative; }
+.swarm-card .chart-head { cursor: default; }
+.swarm-host { height: var(--pane-h, 150px); margin-top: 6px; }
+.swarm { display: block; }
+.swarm .sw-bg { fill: transparent; }
+.swarm circle { fill: var(--accent); fill-opacity: 0.7; cursor: pointer; }
+.swarm circle.err { fill: var(--negative); }
+.swarm circle:hover { fill-opacity: 1; stroke: var(--grey-6); stroke-width: 1; }
+.sw-box rect { fill: var(--hairline-faint); stroke: var(--grey-3); stroke-width: 1; }
+.sw-box line { stroke: var(--grey-3); stroke-width: 1; }
+.sw-box .median { stroke: var(--grey-4); stroke-width: 1.5; }
+.sw-box .mean { stroke: var(--grey-4); stroke-dasharray: 3 3; }
+#swarm-tip {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 6px 8px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+#swarm-tip .tip-head { color: var(--accent); margin-bottom: 4px; }
+#swarm-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
+#swarm-tip .tip-row span:first-child { color: var(--grey-4); }
 .ep-label {
   font-size: 10px;
   letter-spacing: var(--track-caps);

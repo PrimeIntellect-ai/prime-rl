@@ -33,7 +33,7 @@ const state = {
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150, includeErrors: prefs.includeErrors ?? false,
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
@@ -182,6 +182,7 @@ function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
   $("#metrics-mode").hidden = isEval;
   $("#eval-envs").hidden = !isEval;
+  $("#metrics-filter-wrap").hidden = !isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -599,23 +600,42 @@ function distStats(values) {
   };
 }
 
-const SWARM_W = 320, SWARM_H = 72, SWARM_PAD = 8, SWARM_MAX_POINTS = 1500;
+/* one swarm per card: the values as dots (each an episode, or a task), a faint
+   boxplot behind them, and the summary in a tooltip — hover a dot for its episode,
+   click it to open that trace; hover the background for the distribution */
+const swarmRegistry = new Map();
+const SWARM_MAX_POINTS = 1500;
 
-/* a beeswarm: every value a dot along x, stacked where they crowd, with the
-   summary stats drawn through as ticks */
-function swarmSvg(stats) {
-  const { sorted, min, max } = stats;
-  const span = max - min || 1;
-  const x = (v) => SWARM_PAD + ((v - min) / span) * (SWARM_W - 2 * SWARM_PAD);
-  const pts =
-    sorted.length > SWARM_MAX_POINTS
-      ? Array.from({ length: SWARM_MAX_POINTS }, (_, k) => sorted[Math.floor((k * sorted.length) / SWARM_MAX_POINTS)])
-      : sorted;
-  const r = pts.length > 600 ? 1.5 : pts.length > 200 ? 2 : 3;
-  const mid = SWARM_H / 2;
-  const placed = []; // [x, y], sorted by x like the values
-  const circles = pts.map((v) => {
-    const px = x(v);
+function swarmEntry(key, label, points, fmt, { headline, rows } = {}) {
+  const sorted = points.filter((p) => typeof p.v === "number" && isFinite(p.v)).sort((a, b) => a.v - b.v);
+  if (!sorted.length) return null;
+  const stats = distStats(sorted.map((p) => p.v));
+  stats.p25 = quantile(stats.sorted, 0.25);
+  stats.p75 = quantile(stats.sorted, 0.75);
+  return { key, label, points: sorted, fmt, stats, headline: headline ?? fmt(stats.mean), rows };
+}
+
+function swarmCardHtml(entry) {
+  return (
+    `<div class="chart-card swarm-card" data-key="${esc(entry.key)}"><div class="chart-head"><div class="chart-title" title="${esc(entry.key)}">${esc(entry.label)}</div>` +
+    `<div class="chart-last">${entry.headline}</div></div><div class="swarm-host"></div>` +
+    `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div><div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div></div>`
+  );
+}
+
+function swarmSvg(entry, W, H) {
+  const { points, stats } = entry;
+  const pad = 10;
+  const span = stats.max - stats.min || 1;
+  const x = (v) => pad + ((v - stats.min) / span) * (W - 2 * pad);
+  const step = Math.max(1, points.length / SWARM_MAX_POINTS);
+  const shown = [];
+  for (let k = 0; k < points.length; k += step) shown.push(Math.floor(k));
+  const r = Math.max(1.5, Math.min(H / 28, shown.length > 600 ? 2 : shown.length > 200 ? 2.5 : 3.5));
+  const mid = H / 2;
+  const placed = []; // [x, y], in value order
+  const circles = shown.map((i) => {
+    const px = x(points[i].v);
     // the lowest |y| that clears the neighbours already placed within 2r in x
     const candidates = [0];
     for (let j = placed.length - 1; j >= 0 && px - placed[j][0] < 2 * r; j--) {
@@ -634,28 +654,44 @@ function swarmSvg(stats) {
       if (clear) { best = c; bestAbs = Math.abs(c); }
     }
     placed.push([px, best]);
-    const y = Math.max(r, Math.min(SWARM_H - r, mid + best));
-    return `<circle cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+    const y = Math.max(r, Math.min(H - r, mid + best));
+    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
-  const tick = (v, cls) => `<line class="sw-tick ${cls}" x1="${x(v).toFixed(1)}" x2="${x(v).toFixed(1)}" y1="1" y2="${SWARM_H - 1}"></line>`;
-  return (
-    `<svg class="swarm" viewBox="0 0 ${SWARM_W} ${SWARM_H}" preserveAspectRatio="xMidYMid meet">` +
-    `${tick(stats.p10, "q")}${tick(stats.p90, "q")}${tick(stats.mean, "mean")}${tick(stats.median, "median")}` +
-    `<g class="sw-pts">${circles.join("")}</g></svg>`
-  );
+  // the boxplot sits behind the dots: p25–p75 box, median line, whiskers to p10/p90
+  const top = H * 0.3, bottom = H * 0.7;
+  const box =
+    `<g class="sw-box"><line x1="${x(stats.p10).toFixed(1)}" x2="${x(stats.p25).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
+    `<line x1="${x(stats.p75).toFixed(1)}" x2="${x(stats.p90).toFixed(1)}" y1="${mid}" y2="${mid}"></line>` +
+    `<rect x="${x(stats.p25).toFixed(1)}" y="${top}" width="${Math.max(1, x(stats.p75) - x(stats.p25)).toFixed(1)}" height="${bottom - top}"></rect>` +
+    `<line class="median" x1="${x(stats.median).toFixed(1)}" x2="${x(stats.median).toFixed(1)}" y1="${top}" y2="${bottom}"></line>` +
+    `<line class="mean" x1="${x(stats.mean).toFixed(1)}" x2="${x(stats.mean).toFixed(1)}" y1="${top}" y2="${bottom}"></line></g>`;
+  return `<svg class="swarm" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect class="sw-bg" width="${W}" height="${H}"></rect>${box}<g class="sw-pts">${circles.join("")}</g></svg>`;
 }
 
-const SWARM_STATS = ["min", "p10", "median", "mean", "p90", "max"];
+/* swarms are drawn to their host's pixel size, so they redraw with the panes */
+function drawSwarms() {
+  for (const card of document.querySelectorAll("#metrics-body .swarm-card")) {
+    const entry = swarmRegistry.get(card.dataset.key);
+    const host = card.querySelector(".swarm-host");
+    if (!entry || !host?.clientWidth) continue;
+    host.innerHTML = swarmSvg(entry, host.clientWidth, host.clientHeight);
+  }
+}
 
-function swarmCard(key, label, values, fmt, { headline, sub } = {}) {
-  const stats = distStats(values);
-  if (!stats) return ""; // nothing of this kind landed for the env (yet)
-  const head = `<div class="sw-head"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>`;
-  return (
-    `<div class="stat-card swarm-card" data-key="${esc(key)}">${head}<div class="stat-value">${headline ?? fmt(stats.mean)}</div></div>` +
-    `<div class="muted sw-sub">${sub ?? `${fmtCompact(stats.n)} episodes`}</div>${swarmSvg(stats)}` +
-    `<div class="sw-stats">${SWARM_STATS.map((k) => `<span class="sw-stat ${k}"><span class="k">${k}</span>${fmt(stats[k])}</span>`).join("")}</div></div>`
-  );
+const SWARM_STAT_ROWS = ["min", "p10", "p25", "median", "mean", "p75", "p90", "max"];
+
+function swarmTipHtml(entry, point) {
+  const row = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+  if (point) {
+    const rows = point.group
+      ? [row("rollouts", point.n), row(entry.label, entry.fmt(point.v))]
+      : [row(entry.label, entry.fmt(point.v)), ...(point.reward != null ? [row("reward", fmtReward(point.reward))] : [])];
+    if (point.err) rows.push(row("errors", point.group ? "in a rollout" : "yes"));
+    rows.push(row("", point.group ? "click opens its first rollout" : "click opens the trace"));
+    return `<div class="tip-head">${point.group ? `task ${esc(point.group.slice(0, 8))}` : `episode #${point.line}`}</div>${rows.join("")}`;
+  }
+  const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
+  return `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} ${entry.points[0]?.group ? "tasks" : "episodes"}</div>${rows.map(([k, v]) => row(k, v)).join("")}`;
 }
 
 /* unbiased pass@k for one task's binary rewards, k over the powers of two up to n
@@ -674,55 +710,41 @@ function passAtK(rewards) {
   return out;
 }
 
-function taskCount(n) {
-  return `${fmtCompact(n)} task${n === 1 ? "" : "s"}`;
-}
-
-function evalScoreCards(idx, filter) {
+function evalScoreEntries(idx, filter) {
   const series = state.metrics.evalSeries || {};
-  const cards = [];
-  const rewards = idx.map((i) => series.reward?.[i]).filter((v) => v != null);
+  const entries = [];
   const byTask = new Map();
   for (const i of idx) {
     const reward = series.reward?.[i];
     if (reward == null) continue;
     const task = series.group?.[i] ?? String(i);
-    if (!byTask.has(task)) byTask.set(task, []);
-    byTask.get(task).push(reward);
+    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
+    const t = byTask.get(task);
+    t.rewards.push(reward);
+    if (series.ok?.[i] === false) t.err = true;
   }
-  const groups = [...byTask.values()];
-  const k = groups.length ? Math.max(...groups.map((g) => g.length)) : 0;
-  if (groups.length && (!filter || filter.test("avg@k"))) {
-    const perTask = groups.map((g) => g.reduce((a, b) => a + b, 0) / g.length);
-    cards.push(swarmCard("avg@k", `avg@${k}`, perTask, fmtReward, { sub: `${taskCount(groups.length)} · mean reward per task` }));
+  const tasks = [...byTask.values()];
+  if (!tasks.length) return entries;
+  const k = Math.max(...tasks.map((t) => t.rewards.length));
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err });
+  if (!filter || filter.test("avg@k"))
+    entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
+  if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
+    const perTask = tasks.map((t) => ({ task: t, pass: passAtK(t.rewards) }));
+    const ks = [...new Set(perTask.flatMap((p) => Object.keys(p.pass).map(Number)))].sort((a, b) => a - b);
+    const mean = (kk) => {
+      const vals = perTask.map((p) => p.pass[kk]).filter((v) => v != null);
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+    const top = ks[ks.length - 1];
+    entries.push(
+      swarmEntry("pass@k", `pass@${top}`, perTask.map((p) => taskPoint(p.task, p.pass[top])), fmtReward, {
+        headline: fmtReward(mean(top)),
+        rows: ks.map((kk) => [`pass@${kk}`, fmtReward(mean(kk))]),
+      })
+    );
   }
-  if (groups.length && (!filter || filter.test("pass@k"))) {
-    if (rewards.every((r) => r === 0 || r === 1)) {
-      const perTask = groups.map(passAtK);
-      const ks = [...new Set(perTask.flatMap((p) => Object.keys(p).map(Number)))].sort((a, b) => a - b);
-      const mean = (kk) => {
-        const vals = perTask.map((p) => p[kk]).filter((v) => v != null);
-        return vals.reduce((a, b) => a + b, 0) / vals.length;
-      };
-      const top = ks[ks.length - 1];
-      const stats = distStats(perTask.map((p) => p[top]).filter((v) => v != null));
-      cards.push(
-        `<div class="stat-card swarm-card" data-key="pass@k"><div class="sw-head"><div class="stat-label">pass@${top}</div><div class="stat-value">${fmtReward(mean(top))}</div></div>` +
-          `<div class="muted sw-sub">${taskCount(groups.length)} · any of ${top} rollouts solved</div>${stats ? swarmSvg(stats) : ""}` +
-          `<div class="sw-stats">${ks.map((kk) => `<span class="sw-stat"><span class="k">pass@${kk}</span>${fmtReward(mean(kk))}</span>`).join("")}</div></div>`
-      );
-    } else {
-      cards.push(
-        `<div class="stat-card swarm-card" data-key="pass@k"><div class="sw-head"><div class="stat-label">pass@k</div><div class="stat-value muted">n/a</div></div>` +
-          `<div class="muted sw-sub">rewards are not binary</div></div>`
-      );
-    }
-  }
-  if (rewards.length && (!filter || filter.test("reward"))) {
-    const errors = idx.filter((i) => series.ok?.[i] === false).length;
-    cards.push(swarmCard("reward", "reward", rewards, fmtReward, { sub: `${fmtCompact(rewards.length)} episodes${errors ? ` · ${errors} with errors` : ""}` }));
-  }
-  return cards;
+  return entries;
 }
 
 const EVAL_USAGE_CARDS = [
@@ -741,37 +763,70 @@ function renderEvalPane(body) {
   renderEvalEnvs();
   const env = evalEnv();
   $("#metrics-status").textContent = "";
+  $("#metrics-errors").checked = !!m.includeErrors;
+  $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors);
+  swarmRegistry.clear();
   if (!env) {
     body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
     return;
   }
-  const idx = evalIndices(env);
+  const all = evalIndices(env);
   const live = (state.traces.live || []).filter((r) => r.env === env);
-  body.insertAdjacentHTML("beforeend", evalProgressHtml(env, idx, live));
-  const pick = (key) => idx.map((i) => series[key]?.[i]);
-  const section = (name, all) => {
-    const cards = all.filter(Boolean);
-    if (!cards.length) return 0;
-    const { grid } = addSection(body, name);
-    grid.className = "swarm-grid";
-    grid.innerHTML = cards.join("");
-    return cards.length;
-  };
+  body.insertAdjacentHTML("beforeend", evalProgressHtml(env, all, live));
+  // errored episodes stay out of the distributions unless asked in, where they read red
+  const idx = m.includeErrors ? all : all.filter((i) => series.ok?.[i] !== false);
+  const episodeEntry = (key, label, fmt) =>
+    swarmEntry(key, label, idx.map((i) => ({ v: series[key]?.[i], line: series.line?.[i], reward: series.reward?.[i], err: series.ok?.[i] === false })), fmt);
   const keyed = (prefix, fmt) =>
     Object.keys(series)
       .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
       .sort()
-      .map((k) => swarmCard(k, k.slice(prefix.length), pick(k), fmt));
+      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
+  const section = (name, entries) => {
+    const kept = entries.filter(Boolean);
+    if (!kept.length) return 0;
+    for (const entry of kept) swarmRegistry.set(entry.key, entry);
+    const { grid } = addSection(body, name);
+    grid.innerHTML = kept.map(swarmCardHtml).join("");
+    return kept.length;
+  };
   let shown = 0;
-  shown += section("scores", evalScoreCards(idx, filter));
+  shown += section("scores", evalScoreEntries(idx, filter));
   shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
   shown += section(
     "usage",
-    EVAL_USAGE_CARDS.filter(([key]) => series[key] && (!filter || filter.test(key))).map(([key, label, fmt]) => swarmCard(key, label, pick(key), fmt))
+    EVAL_USAGE_CARDS.filter(([key]) => series[key] && (!filter || filter.test(key))).map(([key, label, fmt]) => episodeEntry(key, label, fmt))
   );
   shown += section("timing", keyed("timing/", fmtDuration));
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
+  drawSwarms();
 }
+
+$("#metrics-errors").addEventListener("change", (e) => {
+  state.metrics.includeErrors = e.target.checked;
+  savePrefs();
+  renderMetricsBody();
+});
+
+$("#metrics-body").addEventListener("mousemove", (e) => {
+  const tip = $("#swarm-tip");
+  const svg = e.target.closest(".swarm");
+  const entry = svg && swarmRegistry.get(svg.closest(".swarm-card")?.dataset.key);
+  if (!entry) {
+    tip.hidden = true;
+    return;
+  }
+  const dot = e.target.closest("circle");
+  tip.innerHTML = swarmTipHtml(entry, dot ? entry.points[+dot.dataset.i] : null);
+  tip.hidden = false;
+  const host = $("#tab-metrics").getBoundingClientRect();
+  const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${e.clientY - host.top + 14}px`;
+});
+$("#metrics-body").addEventListener("mouseleave", () => {
+  $("#swarm-tip").hidden = true;
+});
 
 $("#eval-envs").addEventListener("click", (e) => {
   const button = e.target.closest("[data-env]");
@@ -781,6 +836,13 @@ $("#eval-envs").addEventListener("click", (e) => {
 });
 
 $("#metrics-body").addEventListener("click", (e) => {
+  const dot = e.target.closest(".swarm circle");
+  if (dot) {
+    const entry = swarmRegistry.get(dot.closest(".swarm-card")?.dataset.key);
+    const line = entry?.points[+dot.dataset.i]?.line;
+    if (line != null) openEpisode(line);
+    return;
+  }
   const cell = e.target.closest(".ep-cell[data-line], .ep-cell[data-live]");
   if (!cell) return;
   if (cell.dataset.live) openLiveTrace(cell.dataset.live);
@@ -6380,6 +6442,8 @@ $("#tm-meta").addEventListener("click", (e) => {
 });
 
 function resizeCharts() {
+  $("#metrics-body").style.setProperty("--pane-h", `${chartHeight()}px`);
+  drawSwarms();
   for (const entry of state.metrics.charts) {
     if (entry.u) entry.u.setSize({ width: chartWidth(entry.card), height: chartHeight() });
     // unmounted (lazy) and no-data cards track the pane height too
@@ -6404,6 +6468,7 @@ function savePrefs() {
       allLayout: state.metrics.allLayout,
       paneMin: state.metrics.paneMin,
       paneH: state.metrics.paneH,
+      includeErrors: state.metrics.includeErrors,
       paneOrder: state.metrics.paneOrder,
       metricsMode: state.metrics.mode,
       metricsSearch: state.metrics.search,

@@ -40,6 +40,16 @@
         <button data-mode="all">All</button>
       </div>
       <div class="seg" id="eval-envs" hidden></div>
+      <div id="metrics-filter-wrap" class="dd-wrap" hidden>
+        <button id="metrics-filter-btn" class="btn dd-btn" title="filter">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div class="dd-menu dd-filters" id="metrics-filter-menu" hidden>
+          <div class="dd-sec">filter</div>
+          <label class="toggle dd-row"><input type="checkbox" id="metrics-errors"><span class="dot"></span>include errors</label>
+        </div>
+      </div>
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
       <span id="metrics-status" class="muted"></span>
@@ -52,6 +62,7 @@
       <button id="metrics-expand" class="btn">expand</button>
     </div>
     <div id="metrics-body"></div>
+    <div id="swarm-tip" hidden></div>
   </section>
 
   <section id="tab-config" hidden>
