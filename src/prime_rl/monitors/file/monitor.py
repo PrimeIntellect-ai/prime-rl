@@ -98,8 +98,9 @@ class FileMonitor(Monitor):
                     path.unlink(missing_ok=True)
                     continue
                 line = {**delta, "dispatch": event["dispatch"]} if "open" in delta else delta
+                # deltas key semantic links and the mm token map by node index (int)
                 with path.open("ab") as f:
-                    f.write(orjson.dumps(line, default=str, option=OPTS) + b"\n")
+                    f.write(orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS) + b"\n")
 
         await asyncio.to_thread(write)
 
