@@ -74,6 +74,39 @@ jobs:
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
 
+  core-eval-install:
+    name: Core install runs eval (no extras)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install the core and one env
+        run: uv sync --locked --package prime-rl --package gsm8k
+      - name: Import the eval without torch
+        run: |
+          uv run --no-sync python - <<'PY'
+          import sys
+
+          import prime_rl.entrypoints.eval
+          import prime_rl.eval.eval
+
+          assert "torch" not in sys.modules, "the eval imports pulled in torch"
+          print("core eval import OK")
+          PY
+      - name: Resolve an eval config
+        run: uv run --no-sync eval gsm8k -n 1 --dry-run --output-dir /tmp/outputs
+
   slim-configs-install:
     name: Slim install (prime-rl-configs only)
     runs-on: ubuntu-latest
