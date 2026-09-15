@@ -99,7 +99,6 @@ def test_state_dict_round_trip_is_exact_and_training_continues(trained_pair: Tra
     assert_params_equal(trained_pair.reference_model, trained_pair.offloaded_model)
 
 
-@pytest.mark.xfail(strict=True, reason="fresh pageable+pin copies every step")
 def test_offload_reuses_pinned_buffers_across_steps() -> None:
     model = make_model(0)
     optimizer = CPUOffloadOptimizer(torch.optim.AdamW(model.parameters(), lr=1e-2))
