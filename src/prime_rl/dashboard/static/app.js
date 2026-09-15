@@ -523,12 +523,9 @@ function envColor(env) {
 function renderEvalEnvs() {
   const envs = evalEnvs();
   const selected = new Set(selectedEvalEnvs());
-  const all = selected.size === envs.length;
   const row = $("#metrics-env-filter").closest(".dd-row");
   row.hidden = envs.length < 2;
-  $("#metrics-env-filter").innerHTML =
-    `<button data-env="" class="${all ? "on" : ""}">all</button>` +
-    envs
+  $("#metrics-env-filter").innerHTML = envs
       .map(
         (env) =>
           `<button data-env="${esc(env)}" class="${selected.has(env) ? "on" : ""}">` +
@@ -556,8 +553,8 @@ const EP_CELL_CAP = 400;
 
 function evalProgressHtml(envs, idx, live) {
   const series = state.metrics.evalSeries || {};
-  const many = envs.length > 1;
-  const color = (env) => (many ? envColor(env) : "var(--accent)");
+  const many = evalEnvs().length > 1;
+  const color = envColor;
   const done = idx.length;
   const expected = envs.map(evalExpected);
   const total = expected.some((n) => n == null) ? null : expected.reduce((a, b) => a + b, 0);
@@ -597,15 +594,13 @@ function evalProgressHtml(envs, idx, live) {
       `<span class="ep-cell live"></span>`.repeat(liveCells) +
       `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
-  // the header names the env, or a legend of the envs with each one's own count
-  const legend = many
-    ? envs
-        .map((env, k) => {
-          const mine = idx.filter((i) => series.env?.[i] === env).length;
-          return `<span class="ep-env"><span class="env-dot" style="background:${envColor(env)}"></span>${esc(env)} <span class="muted">${mine}/${expected[k] ?? "?"}</span></span>`;
-        })
-        .join("")
-    : `<span class="name">${esc(envs[0] ?? "")}</span>`;
+  // the header is a legend of the shown envs, each with its own count
+  const legend = envs
+    .map((env, k) => {
+      const mine = idx.filter((i) => series.env?.[i] === env).length;
+      return `<span class="ep-env"><span class="env-dot" style="background:${envColor(env)}"></span>${esc(env)} <span class="muted">${mine}/${expected[k] ?? "?"}</span></span>`;
+    })
+    .join("");
   const parts = [`${done}/${total ?? "?"} episodes`];
   if (live.length) parts.push(`${live.length} in flight`);
   if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
@@ -820,7 +815,7 @@ function evalScoreEntries(idx, filter, many) {
   const tasks = [...byTask.values()];
   if (!tasks.length) return entries;
   const k = Math.max(...tasks.map((t) => t.rewards.length));
-  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err, env: many ? t.env : null, color: many ? envColor(t.env) : null });
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err, env: many ? t.env : null, color: envColor(t.env) });
   if (!filter || filter.test("avg@k"))
     entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
   if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
@@ -856,7 +851,7 @@ function renderEvalPane(body) {
   const filter = makeFilter(m.search.trim());
   renderEvalEnvs();
   const envs = selectedEvalEnvs();
-  const many = envs.length > 1;
+  const many = evalEnvs().length > 1;
   $("#metrics-status").textContent = "";
   $("#metrics-errors").checked = !!m.includeErrors;
   $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors || envs.length !== evalEnvs().length);
@@ -881,7 +876,7 @@ function renderEvalPane(body) {
         reward: series.reward?.[i],
         err: series.ok?.[i] === false,
         env: many ? series.env?.[i] : null,
-        color: many ? envColor(series.env?.[i]) : null,
+        color: envColor(series.env?.[i]),
       })),
       fmt
     );
@@ -940,15 +935,12 @@ $("#metrics-env-filter").addEventListener("click", (e) => {
   const button = e.target.closest("[data-env]");
   if (!button) return;
   const env = button.dataset.env;
-  if (!env) state.metrics.evalEnvs = null; // all
-  else {
-    const picked = new Set(state.metrics.evalEnvs ?? evalEnvs());
-    if (picked.has(env)) {
-      if (picked.size === 1) return; // never none
-      picked.delete(env);
-    } else picked.add(env);
-    state.metrics.evalEnvs = picked.size === evalEnvs().length ? null : picked;
-  }
+  const picked = new Set(state.metrics.evalEnvs ?? evalEnvs());
+  if (picked.has(env)) {
+    if (picked.size === 1) return; // never none
+    picked.delete(env);
+  } else picked.add(env);
+  state.metrics.evalEnvs = picked.size === evalEnvs().length ? null : picked;
   renderMetricsBody();
 });
 
