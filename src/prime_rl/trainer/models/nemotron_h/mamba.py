@@ -14,7 +14,7 @@ from torch import nn
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
-from prime_rl.utils.cp import CPContext
+from prime_rl.utils.cp import CPContextMixin
 
 
 def sequence_to_head_parallel(
@@ -75,7 +75,7 @@ class GatedRMSNorm(nn.Module):
         return (self.weight if weight is None else weight) * hidden_states.to(input_dtype)
 
 
-class NemotronHMamba2(nn.Module):
+class NemotronHMamba2(nn.Module, CPContextMixin):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__()
         from fla.modules.conv import causal_conv1d
@@ -124,8 +124,6 @@ class NemotronHMamba2(nn.Module):
         ).clamp(min=config.time_step_floor)
         with torch.no_grad():
             self.dt_bias.copy_((time_steps + torch.log(-torch.expm1(-time_steps))).to(self.dt_bias.dtype))
-
-        self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape

@@ -17,7 +17,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
-from prime_rl.utils.cp import CPContext
+from prime_rl.utils.cp import CPContext, CPContextMixin
 
 
 def get_text_config(config_cls=Qwen3_5TextConfig) -> Qwen3_5TextConfig:
@@ -84,35 +84,24 @@ def get_model(config, device="cuda"):
 
 
 @pytest.mark.gpu
-def test_context_parallel_setup_chain_text_and_vlm(text_config):
+def test_context_parallel_setup_chain_text_and_vlm(text_config, monkeypatch):
     cp_group = MagicMock()
 
     text_model = get_model(text_config, device="meta")
-    linear_layer = text_model.model.layers[0]
-    text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
+    vlm_model = get_model(get_vlm_config(text_config), device="meta")
 
-    text_cp_context = CPContext(cp_group, 1, 2, "ulysses")
-    for module in text_model.modules():
-        if hasattr(module, "cp_context"):
-            module.cp_context = text_cp_context
+    cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    monkeypatch.setattr(CPContextMixin, "_cp_context", cp_context)
 
-    assert text_model.model.cp_context is text_cp_context
+    assert text_model.model.cp_context is cp_context
     assert text_model.model.cp_context.cp_rank == 1
     assert text_model.model.cp_context.cp_world_size == 2
     assert text_model.model.cp_context.cp_style == "ulysses"
-    assert linear_layer.linear_attn.cp_context is text_cp_context
+    assert text_model.model.layers[0].linear_attn.cp_context is cp_context
 
-    vlm_model = get_model(get_vlm_config(text_config), device="meta")
-
-    vlm_cp_context = CPContext(cp_group, 0, 2, "ulysses")
-    for module in vlm_model.modules():
-        if hasattr(module, "cp_context"):
-            module.cp_context = vlm_cp_context
-
-    assert vlm_model.model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
-    assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
+    assert vlm_model.model.cp_context is cp_context
+    assert vlm_model.model.language_model.cp_context is cp_context
+    assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is cp_context
 
 
 def test_ring_patches_flash_attention():

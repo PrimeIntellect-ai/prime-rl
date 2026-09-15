@@ -143,7 +143,7 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
-        setup_context_parallel(model, config.model, parallel_dims)
+        setup_context_parallel(config.model, parallel_dims)
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()

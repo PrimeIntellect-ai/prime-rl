@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
@@ -37,7 +36,16 @@ class CPContext:
         return self.cp_world_size > 1
 
 
-def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+class CPContextMixin:
+    # Keep as a private attr accessed via read-only `property` for harder accidental overwriting.
+    _cp_context: CPContext = CPContext()
+
+    @property
+    def cp_context(self) -> CPContext:
+        return self._cp_context
+
+
+def setup_context_parallel(config: ModelConfig, parallel_dims: ParallelDims) -> None:
     cp_group = parallel_dims.world_mesh["cp"].get_group()
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
@@ -56,16 +64,10 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")
 
-    cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
-    for module in model.modules():
-        if not hasattr(module, "cp_context"):
-            continue
-        if not isinstance(module.cp_context, CPContext):
-            raise TypeError(
-                f"{type(module).__name__}.cp_context is {type(module.cp_context).__name__}, not a CPContext; "
-                "context-parallel setup claims that attribute name, so rename it"
-            )
-        module.cp_context = cp_context
+    # Updating the _cp_context class attr on the mixin propagates the changes to all subclasses.
+    # Note: the converse is not true. Updating _cp_context on a CPContextMixin subclass doesn't
+    # propagate.
+    CPContextMixin._cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
 
     get_logger().info(f"Configured {config.cp_style} context parallelism (cp={parallel_dims.cp})")
 
