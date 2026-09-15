@@ -1198,7 +1198,7 @@ function renderEvalPane(body) {
     Object.keys(series)
       .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
       .sort()
-      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt, { shape: "swarm" }));
+      .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
   // constants sit in a chip row above the section's panes: a pane for a value every
   // episode shares would only take space
   // sections are flat: a muted heading, the constants as chips, then the panes
