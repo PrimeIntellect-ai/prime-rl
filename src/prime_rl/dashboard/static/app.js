@@ -5385,7 +5385,7 @@ function syncTraceFilterControls() {
     }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  for (const button of document.querySelectorAll("#trace-status-filter button"))
+  for (const button of document.querySelectorAll("#trace-status-filter button, #tm-status-filter button"))
     button.classList.toggle("on", !!t.status[button.dataset.status]);
   for (const sel of ["#trace-sort", "#tm-sort"])
     $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
@@ -5736,7 +5736,7 @@ $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
-document.querySelectorAll("#trace-status-filter button").forEach((b) =>
+document.querySelectorAll("#trace-status-filter button, #tm-status-filter button").forEach((b) =>
   b.addEventListener("click", async () => {
     const status = state.traces.status;
     const key = b.dataset.status;
@@ -5747,6 +5747,7 @@ document.querySelectorAll("#trace-status-filter button").forEach((b) =>
     savePrefs();
     renderEpisodeRows(true);
     $("#trace-status").textContent = traceStatusText();
+    if (!$("#trace-modal").hidden) renderRolloutList(); // the viewer's sidebar follows the same filter
   })
 );
 function rafThrottle(fn) {
