@@ -204,7 +204,7 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnvs: null,
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnvs: null, timingPath: "",
   };
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
@@ -690,6 +690,7 @@ const SWARM_AXIS_H = 18;
 /* a tick reads shorter than a value: round counts lose their ".0", durations their
    empty trailing units (5m 0s → 5m) */
 function tickLabel(v, fmt) {
+  if (v === 0) return "0";
   return fmt(v).replace(/\.0(?=[KMB]$)/, "").replace(/ 0s$/, "").replace(/ 0m$/, "");
 }
 
@@ -836,6 +837,174 @@ function evalScoreEntries(idx, filter, many) {
   return entries;
 }
 
+
+/* ------------------------------------------------------------ eval timing */
+/* one pane for the whole timing hierarchy: the phases are key paths (agent/model),
+   every level sums to its parent with an `other` remainder, and the pane zooms
+   into a node — an icicle of mean composition above per-episode strips */
+
+const PHASE_COLORS = {
+  agent: "#b6ff3c", boot: "#b7a6fa", setup: "#fcdaa4", finalize: "#4a9eff", scoring: "#78f8a5",
+  model: "#78f8a5", harness: "#fcdaa4", other: "#3a3a3a",
+};
+
+function phaseColor(name) {
+  if (PHASE_COLORS[name]) return PHASE_COLORS[name];
+  const names = Object.keys(state.metrics.evalSeries || {}).filter((k) => k.startsWith("timing/")).map((k) => k.split("/").pop());
+  return PALETTE[[...new Set(names)].sort().indexOf(name) % PALETTE.length];
+}
+
+let timingModel = null;
+let timingTips = [];
+
+/* the tree from the series keys: every `timing/a/b` is a node whose parent is `timing/a`
+   (or the episode root); the root's own duration is the episode's wall time */
+function timingTree(series) {
+  const paths = Object.keys(series)
+    .filter((k) => k.startsWith("timing/"))
+    .map((k) => k.slice("timing/".length))
+    .sort();
+  const children = (path) => paths.filter((p) => (path ? p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/") : !p.includes("/")));
+  return { paths, children };
+}
+
+function timingValue(series, path, i) {
+  return path ? series[`timing/${path}`]?.[i] : series.duration?.[i];
+}
+
+/* the node the pane is zoomed to; a path the current series does not have snaps back to
+   the episode */
+function timingPath() {
+  const path = state.metrics.timingPath || "";
+  return path && !state.metrics.evalSeries?.[`timing/${path}`] ? "" : path;
+}
+
+function timingPaneHtml(idx) {
+  const series = state.metrics.evalSeries || {};
+  const tree = timingTree(series);
+  if (!tree.paths.length) return "";
+  const path = timingPath();
+  const many = evalEnvs().length > 1;
+  const kids = tree.children(path);
+  // per-episode rows: the node's duration, each child's, and what is left over
+  const rows = idx
+    .map((i) => {
+      const total = timingValue(series, path, i);
+      if (total == null) return null;
+      const parts = kids.map((kid) => ({ name: kid.split("/").pop(), path: kid, v: timingValue(series, kid, i) ?? 0 }));
+      const other = Math.max(0, total - parts.reduce((a, p) => a + p.v, 0));
+      if (kids.length) parts.push({ name: "other", path: null, v: other });
+      return { i, line: series.line?.[i], env: series.env?.[i], err: series.ok?.[i] === false, total, parts };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+  if (!rows.length) return "";
+  const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
+  const meanTotal = mean(rows.map((r) => r.total));
+  const segments = (kids.length ? [...kids.map((k) => ({ name: k.split("/").pop(), path: k })), { name: "other", path: null }] : [{ name: path.split("/").pop() || "episode", path }]).map((seg, k) => {
+    const values = rows.map((r) => (kids.length ? r.parts[k].v : r.total));
+    const stats = distStats(values);
+    return { ...seg, values, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: !!seg.path && seg.path !== path && tree.children(seg.path).length > 0 };
+  });
+  timingModel = { path, rows, segments, meanTotal, kids, many, tree };
+  timingTips = [];
+  const crumbs = ["", ...path.split("/").filter(Boolean).map((_, k, all) => all.slice(0, k + 1).join("/"))];
+  const crumbHtml = crumbs
+    .map((p, k) => `<span class="tm-crumb${p === path ? " current" : ""}" data-path="${esc(p)}">${esc(p ? p.split("/").pop() : "episode")}</span>`)
+    .join(`<span class="muted"> › </span>`);
+  // the legend is the whole tree, indented, with the zoomed node marked
+  const treeHtml = ["", ...tree.paths]
+    .map((p) => {
+      const depth = p ? p.split("/").length : 0;
+      const name = p ? p.split("/").pop() : "episode";
+      const onPath = path === p || path.startsWith(`${p}/`) || p === "";
+      const kid = kids.includes(p);
+      const cls = p === path ? " current" : kid ? " child" : onPath ? " ancestor" : "";
+      return `<div class="tm-node${cls}" data-path="${esc(p)}" style="padding-left:${depth * 12}px"><span class="env-dot" style="background:${p ? phaseColor(name) : "var(--grey-6)"}"></span>${esc(name)}</div>`;
+    })
+    .join("");
+  return (
+    `<div class="chart-card timing-pane"><div class="chart-head"><div class="tm-crumbs">${crumbHtml}</div>` +
+    `<div class="chart-last">${fmtDuration(meanTotal)} <span class="muted">mean · ${fmtCompact(rows.length)} episodes</span></div></div>` +
+    `<div class="tm-body"><div class="tm-plots"><div class="tm-icicle"></div><div class="tm-strips"></div></div><div class="tm-tree">${treeHtml}</div></div></div>`
+  );
+}
+
+const TM_MAX_STRIPS = 40;
+
+function drawTiming() {
+  const pane = document.querySelector("#metrics-body .timing-pane");
+  if (!pane || !timingModel) return;
+  const { rows, segments, meanTotal, kids, many } = timingModel;
+  const tip = (html) => timingTips.push(html) - 1;
+  const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+  // icicle: the mean composition of the zoomed node
+  const ice = pane.querySelector(".tm-icicle");
+  const W = ice.clientWidth, IH = 28;
+  if (!W) return;
+  let x = 0;
+  const iceSegs = segments
+    .map((seg) => {
+      const w = meanTotal ? (seg.stats.mean / meanTotal) * W : 0;
+      if (w <= 0) return "";
+      const label = `${seg.name} · ${fmtDuration(seg.stats.mean)} · ${Math.round(seg.share * 100)}%`;
+      const shown = w > label.length * 6.5 + 12 ? label : w > 40 ? seg.name : "";
+      const t = tip(
+        `<div class="tip-head">${esc(seg.name)}</div>${rowTip("share", `${Math.round(seg.share * 100)}%`)}${rowTip("mean", fmtDuration(seg.stats.mean))}` +
+          `${rowTip("median", fmtDuration(seg.stats.median))}${rowTip("p90", fmtDuration(seg.stats.p90))}${rowTip("max", fmtDuration(seg.stats.max))}` +
+          (seg.zoomable ? rowTip("", "click zooms in") : "")
+      );
+      const html =
+        `<g class="tm-seg${seg.zoomable ? " zoomable" : ""}" data-tip="${t}" ${seg.zoomable ? `data-zoom="${esc(seg.path)}"` : ""}>` +
+        `<rect x="${x.toFixed(1)}" y="0" width="${Math.max(1, w - 1).toFixed(1)}" height="${IH}" fill="${phaseColor(seg.name)}"></rect>` +
+        (shown ? `<text x="${(x + 6).toFixed(1)}" y="${IH / 2 + 4}">${esc(shown)}</text>` : "") +
+        `</g>`;
+      x += w;
+      return html;
+    })
+    .join("");
+  ice.innerHTML = `<svg width="${W}" height="${IH}" viewBox="0 0 ${W} ${IH}">${iceSegs}</svg>`;
+  // strips: one per episode, longest first, the same segments in the same colours
+  const host = pane.querySelector(".tm-strips");
+  const step = Math.max(1, rows.length / TM_MAX_STRIPS);
+  const shown = [];
+  for (let k = 0; k < rows.length; k += step) shown.push(rows[Math.floor(k)]);
+  const SH = 9, GAP = 3, PAD_L = 40, AX = 18;
+  const H = shown.length * (SH + GAP) + AX;
+  const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
+  const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
+  const strips = shown
+    .map((r, n) => {
+      const y = n * (SH + GAP);
+      let sxPos = PAD_L;
+      const parts = kids.length ? r.parts : [{ name: segments[0].name, v: r.total }];
+      const segs = parts
+        .map((p) => {
+          const w = sx(p.v);
+          if (w <= 0) return "";
+          const t = tip(
+            `<div class="tip-head">episode #${r.line}${many ? ` · ${esc(r.env ?? "")}` : ""}</div>${rowTip(p.name, fmtDuration(p.v))}` +
+              `${rowTip("share", `${Math.round((p.v / (r.total || 1)) * 100)}%`)}${rowTip("total", fmtDuration(r.total))}${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
+          );
+          const html = `<rect class="tm-strip-seg" data-tip="${t}" data-line="${r.line}" x="${sxPos.toFixed(1)}" y="${y}" width="${Math.max(1, w - 1).toFixed(1)}" height="${SH}" fill="${phaseColor(p.name)}"></rect>`;
+          sxPos += w;
+          return html;
+        })
+        .join("");
+      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`;
+    })
+    .join("");
+  const ticks = niceTicks(0, maxTotal, W - PAD_L - 8, (v) => tickLabel(v, fmtDuration), true)
+    .map((v) => {
+      const tx = (PAD_L + sx(v)).toFixed(1);
+      return `<line class="sw-grid" x1="${tx}" x2="${tx}" y1="0" y2="${H - AX}"></line><text class="hax" style="text-anchor:middle" x="${tx}" y="${H - 4}">${esc(tickLabel(v, fmtDuration))}</text>`;
+    })
+    .join("");
+  host.innerHTML =
+    `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${ticks}<line class="sw-axis" x1="${PAD_L}" x2="${W}" y1="${H - AX + 0.5}" y2="${H - AX + 0.5}"></line>${strips}</svg>` +
+    (shown.length < rows.length ? `<div class="muted tm-note">${shown.length} of ${fmtCompact(rows.length)} episodes shown, evenly across the range</div>` : "");
+}
+
 const EVAL_USAGE_CARDS = [
   ["duration", "rollout time", fmtDuration],
   ["input_tokens", "input tokens", (v) => fmtCompact(Math.round(v))],
@@ -900,9 +1069,16 @@ function renderEvalPane(body) {
     "usage",
     EVAL_USAGE_CARDS.filter(([key]) => series[key] && (!filter || filter.test(key))).map(([key, label, fmt]) => episodeEntry(key, label, fmt))
   );
-  shown += section("timing", keyed("timing/", fmtDuration));
+  const timingHtml = timingPaneHtml(idx);
+  if (timingHtml) {
+    const { grid } = addSection(body, "timing");
+    grid.className = "timing-grid";
+    grid.innerHTML = timingHtml;
+    shown += 1;
+  }
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
   drawSwarms();
+  drawTiming();
 }
 
 $("#metrics-errors").addEventListener("change", (e) => {
@@ -913,14 +1089,18 @@ $("#metrics-errors").addEventListener("change", (e) => {
 
 $("#metrics-body").addEventListener("mousemove", (e) => {
   const tip = $("#swarm-tip");
+  const timed = e.target.closest("[data-tip]");
   const svg = e.target.closest(".swarm");
   const entry = svg && swarmRegistry.get(svg.closest(".swarm-card")?.dataset.key);
-  if (!entry) {
+  if (!entry && !timed) {
     tip.hidden = true;
     return;
   }
-  const dot = e.target.closest("circle");
-  tip.innerHTML = swarmTipHtml(entry, dot ? entry.points[+dot.dataset.i] : null);
+  if (timed) tip.innerHTML = timingTips[+timed.dataset.tip] ?? "";
+  else {
+    const dot = e.target.closest("circle");
+    tip.innerHTML = swarmTipHtml(entry, dot ? entry.points[+dot.dataset.i] : null);
+  }
   tip.hidden = false;
   const host = $("#tab-metrics").getBoundingClientRect();
   const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
@@ -945,6 +1125,20 @@ $("#metrics-env-filter").addEventListener("click", (e) => {
 });
 
 $("#metrics-body").addEventListener("click", (e) => {
+  const zoom = e.target.closest("[data-zoom], .tm-crumb[data-path], .tm-node[data-path]");
+  if (zoom) {
+    const target = zoom.dataset.zoom ?? zoom.dataset.path;
+    if (target !== timingPath()) {
+      state.metrics.timingPath = target;
+      renderMetricsBody();
+    }
+    return;
+  }
+  const strip = e.target.closest(".tm-strip-seg[data-line]");
+  if (strip) {
+    openEpisode(+strip.dataset.line);
+    return;
+  }
   const dot = e.target.closest(".swarm circle");
   if (dot) {
     const entry = swarmRegistry.get(dot.closest(".swarm-card")?.dataset.key);
@@ -6551,6 +6745,7 @@ $("#tm-meta").addEventListener("click", (e) => {
 function resizeCharts() {
   $("#metrics-body").style.setProperty("--pane-h", `${chartHeight()}px`);
   drawSwarms();
+  drawTiming();
   for (const entry of state.metrics.charts) {
     if (entry.u) entry.u.setSize({ width: chartWidth(entry.card), height: chartHeight() });
     // unmounted (lazy) and no-data cards track the pane height too
