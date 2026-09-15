@@ -1929,7 +1929,7 @@ function traceStatusText(total) {
   const live = state.traces.live?.length || 0;
   const parts = [];
   if (live && state.traces.status !== "done") parts.push(`${live} in flight`);
-  if (state.traces.status !== "live") parts.push(episodeCount(total ?? state.traces.total ?? 0));
+  if (state.traces.status !== "live") parts.push(`${fmtCompact(total ?? state.traces.total ?? 0)} completed`);
   return parts.join(" · ");
 }
 
