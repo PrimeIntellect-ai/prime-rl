@@ -3,7 +3,13 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.kernels.deepseek_v4 import dsv4_mhc
 from prime_rl.trainer.models.layers import norms
+
+
+def _use_fused_mhc(t: torch.Tensor, hc: int) -> bool:
+    """The vendored Triton kernels tile the stream axis with `tl.arange`, so `hc` must be a power of two."""
+    return t.is_cuda and hc & (hc - 1) == 0
 
 
 class DeepseekV4UnweightedRMSNorm(nn.Module):
@@ -63,11 +69,14 @@ class DeepseekV4HyperConnection(nn.Module):
         pre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps
         post = 2 * torch.sigmoid(post_w * post_scale + post_b)
         comb_logits = comb_w.view(*comb_w.shape[:-1], hc, hc) * comb_scale + comb_b.view(hc, hc)
-        comb = torch.softmax(comb_logits, dim=-1) + self.hc_eps
-        comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
-        for _ in range(self.hc_sinkhorn_iters - 1):
-            comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
+        if _use_fused_mhc(comb_logits, hc):
+            comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
+        else:
+            comb = torch.softmax(comb_logits, dim=-1) + self.hc_eps
             comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
+            for _ in range(self.hc_sinkhorn_iters - 1):
+                comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
+                comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
 
         collapsed = (pre.unsqueeze(-1) * hidden_streams).sum(dim=2).to(hidden_streams.dtype)
         return post, comb, collapsed
