@@ -37,8 +37,7 @@ class CPContext:
 
 
 class CPContextMixin:
-    """Modules that consume the context-parallel topology."""
-
+    # Keep as a private attr accessed via read-only `property` for harder accidental overwriting.
     _cp_context: CPContext = CPContext()
 
     @property
