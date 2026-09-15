@@ -56,6 +56,11 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   --package prime-rl --package <env>` (one) — they're auto-discovered, no
   `pyproject.toml` edit needed. Keep `--all-extras` for training so a targeted
   package sync does not prune accelerator dependencies from the environment.
+- Custom PrimeRL models can auto-convert an HF checkpoint into a sibling `prime/`
+  cache on their first trainer launch. Do not start parallel first launches for the
+  same model: wait for the first conversion to finish and create `prime/.prime-v1`,
+  then submit the remaining runs. An existing `prime/` directory without that marker
+  is an incomplete conversion, not a usable cache.
 
 ## `sft` — SFT training
 
