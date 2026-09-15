@@ -546,7 +546,6 @@ function evalProgressHtml(env, idx, live) {
   const total = evalExpected(env);
   const n = Math.max(total ?? 0, done + live.length);
   const pct = total ? Math.min(100, (done / total) * 100) : null;
-  const errors = idx.filter((i) => series.ok?.[i] === false).length;
   let cells;
   if (n <= EP_CELL_CAP) {
     // one cell per episode: landed ones in arrival order (click opens it), the
@@ -578,13 +577,10 @@ function evalProgressHtml(env, idx, live) {
       `<span class="ep-cell live"></span>`.repeat(liveCells) +
       `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
-  const parts = [`${done}/${total ?? "?"} episodes`];
-  if (live.length) parts.push(`${live.length} in flight`);
-  if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
   // the toolbar line reads like the traces tab's
   $("#metrics-status").textContent = [...(live.length ? [`${live.length} in flight`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
   return (
-    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span><span class="muted">${parts.join(" · ")}</span></div>` +
+    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span></div>` +
     `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
     `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span></div></div>`
   );
