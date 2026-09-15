@@ -276,7 +276,7 @@ def sft_slurm(config: SFTConfig):
         log_dir=log_dir,
         trainer=True,
         num_train_nodes=num_nodes,
-        online_eval=online_eval,
+        eval=online_eval,
         inference=online_eval,
         eval_env_names=[source.resolved_name for source in eval_env_servers(config)] if online_eval else None,
         num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
@@ -321,7 +321,7 @@ def sft_local(config: SFTConfig):
         format_log_message(
             log_dir=log_dir,
             trainer=True,
-            online_eval=config.eval is not None,
+            eval=config.eval is not None,
             inference=config.inference is not None,
             eval_env_names=[source.resolved_name for source in eval_env_servers(config)] or None,
         )

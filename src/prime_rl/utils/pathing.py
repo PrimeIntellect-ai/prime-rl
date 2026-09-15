@@ -87,7 +87,6 @@ def format_log_message(
     log_dir: Path,
     trainer: bool = False,
     orchestrator: bool = False,
-    online_eval: bool = False,
     eval: bool = False,
     inference: bool = False,
     job_log: bool = False,
@@ -113,8 +112,6 @@ def format_log_message(
         log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
-    if online_eval:
-        log_lines.append(f"{i1}{'Online evals:':<{col}}tail -F {log_dir}/eval.log")
     if eval:
         log_lines.append(f"{i1}{'Eval:':<{col}}tail -F {log_dir}/eval.log")
     if inference:
