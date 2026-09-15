@@ -2187,21 +2187,21 @@ function fmtStamp(epoch) {
 function fmtSpan(dispatched, arrived) {
   if (!dispatched && !arrived) return "";
   const time = { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+  const stamp = (epoch) => `<span class="day">${fmtDay(epoch)}</span>${new Date(epoch * 1000).toLocaleTimeString([], time)}`;
   const from = dispatched ? new Date(dispatched * 1000) : null;
   const to = arrived ? new Date(arrived * 1000) : null;
-  const left = from ? fmtStamp(dispatched) : "–";
+  const left = from ? stamp(dispatched) : "–";
   if (!to) return `${left} → –`;
   const sameDay = from && from.toDateString() === to.toDateString();
-  const right = sameDay ? to.toLocaleTimeString([], time) : fmtStamp(arrived);
-  return `${left} → ${right}`;
+  return `${left} → ${sameDay ? to.toLocaleTimeString([], time) : stamp(arrived)}`;
 }
 
 function episodeRowHtml(ep) {
   const phase = ep.ok && !ep.num_errors ? "done" : "error";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
   return `<tr data-line="${ep.line}">
-        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted">${ep.line}</td>
+        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival)}</td>
         <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
@@ -2223,10 +2223,9 @@ function episodeRowHtml(ep) {
 /* an in-flight rollout, streamed by its env server: the same columns, a pulsing dot for
    its number, no arrival yet, counts that grow with every turn, no reward yet */
 function liveRowHtml(r) {
-  const label = r.trace ? `${esc(r.task ?? "")}${r.agent && r.agent !== "agent" ? ` · ${esc(r.agent)}` : ""}` : esc(r.task ?? "");
-  return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.last ?? "")}">
-        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span> <span class="muted">${label}</span></td>
+  return `<tr class="live stage-${esc(r.stage)}" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.task ?? "")}${r.last ? ` — ${esc(r.last)}` : ""}">
         <td><span class="live-dot" title="in flight"></span></td>
+        <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
         <td class="muted nowrap">${fmtSpan(r.started, null)}</td>
         <td class="muted">${r.elapsed != null ? fmtDuration(r.elapsed) : ""}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>

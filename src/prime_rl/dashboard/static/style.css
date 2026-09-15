@@ -1601,3 +1601,4 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .badge.stage.stage-error { color: #ef4444; }
 #tm-live-label { margin-left: 8px; }
 #log-comp-menu .file-item.sub { padding-left: 22px; }
+#episode-table .day { margin-right: 8px; }
