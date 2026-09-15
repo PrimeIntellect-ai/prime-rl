@@ -89,7 +89,10 @@ Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
 ### vLLM router backend
 
-The pinned `vllm-router` revision is a source archive. Installing the `disagg` extra therefore builds its Rust extension locally and requires a Rust toolchain, `pkg-config`, and OpenSSL development headers.
+The sticky least-loaded experiment vendors an x86_64 abi3 wheel under `deps/wheels/`
+because its pinned upstream revision has no published wheels and SLURM compute nodes do
+not provide the Rust/OpenSSL build toolchain. This experiment-only pin supports Linux
+x86_64.
 
 ### llm-d router backend
 

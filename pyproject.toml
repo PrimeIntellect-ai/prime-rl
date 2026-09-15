@@ -91,7 +91,7 @@ disagg = [
     "deep-gemm ; sys_platform == 'linux'",
     "nixl ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
-    "vllm-router ; sys_platform == 'linux'",
+    "vllm-router ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
@@ -268,7 +268,7 @@ torchao = [
 dion = { git = "https://github.com/samsja/dion.git", rev = "99e5f7e" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 # Sticky least-loaded routing: https://github.com/vllm-project/router/pull/235
-vllm-router = { url = "https://github.com/bvolpato/router/archive/6422afaccf2bb2de8e472ab98654d1a2509700ac.tar.gz" }
+vllm-router = { path = "deps/wheels/vllm_router-0.1.15-cp38-abi3-linux_x86_64.whl" }
 vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
