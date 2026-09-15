@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
+from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.model import forward
 
 
@@ -35,11 +36,11 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
         position_ids,
         seq_lens=torch.tensor([input_ids.shape[1]]),
         mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
+        mm_forward_policy=QwenVLAdapter.forward_policy,
         mm_token_type_ids=mm_token_type_ids,
     )
 
     assert model.kwargs is not None
-    # MRoPE families (image_grid_thw present) get position_ids stripped.
     assert "position_ids" not in model.kwargs
     torch.testing.assert_close(model.kwargs["pixel_values"], pixel_values)
     torch.testing.assert_close(model.kwargs["image_grid_thw"], image_grid_thw)
