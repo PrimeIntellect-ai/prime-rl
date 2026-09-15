@@ -680,7 +680,18 @@ mark.hit {
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
 #episode-table .vpad td { padding: 0; border: 0; }
-#episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+/* fixed columns: a poll that swaps rows in or out never reflows the table */
+#episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
+#episode-table col.c-line { width: 52px; }
+#episode-table col.c-phase { width: 78px; }
+#episode-table col.c-span { width: 340px; }
+#episode-table col.c-kind { width: 56px; }
+#episode-table col.c-group { width: 92px; }
+#episode-table col.c-tok { width: 170px; }
+#episode-table col.c-turns { width: 60px; }
+#episode-table col.c-branches { width: 84px; }
+#episode-table col.c-reward { width: 72px; }
+#episode-table td, #episode-table th { overflow: hidden; text-overflow: ellipsis; }
 #episode-table th {
   text-align: left;
   font: 400 10px var(--font-mono);

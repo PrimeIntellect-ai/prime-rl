@@ -323,7 +323,9 @@ def run_meta(run_dir: Path) -> dict:
         touched.append(stream.stat().st_mtime)
     if touched:
         updated = max(touched + ([updated] if updated is not None else []))
-    if started is None and resolved.is_dir():
+    # An eval writes its only metrics row at the end of the epoch, so its start is the
+    # launch, not that row; a training run's first row follows its launch closely.
+    if (started is None or run_type == "eval") and resolved.is_dir():
         started = resolved.stat().st_mtime
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
