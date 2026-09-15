@@ -19,6 +19,18 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self._initialized = False
+        self._cpu_buffers: dict[tuple[torch.Tensor, str], torch.Tensor] = {}
+
+    def _offload_to_cpu(self, param: torch.Tensor, key: str, src: torch.Tensor) -> torch.Tensor:
+        if not self.pin_memory:
+            return src.to("cpu", non_blocking=True)
+        buffer = self._cpu_buffers.get((param, key))
+        if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
+            buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+            self._cpu_buffers[(param, key)] = buffer
+        if buffer is not src:
+            buffer.copy_(src, non_blocking=True)
+        return buffer
 
     def _move_states(self, device: str):
         """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
@@ -28,10 +40,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                 if isinstance(value, DTensor):
                     local_tensor = value._local_tensor
                     if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        new_local = local_tensor.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not new_local.is_pinned():
-                            new_local = new_local.pin_memory()
+                        new_local = self._offload_to_cpu(param, key, local_tensor)
                     else:
                         new_local = local_tensor.to(device, non_blocking=True)
                     new_dtensor = copy.copy(value)
@@ -39,13 +48,11 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                     state[key] = new_dtensor
                 elif isinstance(value, torch.Tensor):
                     if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        cpu_tensor = value.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not cpu_tensor.is_pinned():
-                            cpu_tensor = cpu_tensor.pin_memory()
-                        state[key] = cpu_tensor
+                        state[key] = self._offload_to_cpu(param, key, value)
                     else:
                         state[key] = value.to(device, non_blocking=True)
+        if device == "cpu" and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
 
     def step(self, closure=None):
         # First step initializes states on GPU - offload after
