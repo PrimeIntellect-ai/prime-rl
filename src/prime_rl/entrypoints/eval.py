@@ -113,7 +113,12 @@ def main():
 
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
     from prime_rl.utils.logger import setup_logger
-    from prime_rl.utils.pathing import prepare_attempt_dirs, validate_run_dir, write_launch_artifacts
+    from prime_rl.utils.pathing import (
+        format_config_message,
+        prepare_attempt_dirs,
+        validate_run_dir,
+        write_launch_artifacts,
+    )
 
     # The run identity is runtime-only: $PRL_RUN_ID / $PRL_RUN_NAME are stamped on
     # every episode and inherited by the env servers.
@@ -127,18 +132,21 @@ def main():
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)
-    write_launch_artifacts(config_dir, "eval")
-    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
-
     log_file = log_dir / "eval.log"
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
-    logger.info(f"Wrote config to {config_dir}")
+    names = ", ".join(source.resolved_name for source in config.source)
+    logger.info(f"Starting eval of {names} with {config.model} ({config.client.base_url})")
+
+    write_launch_artifacts(config_dir, "eval")
+    (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
+    components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
+    if any(source.serve.address is None for source in config.source):
+        components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
     if config.dry_run:
         logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
         return
 
-    names = ", ".join(source.resolved_name for source in config.source)
-    logger.info(f"Starting eval of {names} with {config.model} ({config.client.base_url})")
     logger.info(f"Logs:\n  {'Eval:':<18}tail -F {log_file}\n  {'Envs:':<18}tail -F {log_dir}/envs/eval/*.log")
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     log_dashboard_url(logger, dashboard_url)
@@ -148,9 +156,7 @@ def main():
     # live in the dashboard and the log file, only errors surface here.
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
     asyncio.run(run_eval(config, log_dir))
-    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
-    logger.success("Eval finished!")
-    log_dashboard_url(logger, dashboard_url)
+    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).success("Eval finished!")
 
 
 if __name__ == "__main__":

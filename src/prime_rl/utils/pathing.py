@@ -186,6 +186,19 @@ def write_launch_toml(config_dir: Path, name: str) -> None:
     (config_dir.parent / f"{name}.toml").write_text("\n".join(texts))
 
 
+def format_config_message(config_dir: Path, name: str, components: list[tuple[str, Path | str]]) -> str:
+    """Where a launch's configs are: the command as typed, the launch TOML when one was
+    given, and each component's resolved config. Mirrors ``format_log_message``."""
+    col = 18
+    attempt_dir = config_dir.parent
+    lines = [f"  {'Command:':<{col}}{attempt_dir / 'command.txt'}"]
+    launch_toml = attempt_dir / f"{name}.toml"
+    if launch_toml.is_file():
+        lines.append(f"  {'Launch TOML:':<{col}}{launch_toml}")
+    lines.extend(f"  {f'{label}:':<{col}}{path}" for label, path in components)
+    return "\n".join(lines)
+
+
 def write_launch_artifacts(config_dir: Path, name: str) -> None:
     """Write the user command and launch TOML for a config attempt."""
     write_launch_command(config_dir, name)

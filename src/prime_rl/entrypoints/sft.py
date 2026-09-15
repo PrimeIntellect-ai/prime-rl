@@ -18,6 +18,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     env_address_file,
+    format_config_message,
     format_log_message,
     get_broadcast_dir,
     get_ckpt_dir,
@@ -89,6 +90,19 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         monitors=config.monitors,
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
+
+
+def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
+    """The resolved configs a launch leaves in ``config_dir``: the SFT config and, with
+    online evals, the inference, online-eval and env-server configs."""
+    components: list[tuple[str, Path | str]] = [("SFT", config_dir / SFT_CONFIG)]
+    if config.eval is not None:
+        if config.inference is not None:
+            components.append(("Inference", config_dir / INFERENCE_CONFIG))
+        components.append(("Eval", config_dir / ONLINE_EVAL_CONFIG))
+        if eval_env_servers(config):
+            components.append(("Envs", f"{config_dir}/{ENVS_DIR}/eval/*.json"))
+    return components
 
 
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
@@ -229,6 +243,7 @@ def sft_slurm(config: SFTConfig):
 
     online_eval = config.deployment.type == "multi_node" and config.eval is not None
 
+    logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
@@ -242,7 +257,6 @@ def sft_slurm(config: SFTConfig):
         # inference pool runs on its dedicated nodes in the same allocation.
         exclude = exclude | {"inference"}
     write_config(config, config_path, exclude=exclude)
-    logger.info(f"Wrote config to {config_path}")
 
     # Trainer and online-eval processes log to a single shared W&B run.
     prl_run_id: str | None = None
@@ -252,7 +266,7 @@ def sft_slurm(config: SFTConfig):
     launcher_dir = get_launcher_dir(config.run_dir)
     if online_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
-        logger.info(f"Wrote eval subconfigs to {config_dir}")
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
     write_slurm_script(config, config_path, log_dir, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
@@ -290,20 +304,28 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
+    logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
-    logger.info(f"Wrote config to {config_path}")
-
     if config.eval is not None:
         write_eval_subconfigs(config, config_dir)
-        logger.info(f"Wrote eval subconfigs to {config_dir}")
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
+    logger.info(
+        format_log_message(
+            log_dir=log_dir,
+            trainer=True,
+            online_eval=config.eval is not None,
+            inference=config.inference is not None,
+            eval_env_names=[source.resolved_name for source in eval_env_servers(config)] or None,
+        )
+    )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     # Derive launcher-local GPU IDs (inference first, then the trainer) only when the

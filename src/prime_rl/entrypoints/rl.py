@@ -21,6 +21,7 @@ from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     env_address_file,
+    format_config_message,
     format_log_message,
     get_ckpt_dir,
     get_launcher_dir,
@@ -72,6 +73,19 @@ def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = 
         json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
+def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
+    """The resolved per-component configs ``write_subconfigs`` leaves in ``config_dir``."""
+    components: list[tuple[str, Path | str]] = [
+        ("Orchestrator", config_dir / ORCHESTRATOR_CONFIG),
+        ("Trainer", config_dir / TRAINER_CONFIG),
+    ]
+    if config.inference is not None:
+        components.append(("Inference", config_dir / INFERENCE_CONFIG))
+    if env_servers(config):
+        components.append(("Envs", f"{config_dir}/{ENVS_DIR}/*/*.json"))
+    return components
+
+
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -121,12 +135,22 @@ def rl_local(config: RLConfig):
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "rl")
     write_subconfigs(config, config_dir)
-    logger.info(f"Wrote subconfigs to {config_dir}")
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', rl_config_components(config, config_dir))}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
+    logger.info(
+        format_log_message(
+            log_dir=log_dir,
+            trainer=True,
+            orchestrator=True,
+            inference=config.inference is not None,
+            train_env_names=env_server_names(config, "train"),
+            eval_env_names=env_server_names(config, "eval"),
+        )
+    )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     # Derive launcher-local GPU IDs from deployment config
@@ -150,7 +174,6 @@ def rl_local(config: RLConfig):
     trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
 
     start_command = sys.argv
-    logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Build shared W&B env vars for subprocesses. Shared mode is always on for
@@ -583,7 +606,7 @@ def rl_slurm(config: RLConfig):
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
-        logger.info(f"Wrote config to {config_dir / RL_CONFIG}")
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', [('RL', config_dir / RL_CONFIG)])}")
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")
@@ -598,7 +621,7 @@ def rl_slurm(config: RLConfig):
         )
     else:
         write_subconfigs(config, config_dir)
-        logger.info(f"Wrote subconfigs to {config_dir}")
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', rl_config_components(config, config_dir))}")
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")
@@ -658,6 +681,7 @@ def rl(config: RLConfig):
     # step is stale. When training from scratch, every existing step directory is
     # stale — without this, a fresh run in a dirty run dir would pick up rollouts
     # from a previous run and the orchestrator would see a negative async level.
+    get_logger().info("Starting RL run")
     resume_step: int | None = None
     if resuming:
         if config.resume.dir is not None:
