@@ -121,12 +121,12 @@ def train(config: TrainerConfig):
         enable_gloo=(
             config.model.fsdp_cpu_offload
             or config.model.full_offload is not None
-            # Only mx_refit's non-default tensor handshake needs a CPU backend;
-            # object mode routes through _get_object_coll_device and runs on NCCL.
-            or (
-                config.weight_broadcast.type == "mx_refit"
-                and config.weight_broadcast.handshake_mode == "tensor"
-            )
+            # Both mx_refit handshakes want a CPU backend. Tensor mode requires
+            # one outright, and object mode routes through
+            # _get_object_coll_device, which prefers CPU whenever a CPU backend
+            # exists -- so dropping Gloo here would not merely relax a
+            # requirement, it would move the default token exchange onto NCCL.
+            or config.weight_broadcast.type == "mx_refit"
         ),
     )
     if config.model.full_offload is not None:

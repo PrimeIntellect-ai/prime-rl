@@ -240,9 +240,10 @@ class MXRefitWeightSender(WeightSender):
                         if observed:
                             return
                         raise RuntimeError(
-                            f"Version {uid} was never visible to the control plane. "
-                            "The publish did not land, or the trainer and inference "
-                            "sides disagree on the run identity."
+                            f"Version {uid} was not visible to the control plane on any poll, "
+                            "so no consumption was observed and the broadcast cannot be "
+                            "reported as released. Check that the publish landed and that "
+                            "both sides agree on the run identity."
                         ) from error
                     raise
                 else:

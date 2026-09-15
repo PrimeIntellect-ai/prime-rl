@@ -262,17 +262,20 @@ Set `[weight_broadcast] type = "mx_refit"` to have ModelExpress reshard the weig
 The pinned `modelexpress==0.3.0` package does not provide the `modelexpress_rl` API required by this transport, and the `v0.3.0` server does not register `RefitService` at all. Build the server and the client from the same compatible commit:
 
 ```bash
-MX_REF=<modelexpress-commit>            # must carry RefitService
+MX_REF=<branch, tag, or full commit SHA>   # must carry RefitService
 bash scripts/install_modelexpress.sh "$MX_REF"
-git clone https://github.com/ai-dynamo/modelexpress.git /tmp/mx && git -C /tmp/mx checkout "$MX_REF"
-uv pip install --no-deps /tmp/mx/modelexpress_client/python
+# Install the client from the same commit the server was built from:
+cat third_party/modelexpress/bin/modelexpress-server.source-sha
+uv pip install --no-deps <modelexpress-checkout>/modelexpress_client/python
 ```
 
-Passing no argument to the installer builds the default `v0.3.0` server, which a newer client cannot use: `RegisterWorker` fails with `UNIMPLEMENTED`. Selecting `mx_refit` without the client installed fails immediately instead. Other transports do not import the client.
+The installer fetches the ref explicitly rather than cloning a branch, so a full commit SHA works, and it records the built commit in `modelexpress-server.source-sha` — the server's `--version` reports a package version and cannot distinguish two commits on one tag. `MODELEXPRESS_REPOSITORY` may also point at a local checkout or bundle, so a preserved source tree can be built without publishing it.
+
+Passing no argument builds the default `v0.3.0` server, which registers no `RefitService`: a newer client then fails `RegisterWorker` with `UNIMPLEMENTED`. Selecting `mx_refit` without the client installed fails immediately instead. Other transports do not import the client.
 
 Weight versions use `{run_uid}.{attempt}:{step}` IDs. `run_uid` separates runs on a long-lived server; the per-offer token permits a restarted trainer to republish a step.
 
-The default `handshake_mode = "object"` broadcasts the offer token over the collective device torch already selects, so it needs no CPU backend. Setting `handshake_mode = "tensor"` requires Gloo, which the trainer then enables automatically.
+`mx_refit` enables a Gloo CPU backend alongside NCCL. `handshake_mode = "tensor"` requires it outright, and the default `handshake_mode = "object"` routes through torch's object-collective device selection, which prefers CPU whenever a CPU backend exists — so the token exchange runs on Gloo in both modes.
 Set `MX_REFIT_STAGING_BYTES` to a positive byte budget to stream complete modules
 through a reusable GPU arena. A failed streaming installation requires restarting
 the inference engine. `MX_REFIT_TIMING_STDOUT=1` emits per-rank phase records to
