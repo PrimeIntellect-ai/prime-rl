@@ -6,7 +6,7 @@ import torch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
-from prime_rl.utils.cp import CPContext
+from prime_rl.utils.cp import CPContext, CPContextMixin
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -101,7 +101,7 @@ def test_nemotron_h_layer_types():
     assert pattern_config.num_hidden_layers == list_config.num_hidden_layers == 4
 
 
-def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
+def test_nemotron_h_mamba_reads_global_cp_context(monkeypatch):
     config = NemotronHConfig(
         **(_BASE | {"n_groups": 2}),
         hybrid_override_pattern="ME*E",
@@ -109,20 +109,13 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
 
-    mamba_layer = model.model.layers[0]
-    assert isinstance(mamba_layer.mamba, NemotronHMamba2)
-    model.model.layers[0] = torch.nn.Sequential(mamba_layer)
+    mamba = model.model.layers[0].mamba
+    assert isinstance(mamba, NemotronHMamba2)
 
-    cp_group = MagicMock()
+    cp_context = CPContext(MagicMock(), 1, 2, "ulysses")
+    monkeypatch.setattr(CPContextMixin, "_cp_context", cp_context)
 
-    cp_context = CPContext(cp_group, 1, 2, "ulysses")
-    for module in model.modules():
-        if hasattr(module, "cp_context"):
-            module.cp_context = cp_context
-
-    assert mamba_layer.mamba.cp_context is cp_context
-    assert mamba_layer.mamba.cp_context.cp_rank == 1
-    assert mamba_layer.mamba.cp_context.cp_world_size == 2
+    assert mamba.cp_context is cp_context
 
 
 def test_nemotron_h_no_latent_projection():

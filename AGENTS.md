@@ -5,7 +5,7 @@
 - **Minimal try/except**: let errors propagate — silent failures hide bugs. Only catch exceptions for intentional fault tolerance (retries, robustness).
 - **Don't touch `optimization_dtype` / `reduce_dtype`**: never change these model config fields (or their defaults in `trainer.py`) unless the user explicitly asks. They're load-bearing numerical knobs — flipping bfloat16/float32 silently changes training dynamics.
 - **Targeted comments**: don't explain your work process or reference old code. Use targeted comments sparingly to clarify ambiguous logic.
-- **Context parallelism**: a module that needs CP state holds a `CPContext` (`models/base.py`) as `self.cp_context`, defaulting to `CPContext()`, which is the non-CP case; `PreTrainedModelPrimeRL` supplies that default. `setup_context_parallel` in `utils/cp.py` builds one `CPContext` and assigns it to every module that has the field, so each module holds the same frozen object.
+- **Context parallelism**: a module that needs CP state inherits `CPContextMixin` (`utils/cp.py`) and reads `self.cp_context`, a read-only property over a class attribute holding one frozen `CPContext`; it defaults to `CPContext()`, the non-CP case. `setup_context_parallel` writes `CPContextMixin._cp_context` once at startup and every consumer in the process observes it through the MRO. `cp_context` cannot be assigned per instance or per subclass (both raise `AttributeError`), so tests install a context with `monkeypatch.setattr(CPContextMixin, "_cp_context", ...)`.
 - **Zen of Python**: remember the Zen of Python when writing code.
 ```
 Beautiful is better than ugly.
