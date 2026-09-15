@@ -104,8 +104,12 @@ def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
     """The live table's view of one trace: phase, turns, tokens, cost, last message."""
     calls = trace.get("calls") or []
     usage = [call.get("usage") or {} for call in calls]
-    nodes = trace.get("nodes") or []
-    last = " ".join(message_text(nodes[-1].get("message") or {}).split()) if nodes else ""
+    # The newest node is usually a tool result; the assistant's latest words say more.
+    last = ""
+    for node in reversed(trace.get("nodes") or []):
+        message = node.get("message") or {}
+        if message.get("role") == "assistant" and (last := " ".join(message_text(message).split())):
+            break
     costs = [u["cost"] for u in usage if u.get("cost") is not None]
     return {
         "trace": trace.get("id"),
