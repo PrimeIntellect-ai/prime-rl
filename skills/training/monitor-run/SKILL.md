@@ -104,6 +104,10 @@ grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,eval,inferen
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 
+### Live rollouts
+
+`{run_dir}/monitors/file/inflight.json` is the dispatcher's live view of every in-flight rollout (train and eval), rewritten twice a second from the env servers' turn-by-turn stream: one row per trace with `stage` (pending/boot/setup/running/finalize/scoring/done/error), `turns`, `input_tokens`/`output_tokens`, `cost`, `elapsed` and `last` (the latest message). The dashboard's metrics tab renders it as a live table; `/api/runs/<run>/inflight` serves it.
+
 ### Metrics
 
 All metrics print to the console log (and W&B when configured).

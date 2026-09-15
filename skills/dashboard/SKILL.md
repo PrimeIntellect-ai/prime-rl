@@ -36,7 +36,7 @@ latest and peak prompt lengths first, followed by cumulative token processing
 and cost. Exact timing remains available on model-call hover and in Timeline.
 Traces without semantic parents keep the other views and disable Semantic.
 
-Replay defaults to 8× so long coding-agent model waits remain watchable; select
+The metrics tab also shows a live table of in-flight rollouts (phase, turns, tokens, last message) while a run is going, read from `monitors/file/inflight.json` at `/api/runs/<run>/inflight`. Replay defaults to 8× so long coding-agent model waits remain watchable; select
 1× for exact wall time or up to 32× for faster review. In-flight calls display
 their measured progress and recorded output-token usage even when they produce
 only tool calls. Enable **Skip inference** to collapse model calls to immediate

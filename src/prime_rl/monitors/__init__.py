@@ -139,6 +139,15 @@ async def log_annotations(updates: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
+async def log_inflight(rows: list[dict[str, Any]]) -> None:
+    """Log the live in-flight view to all registered monitors."""
+    for monitor in MONITORS:
+        try:
+            await monitor.log_inflight(rows)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+
+
 async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
     """Log one finished eval epoch to all registered monitors."""
     for monitor in MONITORS:

@@ -10,6 +10,7 @@ This page covers `uv run eval` — evaluating one or more environments against a
   - [Launch](#launch)
   - [Configuration](#configuration)
   - [Run Directory and Resume](#run-directory-and-resume)
+  - [Live View](#live-view)
   - [Monitors and Platform Upload](#monitors-and-platform-upload)
 - [Online Evals](#online-evals)
 - [Metrics](#metrics)
@@ -83,6 +84,10 @@ The task cursor is checkpointed after every completed group (`[ckpt]`: `interval
 uv run eval @ eval.toml --run.name my-eval
 uv run eval @ eval.toml --run.name my-eval --resume
 ```
+
+### Live View
+
+Env servers stream every rollout to the eval process as it happens: the trace's header when it is minted, then each committed turn (the new messages and the model call behind them) and each phase change (boot, setup, agent, finalize, scoring). The eval keeps the partial episode of every in-flight rollout and publishes it twice a second to `monitors/file/inflight.json`, one row per live trace with its phase, turn count, tokens, cost, elapsed time and the last message. The dashboard's metrics tab shows those rows as a live table above the eval cards while the run is in flight, and the progress line in `eval.log` counts them by phase (`2 inflight episodes ... - boot 1 · running 1`). The same view exists for RL runs, covering train and online-eval rollouts alike.
 
 ### Monitors and Platform Upload
 

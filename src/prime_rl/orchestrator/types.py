@@ -98,6 +98,9 @@ class InflightEpisode:
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
+    assembly: Any = None
+    """The env server's streamed picture of the episode so far (an
+    ``EpisodeAssembly``), None until its first delta lands."""
 
 
 @dataclass

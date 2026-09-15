@@ -25,6 +25,7 @@ from subprocess import Popen
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -352,9 +353,11 @@ class EvalRunner:
             parts.append(part)
         progress_part = " | ".join(parts) if parts else "Idle"
 
+        stages = live.stage_counts(self.dispatcher.live_rows())
         body = (
             f"{progress_part}; {self.dispatcher.inflight_eval_count} inflight episodes "
             f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"
+            + (f" - {stages}" if stages else "")
         )
         payload = {**disp_gauges, **disp_drain, **self.concurrency.gauges()}
         return body, payload

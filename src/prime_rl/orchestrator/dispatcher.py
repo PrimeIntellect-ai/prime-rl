@@ -33,11 +33,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
+from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl import monitors
+from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -56,6 +58,8 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
+
+LIVE_INTERVAL_S = 0.5
 
 
 class DispatcherMode(Enum):
@@ -189,6 +193,8 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        self.live_dirty = False
+        self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
         self.source_indices_by_group: dict[str, int] = {}
 
@@ -331,6 +337,7 @@ class Dispatcher:
     async def start(self) -> None:
         """Single dispatch loop: schedule, wait, collect, repeat."""
         self.task = asyncio.current_task()
+        self.live_task = asyncio.create_task(self.publish_live())
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
@@ -356,9 +363,26 @@ class Dispatcher:
     async def stop(self) -> None:
         self.stopped.set()
         await self.cancel_inflight_episodes()
+        if self.live_task is not None:
+            await safe_cancel(self.live_task)
+            self.live_task = None
+            await monitors.log_inflight([])
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
+
+    def live_rows(self) -> list[dict[str, Any]]:
+        """One row per in-flight trace: its phase, turns, tokens and last message."""
+        return live.rows(list(self.inflight.values()))
+
+    async def publish_live(self) -> None:
+        """Push the live rows to the monitors whenever they changed, at most twice a second."""
+        while True:
+            await asyncio.sleep(LIVE_INTERVAL_S)
+            if not self.live_dirty:
+                continue
+            self.live_dirty = False
+            await monitors.log_inflight(self.live_rows())
 
     async def on_version_pending(self, step: int) -> None:
         """Drop train groups past ``max_off_policy_steps``: a group dispatched at
@@ -536,16 +560,7 @@ class Dispatcher:
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
-        task = asyncio.create_task(
-            env.run(
-                client=client,
-                model_name=model_name,
-                cache_salt=cache_salt,
-                task_data=group.task.data.model_dump(mode="json"),
-            )
-        )
-
-        self.inflight[task] = InflightEpisode(
+        meta = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
             group_id=group_id,
@@ -556,6 +571,22 @@ class Dispatcher:
             client_config=client,
             started_at=time.monotonic(),
         )
+
+        def on_update(assembly) -> None:
+            meta.assembly = assembly
+            self.live_dirty = True
+
+        task = asyncio.create_task(
+            env.run(
+                client=client,
+                model_name=model_name,
+                cache_salt=cache_salt,
+                task_data=group.task.data.model_dump(mode="json"),
+                on_update=on_update,
+            )
+        )
+        self.inflight[task] = meta
+        self.live_dirty = True
         return True
 
     async def acquire(self) -> None:
@@ -578,6 +609,7 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
+        self.live_dirty = True
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 

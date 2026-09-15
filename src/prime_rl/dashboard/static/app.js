@@ -415,7 +415,64 @@ function ingestInto(store, rows, meta) {
 /* the server caps each /metrics response, so a huge run streams in chunks: the
    first charts paint immediately and a progress readout ticks up while the rest
    loads, with the main thread yielding between chunks */
+/* the dispatcher publishes its in-flight episodes as the env servers stream them
+   turn by turn; stale or empty views (a finished run) hide the table */
+async function fetchInflight() {
+  try {
+    state.inflight = await api(`/api/runs/${encodeURIComponent(state.run)}/inflight`);
+  } catch {
+    state.inflight = null;
+  }
+  renderInflight();
+}
+
+const INFLIGHT_STALE_S = 60;
+
+function renderInflight() {
+  const body = $("#metrics-body");
+  if (!body) return;
+  let el = body.querySelector("#inflight");
+  const data = state.inflight;
+  const rows = data?.rows ?? [];
+  if (!rows.length || data.age == null || data.age > INFLIGHT_STALE_S) {
+    el?.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "inflight";
+    el.className = "section inflight";
+    body.prepend(el);
+  }
+  const cell = (v) => `<td>${esc(v == null ? "" : String(v))}</td>`;
+  const tokens = (r) =>
+    r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : "";
+  el.innerHTML =
+    `<div class="section-title">live · ${rows.length} in flight <span class="muted">(${Math.round(data.age)}s ago)</span></div>` +
+    `<div class="md-table-wrap"><table class="md-table inflight-table"><thead><tr>` +
+    ["env", "task", "agent", "stage", "turns", "tokens", "cost", "elapsed", "last message"].map((h) => `<th>${h}</th>`).join("") +
+    `</tr></thead><tbody>` +
+    rows
+      .map(
+        (r) =>
+          `<tr class="stage-${esc(r.stage)}">` +
+          cell(r.env) +
+          cell(r.task) +
+          cell(r.agent ?? "") +
+          `<td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span>${r.stop_condition ? ` <span class="muted">${esc(r.stop_condition)}</span>` : ""}</td>` +
+          cell(r.turns ?? "") +
+          `<td>${tokens(r)}</td>` +
+          cell(r.cost != null ? fmtCost(r.cost) : "") +
+          cell(r.elapsed != null ? fmtDuration(r.elapsed) : "") +
+          `<td class="muted snippet" title="${esc(r.last ?? "")}">${esc(r.last ?? "")}</td>` +
+          `</tr>`
+      )
+      .join("") +
+    `</tbody></table></div>`;
+}
+
 async function fetchMetrics() {
+  fetchInflight();
   if (state.meta?.type === "eval") return fetchEvalSeries();
   const m = state.metrics;
   if (m.fetching) return 0;
@@ -1167,7 +1224,12 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.meta?.type === "eval") return renderEvalCards(body);
+  if (state.meta?.type === "eval") {
+    renderEvalCards(body);
+    renderInflight();
+    return;
+  }
+  renderInflight();
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");

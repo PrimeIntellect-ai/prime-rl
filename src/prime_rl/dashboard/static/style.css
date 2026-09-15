@@ -1589,3 +1589,13 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   background: var(--grey-2);
   border-bottom: 1px solid var(--hairline);
 }
+
+/* live in-flight table (metrics tab) */
+.inflight .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin: 4px 0 6px; }
+.inflight-table td.snippet { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inflight-table .badge.stage { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--hairline); }
+.inflight-table .stage-running { color: var(--accent, #3b82f6); }
+.inflight-table .stage-boot, .inflight-table .stage-setup, .inflight-table .stage-pending { color: var(--muted, #888); }
+.inflight-table .stage-scoring, .inflight-table .stage-finalize { color: #a855f7; }
+.inflight-table .stage-done { color: #22c55e; }
+.inflight-table .stage-error { color: #ef4444; }

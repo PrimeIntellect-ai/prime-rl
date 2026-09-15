@@ -56,6 +56,15 @@ class FileMonitor(Monitor):
             row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
+    async def log_inflight(self, rows: list[dict[str, Any]]) -> None:
+        """``inflight.json`` next to the metrics: the live rows, replaced whole so a
+        reader never sees a torn view."""
+        path = get_file_monitor_dir(self.output_dir) / "inflight.json"
+        data = orjson.dumps({"time": time.time(), "rows": rows})
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+
     def _stream(self, directory: Path) -> tuple[ChunkedJsonl, BinaryIO]:
         """A stream and its index, opened on first use and kept open. Writers flush the
         stream before the index: a row a reader sees points at a record it can read."""

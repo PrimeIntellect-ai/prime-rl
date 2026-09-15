@@ -1712,6 +1712,18 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
     }
 
 
+@app.get("/api/runs/{run}/inflight")
+def inflight(run: str) -> dict:
+    """The live view of the run's in-flight episodes, as the dispatcher last published it
+    (``monitors/file/inflight.json``): one row per live trace with its phase, turns,
+    tokens and last message. ``age`` is how old the view is in seconds."""
+    path = get_file_monitor_dir(get_run_dir(run)) / "inflight.json"
+    if not path.is_file():
+        return {"time": None, "age": None, "rows": []}
+    data = read_json(path)
+    return {**data, "age": time.time() - data["time"]}
+
+
 @app.get("/api/runs/{run}/episodes/series")
 def episode_series(run: str, kind: str | None = None, etag: str | None = None, after: int = 0) -> dict:
     """Per-episode series over the stream (x = arrival order): reward, shape, and the
