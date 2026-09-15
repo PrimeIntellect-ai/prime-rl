@@ -22,15 +22,14 @@ cp = 8
 # Freezing the router keeps this measuring the data rather than expert drift onto one domain.
 freeze_moe_router = true
 
+ac_offloading = "None"
+
 # DeepEP dies on the first backward, inside `DeepEPTokenDispatcher.combine`.
 [model.moe.dispatch]
 type = "torch"
 
 [model.ac]
 freq = 1
-
-[model.ac_offloading]
-max_inflight_activations = 5
 
 [renderer]
 name = "deepseek-v4"
