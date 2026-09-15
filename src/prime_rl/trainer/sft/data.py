@@ -267,7 +267,9 @@ class SFTDataset(StatefulIterableDataset):
         # `tools` or `tool_defs` (the verifiers rollout format), as either a
         # JSON-encoded string of a list or a list of dicts; verifiers-shaped
         # tools are converted to OAI form for the chat template.
-        raw_tools = example.get("tools", example.get("tool_defs"))
+        raw_tools = example.get("tools")
+        if raw_tools is None:
+            raw_tools = example.get("tool_defs")
         if not raw_tools:
             tools = []
         else:
