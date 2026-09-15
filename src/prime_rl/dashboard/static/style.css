@@ -92,8 +92,10 @@ body {
 #topbar .toggle { margin-left: auto; }
 #topbar .toggle + .toggle { margin-left: 0; }
 #platform-wrap { margin-left: 14px; }
-#platform-wrap .platform { color: var(--accent); text-decoration: none; }
-#platform-wrap .platform.disabled { color: var(--grey-4); cursor: default; }
+/* looks like the run and compare pickers; the arrow says it leaves the page */
+#platform-wrap .platform { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; cursor: pointer; }
+#platform-wrap .platform:hover { color: var(--accent); border-color: var(--accent); }
+#platform-wrap .platform.disabled { color: var(--grey-4); border-color: var(--grey-3); cursor: default; }
 #platform-menu { left: auto; right: 0; min-width: 180px; }
 #platform-menu .dd-opt { display: block; color: var(--grey-5); text-decoration: none; }
 #platform-menu .dd-opt:hover { color: var(--grey-6); }
