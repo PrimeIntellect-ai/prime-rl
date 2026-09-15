@@ -121,9 +121,12 @@ def train(config: TrainerConfig):
         enable_gloo=(
             config.model.fsdp_cpu_offload
             or config.model.full_offload is not None
-            # mx_refit broadcasts the offer token over the CPU collective, and
-            # its tensor handshake refuses to run without a Gloo backend.
-            or config.weight_broadcast.type == "mx_refit"
+            # Only mx_refit's non-default tensor handshake needs a CPU backend;
+            # object mode routes through _get_object_coll_device and runs on NCCL.
+            or (
+                config.weight_broadcast.type == "mx_refit"
+                and config.weight_broadcast.handshake_mode == "tensor"
+            )
         ),
     )
     if config.model.full_offload is not None:
