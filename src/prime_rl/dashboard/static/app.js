@@ -183,6 +183,8 @@ function applyRunTypeControls() {
   $("#metrics-mode").hidden = isEval;
   $("#metrics-filter-wrap").hidden = !isEval;
   $("#metrics-search").hidden = isEval;
+  $("#metrics-collapse").hidden = isEval;
+  $("#metrics-expand").hidden = isEval;
   $("#smooth-range").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -204,7 +206,7 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnvs: null, timingPath: "",
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null, timingPath: "",
   };
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
@@ -507,39 +509,26 @@ function evalEnvs() {
   return [...new Set([...(meta.eval_envs || []), ...Object.keys(meta.eval_plan || {}), ...streamed])];
 }
 
-/* the env filter: null selects every env; a set narrows to some (never none) */
-function selectedEvalEnvs() {
+/* the pane shows one env at a time; the first is the default */
+function evalEnv() {
   const envs = evalEnvs();
-  const picked = state.metrics.evalEnvs;
-  const selected = picked ? envs.filter((env) => picked.has(env)) : envs;
-  return selected.length ? selected : envs;
-}
-
-/* every env keeps its palette colour whatever the filter shows */
-function envColor(env) {
-  return PALETTE[Math.max(0, evalEnvs().indexOf(env)) % PALETTE.length];
+  if (!envs.includes(state.metrics.evalEnv)) state.metrics.evalEnv = envs[0] ?? null;
+  return state.metrics.evalEnv;
 }
 
 function renderEvalEnvs() {
   const envs = evalEnvs();
-  const selected = new Set(selectedEvalEnvs());
-  const row = $("#metrics-env-filter").closest(".dd-row");
-  row.hidden = envs.length < 2;
-  $("#metrics-env-filter").innerHTML = envs
-      .map(
-        (env) =>
-          `<button data-env="${esc(env)}" class="${selected.has(env) ? "on" : ""}">` +
-          `<span class="env-dot" style="background:${envColor(env)}"></span>${esc(env)}</button>`
-      )
-      .join("");
+  const current = evalEnv();
+  $("#metrics-env-row").hidden = envs.length < 2;
+  $("#metrics-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
+  syncDressedSelects();
 }
 
-/* the episodes of the given envs, as indices into the series */
-function evalIndices(envs) {
-  const wanted = new Set(envs);
+/* the episodes of one env, as indices into the series */
+function evalIndices(env) {
   const column = state.metrics.evalSeries?.env || [];
   const out = [];
-  for (let i = 0; i < column.length; i++) if (wanted.has(column[i])) out.push(i);
+  for (let i = 0; i < column.length; i++) if (column[i] === env) out.push(i);
   return out;
 }
 
@@ -551,13 +540,10 @@ function evalExpected(env) {
 
 const EP_CELL_CAP = 400;
 
-function evalProgressHtml(envs, idx, live) {
+function evalProgressHtml(env, idx, live) {
   const series = state.metrics.evalSeries || {};
-  const many = evalEnvs().length > 1;
-  const color = envColor;
   const done = idx.length;
-  const expected = envs.map(evalExpected);
-  const total = expected.some((n) => n == null) ? null : expected.reduce((a, b) => a + b, 0);
+  const total = evalExpected(env);
   const n = Math.max(total ?? 0, done + live.length);
   const pct = total ? Math.min(100, (done / total) * 100) : null;
   const errors = idx.filter((i) => series.ok?.[i] === false).length;
@@ -570,18 +556,16 @@ function evalProgressHtml(envs, idx, live) {
         .map((i) => {
           const err = series.ok?.[i] === false;
           const reward = series.reward?.[i];
-          const style = err ? "" : ` style="background:${color(series.env?.[i])};border-color:${color(series.env?.[i])}"`;
           return (
-            `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}"${style} ` +
-            `title="#${series.line?.[i]}${many ? ` · ${esc(series.env?.[i] ?? "")}` : ""} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`
+            `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}" ` +
+            `title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`
           );
         })
         .join("") +
       live
         .map(
           (r) =>
-            `<span class="ep-cell live" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} style="border-color:${color(r.env)}" ` +
-            `title="${esc(r.stage)}${many ? ` · ${esc(r.env ?? "")}` : ""} · ${esc(r.task ?? "")}"></span>`
+            `<span class="ep-cell live" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"></span>`
         )
         .join("") +
       `<span class="ep-cell"></span>`.repeat(Math.max(0, n - done - live.length));
@@ -594,20 +578,13 @@ function evalProgressHtml(envs, idx, live) {
       `<span class="ep-cell live"></span>`.repeat(liveCells) +
       `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
-  // the header is a legend of the shown envs, each with its own count
-  const legend = envs
-    .map((env, k) => {
-      const mine = idx.filter((i) => series.env?.[i] === env).length;
-      return `<span class="ep-env"><span class="env-dot" style="background:${envColor(env)}"></span>${esc(env)} <span class="muted">${mine}/${expected[k] ?? "?"}</span></span>`;
-    })
-    .join("");
   const parts = [`${done}/${total ?? "?"} episodes`];
   if (live.length) parts.push(`${live.length} in flight`);
   if (errors) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
   // the toolbar line reads like the traces tab's
   $("#metrics-status").textContent = [...(live.length ? [`${live.length} in flight`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
   return (
-    `<div class="eval-progress"><div class="ep-head">${legend}<span class="muted">${parts.join(" · ")}</span></div>` +
+    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span><span class="muted">${parts.join(" · ")}</span></div>` +
     `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
     `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span></div></div>`
   );
@@ -695,8 +672,7 @@ function dotPlotSvg(entry, W, H) {
         const col = Math.floor(j / perCol), rowN = j % perCol;
         const cx = x0 + col * (2 * r + 1);
         const cy = top + plotH - r - rowN * (2 * r + 1);
-        const style = !p.err && p.color ? ` style="fill:${p.color}"` : "";
-        return `<circle data-i="${i}" class="${p.err ? "err" : ""}"${style} cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
+        return `<circle data-i="${i}" class="${p.err ? "err" : ""}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
       })
       .join("");
     const n = counts.get(v);
@@ -791,8 +767,7 @@ function swarmSvg(entry, W, H) {
     }
     placed.push([px, best]);
     const y = Math.max(r, Math.min(plotH - r, mid + best));
-    const style = !points[i].err && points[i].color ? ` style="fill:${points[i].color}"` : "";
-    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}"${style} cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
   // the x axis: a baseline under the plot, round-valued ticks with grid lines
   const label = (v) => tickLabel(v, entry.fmt);
@@ -838,7 +813,6 @@ function swarmTipHtml(entry, point) {
     const rows = point.group
       ? [row("rollouts", point.n), row(entry.label, entry.fmt(point.v))]
       : [row(entry.label, entry.fmt(point.v)), ...(point.reward != null ? [row("reward", fmtReward(point.reward))] : [])];
-    if (point.env) rows.unshift(row("env", esc(point.env)));
     if (point.err) rows.push(row("errors", point.group ? "in a rollout" : "yes"));
     rows.push(row("", point.group ? "click opens its first rollout" : "click opens the trace"));
     return `<div class="tip-head">${point.group ? `task ${esc(point.group.slice(0, 8))}` : `episode #${point.line}`}</div>${rows.join("")}`;
@@ -863,16 +837,15 @@ function passAtK(rewards) {
   return out;
 }
 
-function evalScoreEntries(idx, filter, many) {
+function evalScoreEntries(idx, filter) {
   const series = state.metrics.evalSeries || {};
   const entries = [];
   const byTask = new Map();
   for (const i of idx) {
     const reward = series.reward?.[i];
     if (reward == null) continue;
-    const env = series.env?.[i];
-    const task = `${env}/${series.group?.[i] ?? i}`;
-    if (!byTask.has(task)) byTask.set(task, { group: series.group?.[i] ?? String(i), env, line: series.line?.[i], rewards: [], err: false });
+    const task = series.group?.[i] ?? String(i);
+    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
     const t = byTask.get(task);
     t.rewards.push(reward);
     if (series.ok?.[i] === false) t.err = true;
@@ -880,7 +853,7 @@ function evalScoreEntries(idx, filter, many) {
   const tasks = [...byTask.values()];
   if (!tasks.length) return entries;
   const k = Math.max(...tasks.map((t) => t.rewards.length));
-  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err, env: many ? t.env : null, color: envColor(t.env) });
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err });
   if (!filter || filter.test("avg@k"))
     entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
   if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
@@ -974,7 +947,6 @@ function timingPaneHtml(idx) {
   const tree = timingTree(series);
   if (!tree.paths.length) return "";
   const path = timingPath();
-  const many = evalEnvs().length > 1;
   const kids = tree.children(path);
   // per-episode rows: the node's duration, each child's, and what is left over
   const rows = idx
@@ -984,7 +956,7 @@ function timingPaneHtml(idx) {
       const parts = kids.map((kid) => ({ name: kid.split("/").pop(), path: kid, v: timingValue(series, kid, i) ?? 0 }));
       const other = Math.max(0, total - parts.reduce((a, p) => a + p.v, 0));
       if (kids.length) parts.push({ name: "other", path: null, v: other });
-      return { i, line: series.line?.[i], env: series.env?.[i], err: series.ok?.[i] === false, total, parts };
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total, parts };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
@@ -996,7 +968,7 @@ function timingPaneHtml(idx) {
     const stats = distStats(values);
     return { ...seg, values, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: !!seg.path && seg.path !== path && tree.children(seg.path).length > 0 };
   });
-  timingModel = { path, rows, segments, meanTotal, kids, many, tree };
+  timingModel = { path, rows, segments, meanTotal, kids, tree };
   timingTips = [];
   const crumbs = ["", ...path.split("/").filter(Boolean).map((_, k, all) => all.slice(0, k + 1).join("/"))];
   const crumbHtml = crumbs
@@ -1010,7 +982,7 @@ function timingPaneHtml(idx) {
       const onPath = path === p || path.startsWith(`${p}/`) || p === "";
       const kid = kids.includes(p);
       const cls = p === path ? " current" : kid ? " child" : onPath ? " ancestor" : "";
-      return `<div class="tm-node${cls}" data-path="${esc(p)}" style="padding-left:${depth * 12}px"><span class="env-dot" style="background:${p ? phaseColor(name) : "var(--grey-6)"}"></span>${esc(name)}</div>`;
+      return `<div class="tm-node${cls}" data-path="${esc(p)}" style="padding-left:${depth * 12}px"><span class="phase-dot" style="background:${p ? phaseColor(name) : "var(--grey-6)"}"></span>${esc(name)}</div>`;
     })
     .join("");
   return (
@@ -1025,7 +997,7 @@ const TM_MAX_STRIPS = 40;
 function drawTiming() {
   const pane = document.querySelector("#metrics-body .timing-pane");
   if (!pane || !timingModel) return;
-  const { rows, segments, meanTotal, kids, many } = timingModel;
+  const { rows, segments, meanTotal, kids } = timingModel;
   const tip = (html) => timingTips.push(html) - 1;
   const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   // icicle: the mean composition of the zoomed node
@@ -1054,40 +1026,18 @@ function drawTiming() {
     })
     .join("");
   ice.innerHTML = `<svg width="${W}" height="${IH}" viewBox="0 0 ${W} ${IH}">${iceSegs}</svg>`;
-  // strips: one per episode, longest first, the same segments in the same colours;
-  // a run with several envs groups them by env under a header with the env's mean
+  // strips: one per episode, longest first, the same segments in the same colours
   const host = pane.querySelector(".tm-strips");
-  const groups = many
-    ? evalEnvs()
-        .map((env) => ({ env, rows: rows.filter((r) => r.env === env) }))
-        .filter((g) => g.rows.length)
-    : [{ env: null, rows }];
-  const perGroup = Math.max(4, Math.floor(TM_MAX_STRIPS / groups.length));
-  const SH = 9, GAP = 3, PAD_L = 40, AX = 18, GH = 18;
-  const items = []; // {header} or {row}, in draw order
-  for (const g of groups) {
-    const step = Math.max(1, g.rows.length / perGroup);
-    if (g.env) items.push({ header: g.env, mean: g.rows.reduce((a, r) => a + r.total, 0) / g.rows.length, n: g.rows.length });
-    for (let k = 0; k < g.rows.length; k += step) items.push({ row: g.rows[Math.floor(k)] });
-  }
-  const shown = items.filter((it) => it.row).map((it) => it.row);
-  const H = items.reduce((h, it) => h + (it.header ? GH : SH + GAP), 0) + AX;
+  const step = Math.max(1, rows.length / TM_MAX_STRIPS);
+  const shown = [];
+  for (let k = 0; k < rows.length; k += step) shown.push(rows[Math.floor(k)]);
+  const SH = 9, GAP = 3, PAD_L = 40, AX = 18;
+  const H = shown.length * (SH + GAP) + AX;
   const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
   const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
-  let yPos = 0;
-  const strips = items
-    .map((it) => {
-      if (it.header) {
-        const y = yPos;
-        yPos += GH;
-        return (
-          `<circle cx="${PAD_L + 4}" cy="${y + 9}" r="3.5" fill="${envColor(it.header)}"></circle>` +
-          `<text class="tm-group" x="${PAD_L + 12}" y="${y + 13}">${esc(it.header)} <tspan class="muted">· ${fmtCompact(it.n)} episodes · mean ${fmtDuration(it.mean)}</tspan></text>`
-        );
-      }
-      const r = it.row;
-      const y = yPos;
-      yPos += SH + GAP;
+  const strips = shown
+    .map((r, n) => {
+      const y = n * (SH + GAP);
       let sxPos = PAD_L;
       const parts = kids.length ? r.parts : [{ name: segments[0].name, v: r.total }];
       const segs = parts
@@ -1095,7 +1045,7 @@ function drawTiming() {
           const w = sx(p.v);
           if (w <= 0) return "";
           const t = tip(
-            `<div class="tip-head">episode #${r.line}${many ? ` · ${esc(r.env ?? "")}` : ""}</div>${rowTip(p.name, fmtDuration(p.v))}` +
+            `<div class="tip-head">episode #${r.line}</div>${rowTip(p.name, fmtDuration(p.v))}` +
               `${rowTip("share", `${Math.round((p.v / (r.total || 1)) * 100)}%`)}${rowTip("total", fmtDuration(r.total))}${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
           );
           const html = `<rect class="tm-strip-seg" data-tip="${t}" data-line="${r.line}" x="${sxPos.toFixed(1)}" y="${y}" width="${Math.max(1, w - 1).toFixed(1)}" height="${SH}" fill="${phaseColor(p.name)}"></rect>`;
@@ -1103,8 +1053,7 @@ function drawTiming() {
           return html;
         })
         .join("");
-      const labelColor = r.err ? "" : many ? `fill:${envColor(r.env)};` : "";
-      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end;${labelColor}">#${r.line}</text>${segs}`;
+      return `<text class="hax tm-line${r.err ? " err" : ""}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`;
     })
     .join("");
   const ticks = niceTicks(0, maxTotal, W - PAD_L - 8, (v) => tickLabel(v, fmtDuration), true)
@@ -1132,20 +1081,18 @@ function renderEvalPane(body) {
   const series = m.evalSeries || {};
   const filter = makeFilter(m.search.trim());
   renderEvalEnvs();
-  const envs = selectedEvalEnvs();
-  const many = evalEnvs().length > 1;
+  const env = evalEnv();
   $("#metrics-status").textContent = "";
   $("#metrics-errors").checked = !!m.includeErrors;
-  $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors || envs.length !== evalEnvs().length);
+  $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors);
   swarmRegistry.clear();
-  if (!envs.length) {
+  if (!env) {
     body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
     return;
   }
-  const wanted = new Set(envs);
-  const all = evalIndices(envs);
-  const live = (state.traces.live || []).filter((r) => wanted.has(r.env));
-  body.insertAdjacentHTML("beforeend", evalProgressHtml(envs, all, live));
+  const all = evalIndices(env);
+  const live = (state.traces.live || []).filter((r) => r.env === env);
+  body.insertAdjacentHTML("beforeend", evalProgressHtml(env, all, live));
   // errored episodes stay out of the distributions unless asked in, where they read red
   const idx = m.includeErrors ? all : all.filter((i) => series.ok?.[i] !== false);
   const episodeEntry = (key, label, fmt) =>
@@ -1157,8 +1104,6 @@ function renderEvalPane(body) {
         line: series.line?.[i],
         reward: series.reward?.[i],
         err: series.ok?.[i] === false,
-        env: many ? series.env?.[i] : null,
-        color: envColor(series.env?.[i]),
       })),
       fmt
     );
@@ -1169,20 +1114,25 @@ function renderEvalPane(body) {
       .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
   // constants sit in a chip row above the section's panes: a pane for a value every
   // episode shares would only take space
+  // sections are flat: a muted heading, the constants as chips, then the panes
+  const evalSection = (name, inner) => {
+    body.insertAdjacentHTML("beforeend", `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`);
+  };
   const section = (name, entries) => {
     const kept = entries.filter(Boolean);
     if (!kept.length) return 0;
     for (const entry of kept) swarmRegistry.set(entry.key, entry);
     const constants = kept.filter((e) => e.shape === "constant");
     const panes = kept.filter((e) => e.shape !== "constant");
-    const { div, grid } = addSection(body, name);
-    if (constants.length) grid.insertAdjacentHTML("beforebegin", `<div class="const-row">${constants.map(constChipHtml).join("")}</div>`);
-    grid.innerHTML = panes.map(swarmCardHtml).join("");
-    if (!panes.length) grid.remove();
+    evalSection(
+      name,
+      (constants.length ? `<div class="const-row">${constants.map(constChipHtml).join("")}</div>` : "") +
+        (panes.length ? `<div class="chart-grid">${panes.map(swarmCardHtml).join("")}</div>` : "")
+    );
     return kept.length;
   };
   let shown = 0;
-  shown += section("scores", evalScoreEntries(idx, filter, many));
+  shown += section("scores", evalScoreEntries(idx, filter));
   shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
   shown += section(
     "usage",
@@ -1190,9 +1140,7 @@ function renderEvalPane(body) {
   );
   const timingHtml = timingPaneHtml(idx);
   if (timingHtml) {
-    const { grid } = addSection(body, "timing");
-    grid.className = "timing-grid";
-    grid.innerHTML = timingHtml;
+    evalSection("timing", timingHtml);
     shown += 1;
   }
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
@@ -1230,16 +1178,8 @@ $("#metrics-body").addEventListener("mouseleave", () => {
   $("#swarm-tip").hidden = true;
 });
 
-$("#metrics-env-filter").addEventListener("click", (e) => {
-  const button = e.target.closest("[data-env]");
-  if (!button) return;
-  const env = button.dataset.env;
-  const picked = new Set(state.metrics.evalEnvs ?? evalEnvs());
-  if (picked.has(env)) {
-    if (picked.size === 1) return; // never none
-    picked.delete(env);
-  } else picked.add(env);
-  state.metrics.evalEnvs = picked.size === evalEnvs().length ? null : picked;
+$("#metrics-env").addEventListener("change", (e) => {
+  state.metrics.evalEnv = e.target.value;
   renderMetricsBody();
 });
 
@@ -6990,7 +6930,7 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#trace-env", "#metrics-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);

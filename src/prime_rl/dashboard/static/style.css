@@ -339,12 +339,9 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 /* eval progress: one cell per expected episode */
 .eval-progress { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .ep-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.ep-env { font-size: 12px; color: var(--grey-6); display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
-.env-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .ep-row { display: flex; align-items: center; gap: 12px; }
 .ep-row .ep-blocks { flex: 1; }
 .ep-pct { font-size: 13px; color: var(--grey-6); min-width: 4ch; text-align: right; }
-#metrics-env-filter button { display: inline-flex; align-items: center; }
 .ep-head .name { font-size: 14px; color: var(--grey-6); }
 .ep-blocks { display: flex; gap: 2px; height: 28px; }
 .ep-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); }
@@ -369,7 +366,10 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .sw-box .median { stroke: var(--grey-4); stroke-width: 1.5; }
 .sw-box .mean { stroke: var(--grey-4); stroke-dasharray: 3 3; }
 /* timing pane: breadcrumb, icicle of the zoomed node, per-episode strips, tree legend */
-.timing-grid { display: block; }
+/* eval metrics sections: flat, a muted heading each */
+.eval-sec { margin-bottom: 18px; }
+.eval-sec-title { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--grey-4); border-bottom: 1px solid var(--hairline); padding-bottom: 4px; margin-bottom: 10px; }
+.phase-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .timing-pane .chart-head { cursor: default; }
 .tm-crumbs { font-size: 12px; color: var(--grey-5); }
 .tm-crumb { cursor: pointer; }
@@ -391,8 +391,6 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tm-node.ancestor { color: var(--grey-5); }
 .tm-node.child { color: var(--grey-5); }
 .tm-node.current { color: var(--grey-6); font-weight: 500; cursor: default; }
-.tm-group { fill: var(--grey-5); font-size: 11px; }
-.tm-group .muted { fill: var(--grey-4); }
 /* constants as chips; counted dot plots for few-valued metrics */
 .const-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .const-chip { font-size: 12px; color: var(--grey-6); background: var(--grey-2); border: 1px solid var(--hairline); padding: 4px 10px; }
