@@ -304,7 +304,7 @@ class VllmRouterConfig(BaseConfig):
     type: Literal["vllm-router"] = "vllm-router"
 
     policy: str = "consistent_hash"
-    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+    """Routing policy, e.g. ``consistent_hash``, ``sticky_least_loaded``, or ``round_robin``."""
 
 
 class LlmdRouterConfig(BaseConfig):

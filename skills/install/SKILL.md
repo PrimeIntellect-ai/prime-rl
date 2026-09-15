@@ -87,6 +87,13 @@ more than the local GPU architecture.
 
 Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
+### vLLM router backend
+
+The sticky least-loaded experiment vendors an x86_64 abi3 wheel under `deps/wheels/`
+because its pinned upstream revision has no published wheels and SLURM compute nodes do
+not provide the Rust/OpenSSL build toolchain. This experiment-only pin supports Linux
+x86_64.
+
 ### llm-d router backend
 
 Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[inference.router] type = "llm-d"`). It needs three native binaries — install once:
