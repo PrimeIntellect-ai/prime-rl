@@ -905,11 +905,13 @@ function evalScoreEntries(idx, filter) {
    into a node — an icicle of mean composition above per-episode strips */
 
 /* one colour per phase, told apart at a glance; `other` is the grey remainder */
+/* the dash's own palette: the accent for the agent, greys for the infrastructure
+   around it, one chart tone each for its model/harness split and for scoring */
 const PHASE_COLORS = {
-  boot: "#b7a6fa", setup: "#fcdaa4", agent: "#b6ff3c", finalize: "#4a9eff", scoring: "#ff6b4a",
-  model: "#78f8a5", harness: "#e879f9", other: "#3a3a3a",
+  boot: "#767676", setup: "#bcbcbc", agent: "#b6ff3c", finalize: "#5a5a5a", scoring: "#fcdaa4",
+  model: "#78f8a5", harness: "#b7a6fa", other: "#2a2a2a",
 };
-const TOKEN_COLORS = { input: PHASE_COLORS.agent, output: PHASE_COLORS.boot }; // the timing palette
+const TOKEN_COLORS = { input: PHASE_COLORS.agent, output: PHASE_COLORS.harness };
 
 function phaseColor(name) {
   if (PHASE_COLORS[name]) return PHASE_COLORS[name];
@@ -1026,7 +1028,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
   const tip = (html) => paneTips.push(html) - 1;
   const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   const ice = pane.querySelector(".tm-icicle");
-  const W = ice.clientWidth, IH = 28;
+  const W = ice.clientWidth, IH = 36;
   if (!W) return;
   let x = 0;
   const iceSegs = segments
@@ -1059,7 +1061,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
   const step = all ? 1 : Math.max(1, rows.length / TM_MAX_STRIPS);
   const shown = [];
   for (let k = 0; k < rows.length; k += step) shown.push(rows[Math.floor(k)]);
-  const SH = 9, GAP = 3, PAD_L = 40, AX = 18;
+  const SH = 14, GAP = 5, PAD_L = 40, AX = 20;
   const H = shown.length * (SH + GAP) + AX;
   const maxTotal = Math.max(...shown.map((r) => r.total), 1e-9);
   const sx = (v) => (v / maxTotal) * (W - PAD_L - 8);
