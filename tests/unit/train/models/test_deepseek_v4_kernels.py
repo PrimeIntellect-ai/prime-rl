@@ -13,7 +13,11 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
-from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
+from prime_rl.trainer.models.deepseek_v4.rotary import (
+    DeepseekV4RotaryEmbedding,
+    apply_rotary_pos_emb_interleaved,
+    rotate_half_interleaved,
+)
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
@@ -1324,3 +1328,28 @@ def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
     for label, fused_leaf, fallback_leaf in grads:
         assert fallback_leaf.grad is not None, f"{label}: the fallback backward left the leaf without a gradient"
         _assert_relative(fused_leaf.grad, fallback_leaf.grad, POST_BDA_GRAD_RTOL, label)
+
+
+def test_sliced_interleaved_rope_matches_the_full_rotation():
+    batch, seq_len, heads, head_dim, rope_dim = 2, 16, 4, 64, 16
+    with torch.device("cuda"):
+        x = torch.randn(batch, seq_len, heads, head_dim, dtype=torch.bfloat16)
+        angles = torch.rand(1, seq_len, rope_dim // 2) * 2 * math.pi
+    cos, sin = angles.cos().to(torch.bfloat16), angles.sin().to(torch.bfloat16)
+    sliced_x, full_x = _leaves(x, x)
+
+    sliced = apply_rotary_pos_emb_interleaved(sliced_x, cos, sin, unsqueeze_dim=2)
+
+    wide_cos = cos.repeat_interleave(2, dim=-1).unsqueeze(2)
+    wide_sin = sin.repeat_interleave(2, dim=-1).unsqueeze(2)
+    rope = full_x[..., -rope_dim:]
+    rotated = ((rope.float() * wide_cos) + (rotate_half_interleaved(rope).float() * wide_sin)).to(full_x.dtype)
+    full = torch.cat([full_x[..., :-rope_dim], rotated], dim=-1)
+
+    assert torch.equal(sliced, full)
+
+    weight = torch.randn_like(x)
+    (sliced * weight).sum().backward()
+    (full * weight).sum().backward()
+    assert sliced_x.grad is not None and full_x.grad is not None
+    assert torch.equal(sliced_x.grad, full_x.grad)
