@@ -1266,7 +1266,7 @@ MHC_SHAPE_IDS = ["aligned", "misaligned", "batched"]
 SINKHORN_RTOL = 1e-5
 SINKHORN_GRAD_RTOL = 1e-5
 POST_BDA_RTOL = 1e-2
-POST_BDA_GRAD_RTOL = 5e-2
+POST_BDA_GRAD_RTOL = 1e-2
 
 
 @pytest.mark.parametrize(("batch", "seq_len"), MHC_SHAPES, ids=MHC_SHAPE_IDS)
