@@ -342,7 +342,6 @@ def install_prepared_weights(
 ) -> None:
     """Wrap the named parameters of ``module`` in place, before ``fully_shard``."""
     if not release_all_gather_outputs:
-        # TODO: add support
         # release=False means the op still needs the gathered high-precision weight, which we cannot
         # honor: UnshardedPreparedTensor drops it, and that is what makes releasing safe.
         # Supporting it means retaining the gathered tensor and exposing it next to .prepared, but

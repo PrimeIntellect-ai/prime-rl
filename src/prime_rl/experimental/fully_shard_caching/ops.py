@@ -226,14 +226,18 @@ class Fp8GroupedExpertCompute:
     def __call__(
         self,
         x: torch.Tensor,
-        gate_proj: torch.Tensor,
-        up_proj: torch.Tensor,
+        gate_proj: torch.Tensor | None,
+        up_proj: torch.Tensor | None,
+        gate_up_proj: torch.Tensor | None,
         down_proj: torch.Tensor,
         offs: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
-        gate = self._gemm(x, gate_proj, offs)
-        up = self._gemm(x, up_proj, offs)
+        if gate_up_proj is None:
+            gate = self._gemm(x, gate_proj, offs)
+            up = self._gemm(x, up_proj, offs)
+        else:
+            gate, up = self._gemm(x, gate_up_proj, offs).chunk(2, dim=-1)
         return self._gemm(self.activation.apply(gate, up), down_proj, offs)
 
 
@@ -294,12 +298,16 @@ class RowScaledGroupedExpertCompute:
     def __call__(
         self,
         x: torch.Tensor,
-        gate_proj: torch.Tensor,
-        up_proj: torch.Tensor,
+        gate_proj: torch.Tensor | None,
+        up_proj: torch.Tensor | None,
+        gate_up_proj: torch.Tensor | None,
         down_proj: torch.Tensor,
         offs: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
-        gate = self._gemm(x, gate_proj, offs, num_tokens_per_expert)
-        up = self._gemm(x, up_proj, offs, num_tokens_per_expert)
+        if gate_up_proj is None:
+            gate = self._gemm(x, gate_proj, offs, num_tokens_per_expert)
+            up = self._gemm(x, up_proj, offs, num_tokens_per_expert)
+        else:
+            gate, up = self._gemm(x, gate_up_proj, offs, num_tokens_per_expert).chunk(2, dim=-1)
         return self._gemm(self.activation.apply(gate, up), down_proj, offs, num_tokens_per_expert)
