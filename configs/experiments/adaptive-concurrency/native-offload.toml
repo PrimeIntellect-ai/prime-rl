@@ -1,13 +1,13 @@
 # Stack after base.toml; one trainer node and one TP8/EP inference node.
 [run]
-name = "terminal-lego-native-offload-v1"
+name = "terminal-lego-native-offload-v2"
 
 [env_vars]
 TMPDIR = "/tmp/ac-native-offload"
 TRITON_CACHE_DIR = "/tmp/ac-native-offload/triton"
 
 [slurm]
-job_name = "ac-native-offload-v1"
+job_name = "ac-native-offload-v2"
 pre_run_command = "mkdir -p /tmp/ac-native-offload"
 
 [deployment]
@@ -15,13 +15,13 @@ num_infer_nodes = 1
 num_infer_replicas = 1
 
 [monitors.wandb]
-name = "terminal-lego-native-offload-v1"
+name = "terminal-lego-native-offload-v2"
 
 [[orchestrator.train.source]]
 name = "terminal-lego"
 env.taskset.id = "terminal-lego"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["ac-native-offload-v1"]
+env.agent.runtime.labels = ["ac-native-offload-v2"]
 
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/ac-native-offload/vllm"
@@ -31,4 +31,4 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/ac-native-offload/flashinfer"
 type = "native"
 
 [inference.kv_cache_offload.cpu]
-num_bytes = 512_000_000_000
+num_bytes = 1_200_000_000_000
