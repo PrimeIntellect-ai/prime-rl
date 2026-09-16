@@ -154,12 +154,11 @@ def main():
             components.append(
                 (f" {source.resolved_name}", write_env_server_config(config_dir, "eval", source, config.log))
             )
-    logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
     if config.dry_run:
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
         logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
         return
 
-    logger.info(format_log_message(log_dir, eval=True, env_names={"eval": env_names}))
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     from prime_rl.eval.eval import run_eval
 
@@ -178,6 +177,9 @@ def main():
                     stderr=log_file_handle,
                 )
             )
+
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
+    logger.info(format_log_message(log_dir, eval=True, env_names={"eval": env_names}))
 
     def sigterm_handler(signum, frame):
         logger.warning("Received SIGTERM, terminating all processes...")
