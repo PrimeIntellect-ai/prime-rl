@@ -2,8 +2,9 @@
 
 This is where the pieces built in `attention.py`, `moe.py`, `hyperconnections.py` and
 `rotary.py` come together. The one structural surprise is the residual: it is not a single
-stream but `hc_mult` parallel ones, carried as `(batch, seq, hc_mult, hidden)` from the
-embedding all the way to `hc_head`, which collapses them back before the final norm.
+stream but `hc_mult` parallel ones, carried as `mhc_states` of shape
+`(batch, seq, hc_mult, hidden)` from the embedding all the way to `hc_head`, which collapses
+them back before the final norm.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
     DeepseekV4HyperHead,
-    hc_write_back,
 )
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
@@ -56,21 +56,21 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        mhc_states: torch.Tensor,
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
         *,
         packed: PackedContext,
     ) -> torch.Tensor:
-        post, comb, collapsed = self.attn_hc(hidden_states)
+        post, comb, collapsed = self.attn_hc(mhc_states)
         attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
-        hidden_states = hc_write_back(post, comb, attn_output, hidden_states)
+        mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
-        post, comb, collapsed = self.ffn_hc(hidden_states)
+        post, comb, collapsed = self.ffn_hc(mhc_states)
         mlp_output = self.mlp(
             self.post_attention_layernorm(collapsed), input_ids=input_ids, routed_experts=routed_experts
         )
-        return hc_write_back(post, comb, mlp_output, hidden_states)
+        return self.ffn_hc.update_states(post, comb, mlp_output, mhc_states)
 
 
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
@@ -263,17 +263,17 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         if position_ids is not None:
             packed.check_position_ids(position_ids)
 
-        hidden_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states = decoder_layer(
-                hidden_states,
+            mhc_states = decoder_layer(
+                mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
             )
 
-        hidden_states = self.norm(self.hc_head(hidden_states))
+        hidden_states = self.norm(self.hc_head(mhc_states))
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
 

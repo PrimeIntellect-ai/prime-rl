@@ -32,7 +32,7 @@ class DeepseekV4UnweightedRMSNorm(nn.Module):
 class DeepseekV4HyperConnection(nn.Module):
     """Manifold-constrained hyper-connection (mHC) around one sublayer.
 
-    The residual is `hc_mult` parallel streams shaped `(B, S, hc_mult, hidden_size)`.
+    The residual, `mhc_states`, is `hc_mult` parallel streams shaped `(B, S, hc_mult, hidden_size)`.
     A single projection of the normalized, flattened streams produces three gates:
 
     - `pre`: weights that collapse the streams into the single sequence fed to the
@@ -59,9 +59,9 @@ class DeepseekV4HyperConnection(nn.Module):
         # One scale per gate: `pre`, `post`, `comb`.
         self.scale = nn.Parameter(torch.empty(3))
 
-    def forward(self, hidden_streams: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, mhc_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
-        flat = self.input_norm(hidden_streams.flatten(start_dim=2))
+        flat = self.input_norm(mhc_states.flatten(start_dim=2))
         pre_w, post_w, comb_w = F.linear(flat, self.fn.float()).split([hc, hc, hc * hc], dim=-1)
         pre_b, post_b, comb_b = self.base.split([hc, hc, hc * hc])
         pre_scale, post_scale, comb_scale = self.scale.unbind(0)
@@ -78,8 +78,19 @@ class DeepseekV4HyperConnection(nn.Module):
                 comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
                 comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
 
-        collapsed = (pre.unsqueeze(-1) * hidden_streams).sum(dim=2).to(hidden_streams.dtype)
+        collapsed = (pre.unsqueeze(-1) * mhc_states).sum(dim=2).to(mhc_states.dtype)
         return post, comb, collapsed
+
+    def update_states(
+        self, post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, mhc_states: torch.Tensor
+    ) -> torch.Tensor:
+        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
+        dtype = mhc_states.dtype
+        if can_use_fused_mhc(mhc_states, self.hc_mult):
+            return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
+        return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
+            comb.to(dtype).transpose(-1, -2), mhc_states
+        )
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)
@@ -99,11 +110,11 @@ class DeepseekV4HyperHead(nn.Module):
         self.hc_base = nn.Parameter(torch.empty(self.hc_mult))
         self.hc_scale = nn.Parameter(torch.empty(1))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        flat = self.input_norm(x.flatten(2))
+    def forward(self, mhc_states: torch.Tensor) -> torch.Tensor:
+        flat = self.input_norm(mhc_states.flatten(2))
         mixes = F.linear(flat, self.hc_fn.float())
         pre = torch.sigmoid(mixes * self.hc_scale.float() + self.hc_base.float()) + self.eps
-        return (pre.unsqueeze(-1) * x).sum(dim=2).to(x.dtype)
+        return (pre.unsqueeze(-1) * mhc_states).sum(dim=2).to(mhc_states.dtype)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.hc_fn, mean=0.0, std=init_std)
@@ -111,25 +122,8 @@ class DeepseekV4HyperHead(nn.Module):
         nn.init.ones_(self.hc_scale)
 
 
-def hc_write_back(
-    post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, hidden_streams: torch.Tensor
-) -> torch.Tensor:
-    """Broadcast the sublayer output over the streams via `post` and remix them via `comb`.
-
-    `comb` is consumed summing over the *source* stream axis, i.e. transposed; the fused
-    kernel applies that transpose internally, so both branches take `comb` untransposed.
-    """
-    dtype = hidden_streams.dtype
-    if can_use_fused_mhc(hidden_streams, comb.shape[-1]):
-        return dsv4_mhc.fused_post_bda(comb.to(dtype), hidden_streams, post.to(dtype), sublayer_out)
-    return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
-        comb.to(dtype).transpose(-1, -2), hidden_streams
-    )
-
-
 __all__ = [
     "DeepseekV4HyperConnection",
     "DeepseekV4HyperHead",
     "DeepseekV4UnweightedRMSNorm",
-    "hc_write_back",
 ]

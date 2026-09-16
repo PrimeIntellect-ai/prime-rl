@@ -12,7 +12,7 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_referenc
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, hc_write_back
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.utils.cp import CPContext
@@ -1293,8 +1293,10 @@ def test_fused_sinkhorn_matches_the_python_fallback(batch, seq_len, monkeypatch)
 
 
 def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
-    batch, seq_len, hc, dim = 2, 129, 4, 512
+    batch, seq_len = 2, 129
+    hc, dim = V4FLASH_MODEL["hc_mult"], V4FLASH_MODEL["hidden_size"]
     with torch.device("cuda"):
+        module = DeepseekV4HyperConnection(V4FLASH_CONFIG)
         streams = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
         sublayer_out = torch.randn(batch, seq_len, dim, dtype=torch.bfloat16)
         post = 2 * torch.sigmoid(torch.randn(batch, seq_len, hc))
@@ -1305,11 +1307,11 @@ def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
     fallback_post, fallback_comb, fallback_x, fallback_streams = _leaves(post, comb, sublayer_out, streams)
 
     assert hyperconnections.can_use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
-    fused_out = hc_write_back(fused_post, fused_comb, fused_x, fused_streams)
+    fused_out = module.update_states(fused_post, fused_comb, fused_x, fused_streams)
     (fused_out * weight).sum().backward()
 
     monkeypatch.setattr(hyperconnections, "can_use_fused_mhc", lambda t, hc: False)
-    fallback_out = hc_write_back(fallback_post, fallback_comb, fallback_x, fallback_streams)
+    fallback_out = module.update_states(fallback_post, fallback_comb, fallback_x, fallback_streams)
     (fallback_out * weight).sum().backward()
 
     _assert_relative(fused_out, fallback_out, POST_BDA_RTOL, "write-back output")
