@@ -1,0 +1,28 @@
+# Stack after base.toml; one trainer node and one TP8/EP inference node.
+[run]
+name = "terminal-lego-no-offload-v1"
+
+[env_vars]
+TMPDIR = "/tmp/ac-no-offload"
+TRITON_CACHE_DIR = "/tmp/ac-no-offload/triton"
+
+[slurm]
+job_name = "ac-no-offload-v1"
+pre_run_command = "mkdir -p /tmp/ac-no-offload"
+
+[deployment]
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[monitors.wandb]
+name = "terminal-lego-no-offload-v1"
+
+[[orchestrator.train.source]]
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["ac-no-offload-v1"]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/ac-no-offload/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/ac-no-offload/flashinfer"
