@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from verifiers.v1.configs.client import EvalClientConfig
@@ -8,7 +8,6 @@ from verifiers.v1.configs.client import EvalClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
-    InferenceClient,
     _is_retryable_lora_error,
     check_health,
     load_lora_adapter,
@@ -156,33 +155,3 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
-
-
-def test_inference_client_finishes_router_sessions():
-    inference_client = InferenceClient(
-        ClientConfig(base_url="http://router:8000/v1", finish_sessions=True),
-        model_name="test-model",
-    )
-    assert inference_client._session_client is not None
-
-    with patch("prime_rl.orchestrator.clients._admin_post", new_callable=AsyncMock) as post:
-        asyncio.run(inference_client.finish_sessions(["session-a", "session-b"]))
-
-    post.assert_has_awaits(
-        [
-            call(
-                inference_client._session_client,
-                "/finish_session",
-                timeout_s=5.0,
-                params={"session_id": "session-a"},
-            ),
-            call(
-                inference_client._session_client,
-                "/finish_session",
-                timeout_s=5.0,
-                params={"session_id": "session-b"},
-            ),
-        ],
-        any_order=True,
-    )
-    asyncio.run(inference_client.aclose())

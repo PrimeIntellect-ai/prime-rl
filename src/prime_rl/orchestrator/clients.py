@@ -91,11 +91,14 @@ class InferenceClient:
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
         self._scorer = PrefillScorer()
+        # Managed routed deployments set admin_base_url so engine admin traffic
+        # bypasses the client-facing router. External and frozen clients do not.
         self._session_client = (
             setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))[0]
-            if client_config.finish_sessions
+            if client_config.admin_base_url is not None
             else None
         )
+        self._session_cleanup_supported: bool | None = None
         self.model_name = model_name
 
     async def score(self, token_ids: list[int]) -> list[float]:
@@ -109,21 +112,37 @@ class InferenceClient:
             await self._session_client.aclose()
 
     async def finish_sessions(self, session_ids: list[str]) -> None:
-        """Release completed rollout sessions from a session-aware router."""
-        if self._session_client is None or not session_ids:
+        """Release completed sessions when the client-facing router supports it."""
+        if self._session_client is None or self._session_cleanup_supported is False or not session_ids:
             return
         try:
-            await asyncio.gather(
-                *(
-                    _admin_post(
-                        self._session_client,
-                        "/finish_session",
-                        timeout_s=5.0,
-                        params={"session_id": session_id},
-                    )
-                    for session_id in session_ids
+            if self._session_cleanup_supported is None:
+                await _admin_post(
+                    self._session_client,
+                    "/finish_session",
+                    timeout_s=5.0,
+                    params={"session_id": session_ids[0]},
                 )
-            )
+                self._session_cleanup_supported = True
+                session_ids = session_ids[1:]
+            if session_ids:
+                await asyncio.gather(
+                    *(
+                        _admin_post(
+                            self._session_client,
+                            "/finish_session",
+                            timeout_s=5.0,
+                            params={"session_id": session_id},
+                        )
+                        for session_id in session_ids
+                    )
+                )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {404, 405}:
+                self._session_cleanup_supported = False
+                get_logger().debug(f"Inference router does not support session cleanup: {error!r}")
+                return
+            get_logger().warning(f"Failed to release {len(session_ids)} inference session(s): {error!r}")
         except Exception as error:
             get_logger().warning(f"Failed to release {len(session_ids)} inference session(s): {error!r}")
 

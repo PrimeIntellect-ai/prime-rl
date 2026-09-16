@@ -195,9 +195,6 @@ class ClientConfig(BaseConfig):
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
 
-    finish_sessions: bool = False
-    """Release completed rollout sessions through vllm-router's ``/finish_session`` endpoint. Auto-enabled for the ``sticky_least_loaded`` policy."""
-
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))

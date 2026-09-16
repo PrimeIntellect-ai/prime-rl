@@ -478,49 +478,6 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
-def test_sticky_router_defaults_and_session_release():
-    base = {
-        "trainer": {},
-        "orchestrator": {},
-        "inference": {"vllm": {"tensor_parallel_size": 1}},
-        "deployment": {
-            "type": "single_node",
-            "gpus_per_node": 2,
-            "num_train_gpus": 1,
-            "num_infer_gpus": 1,
-        },
-    }
-    config = RLConfig.model_validate(base)
-
-    assert config.inference is not None and config.inference.router is not None
-    assert config.inference.router.policy == "sticky_least_loaded"
-    assert config.orchestrator.model.client.finish_sessions is True
-
-    consistent_hash = RLConfig.model_validate(
-        base
-        | {
-            "inference": {
-                "router": {"type": "vllm-router", "policy": "consistent_hash"},
-                "vllm": {"tensor_parallel_size": 1},
-            }
-        }
-    )
-    assert consistent_hash.orchestrator.model.client.finish_sessions is False
-
-    opted_out = RLConfig.model_validate(base | {"orchestrator": {"model": {"client": {"finish_sessions": False}}}})
-    assert opted_out.orchestrator.model.client.finish_sessions is False
-
-    sft = SFTConfig.model_validate(
-        {
-            "eval": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
-            "inference": {},
-        }
-    )
-    assert sft.eval is not None and sft.inference is not None and sft.inference.router is not None
-    assert sft.inference.router.policy == "sticky_least_loaded"
-    assert sft.eval.client.finish_sessions is True
-
-
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
