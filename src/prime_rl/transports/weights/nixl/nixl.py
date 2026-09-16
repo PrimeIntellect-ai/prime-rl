@@ -32,7 +32,7 @@ from prime_rl.transports.weights.nixl.agent import (
     policy_notification,
     set_ucx_env_defaults,
 )
-from prime_rl.transports.weights.nixl.cuda_malloc_memory import use_cuda_malloc_pool
+from prime_rl.transports.weights.nixl.device_memory import use_registerable_pool
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerAgent,
@@ -192,7 +192,7 @@ class NIXLWeightSender(WeightSender):
             return
 
         device = self.staged_shards[0].source_tensor.device
-        with use_cuda_malloc_pool():
+        with use_registerable_pool(device):
             self.staging_arenas = {
                 dtype: torch.empty(
                     self.staging_buffer_count * elements,
