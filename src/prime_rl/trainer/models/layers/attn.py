@@ -39,12 +39,14 @@ _KV_CACHE_DTYPE_MAP: dict[str, torch.dtype] = {
 
 
 def simulate_kv_cache_dtype(x: torch.Tensor, kv_cache_dtype: str | None) -> torch.Tensor:
-    """Round-trip K/V through the simulated KV-cache storage dtype.
+    """Round-trip Q/K/V through the simulated KV-cache storage dtype.
 
-    Quantized KV caches store K (post-RoPE) and V in 8 bits at unit scale;
-    dequantizing back to the compute dtype reproduces the cache's quantization
-    error in the trainer forward, keeping its logprobs aligned with the
-    inference server's (the KV-cache analogue of router replay). The
+    Quantized KV caches store K (post-RoPE) and V in 8 bits at unit scale, and
+    vLLM additionally quantizes Q (per-tensor static scale) on the fp8 attention
+    path; dequantizing all three back to the compute dtype reproduces the
+    engine's quantization error in the trainer forward, keeping its logprobs
+    aligned with the inference server's (the KV-cache analogue of router
+    replay). The
     straight-through formulation keeps the backward exact: forward sees the
     quantized value, the gradient flows as if the cast were identity.
     """
@@ -132,9 +134,11 @@ class FlashAttention(nn.Module):
         kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
         if kv_cache_dtype is not None:
             # Replay the inference KV cache storage dtype: K is post-RoPE here, matching
-            # what vLLM quantizes at cache-write time.
+            # what vLLM quantizes at cache-write time. vLLM also quantizes the query
+            # (QuantFP8, per-tensor scale) for fp8 KV caches, so the replay covers Q too.
             k = simulate_kv_cache_dtype(k, kv_cache_dtype)
             v = simulate_kv_cache_dtype(v, kv_cache_dtype)
+            q = simulate_kv_cache_dtype(q, kv_cache_dtype)
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:

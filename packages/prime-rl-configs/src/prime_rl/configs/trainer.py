@@ -337,7 +337,7 @@ class ModelConfig(BaseModelConfig):
     """Inference KV-cache storage dtype to replay in the trainer's attention forward.
     When inference serves rollouts with a quantized KV cache (``inference.vllm.kv_cache_dtype``),
     the trainer's full-precision forward disagrees with the engine's sampling distribution
-    on exactly the tokens the importance ratios compare — quantizing K (post-RoPE) and V
+    on exactly the tokens the importance ratios compare — quantizing Q, K (post-RoPE) and V
     through the same 8-bit round-trip reproduces the cache's error and closes most of that
     gap (the KV-cache analogue of router replay). Auto-set from the inference side by the
     rl entrypoint; ``"auto"`` disables the replay. Only the standard GQA/FlashAttention
