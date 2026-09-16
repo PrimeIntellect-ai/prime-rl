@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from prime_rl.transports.batch import TrainingSample
@@ -81,7 +81,16 @@ class TaskRequest:
     env_name: str
     task: vf.Task
     step: int
-    source_index: int | None = None
+    rollouts: int | None = None
+    """Rollouts of the task this request asks for; None is the env's group size."""
+    group_id: str | None = None
+    """The group these rollouts join (a resume completing a task's landed group); None mints one."""
+
+
+@dataclass
+class LiveTrace:
+    stage: str = "pending"
+    turns: int = 0
 
 
 @dataclass
@@ -94,10 +103,14 @@ class InflightEpisode:
     task: vf.Task
     policy_version: int
     step: int
-    source_index: int | None = None
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
+    dispatch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    """Names the episode on the live view from dispatch until its first trace streams."""
+    live: dict[str, LiveTrace] = field(default_factory=dict)
+    """The episode's in-flight traces by id, as far as the env server's stream has
+    told: which phase each is in and how many turns it has committed."""
 
 
 @dataclass
@@ -113,7 +126,7 @@ class GroupState:
     target_episodes: int
     emitted: int = 0
     policy_version_at_start: int = 0
-    source_index: int | None = None
+    group_id: uuid.UUID | None = None
 
 
 @dataclass

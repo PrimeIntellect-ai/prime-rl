@@ -14,8 +14,36 @@ from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
+from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+
+def resolve_api_key(api_key_var: str) -> str:
+    """The API key named by ``api_key_var``; ``PRIME_API_KEY`` also falls back to the prime
+    CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
+    api_key = os.environ.get(api_key_var)
+    if not api_key and api_key_var == "PRIME_API_KEY":
+        from prime_cli.core.config import Config as PrimeConfig
+
+        api_key = PrimeConfig().api_key
+    return api_key or "EMPTY"
+
+
+def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
+    """The static headers plus those read from the environment. A Prime Inference client
+    without a team header gets the team from ``$PRIME_TEAM_ID`` or the prime CLI config,
+    like the verifiers client: a team's internal models are served only under it."""
+    env_headers = {
+        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+    }
+    headers = {**client_config.headers, **env_headers}
+    if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
+        from prime_cli.core.config import Config as PrimeConfig
+
+        if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
+            headers["X-Prime-Team-ID"] = team_id
+    return headers
 
 
 class PrefillScorer:
@@ -32,7 +60,7 @@ class PrefillScorer:
             # for these chat-completions teacher configs.
             self._client = AsyncOpenAI(
                 base_url=config.base_url,
-                api_key=os.environ.get(config.api_key_var) or "EMPTY",
+                api_key=resolve_api_key(config.api_key_var),
                 default_headers=config.headers or None,
             )
         return await prefill_logprobs(self._client, model, token_ids)
@@ -221,10 +249,7 @@ def setup_client(
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
-    env_headers = {
-        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-    }
-    headers = {**client_config.headers, **env_headers}
+    headers = resolve_headers(client_config)
     return config_cls(
         base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
     )
@@ -240,12 +265,9 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        env_headers = {
-            k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-        }
-        headers = {**client_config.headers, **env_headers}
-        api_key = os.getenv(client_config.api_key_var, "EMPTY")
-        if api_key and api_key != "EMPTY":
+        headers = resolve_headers(client_config)
+        api_key = resolve_api_key(client_config.api_key_var)
+        if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
         # Strip /v1 suffix since admin endpoints are at root level
@@ -270,7 +292,13 @@ async def maybe_check_has_model(
     logger.debug(f"Checking if model {model_name} is in the inference pool")
     results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
     for admin_client, result in zip(admin_clients, results):
-        models = result.json()["data"]
+        body = result.json() if result.headers.get("content-type", "").startswith("application/json") else {}
+        if result.status_code != 200 or "data" not in body:
+            raise RuntimeError(
+                f"Listing the models of {admin_client.base_url} failed with status {result.status_code}: "
+                f"{result.text[:300]}"
+            )
+        models = body["data"]
         if not any(model["id"] == model_name for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")

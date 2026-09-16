@@ -57,5 +57,19 @@ class Monitor(ABC):
         """Log trace updates — post-hoc facts about traces this run already logged.
         Monitors that only carry scalars ignore them."""
 
+    async def log_live(self, events: list[dict[str, Any]]) -> None:
+        """Log the env servers' stream of in-flight traces: ``{"delta", "dispatch"}`` for
+        each delta as it arrived, ``{"done": trace_id}`` when a trace's episode finished.
+        Monitors that only carry finished work ignore it."""
+
+    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
+        """Log how many episodes the eval epoch of ``env_name`` at ``step`` will produce,
+        known once its tasks are counted. Monitors that only carry results ignore it."""
+
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+        """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,
+        errored ones included. Fires once per epoch, after the episodes streamed through
+        ``log``. Monitors that carry episodes as they arrive ignore it."""
+
     async def finalize(self) -> None:
         """Finalize run."""

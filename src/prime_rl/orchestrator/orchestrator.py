@@ -78,7 +78,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -231,14 +231,16 @@ class Orchestrator:
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
 
+        config_dir = get_config_dir(config.output_dir)
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
+            config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
         if config.resume is not None:
             if config.resume.dir is not None:
@@ -325,7 +327,8 @@ class Orchestrator:
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
-                config.eval,
+                intervals=config.eval.intervals,
+                skip_first_step=config.eval.skip_first_step,
                 is_resumed=self.resume_step is not None,
             )
             if config.eval is not None and self.eval_envs is not None
@@ -821,6 +824,8 @@ class Orchestrator:
             env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         }
+        for env_name, expected in census.items():
+            await monitors.log_eval_plan(env_name, step, expected)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
@@ -857,7 +862,7 @@ class Orchestrator:
             train_batch_part += f" (+{train_buffered} buffered)"
 
         eval_batch_part = ""
-        for env, _step, eb, exp, _ebuf in eval_batches:
+        for env, _step, eb, exp in eval_batches:
             eval_pct = eb / exp if exp else 0.0
             eval_batch_part += f" | {env} {eb}/{exp} ({eval_pct:.1%})"
 

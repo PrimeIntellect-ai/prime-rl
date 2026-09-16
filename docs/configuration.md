@@ -171,7 +171,7 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-`ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
+`ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire (inherited from the group-level `interval` when unset); a standalone eval has neither.
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 

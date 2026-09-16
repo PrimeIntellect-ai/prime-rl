@@ -10,7 +10,7 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
-from prime_rl.configs.monitors import OrchestratorMonitorsConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     BaseWeightBroadcastConfig,
@@ -161,13 +161,10 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServeConfig = vf.ServeConfig()
-    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config with an unset ``address`` filled in as the derived ``tcp://127.0.0.1:<env_server_base_port + index>``. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
+    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config; an unset ``address`` means the spawned server binds an OS-assigned port and publishes it for the orchestrator. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
-
-    ratio: float = Field(1.0, gt=0)
-    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     @model_validator(mode="before")
     @classmethod
@@ -269,6 +266,9 @@ class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
+    ratio: float = Field(1.0, gt=0)
+    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
+
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
@@ -292,6 +292,10 @@ class EvalSourceConfig(EnvConfig):
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
+
+
+class OnlineEvalSourceConfig(EvalSourceConfig):
+    """An eval source of a training run: evaluated on a step interval."""
 
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
@@ -328,7 +332,9 @@ class TrainConfig(BaseConfig):
         return self
 
 
-class EvalConfig(BaseConfig):
+class EvalSourcesConfig(BaseConfig):
+    """Eval sources and the group-level defaults they inherit."""
+
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
@@ -340,6 +346,49 @@ class EvalConfig(BaseConfig):
 
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
+
+    @model_validator(mode="after")
+    def resolve_env_defaults(self):
+        """Resolve per-env overrides: inherit group-level sampling, num_examples and
+        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        group_sampling = self.sampling.model_dump()
+        for source in self.source:
+            if "sampling" not in source.model_fields_set:
+                source.sampling = EvalSamplingConfig(**group_sampling)
+            else:
+                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
+                source.sampling = EvalSamplingConfig(**merged)
+            if "num_examples" not in source.model_fields_set:
+                source.num_examples = self.num_examples
+            if "group_size" not in source.model_fields_set:
+                source.group_size = self.group_size
+        return self
+
+    @model_validator(mode="after")
+    def validate_non_empty_sources(self):
+        if not self.source:
+            raise ValueError(
+                "At least one eval source is required. Add a source block "
+                "(e.g. [[source]] or [[orchestrator.eval.source]]) or drop the eval block entirely to disable eval."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_env_names(self):
+        env_names = [source.resolved_name for source in self.source]
+        duplicates = [n for n in env_names if env_names.count(n) > 1]
+        if duplicates:
+            raise ValueError(
+                f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
+            )
+        return self
+
+
+class ScheduledEvalConfig(EvalSourcesConfig):
+    """Eval sources evaluated on a step interval next to training."""
+
+    source: list[OnlineEvalSourceConfig] = Field(default_factory=list)
+    """Evaluation sources, each with its own step interval."""
 
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
@@ -354,43 +403,22 @@ class EvalConfig(BaseConfig):
     exit where all evals already completed."""
 
     @model_validator(mode="after")
-    def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples,
-        group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
-        group_sampling = self.sampling.model_dump()
+    def resolve_env_intervals(self):
+        """Per-env intervals inherit the group-level interval."""
         for source in self.source:
-            if "sampling" not in source.model_fields_set:
-                source.sampling = EvalSamplingConfig(**group_sampling)
-            else:
-                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
-                source.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in source.model_fields_set:
-                source.num_examples = self.num_examples
-            if "group_size" not in source.model_fields_set:
-                source.group_size = self.group_size
             if "interval" not in source.model_fields_set:
                 source.interval = self.interval
         return self
 
-    @model_validator(mode="after")
-    def validate_non_empty_sources(self):
-        if not self.source:
-            raise ValueError(
-                "EvalConfig must define at least one source. Either drop the "
-                "[orchestrator.eval] block entirely (to disable eval) or "
-                "add a [[orchestrator.eval.source]] block."
-            )
-        return self
+    @property
+    def intervals(self) -> dict[str, int]:
+        """Step interval per eval env, by resolved name."""
+        return {source.resolved_name: source.interval for source in self.source}
 
-    @model_validator(mode="after")
-    def validate_unique_env_names(self):
-        env_names = [source.resolved_name for source in self.source]
-        duplicates = [n for n in env_names if env_names.count(n) > 1]
-        if duplicates:
-            raise ValueError(
-                f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
-            )
-        return self
+
+class RLOnlineEvalConfig(ScheduledEvalConfig):
+    """The ``[orchestrator.eval]`` block: online evals against the orchestrator's
+    inference pool, on the policy the train rollouts see."""
 
 
 class CheckpointConfig(BaseConfig):
@@ -510,7 +538,7 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    eval: EvalConfig | None = None
+    eval: RLOnlineEvalConfig | None = None
     """Evaluation configuration."""
 
     log: LogConfig = LogConfig()
@@ -518,7 +546,7 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
@@ -544,9 +572,6 @@ class OrchestratorConfig(BaseConfig):
 
     tasks_per_minute: int | None = Field(None, ge=1)
     """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
-
-    env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
@@ -770,15 +795,9 @@ class OrchestratorConfig(BaseConfig):
         return sources
 
     @property
-    def env_addresses(self) -> dict[tuple[str, str], str]:
-        """Where each source's env server lives, keyed by ``(split, resolved_name)``:
-        the source's own ``serve.address`` when set (an externally managed server), else
-        ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
-        ``env_sources`` order. The launcher binds env servers at exactly these addresses
-        and the orchestrator connects to them, so both sides agree from the config
-        alone."""
-        return {
-            (split, source.resolved_name): source.serve.address
-            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
-            for index, (split, source) in enumerate(self.env_sources)
-        }
+    def env_addresses(self) -> dict[tuple[str, str], str | None]:
+        """Where each source's env server lives, keyed by ``(split, resolved_name)``: the
+        source's own ``serve.address`` when set (an externally managed server), else None —
+        the launcher spawns the server, which binds an OS-assigned port and publishes it
+        to the source's address file for the orchestrator to pick up."""
+        return {(split, source.resolved_name): source.serve.address for split, source in self.env_sources}
