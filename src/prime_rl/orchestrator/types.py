@@ -11,6 +11,7 @@ from prime_rl.transports.batch import TrainingSample
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.orchestrator.clients import InferenceClient
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
 
@@ -104,6 +105,7 @@ class InflightEpisode:
     policy_version: int
     step: int
     client_config: vf.ClientConfig | None = None
+    inference_client: InferenceClient | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
     dispatch_id: str = field(default_factory=lambda: uuid.uuid4().hex)

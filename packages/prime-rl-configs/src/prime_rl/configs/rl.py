@@ -873,9 +873,17 @@ class RLConfig(BaseConfig):
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = f"http://{host}:{port}/v1"
+        router = self.inference.router
+        if (
+            router is not None
+            and router.type == "vllm-router"
+            and router.policy == "sticky_least_loaded"
+            and "finish_sessions" not in client.model_fields_set
+        ):
+            client.finish_sessions = True
         if (
             self.deployment.type == "single_node"
-            and self.inference.router is not None
+            and router is not None
             and "admin_base_url" not in client.model_fields_set
         ):
             # Admin ops (pause/update_weights/resume) must bypass the router and hit

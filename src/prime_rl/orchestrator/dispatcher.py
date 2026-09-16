@@ -590,6 +590,7 @@ class Dispatcher:
             policy_version=group.policy_version_at_start,
             step=group.step,
             client_config=client,
+            inference_client=clients,
             started_at=time.monotonic(),
         )
 
@@ -641,6 +642,8 @@ class Dispatcher:
 
         try:
             episode: vf.WireEpisode = task.result()
+            if meta.inference_client is not None:
+                await meta.inference_client.finish_sessions([trace.id for trace in episode.traces])
         except asyncio.CancelledError:
             return
         except Exception as exc:

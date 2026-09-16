@@ -364,6 +364,15 @@ class SFTConfig(BaseConfig):
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
+        router = self.inference.router if self.inference is not None else None
+        if (
+            router is not None
+            and router.type == "vllm-router"
+            and router.policy == "sticky_least_loaded"
+            and "finish_sessions" not in self.eval.client.model_fields_set
+        ):
+            self.eval.client.finish_sessions = True
+
         # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
         if self.model.lora is not None:
             if self.inference is not None:
