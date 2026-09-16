@@ -249,9 +249,7 @@ class ConcurrencyController:
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
         self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
-        self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(
-            0.0, 1.0 - max_usage / KV_USAGE_SOFT_CAP
-        )
+        self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(0.0, 1.0 - max_usage / KV_USAGE_SOFT_CAP)
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
 
         # First capacity observation without a user-set start: derive the
