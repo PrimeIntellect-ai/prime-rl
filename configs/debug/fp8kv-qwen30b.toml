@@ -2,10 +2,11 @@
 # taskset — its TaskData keeps the default network allow-list, so rollouts run on the
 # local subprocess runtime with no sandboxes). Same 4-node topology as
 # examples/advanced/qwen3-30b-a3b/math-fp8kv.toml (2 trainer + 2 one-node inference
-# replicas): validates the full FP8 stack end-to-end through a real RL loop — rollouts
-# generated against FP8 KV caches (inference), FP8-quantized dense linears + DeepGEMM
-# FP8 MoE compute (trainer), logprob recompute + optimizer step, and the NCCL weight
-# broadcast back into the engines — in 3 steps.
+# replicas): validates the FP8 KV cache end-to-end through a real RL loop — rollouts
+# generated against FP8 KV caches (inference), the trainer replaying the KV cache
+# quantization in its logprob forward (trainer.model.kv_cache_dtype, auto-set from
+# inference.vllm.kv_cache_dtype), optimizer step, and the NCCL weight broadcast back
+# into the engines — in 3 steps.
 #
 # For the math tasksets (i3_math / aime25), which pin an empty network allow-list,
 # use the prime sandbox runtime instead (see math-fp8kv.toml).
@@ -49,12 +50,6 @@ max_inflight_activations = 5
 
 [trainer.model.ac]
 freq = 1
-
-[trainer.model.quantization]
-type = "fp8"
-
-[trainer.model.moe.compute]
-type = "deepgemm_fp8"
 
 [trainer.optim]
 type = "adamw"
