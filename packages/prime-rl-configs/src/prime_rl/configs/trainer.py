@@ -339,7 +339,7 @@ class ModelConfig(BaseModelConfig):
     """Inference KV-cache storage dtype to replay in the trainer's attention forward.
     When inference serves rollouts with a quantized KV cache (``inference.vllm.kv_cache_dtype``),
     the trainer's full-precision forward disagrees with the engine's sampling distribution
-    on exactly the tokens the importance ratios compare. ``fp8`` replays by quantizing Q,
+    on exactly the tokens the importance ratios compare. ``fp8`` replays by quantizing
     K (post-RoPE) and V through the same 8-bit round-trip (value replay); ``fp8_kernel``
     goes further and runs the engine's own fp8 flash-attn kernel (fp8 tensor-core matmuls
     and the in-kernel e4m3 attention-probability quantization), matching the engine's

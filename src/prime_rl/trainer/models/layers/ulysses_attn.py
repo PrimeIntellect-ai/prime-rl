@@ -200,10 +200,9 @@ def substitute_ulysses_attn(
         if kv_cache_dtype is not None:
             # Replay the inference KV cache storage dtype under context
             # parallelism too: quantization is elementwise, so replaying on the
-            # local Q/K/V shards matches the unsharded sequence's replay.
+            # local K/V shards matches the unsharded sequence's replay.
             k = simulate_kv_cache_dtype(k, kv_cache_dtype)
             v = simulate_kv_cache_dtype(v, kv_cache_dtype)
-            q = simulate_kv_cache_dtype(q, kv_cache_dtype)
 
         # cu_seqlens / max_seqlen passed in are for the *local* sharded sequence;
         # ulysses needs the *full* ones (each rank holds the full seq after a2a).

@@ -240,11 +240,11 @@ class FlashAttention(nn.Module):
             return _fp8kv_kernel_replay(q, k, v, cu_seqlens, max_seqlen)
         if kv_cache_dtype is not None:
             # Value-level replay: K is post-RoPE here, matching what vLLM quantizes
-            # at cache-write time. vLLM also quantizes the query (QuantFP8, per-tensor
-            # scale) for fp8 KV caches, so the replay covers Q too.
+            # at cache-write time. Only K/V are replayed: although vLLM also quantizes
+            # the query on the fp8 path, replaying Q adds uncorrelated bucket noise
+            # against the engine's own Q values and measurably widens the mismatch.
             k = simulate_kv_cache_dtype(k, kv_cache_dtype)
             v = simulate_kv_cache_dtype(v, kv_cache_dtype)
-            q = simulate_kv_cache_dtype(q, kv_cache_dtype)
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
