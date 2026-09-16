@@ -15,15 +15,16 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.distributed.device_mesh import init_device_mesh
 
 from prime_rl.experimental.fully_shard_caching.mini_model import (
+    DEFAULT_NUM_EXPERTS,
     WRAP_MODES,
     MiniModelSpec,
     build_mini_model,
     expert_modules,
 )
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import PREPARE_CALLS
+from prime_rl.trainer.parallel_dims import ParallelDims
 
 BYTES_PER_GIB = 1024**3
 
@@ -47,7 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--seq-len", type=int, default=4096)
     parser.add_argument("--layers", type=int, default=8)
-    parser.add_argument("--ep", type=int, default=8)
+    parser.add_argument("--ep", type=int, default=4)
+    parser.add_argument("--num-experts", type=int, default=DEFAULT_NUM_EXPERTS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--attn-implementation", default="flash_attention_3")
@@ -55,15 +57,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--install-prepared", type=boolean, default=True)
     parser.add_argument("--metrics-out", type=Path, default=None)
     return parser.parse_args()
-
-
-def build_meshes(ep: int):
-    world_size = dist.get_world_size()
-    if world_size % ep:
-        raise ValueError(f"World size {world_size} is not divisible by ep={ep}.")
-    mesh = init_device_mesh("cuda", (world_size // ep, ep), mesh_dim_names=("dp_shard_mod_ep", "dp_shard_in_ep"))
-    fsdp_mesh = mesh["dp_shard_mod_ep", "dp_shard_in_ep"]._flatten(mesh_dim_name="dp_shard")
-    return fsdp_mesh, mesh["dp_shard_mod_ep"], mesh["dp_shard_in_ep"]
 
 
 def fake_batch(seed: int, step: int, microbatch: int, seq_len: int, vocab_size: int, device: torch.device):
@@ -99,19 +92,18 @@ def main() -> None:
     device = torch.device("cuda", local_rank)
     torch.manual_seed(args.seed)
 
-    fsdp_mesh, dp_mod_ep_mesh, ep_mesh = build_meshes(args.ep)
+    world_size = dist.get_world_size()
+    parallel_dims = ParallelDims(dp_replicate=1, dp_shard=world_size, cp=1, pp=1, ep=args.ep, world_size=world_size)
     spec = MiniModelSpec(
         num_hidden_layers=args.layers,
         wrap=args.wrap,
-        ep_size=args.ep,
+        num_experts=args.num_experts,
         seed=args.seed,
         attn_implementation=args.attn_implementation,
     )
     model = build_mini_model(
         spec,
-        fsdp_mesh,
-        dp_mod_ep_mesh,
-        ep_mesh,
+        parallel_dims,
         expert_reshard_after_forward=args.expert_reshard_after_forward,
         activation_checkpointing=args.ac == "full",
         install_prepared=args.install_prepared,

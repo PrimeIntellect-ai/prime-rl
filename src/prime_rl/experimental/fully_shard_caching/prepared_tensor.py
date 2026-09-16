@@ -35,6 +35,10 @@ FSDP_SHARDED_OPS = {
     torch.ops.c10d.scatter_.default,
     torch.ops.aten.detach.default,
     torch.ops.aten.alias.default,
+    # Unreachable today, since configure_moe_runtime forbids num_experts % ep and every rank joins
+    # the mesh; kept as insurance and probably deletable.
+    torch.ops.aten.new_empty.default,
+    torch.ops.aten.constant_pad_nd.default,
 }
 
 FSDP_UNSHARDED_VIEW_OPS = {
@@ -76,7 +80,7 @@ def validate_prepared(prepared: Any, prepare_fn: PrepareFn) -> dict[str, torch.T
             raise TypeError(f"{prepare_fn} returned a non-string key {name!r}.")
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(f"{prepare_fn} returned a non-tensor value for {name!r}.")
-    storages = {tensor.untyped_storage()._cdata for tensor in prepared.values()}
+    storages = {tensor.untyped_storage().data_ptr() for tensor in prepared.values()}
     if len(storages) != len(prepared):
         raise ValueError(
             f"{prepare_fn} returned entries aliasing the same storage; FSDP owns each entry's "
@@ -214,9 +218,10 @@ class ShardedPreparedTensor(PreparedTensorBase):
             self._release_gather_buffer(gathered)
             return unsharded, tuple(prepared.values())
 
-        if not isinstance(out, UnshardedPreparedTensor):
-            raise RuntimeError(f"FSDP refill target is not an UnshardedPreparedTensor: {type(out).__name__}")
-        existing = out.prepared_storage
+        target = out._local_tensor if isinstance(out, DTensor) else out
+        if not isinstance(target, UnshardedPreparedTensor):
+            raise RuntimeError(f"FSDP refill target is not an UnshardedPreparedTensor: {type(target).__name__}")
+        existing = target.prepared_storage
         managed = tuple(existing.values())
         with (
             torch.no_grad(),
@@ -337,8 +342,9 @@ def install_prepared_weights(
 ) -> None:
     """Wrap the named parameters of ``module`` in place, before ``fully_shard``."""
     if not release_all_gather_outputs:
+        # TODO: add support
         # release=False means the op still needs the gathered high-precision weight, which we cannot
-        # honour: UnshardedPreparedTensor drops it, and that is what makes releasing safe.
+        # honor: UnshardedPreparedTensor drops it, and that is what makes releasing safe.
         # Supporting it means retaining the gathered tensor and exposing it next to .prepared, but
         # never listing it in __tensor_flatten__, since FSDP already owns that storage.
         raise NotImplementedError(
@@ -346,8 +352,8 @@ def install_prepared_weights(
             "high-precision storage, so an op has no way to read the gathered weight."
         )
     for name, prepare_fn in prepare_fns.items():
-        parameter = module._parameters.get(name)
-        if parameter is None:
+        parameter = getattr(module, name, None)
+        if not isinstance(parameter, nn.Parameter):
             raise ValueError(f"{type(module).__name__} has no parameter {name!r} to prepare.")
         if isinstance(parameter.data, ShardedPreparedTensor):
             raise ValueError(f"{type(module).__name__}.{name} is already wrapped for preparation.")
@@ -361,9 +367,9 @@ def install_prepared_weights(
 
 
 def prepared_or_none(weight: torch.Tensor) -> Mapping[str, torch.Tensor] | None:
-    if isinstance(weight, UnshardedPreparedTensor):
-        return weight.prepared
     local = weight.to_local() if isinstance(weight, DTensor) else weight
+    if isinstance(local, UnshardedPreparedTensor):
+        return local.prepared
     if isinstance(local, ShardedPreparedTensor):
         raise RuntimeError("An op read a ShardedPreparedTensor, so it ran outside its weights' unshard scope.")
     return None

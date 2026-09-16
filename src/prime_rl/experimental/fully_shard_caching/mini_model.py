@@ -1,4 +1,4 @@
-"""Depth-truncated GLM-4.5-Air, randomly initialized, with EP-local experts and FSDP."""
+"""Depth-truncated GLM-4.5-Air, randomly initialized, with expert parallelism and FSDP."""
 
 from __future__ import annotations
 
@@ -7,23 +7,29 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.tensor import DTensor
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig
+from prime_rl.configs.trainer import (
+    ActivationCheckpointConfig,
+    BF16MoEComputeConfig,
+    DeepGemmFP8MoEComputeConfig,
+    ModelConfig,
+    MoERuntimeConfig,
+)
 from prime_rl.experimental.fully_shard_caching.ops import (
     Fp8GroupedExpertCompute,
     RowScaledGroupedExpertCompute,
 )
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import install_prepared_weights
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe.modeling_glm4_moe import Glm4MoeForCausalLM
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, DeepGemmFP8GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE
+from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.parallel_dims import ParallelDims
 
 GLM_4_5_AIR_CONFIG = dict(
     attention_bias=True,
@@ -52,6 +58,10 @@ GLM_4_5_AIR_CONFIG = dict(
 
 WRAP_MODES = ("none", "fp8", "toy")
 
+CHECKPOINT_WRAPPED_MODULE = "_checkpoint_wrapped_module"
+
+DEFAULT_NUM_EXPERTS = GLM_4_5_AIR_CONFIG["n_routed_experts"]
+
 
 class PreparedGroupedExperts(GroupedExperts):
     """Grouped experts that hand their raw parameters to a stateless op.
@@ -63,12 +73,15 @@ class PreparedGroupedExperts(GroupedExperts):
     compute = None
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        def to_local(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         output = self.compute(
             x.bfloat16(),
-            self.gate_proj,
-            self.up_proj,
-            self.down_proj,
+            to_local(self.gate_proj),
+            to_local(self.up_proj),
+            to_local(self.down_proj),
             offsets,
             num_tokens_per_expert,
         )
@@ -79,7 +92,7 @@ class PreparedGroupedExperts(GroupedExperts):
 class MiniModelSpec:
     num_hidden_layers: int
     wrap: str
-    ep_size: int
+    num_experts: int
     seed: int
     attn_implementation: str = "flash_attention_3"
     lm_head_chunk_size: int = 8192
@@ -93,63 +106,49 @@ def build_op(wrap: str, activation):
     raise ValueError(f"Unknown wrap mode {wrap!r}, expected one of {WRAP_MODES}.")
 
 
-def build_grouped_gemm(wrap: str) -> GroupedGemm:
-    return BF16GroupedGemm() if wrap == "toy" else DeepGemmFP8GroupedGemm()
+def build_model_config(wrap: str) -> ModelConfig:
+    """Pick the MoE compute whose kernels the wrap mode's op reproduces."""
+    compute = BF16MoEComputeConfig() if wrap == "toy" else DeepGemmFP8MoEComputeConfig()
+    return ModelConfig(moe=MoERuntimeConfig(compute=compute))
 
 
-def replace_experts(model: nn.Module, spec: MiniModelSpec, ep_group) -> list[GroupedExperts]:
+def replace_experts(model: nn.Module, spec: MiniModelSpec) -> list[GroupedExperts]:
     config = model.config
-    grouped_gemm = build_grouped_gemm(spec.wrap)
     op = build_op(spec.wrap, ActivationDispatch[config.hidden_act]) if spec.wrap != "none" else None
     experts_modules = []
     for moe in (module for module in model.modules() if isinstance(module, MoE)):
-        num_experts = moe.experts.num_experts
-        if num_experts % spec.ep_size:
-            raise ValueError(f"Expert count {num_experts} is not divisible by ep={spec.ep_size}.")
         experts_cls = GroupedExperts if op is None else PreparedGroupedExperts
         experts = experts_cls(
             dim=config.hidden_size,
             hidden_dim=config.moe_intermediate_size,
-            num_experts=num_experts // spec.ep_size,
+            num_experts=moe.experts.num_experts,
             expert_type="gated",
             activation=config.hidden_act,
-            grouped_gemm=grouped_gemm,
         )
         if op is not None:
             experts.compute = op
         moe.experts = experts
-        moe.set_token_dispatcher(
-            TorchTokenDispatcher(
-                num_experts=num_experts,
-                top_k=moe.router.top_k,
-                token_group_alignment=grouped_gemm.token_group_alignment,
-                group=ep_group,
-            )
-        )
         experts_modules.append(experts)
     return experts_modules
 
 
-def initialize(model: nn.Module, seed: int, ep_rank: int, device: torch.device) -> None:
+def seed_name(name: str) -> str:
+    """Parameter name with the activation-checkpoint wrapper stripped, so init is the same either way."""
+    return name.replace(f".{CHECKPOINT_WRAPPED_MODULE}", "")
+
+
+def initialize(model: nn.Module, seed: int, device: torch.device) -> None:
     model.to_empty(device=device)
     for _, buffer in model.named_buffers():
         buffer.zero_()
     model.init_buffers_post_meta()
 
-    expert_parameters = {
-        id(parameter)
-        for module in model.modules()
-        if isinstance(module, GroupedExperts)
-        for parameter in module.parameters(recurse=False)
-    }
     with torch.no_grad():
         for name, parameter in sorted(model.named_parameters()):
             if parameter.dim() == 1:
                 parameter.fill_(1.0 if name.endswith("weight") else 0.0)
                 continue
-            stream = seed * 1_000_003 + zlib.crc32(name.encode())
-            if id(parameter) in expert_parameters:
-                stream += ep_rank * 7_919
+            stream = seed * 1_000_003 + zlib.crc32(seed_name(name).encode())
             generator = torch.Generator(device=parameter.device).manual_seed(stream % (2**63))
             parameter.normal_(0.0, 0.02, generator=generator)
 
@@ -171,34 +170,29 @@ def expert_modules(model: nn.Module) -> list[GroupedExperts]:
     return [module for module in model.modules() if isinstance(module, GroupedExperts)]
 
 
-def apply_fsdp(
-    model: nn.Module,
-    fsdp_mesh: DeviceMesh,
-    dp_mod_ep_mesh: DeviceMesh,
-    expert_reshard_after_forward: bool,
-) -> None:
+def apply_fsdp(model: nn.Module, parallel_dims: ParallelDims, expert_reshard_after_forward: bool) -> None:
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
+    dp_mod_ep_mesh = parallel_dims.get_mesh("dp_shard_mod_ep") if parallel_dims.ep_enabled else hsdp_mesh
 
     def config(reshard: bool) -> dict:
         return dict(mp_policy=mp_policy, offload_policy=OffloadPolicy(), reshard_after_forward=reshard)
 
     for block in model.model.layers:
-        mlp = getattr(block, "_checkpoint_wrapped_module", block).mlp
+        mlp = getattr(block, CHECKPOINT_WRAPPED_MODULE, block).mlp
         if isinstance(mlp, MoE):
             fully_shard(mlp.experts, mesh=dp_mod_ep_mesh, **config(expert_reshard_after_forward))
-            mlp.experts.set_gradient_divide_factor(fsdp_mesh.size())
-        fully_shard(block, mesh=fsdp_mesh, **config(True))
+            mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+        fully_shard(block, mesh=hsdp_mesh, **config(True))
 
-    fully_shard(model.model.embed_tokens, mesh=fsdp_mesh, **config(True))
-    fully_shard([model.lm_head, model.model.norm], mesh=fsdp_mesh, **config(False))
-    fully_shard(model, mesh=fsdp_mesh, **config(True))
+    fully_shard(model.model.embed_tokens, mesh=hsdp_mesh, **config(True))
+    fully_shard([model.lm_head, model.model.norm], mesh=hsdp_mesh, **config(False))
+    fully_shard(model, mesh=hsdp_mesh, **config(True))
 
 
 def build_mini_model(
     spec: MiniModelSpec,
-    fsdp_mesh: DeviceMesh,
-    dp_mod_ep_mesh: DeviceMesh,
-    ep_mesh: DeviceMesh,
+    parallel_dims: ParallelDims,
     *,
     expert_reshard_after_forward: bool,
     activation_checkpointing: bool,
@@ -206,16 +200,18 @@ def build_mini_model(
     device: torch.device,
 ) -> nn.Module:
     config = Glm4MoeConfig(**GLM_4_5_AIR_CONFIG, num_hidden_layers=spec.num_hidden_layers)
+    config.n_routed_experts = spec.num_experts
     config._attn_implementation = spec.attn_implementation
     with torch.device("meta"):
         model = Glm4MoeForCausalLM(config)
-        experts_modules = replace_experts(model, spec, ep_mesh.get_group())
+        experts_modules = replace_experts(model, spec)
         inject_prime_lm_head(model, chunk_size=spec.lm_head_chunk_size)
 
-    initialize(model, spec.seed, ep_mesh.get_local_rank(), device)
     if spec.wrap != "none" and install_prepared:
         install_expert_preparation(experts_modules)
+    configure_moe_runtime(model, build_model_config(spec.wrap), parallel_dims)
     if activation_checkpointing:
         apply_activation_checkpointing(model)
-    apply_fsdp(model, fsdp_mesh, dp_mod_ep_mesh, expert_reshard_after_forward)
+    apply_fsdp(model, parallel_dims, expert_reshard_after_forward)
+    initialize(model, spec.seed, device)
     return model

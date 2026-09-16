@@ -180,7 +180,8 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: UnshardedPreparedTensor, offs: torch.Tensor):
         prepared = weight.prepared
-        out = _fp8_grouped_gemm_prepared_forward(x, prepared["qdata"], prepared["scales"], offs, weight.shape[1])
+        qdata = prepared["qdata"]
+        out = _fp8_grouped_gemm_prepared_forward(x, qdata, prepared["scales"], offs, qdata.size(1))
         ctx.save_for_backward(x, offs)
         ctx.weight = weight
         return out
@@ -191,7 +192,7 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
         weight = ctx.weight
         prepared = weight.prepared
         needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
-        _, out_features, in_features = weight.shape
+        _, out_features, in_features = prepared["qdata"].shape
         grad_x, grad_weight_t = _fp8_grouped_gemm_prepared_backward(
             grad_output,
             x.detach(),

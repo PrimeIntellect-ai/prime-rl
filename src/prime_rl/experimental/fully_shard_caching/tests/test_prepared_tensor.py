@@ -1,7 +1,9 @@
 import pytest
 import torch
 from torch import nn
+from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     PREPARE_CALLS,
@@ -42,6 +44,11 @@ def module() -> Weights:
 
 
 @pytest.fixture
+def ep_mesh(single_rank_process_group) -> DeviceMesh:
+    return init_device_mesh("cuda", (1,), mesh_dim_names=("ep",))
+
+
+@pytest.fixture
 def sharded_module(module, single_rank_process_group) -> Weights:
     install_prepared_weights(module, {"gate_proj": scale_prepare, "down_proj": scale_prepare})
     fully_shard(module, mp_policy=MixedPrecisionPolicy(param_dtype=torch.bfloat16))
@@ -62,6 +69,12 @@ def test_install_wraps_parameters_preserving_metadata(module):
 def test_install_rejects_missing_parameter(module):
     with pytest.raises(ValueError, match="no parameter 'up_proj'"):
         install_prepared_weights(module, {"up_proj": scale_prepare})
+
+
+def test_install_rejects_a_non_parameter_attribute(module):
+    module.register_buffer("scale", torch.ones(EXPERTS))
+    with pytest.raises(ValueError, match="no parameter 'scale'"):
+        install_prepared_weights(module, {"scale": scale_prepare})
 
 
 def test_install_rejects_already_wrapped_parameter(module):
@@ -176,3 +189,29 @@ def test_reading_an_unsharded_tensor_as_data_raises(sharded_module):
     sharded_module.unshard()
     with pytest.raises(RuntimeError, match="storage-free UnshardedPreparedTensor"):
         sharded_module.gate_proj.data.sum()
+
+
+def test_distributing_a_wrapped_parameter_keeps_the_wrapper_inside(module, ep_mesh):
+    install_prepared_weights(module, {"gate_proj": scale_prepare})
+    original = module.gate_proj.data._tensor.clone()
+
+    sharded = distribute_tensor(module.gate_proj, ep_mesh, [Shard(0)])
+
+    assert isinstance(sharded, DTensor)
+    assert isinstance(sharded._local_tensor, ShardedPreparedTensor)
+    assert sharded._local_tensor.prepare_fn is scale_prepare
+    assert torch.equal(sharded._local_tensor._tensor, original)
+
+
+def test_prepared_or_none_looks_through_a_dtensor(module, ep_mesh):
+    install_prepared_weights(module, {"gate_proj": scale_prepare})
+    sharded = distribute_tensor(module.gate_proj, ep_mesh, [Shard(0)])
+
+    with pytest.raises(RuntimeError, match="outside its weights' unshard scope"):
+        prepared_or_none(sharded)
+
+    local = sharded.to_local()._tensor
+    prepared = scale_prepare(local)
+    unsharded = DTensor.from_local(UnshardedPreparedTensor(local, prepared), ep_mesh, [Shard(0)], run_check=False)
+
+    assert dict(prepared_or_none(unsharded)) == prepared
