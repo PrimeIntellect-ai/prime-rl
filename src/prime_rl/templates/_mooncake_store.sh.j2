@@ -24,17 +24,16 @@
 {%- endif %}
     if [ "$SLURMD_NODENAME" = "$MC_HEAD" ]; then
 {%- if kv_offload_disk_path %}
-        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 -enable_offload=true -root_fs_dir={{ kv_offload_disk_path }} > "$MC_DIR/master.log" 2>&1 &
+        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=60000 -enable_offload=true -root_fs_dir={{ kv_offload_disk_path }} > "$MC_DIR/master.log" 2>&1 &
 {%- else %}
-        # default_kv_lease_ttl raised from 5s: KV blocks were expiring before the decode side
-        # reused them ("invalid KV blocks ... may have expired"), the real non-NIC config issue.
-        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 > "$MC_DIR/master.log" 2>&1 &
+        # Read leases protect pending transfers while allowing idle prefixes to be evicted.
+        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=60000 > "$MC_DIR/master.log" 2>&1 &
 {%- endif %}
     fi
     # Every node waits for the shared master + metadata, then contributes its segment.
     for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/50051" 2>/dev/null && break; sleep 1; done
     for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/8080" 2>/dev/null && break; sleep 1; done
-    mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ kv_offload_cpu_bytes }}{% if kv_offload_device_name %} -device_names={{ kv_offload_device_name }}{% endif %}{% if kv_offload_disk_path %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
+    mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ kv_offload_cpu_bytes }}{% if kv_offload_disk_path %} -enable_offload=true{% endif %}{% if kv_offload_device_name %} -device_names={{ kv_offload_device_name }}{% endif %} > "$MC_DIR/client.log" 2>&1 &
     for _ in $(seq 1 60); do timeout 1 bash -c "echo > /dev/tcp/$LOCAL_IP/50052" 2>/dev/null && break; sleep 1; done
     cat > "$MOONCAKE_CONFIG_PATH" <<MOONCAKE_JSON
 {"mode":"standalone-store","global_segment_size":0,"local_buffer_size":4294967296,"protocol":"rdma","device_name":"{{ kv_offload_device_name }}","master_server_address":"$MC_MASTER","metadata_server":"$MC_METADATA","enable_offload":{% if kv_offload_disk_path %}true{% else %}false{% endif %}}

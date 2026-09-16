@@ -45,6 +45,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
+- After changing launcher environment-source plumbing, dry-run the multi-node config and verify its generated script includes an `env-server` command for each launcher-managed source. The RL template receives these names as `env_names.train` and `env_names.eval`.
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
 - NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
 - Environment packages: before launching a config with a non-core verifier env id,

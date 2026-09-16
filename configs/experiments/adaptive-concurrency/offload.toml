@@ -1,0 +1,35 @@
+# Stack after base.toml; one trainer node and one TP8/EP inference node.
+[run]
+name = "terminal-lego-mooncake-dram-v1"
+
+[env_vars]
+TMPDIR = "/tmp/ac-mooncake-dram"
+TRITON_CACHE_DIR = "/tmp/ac-mooncake-dram/triton"
+
+[slurm]
+job_name = "ac-mooncake-dram-v1"
+pre_run_command = "mkdir -p /tmp/ac-mooncake-dram"
+
+[deployment]
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[monitors.wandb]
+name = "terminal-lego-mooncake-dram-v1"
+
+[[orchestrator.train.source]]
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["ac-mooncake-dram-v1"]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/ac-mooncake-dram/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/ac-mooncake-dram/flashinfer"
+
+[inference.kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7"
+
+[inference.kv_cache_offload.cpu]
+num_bytes = 1_200_000_000_000

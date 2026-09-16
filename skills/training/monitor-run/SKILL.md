@@ -11,7 +11,14 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 1. Find the run dir and read the resolved configs at `{run_dir}/configs/latest/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). Read the launch command from `{run_dir}/configs/latest/command.txt`. The launch TOML is copied verbatim to `{run_dir}/configs/latest/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
-3. Write the initial summary into `{run_dir}/STATUS.md`.
+3. For Mooncake DRAM offload, verify the client mounts the configured nonzero memory segment and vLLM creates `MooncakeStoreConnector`. Mooncake `enable_offload` controls the SSD tier, not GPU-to-DRAM caching: enable it on master, client, and vLLM JSON only when disk is configured, with a valid `MOONCAKE_OFFLOAD_FILE_STORAGE_PATH`. Read leases prevent eviction, so size `default_kv_lease_ttl` for pending transfers rather than whole rollouts; verify load failures and eviction progress under pressure. A full store with `NO_AVAILABLE_HANDLE` and no successful evictions is degraded even if inference still serves requests.
+4. Write the initial summary into `{run_dir}/STATUS.md`.
+
+### Native CPU KV offload preflight
+
+For vLLM 0.28 native `OffloadingConnector`, check both host RAM and `df -h /dev/shm` on the inference node before launching: the CPU tier is a shared mmap in `/dev/shm`, and its aggregate `cpu.num_bytes` must fit there with headroom for other users of shared memory. Host RAM alone is insufficient. For an eager CPU-only cache intended to improve reuse, size the CPU tier above aggregate GPU KV capacity; a smaller tier can mostly mirror GPU-resident prefixes. Use the same GPU KV budget in matched baseline comparisons.
+
+Native `kv_offload_cpu_cache_usage_perc` reports transfer-pinned CPU blocks, excluding evictable cached blocks. Read/write occupancy, allocation-failure deltas, transfer bytes/time, external cache hits, and capacity/deferred queue counts help distinguish offload saturation from normal full-cache eviction. Do not sum CPU and GPU usage percentages or their cache-hit percentages.
 
 ### Recurring check-ins
 
