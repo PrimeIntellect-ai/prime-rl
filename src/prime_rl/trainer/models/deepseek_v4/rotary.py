@@ -25,19 +25,19 @@ def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
 
 
 @torch.compile
-def _rotate_interleaved(rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def rotate_interleaved(rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     return ((rope.float() * cos) + (rotate_half_interleaved(rope).float() * sin)).to(rope.dtype)
 
 
 # `emulate_precision_casts` keeps the intermediate bf16 roundings that the naive autograd graph
 # performs, so the input gradient stays bitwise-identical to the pre-fusion implementation.
 @torch.compile(options={"emulate_precision_casts": True})
-def _rotate_interleaved_grad(grad_rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def rotate_interleaved_grad(grad_rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     grad = grad_rope.float()
     return (grad * cos).to(grad_rope.dtype) - rotate_half_interleaved((grad * sin).to(grad_rope.dtype))
 
 
-class _ApplyRotaryInterleavedFn(torch.autograd.Function):
+class ApplyRotaryInterleavedFn(torch.autograd.Function):
     """Rotate the trailing rope slice into a clone of `x`, leaving the nope channels untouched.
 
     The forward matches the naive `cat([nope, rotated])` formulation bitwise while touching only
@@ -49,7 +49,7 @@ class _ApplyRotaryInterleavedFn(torch.autograd.Function):
     def forward(ctx, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         rope_dim = cos.shape[-1]
         out = x.clone()
-        out[..., -rope_dim:] = _rotate_interleaved(x[..., -rope_dim:], cos, sin)
+        out[..., -rope_dim:] = rotate_interleaved(x[..., -rope_dim:], cos, sin)
         ctx.save_for_backward(cos, sin)
         return out
 
@@ -58,7 +58,7 @@ class _ApplyRotaryInterleavedFn(torch.autograd.Function):
         cos, sin = ctx.saved_tensors
         rope_dim = cos.shape[-1]
         grad_x = grad_out.clone()
-        grad_x[..., -rope_dim:] = _rotate_interleaved_grad(grad_out[..., -rope_dim:], cos, sin)
+        grad_x[..., -rope_dim:] = rotate_interleaved_grad(grad_out[..., -rope_dim:], cos, sin)
         return grad_x, None, None
 
 
@@ -81,7 +81,7 @@ def apply_rotary_pos_emb_interleaved(
     """
     cos = cos.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
     sin = sin.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
-    return _ApplyRotaryInterleavedFn.apply(x, cos, sin)
+    return ApplyRotaryInterleavedFn.apply(x, cos, sin)
 
 
 class DeepseekV4RotaryEmbedding(nn.Module):
