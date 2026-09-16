@@ -161,7 +161,6 @@ def main():
 
     logger.info(format_log_message(log_dir, eval=True, env_names={"eval": env_names}))
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
-    log_dashboard_url(logger, dashboard_url)
     from prime_rl.eval.eval import run_eval
 
     processes: list[Popen] = []
@@ -186,6 +185,7 @@ def main():
         sys.exit(1)
 
     signal.signal(signal.SIGTERM, sigterm_handler)
+    log_dashboard_url(logger, dashboard_url)
 
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.
