@@ -22,7 +22,7 @@ class DeepseekV4UnweightedRMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out_dtype = self.out_dtype if self.out_dtype is not None else x.dtype
-        quack_rms = norms._get_quack_rmsnorm() if x.is_cuda else None
+        quack_rms = norms.get_quack_rmsnorm() if x.is_cuda else None
         if quack_rms is not None:
             return quack_rms(x, eps=self.eps, out_dtype=out_dtype)
         x = x.float()
