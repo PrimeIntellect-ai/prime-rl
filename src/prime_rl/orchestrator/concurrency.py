@@ -5,8 +5,9 @@ treats it as a black box. There is no cost model: the controller measures KV
 pressure off the engines and reacts at the pipeline's own pace (AIMD):
 
 - **Grow** the cap multiplicatively per pipeline turnover (each completion
-  advances the turnover by ``1/inflight``) while the engines are clear, KV
-  usage is below ``KV_USAGE_GROW``, and the cap binds admission.
+  advances the turnover by ``1/inflight``) while the engines are clear and
+  the cap binds admission. The multiplier tapers linearly with GPU-KV usage
+  until the soft-cap boundary.
 - **Trim** above ``KV_USAGE_SOFT_CAP``: lower the cap to what the engines
   hold at ``KV_USAGE_TARGET`` and let completions drain the pool (soft). If
   usage still climbs past ``KV_USAGE_HARD_CAP`` — units maturing in place
@@ -38,14 +39,12 @@ from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_num
 
-TURNOVER_GROWTH = 1.25
-"""Cap growth per pipeline turnover while the engines are clear and the cap binds."""
+TURNOVER_GROWTH_MAX = 1.2
+"""Cap growth per pipeline turnover at zero GPU-KV utilization."""
 
 BINDING_FRACTION = 0.9
 """The cap counts as binding when inflight reaches this fraction of it."""
 
-KV_USAGE_GROW = 0.6
-"""Grow only while every decode engine's KV usage is below this."""
 
 KV_USAGE_SOFT_CAP = 0.8
 """Above this usage, soft-trim: lower the cap and let completions drain the
@@ -129,6 +128,7 @@ class ConcurrencyController:
 
         self.turnover = 0.0
         self.signal: Signal = "clear"
+        self.growth_multiplier = 1.0
         # Growth gate from the last poll, consumed by per-completion growth
         self.can_grow = False
         self.can_grow_until = 0.0
@@ -183,7 +183,7 @@ class ConcurrencyController:
             and time.monotonic() < self.can_grow_until
             and inflight >= BINDING_FRACTION * self.max_inflight
         ):
-            self.cap = self.clamp(self.cap * TURNOVER_GROWTH**fraction)
+            self.cap = self.clamp(self.cap * self.growth_multiplier**fraction)
             self.apply_limit(int(self.cap), reason=None)
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
@@ -223,8 +223,10 @@ class ConcurrencyController:
         else:
             self.queue_overload_polls = 0
         queue_overload = self.queue_overload_polls >= QUEUE_PERSISTENCE_POLLS
-        if queue_overload or max_usage > KV_USAGE_GROW:
-            worst = max(worst, "hard" if queue_overload else "soft", key=SEVERITY.__getitem__)
+        if queue_overload:
+            worst = max(worst, "hard", key=SEVERITY.__getitem__)
+        elif max_usage > KV_USAGE_SOFT_CAP:
+            worst = max(worst, "soft", key=SEVERITY.__getitem__)
         self.signal = worst
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
@@ -247,6 +249,9 @@ class ConcurrencyController:
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
         self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
+        self.growth_multiplier = 1.0 + (TURNOVER_GROWTH_MAX - 1.0) * max(
+            0.0, 1.0 - max_usage / KV_USAGE_SOFT_CAP
+        )
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
 
         # First capacity observation without a user-set start: derive the
@@ -331,4 +336,5 @@ class ConcurrencyController:
             "concurrency/turnover": self.turnover,
             "concurrency/capacity": float(self.capacity or 0),
             "concurrency/signal": float(SEVERITY[self.signal]),
+            "concurrency/growth_multiplier": self.growth_multiplier,
         }
