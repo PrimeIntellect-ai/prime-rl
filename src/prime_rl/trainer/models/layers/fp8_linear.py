@@ -48,8 +48,8 @@ def _fp8_blockwise_mm_backward(
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(grad_output.device)
-    grad_x = torch.empty_like(x)
-    grad_weight = torch.empty_like(weight)
+    grad_x = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+    grad_weight = torch.empty(weight.shape, device=weight.device, dtype=weight.dtype)
 
     if needs_grad_x:
         grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
@@ -68,7 +68,7 @@ def _fp8_blockwise_mm_backward(
             x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
         grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
         x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
-        grad_weight_fp32 = torch.zeros_like(weight, dtype=torch.float32)
+        grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
         deep_gemm.fp8_gemm_nt(
             grad_output_t_fp8,
             x_t_fp8,
@@ -90,7 +90,7 @@ def _fp8_blockwise_mm_backward_fake(
     needs_grad_x: bool,
     needs_grad_weight: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.empty_like(x), torch.empty_like(weight)
+    return x.new_empty(x.shape), weight.new_empty(weight.shape)
 
 
 def _fp8_blockwise_mm_setup_context(ctx, inputs, output) -> None:
