@@ -10,7 +10,6 @@ import argparse
 import json
 import os
 import statistics
-import time
 from pathlib import Path
 
 import torch
@@ -51,9 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expert-reshard-after-backward", type=boolean, default=True)
     parser.add_argument("--ac", choices=("none", "full"), default="none")
     parser.add_argument("--grad-accum", type=int, default=1)
-    parser.add_argument("--steps", type=int, default=30)
+    parser.add_argument("--steps", type=int, default=15)
     parser.add_argument("--warmup-steps", type=int, default=5)
-    parser.add_argument("--seq-len", type=int, default=4096)
+    parser.add_argument("--seq-len", type=int, default=16384)
     parser.add_argument("--layers", type=int, default=8)
     parser.add_argument("--ep", type=int, default=4)
     parser.add_argument("--num-experts", type=int, default=DEFAULT_NUM_EXPERTS)
@@ -69,10 +68,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def fake_batch(seed: int, step: int, microbatch: int, seq_len: int, vocab_size: int, device: torch.device):
-    generator = torch.Generator(device=device).manual_seed(
-        (seed * 1_000_003 + step * 9_973 + microbatch * 97 + dist.get_rank()) % (2**63)
-    )
+def fake_batch(generator: torch.Generator, seq_len: int, vocab_size: int, device: torch.device):
     input_ids = torch.randint(0, vocab_size, (1, seq_len), generator=generator, device=device)
     return input_ids, input_ids.roll(-1, dims=1)
 
@@ -117,6 +113,7 @@ def main() -> None:
     position_ids = torch.arange(args.seq_len, device=device).unsqueeze(0)
     temperature = torch.ones((1, args.seq_len), device=device)
     vocab_size = model.config.vocab_size
+    batch_generator = torch.Generator(device=device).manual_seed(args.seed + world.rank)
 
     dist.barrier()
     torch.cuda.synchronize()
@@ -127,44 +124,44 @@ def main() -> None:
     perf_counter = get_perf_counter(model, args.seq_len)
     garbage_collection = GarbageCollection(GC_INTERVAL)
 
-    step_times: list[float] = []
+    measured_steps = max(args.steps - args.warmup_steps, 0)
+    step_start_events = [torch.cuda.Event(enable_timing=True) for _ in range(measured_steps)]
+    step_end_events = [torch.cuda.Event(enable_timing=True) for _ in range(measured_steps)]
+    step_losses = torch.zeros(args.steps, device=device)
+    microbatch_losses = torch.zeros(args.grad_accum, device=device)
     prepare_calls_per_step: list[int] = []
-    loss_history: list[float] = []
-    first_step_microbatch_losses: list[float] = []
 
     for step in range(args.steps):
         garbage_collection.run(step)
         prepare_calls_before = PREPARE_CALLS.count
-        torch.cuda.synchronize()
-        start = time.perf_counter()
+        measured = step - args.warmup_steps
+        if measured >= 0:
+            step_start_events[measured].record()
         optimizer.zero_grad(set_to_none=True)
-        step_loss = 0.0
         for microbatch in range(args.grad_accum):
             if not args.expert_reshard_after_backward:
                 for module in experts:
                     module.set_reshard_after_backward(microbatch == args.grad_accum - 1, recurse=False)
-            input_ids, labels = fake_batch(args.seed, step, microbatch, args.seq_len, vocab_size, device)
-            output = forward(model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, temperature=temperature)
-            loss = -output["logprobs"].mean()
+            input_ids, labels = fake_batch(batch_generator, args.seq_len, vocab_size, device)
+            loss = -forward(model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, temperature=temperature)[
+                "logprobs"
+            ].mean()
             if step == 0:
-                first_step_microbatch_losses.append(loss.item())
+                microbatch_losses[microbatch] = loss.detach()
             (loss / args.grad_accum).backward()
-            step_loss += loss.item() / args.grad_accum
+            step_losses[step] += loss.detach() / args.grad_accum
         scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
         grad_norm = clip_grad_norm_(None, model, optimizer_config.max_norm, parallel_dims.ep_enabled)
         if step == 0:
-            first_step_grad_norm = grad_norm.item()
+            first_step_grad_norm = grad_norm.detach()
         optimizer.step()
-        torch.cuda.synchronize()
-        elapsed = time.perf_counter() - start
-
-        loss_history.append(step_loss)
-        if step >= args.warmup_steps:
-            step_times.append(elapsed)
+        if measured >= 0:
+            step_end_events[measured].record()
             prepare_calls_per_step.append(PREPARE_CALLS.count - prepare_calls_before)
-        if world.is_master:
-            print(f"step {step} loss {step_loss:.6f} time {elapsed:.3f}s prepares {PREPARE_CALLS.count}", flush=True)
 
+    torch.cuda.synchronize()
+    step_times = [start.elapsed_time(end) / 1000 for start, end in zip(step_start_events, step_end_events)]
+    loss_history = step_losses.tolist()
     median_step_time = statistics.median(step_times)
     tokens_per_step = args.seq_len * args.grad_accum
     metrics = {
@@ -179,12 +176,22 @@ def main() -> None:
         "step_times_s": step_times,
         "prepare_calls_total": PREPARE_CALLS.count,
         "prepare_calls_per_measured_step": prepare_calls_per_step,
-        "first_step_microbatch_losses": first_step_microbatch_losses,
-        "first_step_grad_norm": first_step_grad_norm,
+        "first_step_microbatch_losses": microbatch_losses.tolist(),
+        "first_step_grad_norm": first_step_grad_norm.item(),
         "final_loss": loss_history[-1],
         "loss_history": loss_history,
     }
     if world.is_master:
+        for step, step_loss in enumerate(loss_history):
+            measured = step - args.warmup_steps
+            if measured >= 0:
+                print(
+                    f"step {step} loss {step_loss:.6f} time {step_times[measured]:.3f}s "
+                    f"prepares {prepare_calls_per_step[measured]}",
+                    flush=True,
+                )
+            else:
+                print(f"step {step} loss {step_loss:.6f} warmup", flush=True)
         print(json.dumps({key: metrics[key] for key in ("peak_memory_gib", "tokens_per_sec_per_gpu", "final_loss")}))
         if args.metrics_out is not None:
             args.metrics_out.parent.mkdir(parents=True, exist_ok=True)
