@@ -102,13 +102,34 @@ def read_records(stream: Path) -> Iterator[dict]:
                     return
 
 
+def previous_dir(run_dir: Path) -> Path:
+    """Where a resume sets the file monitor's directory aside while the restored episodes
+    make their way into the fresh one."""
+    return get_file_monitor_dir(run_dir).with_name("file.previous")
+
+
 def take_landed(run_dir: Path) -> list[dict]:
-    """The ok eval episodes the run has landed. The file monitor's directory is removed
-    with them: the resumed attempt writes a fresh stream, plan and metrics."""
-    stream = get_trace_stream(run_dir)
-    landed = [record for record in read_records(stream) if record.get("ok")] if stream.is_dir() else []
-    shutil.rmtree(get_file_monitor_dir(run_dir), ignore_errors=True)
-    return landed
+    """The ok eval episodes the run has landed, and the file monitor's directory set aside
+    as ``file.previous`` so the resumed attempt starts a fresh stream, plan and metrics.
+    A resume that dies before ``release_previous`` leaves both: the next one reads the
+    two streams and keeps each episode once."""
+    current, previous = get_file_monitor_dir(run_dir), previous_dir(run_dir)
+    stream = get_trace_stream(run_dir).relative_to(current)
+    landed: dict[str, dict] = {}
+    for directory in (previous, current):
+        if (directory / stream).is_dir():
+            for record in read_records(directory / stream):
+                if record.get("ok"):
+                    landed.setdefault(record["id"], record)
+    shutil.rmtree(previous, ignore_errors=True)
+    if current.is_dir():
+        current.rename(previous)
+    return list(landed.values())
+
+
+def release_previous(run_dir: Path) -> None:
+    """The restored episodes are in the fresh stream: the set-aside directory goes."""
+    shutil.rmtree(previous_dir(run_dir), ignore_errors=True)
 
 
 def plan(landed: list[dict], eval_envs: EvalEnvs) -> tuple[list[vf.WireEpisode], dict[str, dict[str, int]]]:

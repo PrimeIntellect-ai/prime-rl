@@ -26,7 +26,7 @@ class Eval:
         config = self.config
         landed: list[dict] = []
         if config.resume:
-            # read before the monitors start: the resumed attempt writes a fresh stream
+            # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             resume.check_config(resume.previous_config(config.run_dir), dump_resolved_config(config))
             landed = resume.take_landed(config.run_dir)
         get_logger().info(f"Initializing monitors ({config.monitors})")
@@ -53,6 +53,8 @@ class Eval:
         await self.runner.start()
         fired = self.runner.eval_source.trigger(0)
         await self.runner.run_epoch(fired, 0, restored=restored)
+        if config.resume:
+            resume.release_previous(config.run_dir)
         await self.runner.drain()
 
 
