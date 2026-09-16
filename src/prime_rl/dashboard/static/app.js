@@ -1241,10 +1241,8 @@ function renderEvalPane(body) {
   }
   shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
   const tokensHtml = tokensPaneHtml(idx);
-  const cost = series.cost ? episodeEntry("cost", "cost", fmtCost) : null;
-  if (tokensHtml || cost) {
-    for (const entry of [cost].filter(Boolean)) swarmRegistry.set(entry.key, entry);
-    evalSection("usage", tokensHtml + (cost && cost.shape !== "constant" ? `<div class="chart-grid">${swarmCardHtml(cost)}</div>` : cost ? `<div class="const-row">${constChipHtml(cost)}</div>` : ""));
+  if (tokensHtml) {
+    evalSection("usage", tokensHtml);
     shown += 1;
   }
   const timingHtml = timingPaneHtml(idx);
