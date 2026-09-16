@@ -4275,24 +4275,24 @@ function renderMeta(ep, trace, branches) {
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
-      if (typeof obj.duration === "number") durations.push([prefix, obj.duration, false]);
+      if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
       else if (typeof obj.start === "number" && obj.start > 0) {
-        // an open span (no end yet) is still running: a live trace shows its elapsed time
-        if (obj.end) durations.push([prefix, obj.end - obj.start, false]);
-        else if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start, true]);
+        // an open span (no end yet) of a live trace shows its elapsed time
+        if (obj.end) durations.push([prefix, obj.end - obj.start]);
+        else if (currentLive) durations.push([prefix, Date.now() / 1000 - obj.start]);
       }
       for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
     })(trace.timing, "");
     if (durations.length) {
       parts.push(`<div class="meta-sec">timing</div>`);
-      for (const [name, secs, running] of durations) {
+      for (const [name, secs] of durations) {
         // nested phases (agent/model, agent/harness) render as a tree under their parent
         const segments = (name || "total").split("/");
         const depth = segments.length - 1;
         const label = depth
           ? `<span class="tree" style="padding-left:${depth * 12}px">└</span> ${esc(segments[segments.length - 1])}`
           : esc(name || "total");
-        parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s${running ? ' <span class="muted">running</span>' : ""}</span></div>`);
+        parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s</span></div>`);
       }
     }
   }
