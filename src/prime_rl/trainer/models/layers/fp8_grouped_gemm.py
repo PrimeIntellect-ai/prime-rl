@@ -17,7 +17,7 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
 def _compute_grad_weight(
     x: torch.Tensor,
     grad_output: torch.Tensor,
-    weight_shape: torch.Size,
+    weight: torch.Tensor,
     padded_total_m: int,
     block_to_group: torch.Tensor,
     ks_tensor: torch.Tensor,
@@ -78,7 +78,7 @@ def _compute_grad_weight(
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
 
-    grad_weight = torch.zeros(weight_shape, device=x.device, dtype=torch.float32)
+    grad_weight = torch.zeros(weight.shape, device=x.device, dtype=torch.float32)
     grouped_weight_grad(
         x_fp8,
         dy_fp8,
@@ -87,7 +87,7 @@ def _compute_grad_weight(
         ks_tensor,
         grad_weight,
     )
-    return grad_weight.to(torch.bfloat16)
+    return grad_weight.to(weight.dtype)
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
@@ -165,14 +165,14 @@ def _grouped_fp8_gemm_backward(
         block_starts_tensor,
     ) = build_grouped_layout(offs, total_m=x.size(0))
     grad_output = grad_output.contiguous()
-    grad_x = torch.empty_like(x)
-    grad_weight = torch.empty_like(weight)
+    grad_x = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+    grad_weight = torch.empty(weight.shape, device=weight.device, dtype=weight.dtype)
 
     if needs_grad_weight:
         grad_weight = _compute_grad_weight(
             x,
             grad_output,
-            weight.shape,
+            weight,
             padded_total_m,
             block_to_group,
             ks_tensor,
@@ -230,7 +230,7 @@ def _grouped_fp8_gemm_backward_fake(
     needs_grad_x: bool,
     needs_grad_weight: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.empty_like(x), torch.empty_like(weight)
+    return x.new_empty(x.shape), weight.new_empty(weight.shape)
 
 
 def _grouped_fp8_gemm_setup_context(ctx, inputs, output) -> None:
