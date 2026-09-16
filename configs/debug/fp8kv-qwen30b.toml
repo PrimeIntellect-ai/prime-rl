@@ -1,0 +1,77 @@
+# FP8 KV cache smoke: Qwen3-30B-A3B on the reverse-text env (the canonical tiny RL
+# taskset — its TaskData keeps the default network allow-list, so rollouts run on the
+# local subprocess runtime with no sandboxes). Same 4-node topology as
+# examples/advanced/qwen3-30b-a3b/math-fp8kv.toml (2 trainer + 2 one-node inference
+# replicas): validates the FP8 KV cache end-to-end through a real RL loop — rollouts
+# generated against FP8 KV caches, trainer logprob recompute + optimizer step, NCCL
+# weight broadcast back into the engines — in 3 steps.
+#
+# For the math tasksets (i3_math / aime25), which pin an empty network allow-list,
+# use the prime sandbox runtime instead (see math-fp8kv.toml).
+
+max_steps = 3
+seq_len = 8192
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[log]
+level = "debug"
+
+[monitors.file]
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 2
+
+[slurm]
+job_name = "fp8kv-qwen30b-smoke"
+partition = "all"
+time = "04:00:00"
+
+[ckpt]
+interval = 100
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.concurrency]
+initial_inflight = 512
+max_inflight = 1024
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+tensor_parallel_size = 8
+max_model_len = 8192
+kv_cache_dtype = "fp8"

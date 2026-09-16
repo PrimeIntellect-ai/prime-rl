@@ -1,6 +1,7 @@
-# Qwen3-30B-A3B GRPO on the i3_math taskset (null harness, local subprocess runtime — no
-# external sandboxes needed) with an FP8 KV cache on inference, on 4 nodes: 2 trainer +
-# 2 inference nodes.
+# Qwen3-30B-A3B GRPO on the i3_math taskset (null harness, prime sandbox runtime —
+# i3_math tasks carry an empty network allow-list, so rollouts need a network-policy
+# runtime, not the local subprocess one) with an FP8 KV cache on inference, on
+# 4 nodes: 2 trainer + 2 inference nodes.
 #
 # kv_cache_dtype = "fp8" stores K/V projections in 8 bits, halving KV memory per token:
 # Qwen3-30B-A3B allocates 48 layers x 4 KV heads x 128 head_dim, i.e. ~48 KiB/token in
@@ -31,6 +32,8 @@ num_infer_nodes = 2
 job_name = "math-qwen30b-fp8kv"
 partition = "all"
 time = "24:00:00"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the runtime label below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "qwen30b-fp8kv" -y || true'
 
 [ckpt]
 interval = 100
@@ -66,7 +69,8 @@ max_completion_tokens = 32768
 name = "math"
 env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["qwen30b-fp8kv"]
 
 [orchestrator.eval]
 interval = 25
@@ -75,7 +79,8 @@ interval = 25
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["qwen30b-fp8kv"]
 
 [inference.vllm]
 tensor_parallel_size = 8
