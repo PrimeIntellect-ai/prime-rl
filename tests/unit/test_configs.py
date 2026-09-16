@@ -925,6 +925,45 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
+def test_kv_cache_replay_propagates_from_inference():
+    """A quantized inference KV cache must auto-enable the trainer-side replay."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "fp8"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "fp8"
+
+
+def test_kv_cache_replay_explicit_trainer_value_wins():
+    """An explicit trainer.model.kv_cache_dtype is never overridden by auto-setup."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {"model": {"kv_cache_dtype": "auto"}},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "fp8"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "auto"
+
+
+def test_kv_cache_replay_unsimulated_dtype_stays_auto():
+    """Inference dtypes the trainer cannot simulate (e.g. nvfp4) don't propagate."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "nvfp4"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "auto"
+
+
 def test_kv_cache_dtype_reaches_vllm_namespace():
     """inference.vllm.kv_cache_dtype must land on the vLLM serve namespace, and unknown
     values must be rejected at parse time (typed Literal, not blind pass-through)."""
