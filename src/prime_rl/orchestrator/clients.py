@@ -14,6 +14,7 @@ from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
+from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
@@ -27,6 +28,22 @@ def resolve_api_key(api_key_var: str) -> str:
 
         api_key = PrimeConfig().api_key
     return api_key or "EMPTY"
+
+
+def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
+    """The static headers plus those read from the environment. A Prime Inference client
+    without a team header gets the team from ``$PRIME_TEAM_ID`` or the prime CLI config,
+    like the verifiers client: a team's internal models are served only under it."""
+    env_headers = {
+        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+    }
+    headers = {**client_config.headers, **env_headers}
+    if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
+        from prime_cli.core.config import Config as PrimeConfig
+
+        if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
+            headers["X-Prime-Team-ID"] = team_id
+    return headers
 
 
 class PrefillScorer:
@@ -232,10 +249,7 @@ def setup_client(
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
-    env_headers = {
-        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-    }
-    headers = {**client_config.headers, **env_headers}
+    headers = resolve_headers(client_config)
     return config_cls(
         base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
     )
@@ -251,10 +265,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        env_headers = {
-            k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-        }
-        headers = {**client_config.headers, **env_headers}
+        headers = resolve_headers(client_config)
         api_key = resolve_api_key(client_config.api_key_var)
         if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
