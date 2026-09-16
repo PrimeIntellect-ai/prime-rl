@@ -394,6 +394,22 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def fp8_kernel_requires_no_activation_checkpointing(self):
+        """The fp8-kernel replay runs the engine's fp8 flash-attn op, which declares
+        mutating tensor args in its schema. Activation checkpointing's recompute
+        path cannot trace that op (a pybind type error), so the kernel mode requires
+        AC off. The value-level fp8 replay works fine under AC — use that instead.
+        """
+        if self.kv_cache_dtype == "fp8_kernel" and (self.ac is not None or self.ac_offloading is not None):
+            raise ValueError(
+                "model.kv_cache_dtype = 'fp8_kernel' is not supported with activation "
+                "checkpointing (the engine's fp8 flash-attn op cannot run in the AC "
+                "recompute path). Set model.ac and model.ac_offloading to None, or use "
+                "the value-level replay (kv_cache_dtype = 'fp8'), which works under AC."
+            )
+        return self
+
+    @model_validator(mode="after")
     def ac_offloading_requires_ac(self):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:

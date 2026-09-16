@@ -38,11 +38,14 @@ _KV_CACHE_DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
-def _vllm_flash_attn_varlen():
-    """vLLM's vendored FA (3+), whose fp8 path the inference engines run."""
-    from vllm.vllm_flash_attn.flash_attn_interface import flash_attn_varlen_func
-
-    return flash_attn_varlen_func
+# vLLM's vendored FA (3+), whose fp8 path the inference engines run. Imported eagerly
+# at module load: a lazy import inside the forward would land after the trainer's
+# process-group init, and importing vLLM mid-run tears down torch.distributed's
+# default PG (vLLM's platform setup), breaking everything that follows.
+try:
+    from vllm.vllm_flash_attn.flash_attn_interface import flash_attn_varlen_func as _vllm_flash_attn_varlen_func
+except ImportError:
+    _vllm_flash_attn_varlen_func = None
 
 
 class Fp8KVKernelAttention(torch.autograd.Function):
@@ -59,6 +62,7 @@ class Fp8KVKernelAttention(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch._dynamo.disable(recursive=True)
     def forward(
         ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
     ) -> torch.Tensor:
@@ -67,19 +71,45 @@ class Fp8KVKernelAttention(torch.autograd.Function):
         num_seqs = cu_seqlens.numel() - 1
         num_kv_heads = k.shape[1]
         descale = torch.ones((num_seqs, num_kv_heads), device=q.device, dtype=torch.float32)
-        out = _vllm_flash_attn_varlen()(
-            q8,
-            k8,
-            v8,
+        softmax_scale = q.shape[-1] ** (-0.5)
+        out, _, _, _ = torch.ops._vllm_fa3_C.fwd.default(
+            q=q8,
+            k=k8,
+            v=v8,
+            k_new=None,
+            v_new=None,
+            q_v=None,
+            out=None,
             cu_seqlens_q=cu_seqlens,
             cu_seqlens_k=cu_seqlens,
+            cu_seqlens_k_new=None,
+            seqused_q=None,
+            seqused_k=None,
             max_seqlen_q=max_seqlen,
             max_seqlen_k=max_seqlen,
-            causal=True,
+            page_table=None,
+            kv_batch_idx=None,
+            leftpad_k=None,
+            rotary_cos=None,
+            rotary_sin=None,
+            seqlens_rotary=None,
             q_descale=descale,
             k_descale=descale,
             v_descale=descale,
-            fa_version=3,
+            softmax_scale=softmax_scale,
+            is_causal=True,
+            window_size_left=-1,
+            window_size_right=-1,
+            softcap=0.0,
+            is_rotary_interleaved=True,
+            scheduler_metadata=None,
+            num_splits=0,
+            pack_gqa=None,
+            sm_margin=0,
+            s_aux=None,
+            cp_world_size=1,
+            cp_rank=0,
+            cp_tot_seqused_k=None,
         )
         ctx.save_for_backward(q, k, v)
         ctx.cu_seqlens = cu_seqlens
@@ -87,6 +117,7 @@ class Fp8KVKernelAttention(torch.autograd.Function):
         return out
 
     @staticmethod
+    @torch._dynamo.disable(recursive=True)
     def backward(ctx, dout: torch.Tensor):
         from prime_rl.trainer.models.layers.attn import FlashAttention
 
@@ -206,7 +237,7 @@ class FlashAttention(nn.Module):
         if kv_cache_dtype == "fp8_kernel":
             # Kernel-level replay: run the engine's own fp8 flash-attn kernel on
             # unit-scale e4m3 Q/K/V, matching its forward numerics exactly.
-            return Fp8KVKernelAttention.apply(q, k, v, cu_seqlens, max_seqlen)
+            return _fp8kv_kernel_replay(q, k, v, cu_seqlens, max_seqlen)
         if kv_cache_dtype is not None:
             # Value-level replay: K is post-RoPE here, matching what vLLM quantizes
             # at cache-write time. vLLM also quantizes the query (QuantFP8, per-tensor
@@ -269,6 +300,18 @@ class FlashAttention(nn.Module):
         attn_output = out.contiguous().view(1, out.shape[0], -1)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
+
+
+@torch._dynamo.disable
+def _fp8kv_kernel_replay(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    """Run Fp8KVKernelAttention outside dynamo.
+
+    The engine's fp8 flash-attn op declares mutating tensor args in its schema, which
+    dynamo/AOT's functionalization cannot trace (it mangles the call into a pybind
+    type error). Disabling this wrapper forces a clean graph break so the op always
+    runs eagerly — inside compiled models too.
+    """
+    return Fp8KVKernelAttention.apply(q, k, v, cu_seqlens, max_seqlen)
 
 
 def setup_kv_cache_replay(model: nn.Module, kv_cache_dtype: str | None) -> None:
