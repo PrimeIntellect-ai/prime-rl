@@ -7,11 +7,6 @@ from prime_rl.trainer.models.kernels.deepseek_v4 import dsv4_mhc
 from prime_rl.trainer.models.layers import norms
 
 
-def can_use_fused_mhc(t: torch.Tensor, hc: int) -> bool:
-    """The vendored Triton kernels tile the stream axis with `tl.arange`, so `hc` must be a power of two."""
-    return t.is_cuda and hc & (hc - 1) == 0
-
-
 class DeepseekV4UnweightedRMSNorm(nn.Module):
     """RMS normalization without a learnable gain, computed in fp32."""
 
@@ -22,7 +17,7 @@ class DeepseekV4UnweightedRMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out_dtype = self.out_dtype if self.out_dtype is not None else x.dtype
-        quack_rms = norms.get_quack_rmsnorm() if x.is_cuda else None
+        quack_rms = norms.get_quack_rmsnorm()
         if quack_rms is not None:
             return quack_rms(x, eps=self.eps, out_dtype=out_dtype)
         x = x.float()
@@ -69,14 +64,7 @@ class DeepseekV4HyperConnection(nn.Module):
         pre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps
         post = 2 * torch.sigmoid(post_w * post_scale + post_b)
         comb_logits = comb_w.view(*comb_w.shape[:-1], hc, hc) * comb_scale + comb_b.view(hc, hc)
-        if can_use_fused_mhc(comb_logits, hc):
-            comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
-        else:
-            comb = torch.softmax(comb_logits, dim=-1) + self.hc_eps
-            comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
-            for _ in range(self.hc_sinkhorn_iters - 1):
-                comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
-                comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
+        comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
 
         collapsed = (pre.unsqueeze(-1) * mhc_states).sum(dim=2).to(mhc_states.dtype)
         return post, comb, collapsed
@@ -86,11 +74,7 @@ class DeepseekV4HyperConnection(nn.Module):
     ) -> torch.Tensor:
         """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
         dtype = mhc_states.dtype
-        if can_use_fused_mhc(mhc_states, self.hc_mult):
-            return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
-        return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), mhc_states
-        )
+        return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)

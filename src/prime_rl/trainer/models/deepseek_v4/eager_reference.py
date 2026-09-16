@@ -1,4 +1,4 @@
-"""Naive DeepSeek V4 attention reference.
+"""Naive DeepSeek V4 attention and mHC references.
 
 Nothing in the production path calls these. They exist for the tests, where a dense, obviously
 correct implementation is the standard the fused kernel is measured against, and where it is the
@@ -170,3 +170,25 @@ def use_eager_attention(module: nn.Module) -> None:
     for submodule in module.modules():
         if isinstance(submodule, DeepseekV4Attention):
             submodule.forward = types.MethodType(eager_attention_forward, submodule)
+
+
+def eager_sinkhorn(logits: Tensor, num_iterations: int, eps: float) -> Tensor:
+    """Project `logits` onto the doubly-stochastic manifold by alternating row and column sums."""
+    comb = torch.softmax(logits, dim=-1) + eps
+    comb = comb / (comb.sum(dim=-2, keepdim=True) + eps)
+    for _ in range(num_iterations - 1):
+        comb = comb / (comb.sum(dim=-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(dim=-2, keepdim=True) + eps)
+    return comb
+
+
+def eager_update_states(post: Tensor, comb: Tensor, sublayer_out: Tensor, mhc_states: Tensor) -> Tensor:
+    """Broadcast the sublayer output over the streams via `post` and remix them via `comb`.
+
+    `comb` is consumed summing over the *source* stream axis, i.e. transposed; the fused kernel
+    applies that transpose internally, so both take `comb` untransposed.
+    """
+    dtype = mhc_states.dtype
+    return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
+        comb.to(dtype).transpose(-1, -2), mhc_states
+    )

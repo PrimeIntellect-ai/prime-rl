@@ -8,13 +8,13 @@ import torch
 from torch import nn
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference, hyperconnections
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
-from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
@@ -1270,29 +1270,26 @@ POST_BDA_GRAD_RTOL = 1e-2
 
 
 @pytest.mark.parametrize(("batch", "seq_len"), MHC_SHAPES, ids=MHC_SHAPE_IDS)
-def test_fused_sinkhorn_matches_the_python_fallback(batch, seq_len, monkeypatch):
-    with torch.device("cuda"):
-        module = DeepseekV4HyperConnection(V4FLASH_CONFIG)
-    _randomize(module)
+def test_fused_sinkhorn_matches_the_eager_reference(batch, seq_len):
     hc = V4FLASH_MODEL["hc_mult"]
+    iters, eps = V4FLASH_MODEL["hc_sinkhorn_iters"], V4FLASH_MODEL["hc_eps"]
     with torch.device("cuda"):
-        streams = torch.randn(batch, seq_len, hc, V4FLASH_MODEL["hidden_size"])
+        logits = torch.randn(batch, seq_len, hc, hc)
         weight = torch.randn(batch, seq_len, hc, hc)
-    fused_input, fallback_input = streams.clone().requires_grad_(True), streams.clone().requires_grad_(True)
 
-    assert hyperconnections.can_use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
-    _, fused_comb, _ = module(fused_input)
+    fused_logits, reference_logits = _leaves(logits, logits)
+
+    fused_comb = dsv4_mhc.fused_sinkhorn(fused_logits, iters, eps)
     (fused_comb * weight).sum().backward()
 
-    monkeypatch.setattr(hyperconnections, "can_use_fused_mhc", lambda t, hc: False)
-    _, fallback_comb, _ = module(fallback_input)
-    (fallback_comb * weight).sum().backward()
+    reference_comb = eager_reference.eager_sinkhorn(reference_logits, iters, eps)
+    (reference_comb * weight).sum().backward()
 
-    _assert_relative(fused_comb, fallback_comb, SINKHORN_RTOL, "comb")
-    _assert_relative(fused_input.grad, fallback_input.grad, SINKHORN_GRAD_RTOL, "streams gradient")
+    _assert_relative(fused_comb, reference_comb, SINKHORN_RTOL, "comb")
+    _assert_relative(fused_logits.grad, reference_logits.grad, SINKHORN_GRAD_RTOL, "logits gradient")
 
 
-def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
+def test_fused_post_bda_matches_the_eager_reference():
     batch, seq_len = 2, 129
     hc, dim = V4FLASH_MODEL["hc_mult"], V4FLASH_MODEL["hidden_size"]
     with torch.device("cuda"):
@@ -1304,23 +1301,21 @@ def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
         weight = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
 
     fused_post, fused_comb, fused_x, fused_streams = _leaves(post, comb, sublayer_out, streams)
-    fallback_post, fallback_comb, fallback_x, fallback_streams = _leaves(post, comb, sublayer_out, streams)
+    reference_post, reference_comb, reference_x, reference_streams = _leaves(post, comb, sublayer_out, streams)
 
-    assert hyperconnections.can_use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
     fused_out = module.update_states(fused_post, fused_comb, fused_x, fused_streams)
     (fused_out * weight).sum().backward()
 
-    monkeypatch.setattr(hyperconnections, "can_use_fused_mhc", lambda t, hc: False)
-    fallback_out = module.update_states(fallback_post, fallback_comb, fallback_x, fallback_streams)
-    (fallback_out * weight).sum().backward()
+    reference_out = eager_reference.eager_update_states(reference_post, reference_comb, reference_x, reference_streams)
+    (reference_out * weight).sum().backward()
 
-    _assert_relative(fused_out, fallback_out, POST_BDA_RTOL, "write-back output")
+    _assert_relative(fused_out, reference_out, POST_BDA_RTOL, "write-back output")
     grads = (
-        ("post gradient", fused_post, fallback_post),
-        ("comb gradient", fused_comb, fallback_comb),
-        ("sublayer output gradient", fused_x, fallback_x),
-        ("streams gradient", fused_streams, fallback_streams),
+        ("post gradient", fused_post, reference_post),
+        ("comb gradient", fused_comb, reference_comb),
+        ("sublayer output gradient", fused_x, reference_x),
+        ("streams gradient", fused_streams, reference_streams),
     )
-    for label, fused_leaf, fallback_leaf in grads:
-        assert fallback_leaf.grad is not None, f"{label}: the fallback backward left the leaf without a gradient"
-        _assert_relative(fused_leaf.grad, fallback_leaf.grad, POST_BDA_GRAD_RTOL, label)
+    for label, fused_leaf, reference_leaf in grads:
+        assert reference_leaf.grad is not None, f"{label}: the reference backward left the leaf without a gradient"
+        _assert_relative(fused_leaf.grad, reference_leaf.grad, POST_BDA_GRAD_RTOL, label)
