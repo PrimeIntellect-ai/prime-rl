@@ -73,6 +73,60 @@ def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, Prepar
   its weights. A `ShardedPreparedTensor` at compute time means the op ran outside its weights'
   unshard scope and errors.
 
+## Lifetime and scope
+
+`fully_shard` decides prepared-tensor lifetimes, and it decides them a whole unit at a time.
+
+Liveness belongs to storage, not to objects: the wrapper, its `.prepared` mapping, and every tensor
+in that mapping are the same objects for the whole run. Reshard frees the prepared tensors by
+resizing them to zero bytes, leaving the objects in place; the next unshard re-allocates their
+storage and `prepare` refills it. So an op re-reads `.prepared` on every call and never holds a
+prepared tensor across a reshard.
+
+```
+                          unshard                            reshard
+master shard (sharded)  ############################################   always resident
+gather buffer              ####                                        transient
+prepared tensors               P###############################        the cache
+                               ^ prepare
+```
+
+The gather buffer is released by default once `prepare` has consumed it, but FSDP gathers every
+parameter of a unit before preparing any of them, so the unit's full unsharded `param_dtype` size
+stays a momentary peak.
+
+Two existing FSDP2 knobs set the resident window, both per unit: `reshard_after_forward` (RAF), a
+`fully_shard` argument, and `set_reshard_after_backward` (RAB), a method on the `FSDPModule`. `M` is
+the number of microbatches.
+
+```
+P  prepare runs     #  prepared tensors resident     |  reshard frees them
+
+                      mb0.fwd  mb0.bwd    mb1.fwd  mb1.bwd   prepares/step
+RAF=True   RAB=True    P####|   P####|     P####|   P####|        2M
+RAF=False  RAB=True    P###############|   P###############|       M
+RAF=False  RAB=False   P##################################|       1
+```
+
+(NOTE: RAB=True on the final microbatch, or the optimizer's update never reaches `prepare`.)
+
+Activation checkpointing adds nothing to any row: the recomputed forward runs inside backward, where
+FSDP skips its post-forward reshard, so recompute rides the unshard backward already did.
+
+Because the flags are per unit, holding a wrapped weight past its forward holds its unit's unwrapped
+weights too, at full `param_dtype` size:
+
+```
+fully_shard(block)                        RAF/RAB here govern all three
+  attn.qkv_proj, attn.o_proj, mlp.router  unwrapped: full param_dtype weight resident
+
+fully_shard(block.mlp.experts)            its own unit, its own RAF/RAB
+  gate_proj, up_proj, down_proj           wrapped: prepared tensors resident
+```
+
+`## Rules` already requires an op's weights to share a unit; the flags make that unit the lifetime
+granularity too, so give wrapped weights a unit of their own and set RAF and RAB only there.
+
 ## Worked example: (hypothetical) multi-weight fused-MoE op
 
 ```python
@@ -130,29 +184,21 @@ that is the op's own style, invisible to the machinery.
 - Joint preparation (one `prepare` over several weights) is out of scope; pack the weights into
   one parameter instead, as the existing QKV and gate_up fusions do.
 
-## Cache lifetime
-
-Set by existing FSDP2 knobs, per `fully_shard` unit:
-
-- default: prepared tensors live from unshard to reshard, covering one forward, its backward
-  layouts, and any AC recompute in between
-- `reshard_after_forward=False` plus `set_reshard_after_backward(False)` on non-final
-  microbatches: prepared tensors live for the whole gradient-accumulation window, one `prepare`
-  per optimizer step
-
 ## Pros
 
 - Invalidation is free and always correct: the FSDP lifecycle is the cache lifecycle
-- One `prepare` covers forward, backward layouts, and AC recompute; one per optimizer step in window mode
-- Lowers unsharded memory: the bf16 gather buffer is released, only quantized bytes stay resident
+- One `prepare` covers forward, backward layouts, and AC recompute; one per optimizer step at RAF=False, RAB=False
+- Can lower resident unsharded memory: the gather buffer is released, so a weight costs only what
+  its `prepare` returned. Whether that is a net saving is a property of the recipe, not of the
+  mechanism (blockwise fp8 is a wash: two 1-byte layouts against a released 2-byte buffer)
 - Zero-cost when unwrapped, and a new preparation is one `prepare` method
 
 ## Cons
 
 - Dim-0 sharding only for now (an implementation limit, not fundamental): excludes
   `shard_fused_on_dim1` params and parts of the MoE path
-- Window mode holds roughly 2 bytes/param of unsharded prepared tensors across the window and
-  needs train-loop flag wiring
+- RAF=False with RAB=False holds every prepared tensor in the unit across the whole accumulation
+  step, and needs train-loop wiring for the RAB toggle
 - Rides on private FSDP2 extension hooks and tensor-subclass machinery; torch.compile is the main risk
 - All-gather stays high precision: no communication savings
 - One homogeneous `prepare` per op is baked into the protocol; per-weight heterogeneous
