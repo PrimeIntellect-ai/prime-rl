@@ -260,7 +260,6 @@ class PackedContext:
         *,
         rotary_emb: DeepseekV4RotaryEmbedding,
         seq_lens: Tensor,
-        dtype: torch.dtype,
         device: torch.device,
         cp_rank: int = 0,
         cp_world_size: int = 1,
@@ -269,9 +268,8 @@ class PackedContext:
 
         `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
         sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. `dtype` must be the dtype
-        attention runs at, since it types the RoPE tables. The sequence is as long as `seq_lens` says,
-        padding included: both packers fold their padding into the last document.
+        alongside it keeps them from naming different architectures. The sequence is as long as
+        `seq_lens` says, padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -300,9 +298,7 @@ class PackedContext:
         # Document-local by construction: a token's position is its distance from its own
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
-        position_embeddings = {
-            rope_type: rotary_emb(position_ids, rope_type, dtype=dtype) for rope_type in rotary_emb.layer_types
-        }
+        position_embeddings = {rope_type: rotary_emb(position_ids, rope_type) for rope_type in rotary_emb.layer_types}
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
@@ -487,9 +483,7 @@ class DeepseekV4Compressor(nn.Module):
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
-        cos, sin = self.rotary_emb(
-            entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type, dtype=compressed.dtype
-        )
+        cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
         return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:

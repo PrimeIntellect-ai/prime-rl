@@ -255,7 +255,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         packed = PackedContext.build(
             rotary_emb=self.rotary_emb,
             seq_lens=seq_lens,
-            dtype=inputs_embeds.dtype,
             device=inputs_embeds.device,
             cp_rank=cp_rank,
             cp_world_size=cp_world_size,

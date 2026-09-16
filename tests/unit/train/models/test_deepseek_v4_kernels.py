@@ -83,7 +83,6 @@ def _randomize(module: nn.Module) -> None:
 
 def _packed_context(
     doc_lens: tuple[int, ...],
-    dtype: torch.dtype,
     config: DeepseekV4Config,
     cp_rank: int = 0,
     cp_world_size: int = 1,
@@ -91,18 +90,16 @@ def _packed_context(
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
-    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at.
+    half of a packing comparison runs at.
 
     `doc_lens` always describes the whole row, `cp_world_size` shards included: the context
     parallel tests below hand it the same layout every rank sees and vary only `cp_rank`.
     """
-    with torch.device("cuda"), default_dtype(dtype):
+    with torch.device("cuda"):
         rotary = DeepseekV4RotaryEmbedding(config)
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
-        dtype=dtype,
         device=torch.device("cuda"),
         cp_rank=cp_rank,
         cp_world_size=cp_world_size,
@@ -674,7 +671,7 @@ def test_sparse_indices_address_exactly_the_keys_the_dense_mask_admits(doc_lens,
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
-    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
+    packed = _packed_context(doc_lens, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -723,7 +720,7 @@ def test_sparse_indices_are_in_range_and_never_repeat_a_key(doc_lens, layer_idx,
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     layer_type = V4FLASH_MODEL["layer_types"][layer_idx]
-    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
+    packed = _packed_context(doc_lens, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -771,7 +768,7 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     this asserts the contract directly.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
+    packed = _packed_context(doc_lens, V4FLASH_CONFIG)
     hidden_states = _v4flash_hidden_states(sum(doc_lens))[0].detach().to(torch.bfloat16)
     recorded = _record_attention(monkeypatch)
 
@@ -866,8 +863,8 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
-    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG))
-    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
+    kernel_output, _ = kernel_module(kernel_input, packed=_packed_context(doc_lens, V4FLASH_CONFIG))
+    eager_output, _ = eager_module(eager_input, packed=_packed_context(doc_lens, V4FLASH_CONFIG))
     assert calls == [seq_len], f"the forward never reached the kernel, calls={calls}"
     _assert_relative(kernel_output, eager_output, EAGER_KERNEL_RTOL, "attention output")
 
@@ -902,7 +899,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     a fallback would leave this test asserting a property of the gather reference instead.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
+    packed = _packed_context(KERNEL_DOC_LENS, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
     packed_input, alone_input = hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
@@ -925,9 +922,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
 
     for index, length in enumerate(KERNEL_DOC_LENS):
         span = _doc_slice(KERNEL_DOC_LENS, index)
-        alone_output, _ = module(
-            alone_input[:, span], packed=_packed_context((length,), torch.bfloat16, V4FLASH_CONFIG)
-        )
+        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), V4FLASH_CONFIG))
         _assert_relative(packed_output[:, span], alone_output, KERNEL_RTOL, f"document {index}")
         (alone_output * weight[:, span]).sum().backward()
 
@@ -951,7 +946,7 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     asserting a property of the gather reference.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
-    packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
+    packed = _packed_context(KERNEL_DOC_LENS, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden_states = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
     hidden_states.requires_grad_(True)
@@ -1017,7 +1012,7 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
     )
     seq_len = sum(V4FLASH_HCA_DOCS)
     packed_input, alone_input = _v4flash_hidden_states(seq_len)
-    packed = _packed_context(V4FLASH_HCA_DOCS, torch.float32, V4FLASH_CONFIG)
+    packed = _packed_context(V4FLASH_HCA_DOCS, V4FLASH_CONFIG)
 
     q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
     _, picks = module.compressor(packed_input.detach(), q_residual, packed)
@@ -1034,7 +1029,7 @@ def test_v4flash_hca_attention_packed_matches_unpacked():
 
     for index, length in enumerate(V4FLASH_HCA_DOCS):
         span = _doc_slice(V4FLASH_HCA_DOCS, index)
-        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), torch.float32, V4FLASH_CONFIG))
+        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), V4FLASH_CONFIG))
         _assert_relative(packed_output[:, span], alone_output, PACKED_RTOL, f"document {index}")
         (alone_output * weight[:, span]).sum().backward()
 
@@ -1127,7 +1122,7 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
         ("eager_fp32", eager_fp32, torch.float32),
     ):
         hidden_states = hidden.to(dtype).clone().requires_grad_(True)
-        packed = _packed_context(doc_lens, dtype, V4FLASH_CONFIG)
+        packed = _packed_context(doc_lens, V4FLASH_CONFIG)
         with _SparseAttnCallCounter() as counter:
             output, _ = layer(hidden_states, packed=packed)
         assert counter.count == (1 if name == "kernel" else 0), f"{name} made {counter.count} kernel calls"
@@ -1160,7 +1155,6 @@ CP_WORLD_SIZE_IDS = ["cp2", "cp4"]
 def _cp_gathered_projections(
     module: nn.Module,
     doc_lens: tuple[int, ...],
-    dtype: torch.dtype,
     config: DeepseekV4Config,
     cp_world_size: int,
 ) -> list[tuple[str, Callable[[torch.Tensor, int], torch.Tensor]]]:
@@ -1171,7 +1165,7 @@ def _cp_gathered_projections(
     """
     # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
-        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
+        _packed_context(doc_lens, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
             module.rope_layer_type
         ]
         for cp_rank in range(cp_world_size)
@@ -1236,7 +1230,7 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
         hidden_full = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"]).requires_grad_(True)
         cotangent = torch.randn(1, seq_len, V4FLASH_MODEL["hidden_size"])
 
-    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, torch.float32, V4FLASH_CONFIG))
+    out_full, _ = module(hidden_full, packed=_packed_context(doc_lens, V4FLASH_CONFIG))
     (out_full * cotangent).sum().backward()
     reference_out = out_full.detach()
     reference_input_grad = hidden_full.grad.clone()
@@ -1246,13 +1240,13 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     # Views of the one leaf, so every rank's backward accumulates into the same buffers.
     chunks = hidden_full.chunk(cp_world_size, dim=1)
     n_queries = seq_len // cp_world_size
-    projections = _cp_gathered_projections(module, doc_lens, torch.float32, V4FLASH_CONFIG, cp_world_size)
+    projections = _cp_gathered_projections(module, doc_lens, V4FLASH_CONFIG, cp_world_size)
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
         module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
 
-        packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        packed = _packed_context(doc_lens, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
         out_rank, _ = module(chunk, packed=packed)
         assert not pending, f"rank {cp_rank} never gathered {[label for label, _ in pending]}"
 
@@ -1330,7 +1324,7 @@ def test_sliced_interleaved_rope_matches_the_full_rotation():
     with torch.device("cuda"):
         x = torch.randn(batch, seq_len, heads, head_dim, dtype=torch.bfloat16)
         angles = torch.rand(1, seq_len, rope_dim // 2) * 2 * math.pi
-    cos, sin = angles.cos().to(torch.bfloat16), angles.sin().to(torch.bfloat16)
+    cos, sin = angles.cos(), angles.sin()
     sliced_x, full_x = _leaves(x, x)
 
     sliced = apply_rotary_pos_emb_interleaved(sliced_x, cos, sin, unsqueeze_dim=2)
