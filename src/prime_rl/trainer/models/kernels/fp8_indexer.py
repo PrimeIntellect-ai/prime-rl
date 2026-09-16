@@ -46,6 +46,11 @@ def _per_token_group_quant_fp8(
 
     y = tl.load(y_ptr + cols, mask=mask, other=0.0).to(tl.float32)
 
+    # Inductor can pass Python float scalars as f64; keep quantization math f32.
+    eps = eps.to(tl.float32)
+    fp8_min = fp8_min.to(tl.float32)
+    fp8_max = fp8_max.to(tl.float32)
+
     _absmax = tl.maximum(tl.max(tl.abs(y)), eps)
     scale_raw = _absmax / fp8_max
     y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw

@@ -39,8 +39,7 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer. The trainer
-    fails the run when no consumer acknowledges an offered version in time."""
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 class RunConfig(BaseConfig):

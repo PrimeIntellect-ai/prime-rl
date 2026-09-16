@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import final
 
+import torch
 import torch.nn as nn
 
 from prime_rl.configs.trainer import WeightBroadcastConfig
@@ -24,6 +25,33 @@ SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"
 FINISHED_MARKER = ".finished"
+
+
+_GB = 1024**3
+
+
+def reclaim_memory_for_broadcast(broadcast_config: WeightBroadcastConfig) -> dict[str, float]:
+    """Reclaim CUDA memory before a broadcast and return timing metrics."""
+    start = time.perf_counter()
+    torch.cuda.synchronize()
+    synchronized = time.perf_counter()
+
+    emptied = True
+    if broadcast_config.reclaim_memory == "if_needed":
+        # Cached blocks remain available to PyTorch allocations.
+        free_device, _ = torch.cuda.mem_get_info()
+        cached = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+        emptied = (free_device + cached) < broadcast_config.reclaim_headroom_gb * _GB
+    if emptied:
+        torch.cuda.empty_cache()
+
+    done = time.perf_counter()
+    return {
+        "time/reclaim_memory": done - start,
+        "time/reclaim_memory/synchronize": synchronized - start,
+        "time/reclaim_memory/empty_cache": done - synchronized,
+        "time/reclaim_memory/emptied": float(emptied),
+    }
 
 
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
@@ -51,26 +79,39 @@ class WeightSender(ABC):
         self.timeout = timeout
 
     @final
-    def broadcast(self, model: nn.Module, step: int) -> None:
+    def broadcast(self, model: nn.Module, step: int) -> dict[str, float]:
         """Broadcast policy v{step} to the inference pool."""
         start_time = time.perf_counter()
         step_dir = self.step_dir(step)
+        timings: dict[str, float] = {}
         if self.world.is_master:
+            offer_start = time.perf_counter()
             # Reset per attempt so a re-broadcast (e.g. on resume) never trips
             # the consumer or the trainer on stale markers of a previous run.
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
-            (step_dir / SENDER_READY_MARKER).touch()
+            self._offer(step_dir)
+            timings["offer"] = time.perf_counter() - offer_start
+            wait_start = time.perf_counter()
             self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
+            timings["await_receiver"] = time.perf_counter() - wait_start
+        transfer_start = time.perf_counter()
         self._broadcast(model, step, step_dir)
+        timings["transfer"] = time.perf_counter() - transfer_start
         if self.world.is_master:
+            commit_start = time.perf_counter()
             (step_dir / FINISHED_MARKER).touch()
             self._clean(step)
+            timings["commit"] = time.perf_counter() - commit_start
             self.logger.debug(f"Broadcasted weights for step {step} in {time.perf_counter() - start_time:.2f}s")
+        return timings
 
     def step_dir(self, step: int) -> Path:
         return get_step_path(get_broadcast_dir(self.output_dir), step)
+
+    def _offer(self, step_dir: Path) -> None:
+        (step_dir / SENDER_READY_MARKER).touch()
 
     def _wait_for_receiver_ready(self, step_dir: Path) -> None:
         """Wait for the consumer to acknowledge the offered version. Bounded:

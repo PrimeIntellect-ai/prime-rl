@@ -12,6 +12,9 @@ from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    MXRefitWeightBroadcastConfig as OrchestratorMXRefitWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
@@ -30,6 +33,9 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    MXRefitWeightBroadcastConfig as TrainerMXRefitWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
@@ -138,6 +144,12 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer."""
 
+    reclaim_memory: Literal["always", "if_needed"] = "always"
+    """When to empty the CUDA allocator cache before broadcasting weights."""
+
+    reclaim_headroom_gb: float = Field(64.0, gt=0)
+    """Headroom the gather is assumed to need, for ``reclaim_memory="if_needed"``."""
+
 
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
@@ -162,15 +174,48 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+class SharedMXRefitWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    run_uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    """Namespace for this run's ModelExpress weight versions."""
+
+    handshake_mode: Literal["object", "tensor"] = "object"
+    """Broadcast each fresh offer token as a Python object or a reusable fixed CPU tensor (up to 4096 UTF-8 bytes)."""
+
+    handshake_barrier: bool = False
+    """Insert a diagnostic barrier inside the trainer's timed handshake before token broadcast."""
+
+    @model_validator(mode="after")
+    def validate_handshake_token_size(self):
+        if self.handshake_mode == "tensor" and len(self.run_uid.encode("utf-8")) + 9 > 4096:
+            raise ValueError(
+                "tensor handshake requires run_uid plus the 9-byte offer suffix to fit in 4096 UTF-8 bytes"
+            )
+        return self
+
+
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer."""
 
+    reclaim_memory: Literal["always", "if_needed"] = "always"
+    """When to empty the CUDA allocator cache before broadcasting weights."""
+
+    reclaim_headroom_gb: float = Field(64.0, gt=0)
+    """Headroom the gather is assumed to need, for ``reclaim_memory="if_needed"``."""
+
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    SharedFileSystemWeightBroadcastConfig
+    | SharedNCCLWeightBroadcastConfig
+    | SharedNIXLWeightBroadcastConfig
+    | SharedMXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
@@ -474,7 +519,7 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.weight_broadcast.type in ("nccl", "nixl", "mx_refit"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
@@ -486,24 +531,39 @@ class RLConfig(BaseConfig):
                 timeout=self.weight_broadcast.timeout,
                 inference_world_size=inference_world_size,
             )
+            trainer_only_config = dict(
+                reclaim_memory=self.weight_broadcast.reclaim_memory,
+                reclaim_headroom_gb=self.weight_broadcast.reclaim_headroom_gb,
+            )
             if self.weight_broadcast.type == "nccl":
                 transport_config = dict(
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
+            elif self.weight_broadcast.type == "nixl":
                 transport_config = dict(
                     session_id=self.weight_broadcast.session_id,
                     overlap_transfer_and_replay=self.weight_broadcast.overlap_transfer_and_replay,
                 )
                 trainer_config_type = TrainerNIXLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
-            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
+            else:  # mx_refit
+                transport_config = dict()
+                trainer_only_config["run_uid"] = self.weight_broadcast.run_uid
+                trainer_only_config["handshake_mode"] = self.weight_broadcast.handshake_mode
+                trainer_only_config["handshake_barrier"] = self.weight_broadcast.handshake_barrier
+                trainer_config_type = TrainerMXRefitWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorMXRefitWeightBroadcastConfig
+            self.trainer.weight_broadcast = trainer_config_type(
+                **common_config, **transport_config, **trainer_only_config
+            )
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
+                timeout=self.weight_broadcast.timeout,
+                reclaim_memory=self.weight_broadcast.reclaim_memory,
+                reclaim_headroom_gb=self.weight_broadcast.reclaim_headroom_gb,
             )
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
                 timeout=self.weight_broadcast.timeout
@@ -759,14 +819,29 @@ class RLConfig(BaseConfig):
                 and self.inference.deployment.type != "disaggregated"
             ):
                 inference_tp = self.inference.vllm.tensor_parallel_size
-                if self.deployment.gpus_per_node % inference_tp != 0:
+                total_infer_gpus = self.deployment.infer_nodes_per_replica * self.deployment.gpus_per_node
+                cross_node_ray = (
+                    getattr(self.inference.vllm, "distributed_executor_backend", None) == "ray"
+                    and inference_tp > self.deployment.gpus_per_node
+                )
+                if cross_node_ray:
+                    if inference_tp != total_infer_gpus or self.inference.vllm.data_parallel_size != 1:
+                        raise ValueError(
+                            "Cross-node Ray expert parallel inference requires one TP group across all inference nodes per replica."
+                        )
+                    if self.slurm.template_path is None:
+                        raise ValueError(
+                            "Cross-node Ray expert parallel inference requires a custom slurm.template_path that launches the Ray cluster."
+                        )
+                    inferred_dp_local = 1
+                elif self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
                         "deployment.gpus_per_node must be divisible by inference.vllm.tensor_parallel_size "
                         "when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
+                else:
+                    inferred_dp_local = self.deployment.gpus_per_node // inference_tp
 
-                inferred_dp_local = self.deployment.gpus_per_node // inference_tp
-                total_infer_gpus = self.deployment.infer_nodes_per_replica * self.deployment.gpus_per_node
                 expected_global_world_size = self.inference.vllm.data_parallel_size * inference_tp
                 if expected_global_world_size != total_infer_gpus:
                     raise ValueError(
@@ -778,7 +853,7 @@ class RLConfig(BaseConfig):
                     self.inference.vllm.data_parallel_size_local = inferred_dp_local
                 elif self.inference.vllm.data_parallel_size_local != inferred_dp_local:
                     raise ValueError(
-                        "inference.vllm.data_parallel_size_local must equal deployment.gpus_per_node / inference.vllm.tensor_parallel_size "
+                        "inference.vllm.data_parallel_size_local must equal the resolved local DP size "
                         f"({inferred_dp_local}) when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
 

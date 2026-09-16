@@ -1,10 +1,15 @@
 import asyncio
+import json
+import os
+import sys
+import uuid
 from argparse import Namespace
 
 import uvloop
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
+from vllm import SamplingParams
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
@@ -60,6 +65,7 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "mx_refit": "prime_rl.inference.vllm.worker.mx_refit.MXRefitUpdateWorker",
 }
 
 
@@ -79,8 +85,55 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    args = (
+        (data.get("weight_dir"), data["version_uid"])
+        if data.get("version_uid") is not None
+        else (data.get("weight_dir"),)
+    )
+    results = await engine_client(request).collective_rpc("update_weights_from_path", args=args)
+    records = [
+        result
+        for result in results
+        if isinstance(result, dict) and result.get("record") == "mx-initial-refit-verification-v1"
+    ]
+    for record in records:
+        sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+    if os.environ.get("MX_VERIFY_INITIAL_REFIT") == "1" and str(data.get("version_uid", "")).endswith(":0"):
+        if not records or len(records) != len(results):
+            raise HTTPException(status_code=500, detail="Initial verification is missing receiver records")
+    if any(record["passed"] is not True for record in records):
+        raise HTTPException(status_code=500, detail="Initial weight restoration failed; restart the engines")
     return {"status": "ok"}
+
+
+@router.post("/mx_prepare_initial_refit")
+async def mx_prepare_initial_refit(request: Request):
+    if os.environ.get("MX_VERIFY_INITIAL_REFIT") != "1":
+        raise HTTPException(status_code=400, detail="Initial verification is not enabled")
+    results = await engine_client(request).collective_rpc("prepare_initial_verification")
+    return {"workers": results}
+
+
+@router.post("/mx_generation_control")
+async def mx_generation_control(request: Request):
+    if os.environ.get("MX_VERIFY_INITIAL_REFIT") != "1":
+        raise HTTPException(status_code=400, detail="Initial verification is not enabled")
+    if not await engine_client(request).reset_prefix_cache():
+        raise HTTPException(status_code=500, detail="Generation control could not reset prefix cache")
+    outputs = []
+    for prompt in ("The capital of France is", "Calculate 7 plus 5. The answer is"):
+        final = None
+        async for result in engine_client(request).generate(
+            {"prompt": prompt},
+            SamplingParams(temperature=0, seed=0, max_tokens=16, detokenize=False),
+            request_id=f"mx-control-{uuid.uuid4().hex}",
+        ):
+            final = result
+        if final is None or len(final.outputs) != 1 or not final.outputs[0].token_ids:
+            raise HTTPException(status_code=500, detail="Generation control produced no token sequence")
+        outputs.append(list(final.outputs[0].token_ids))
+    return {"replica": int(os.environ.get("MX_REFIT_REPLICA_ID", "0")), "token_ids": outputs}
 
 
 @router.post("/load_lora_adapter")
