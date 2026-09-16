@@ -185,19 +185,17 @@ def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, 
     assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
-def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
+def _packed_context(doc_lens: tuple[int, ...]) -> PackedContext:
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
-    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at.
+    half of a packing comparison runs at.
     """
-    with torch.device("cuda"), default_dtype(dtype):
+    with torch.device("cuda"):
         rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
-        dtype=dtype,
         device=torch.device("cuda"),
     )
 
@@ -808,7 +806,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
     module = prime_attention(layer_idx, dtype=torch.float32)
     compressor = module.compressor
     doc_lens = MIXED_DOCS
-    packed = _packed_context(doc_lens, torch.float32)
+    packed = _packed_context(doc_lens)
 
     counts = _entry_counts(doc_lens, compress_rate)
     assert counts == expected_counts
@@ -832,9 +830,7 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
     for index, count in enumerate(counts):
         # The entry axis is laid out document by document exactly as the token axis is.
         entries = _doc_slice(tuple(counts), index)
-        alone = compressor.compress(
-            alone_input[:, _doc_slice(doc_lens, index)], _packed_context((doc_lens[index],), torch.float32)
-        )
+        alone = compressor.compress(alone_input[:, _doc_slice(doc_lens, index)], _packed_context((doc_lens[index],)))
         assert alone.shape == (BATCH, count, compressor.head_dim), f"document {index} compressed to the wrong count"
         torch.testing.assert_close(
             packed_entries[:, entries],
@@ -876,7 +872,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
     # `test_deepseek_v4_kernels.py`.
     module = prime_attention(layer_idx, dtype=torch.float32)
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
-    packed = _packed_context(doc_lens, torch.float32)
+    packed = _packed_context(doc_lens)
 
     if module.compressor is None:
         # The second document opens inside a window, so an unclipped one would reach back into
@@ -901,7 +897,7 @@ def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm)
 
     for index, length in enumerate(doc_lens):
         span = _doc_slice(doc_lens, index)
-        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,), torch.float32))
+        alone_output, _ = module(alone_input[:, span], packed=_packed_context((length,)))
         torch.testing.assert_close(
             packed_output[:, span],
             alone_output,
