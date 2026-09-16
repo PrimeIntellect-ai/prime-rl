@@ -70,7 +70,8 @@ def apply_rotary_pos_emb_interleaved(
     `cos` and `sin` arrive at half width (one entry per interleaved pair) and are widened
     with `repeat_interleave`. Each head is laid out as `[nope | rope]`, so only the last
     `2 * cos.shape[-1]` channels rotate and the leading ones pass through untouched.
-    The rotation itself runs in fp32 and is cast back to `x`'s dtype.
+    `cos` and `sin` are float32 regardless of `x`'s dtype: the rotation runs in fp32 and the
+    result is cast back to `x`'s dtype.
 
     Args:
         x: Tensor whose last dimension is the head dimension.
@@ -95,6 +96,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
 
     Because the rotation is interleaved, `forward` returns `cos` / `sin` at half the
     rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them.
+    The tables are float32 whatever dtype the model runs at.
 
     `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
     `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
@@ -163,9 +165,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         return inv_freq, 1.0
 
     @torch.no_grad()
-    def forward(
-        self, position_ids: torch.Tensor, layer_type: str, *, dtype: torch.dtype
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, position_ids: torch.Tensor, layer_type: str) -> tuple[torch.Tensor, torch.Tensor]:
         device = position_ids.device
         inv_freq = getattr(self, f"{layer_type}_inv_freq")
         attention_scaling = getattr(self, f"{layer_type}_attention_scaling")
@@ -180,7 +180,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             cos = freqs.cos() * attention_scaling
             sin = freqs.sin() * attention_scaling
 
-        return cos.to(dtype=dtype), sin.to(dtype=dtype)
+        return cos, sin
 
 
 __all__ = [
