@@ -83,21 +83,19 @@ def test_check_config_allows_selection_changes_only() -> None:
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
 
 
-def test_take_landed_survives_a_resume_that_dies_before_release(tmp_path) -> None:
-    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
-    for key in ("m0", "m1"):
-        stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
-    stream.close()
+def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
+    def land(*keys: str) -> None:
+        stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+        for key in keys:
+            stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
+        stream.close()
 
-    landed = resume.take_landed(tmp_path)
-    assert [record["id"] for record in landed] == ["m0", "m1"]
-    assert not get_file_monitor_dir(tmp_path).exists() and resume.previous_dir(tmp_path).is_dir()
+    land("m0", "m1")
+    assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1"]
+    assert not get_file_monitor_dir(tmp_path).exists()
+    assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
 
-    # the resumed attempt re-logged one episode, then died: the next resume sees both
-    fresh = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
-    fresh.append(orjson.dumps({**_record("math", "m0"), "id": "m0"}, option=orjson.OPT_APPEND_NEWLINE))
-    fresh.close()
-    assert sorted(record["id"] for record in resume.take_landed(tmp_path)) == ["m0", "m1"]
-
-    resume.release_previous(tmp_path)
-    assert not resume.previous_dir(tmp_path).exists()
+    # the resumed attempt re-logged one episode and landed a new one before it died
+    land("m0", "m2")
+    assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1", "m2"]
+    assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]

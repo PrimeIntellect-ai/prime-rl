@@ -53,8 +53,6 @@ class Eval:
         await self.runner.start()
         fired = self.runner.eval_source.trigger(0)
         await self.runner.run_epoch(fired, 0, restored=restored)
-        if config.resume:
-            resume.release_previous(config.run_dir)
         await self.runner.drain()
 
 
