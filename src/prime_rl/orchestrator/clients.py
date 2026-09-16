@@ -292,7 +292,13 @@ async def maybe_check_has_model(
     logger.debug(f"Checking if model {model_name} is in the inference pool")
     results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
     for admin_client, result in zip(admin_clients, results):
-        models = result.json()["data"]
+        body = result.json() if result.headers.get("content-type", "").startswith("application/json") else {}
+        if result.status_code != 200 or "data" not in body:
+            raise RuntimeError(
+                f"Listing the models of {admin_client.base_url} failed with status {result.status_code}: "
+                f"{result.text[:300]}"
+            )
+        models = body["data"]
         if not any(model["id"] == model_name for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
