@@ -1149,7 +1149,7 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   const branches = distStats(idx.map((i) => series.branches?.[i]));
   if (turns || branches) {
     const block = (name, stats) => (stats ? `<div class="tip-head">${name} · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtNum(stats[k]))).join("")}` : "");
-    tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"} / ${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
+    tile("mean turns / branches", `${turns ? fmtNum(turns.mean) : "–"}/${branches ? fmtNum(branches.mean) : "–"}`, block("turns", turns) + block("branches", branches));
   }
   const duration = distStats(idx.map((i) => series.duration?.[i]));
   if (duration) tile("mean episode time", fmtDuration(duration.mean), `<div class="tip-head">episode time · ${fmtCompact(duration.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, fmtDuration(duration[k]))).join("")}`);
@@ -1158,13 +1158,13 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
   if (inTok || outTok) {
     const block = (name, stats) => (stats ? `<div class="tip-head">${name} tokens · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(stats[k]))).join("")}` : "");
-    tile("mean in / out tokens", `${inTok ? tok(inTok.mean) : "–"} / ${outTok ? tok(outTok.mean) : "–"}`, block("input", inTok) + block("output", outTok));
+    tile("mean in / out tokens", `${inTok ? tok(inTok.mean) : "–"}/${outTok ? tok(outTok.mean) : "–"}`, block("input", inTok) + block("output", outTok));
   }
   // cost is spent whether or not an episode errored, so the total covers every landed one
   const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));
   if (costs.length) {
     const total = costs.reduce((a, b) => a + b, 0);
-    tile("total cost", fmtCost(total), `<div class="tip-head">cost · ${fmtCompact(costs.length)} episodes</div>${rowTip("total", fmtCost(total))}${rowTip("mean per episode", fmtCost(total / costs.length))}`);
+    tile("total cost", `$${total.toFixed(2)}`, `<div class="tip-head">cost · ${fmtCompact(costs.length)} episodes</div>${rowTip("total", fmtCost(total))}${rowTip("mean per episode", fmtCost(total / costs.length))}`);
   }
   return tiles.length ? `<div class="stat-grid sum-grid">${tiles.join("")}</div>` : "";
 }
