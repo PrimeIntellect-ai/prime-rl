@@ -19,7 +19,7 @@ All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch
 
 Walk-throughs for the core environments (baseline eval → optional SFT warmup → RL → eval), each with its own README:
 
-- [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B)
+- [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B): `eval.toml` → `sft.toml` → `rl.toml`
 - [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator, LoRA
 - [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
@@ -35,5 +35,4 @@ Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 ## Related config folders
 
 - Frontier-model configs without launch walkthroughs (`minimax-m2.5`, `nemotron-3-super`, `deepseek-v4-flash`) live in [`configs/advanced/`](../configs/advanced).
-- Standalone eval configs live in [`configs/evals/`](../configs/evals).
 - Dev-sized (2-GPU) counterparts of `basic/` live in [`configs/basic/`](../configs/basic).

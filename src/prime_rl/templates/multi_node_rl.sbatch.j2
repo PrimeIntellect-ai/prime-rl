@@ -550,7 +550,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {%- if train_env_names or eval_env_names %}
 
     # Launch one env server per source next to the orchestrator, which connects to each
-    # source at its deterministic loopback address (so this node), polling until they are
+    # source on this node; each publishes the loopback address it bound, polling until they are
     # up — the servers and the orchestrator start in parallel.
     # NOTE: keep this block free of single quotes. The whole srun body is one
     # single-quoted bash -c string, so a stray quote closes it early and the rest of

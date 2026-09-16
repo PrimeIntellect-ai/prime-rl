@@ -24,6 +24,7 @@ dependencies = [
     "openai>=1.106.1",
     "orjson>=3.11.0",
     "psutil>=7.0.0",
+    "prometheus-client>=0.20.0",
     "pyzstd>=0.16.2",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
@@ -42,7 +43,7 @@ sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
-evals = "prime_rl.entrypoints.evals:main"
+eval = "prime_rl.entrypoints.eval:main"
 env-server = "prime_rl.entrypoints.env_server:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
 

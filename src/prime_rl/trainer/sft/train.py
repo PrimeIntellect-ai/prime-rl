@@ -7,13 +7,11 @@ from contextlib import nullcontext
 from datetime import timedelta
 
 from renderers.base import create_renderer
-from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -22,7 +20,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
-from prime_rl.utils.cp import setup_cp_params, shard_for_cp
+from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
@@ -35,7 +33,6 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_processor,
     setup_tokenizer,
-    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -124,25 +121,8 @@ def train(config: SFTConfig):
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
-    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
-    resolve_auto_attn(config.model)
-
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
-        cp_group = parallel_dims.world_mesh["cp"].get_group()
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        if config.model.cp_style == "ring":
-            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        else:
-            from prime_rl.trainer.models.layers.ulysses_attn import (
-                substitute_hf_ulysses_attn,
-                substitute_ulysses_attn,
-            )
-
-            substitute_hf_ulysses_attn(cp_group)
-            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -163,12 +143,7 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
-        # sparse MLA is softmax (works with both ring and ulysses).
-        setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
-        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
-        if config.model.cp_style == "ulysses":
-            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_context_parallel(model, config.model, parallel_dims)
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()

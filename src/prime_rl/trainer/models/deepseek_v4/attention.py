@@ -136,7 +136,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.cp import gather_for_cp
+from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
@@ -690,18 +690,7 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
-        self._cp_group: dist.ProcessGroup | None = None
-        self._cp_rank: int = 0
-        self._cp_world_size: int = 1
-
-    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-
-    @property
-    def cp_enabled(self) -> bool:
-        return self._cp_world_size > 1
+        self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
@@ -730,13 +719,17 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
-        if self.cp_enabled:
-            kv = gather_for_cp(kv, self._cp_group)  # (b, T, 1, d)
+        if self.cp_context.cp_enabled:
+            kv = gather_for_cp(kv, self.cp_context.cp_group)  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
 
         compressed = (
             self.compressor(
-                hidden_states, q_residual, packed, cp_group=self._cp_group, cp_world_size=self._cp_world_size
+                hidden_states,
+                q_residual,
+                packed,
+                cp_group=self.cp_context.cp_group,
+                cp_world_size=self.cp_context.cp_world_size,
             )
             if self.compressor is not None
             else None

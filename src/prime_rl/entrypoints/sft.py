@@ -8,8 +8,8 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-from prime_rl.configs.evals import EvalsConfig, OnlineConfig
-from prime_rl.configs.orchestrator import EvalSourceConfig
+from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
@@ -17,6 +17,7 @@ from prime_rl.utils.config import cli, dump_resolved_config, find_package_resour
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
+    format_config_message,
     format_log_message,
     get_broadcast_dir,
     get_ckpt_dir,
@@ -25,6 +26,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
+    write_env_server_config,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -42,23 +44,17 @@ SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
 
 INFERENCE_CONFIG = "inference.json"
-EVALS_CONFIG = "evals.json"
+ONLINE_EVAL_CONFIG = "eval.json"
 
 ENVS_DIR = "envs"
 
 
-def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
-    """``(source, address)`` for every launcher-managed eval source. A source with
-    ``serve.address`` set is externally managed — the launcher neither writes its
-    config nor spawns a server for it."""
+def eval_env_servers(config: SFTConfig) -> list[OnlineEvalSourceConfig]:
+    """Every launcher-managed eval source. A source with ``serve.address`` set is
+    externally managed — the launcher neither writes its config nor spawns a server for it."""
     if config.eval is None:
         return []
-    addresses = config.eval.env_addresses
-    return [
-        (source, addresses[("eval", source.resolved_name)])
-        for source in config.eval.source
-        if source.serve.address is None
-    ]
+    return [source for source in config.eval.source if source.serve.address is None]
 
 
 def get_ckpt_base(config: SFTConfig) -> Path:
@@ -76,28 +72,37 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_evals_config(config: SFTConfig) -> EvalsConfig:
-    """Derive the evals subconfig from the resolved SFT config. The launcher
-    spawns the env servers itself, so each source's derived address is stamped in,
-    marking it externally managed for the evals process."""
+def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
+    """The online-eval process's config: the resolved ``[eval]`` block with the run-level
+    fields filled from the SFT config. The launcher spawns the env servers itself; the
+    online-eval process finds each one through the address it publishes in the shared
+    config attempt."""
     assert config.eval is not None
     eval_config = config.eval.model_copy(deep=True)
-    addresses = config.eval.env_addresses
-    for source in eval_config.source:
-        source.serve.address = addresses[("eval", source.resolved_name)]
-    return EvalsConfig(
+    run_fields = dict(
         model=config.model.name,
-        eval=eval_config,
         weight_broadcast=config.weight_broadcast,
-        online=OnlineConfig(
-            broadcasts_dir=get_broadcast_dir(config.run_dir),
-            max_steps=config.max_steps,
-            resume_step=resolve_resume_step(config),
-        ),
+        broadcasts_dir=get_broadcast_dir(config.run_dir),
+        max_steps=config.max_steps,
+        resume_step=resolve_resume_step(config),
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=config.monitors,
     )
+    return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
+
+
+def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
+    """The resolved configs a launch leaves in ``config_dir``: the SFT config and, with
+    online evals, the inference, online-eval and env-server configs."""
+    components: list[tuple[str, Path | str]] = [("SFT", config_dir / SFT_CONFIG)]
+    if config.eval is not None:
+        if config.inference is not None:
+            components.append(("Inference", config_dir / INFERENCE_CONFIG))
+        components.append(("Eval", config_dir / ONLINE_EVAL_CONFIG))
+        if eval_env_servers(config):
+            components.append(("Envs", f"{config_dir}/{ENVS_DIR}/eval/*.json"))
+    return components
 
 
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
@@ -108,7 +113,7 @@ def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None 
 
 
 def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: bool = False) -> None:
-    """Write the inference, evals, and env-server configs for online evals."""
+    """Write the inference, online-eval, and env-server configs for online evals."""
     config_dir.mkdir(parents=True, exist_ok=True)
 
     if config.inference is not None:
@@ -121,22 +126,14 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
         with open(config_dir / INFERENCE_CONFIG, "w") as f:
             json.dump(inference_dict, f, indent=2)
 
-    with open(config_dir / EVALS_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(build_evals_config(config)), f, indent=2)
+    with open(config_dir / ONLINE_EVAL_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(build_online_eval_config(config)), f, indent=2)
 
-    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>`
-    # binds at the source's deterministic address, where the evals process connects.
-    for source, address in eval_env_servers(config):
-        env_dir = config_dir / ENVS_DIR / "eval"
-        env_dir.mkdir(parents=True, exist_ok=True)
-        source_dict = dump_resolved_config(source)
-        env_server_dict = {
-            "env": source_dict["env"],
-            "serve": {**(source_dict.get("serve") or {}), "address": address},
-            "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
-        }
-        with open(env_dir / f"{source.resolved_name}.json", "w") as f:
-            json.dump(env_server_dict, f, indent=2)
+    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>` binds an
+    # OS-assigned port and publishes it to the source's address file, where the
+    # online-eval process picks it up.
+    for source in eval_env_servers(config):
+        write_env_server_config(config_dir, "eval", source, config.log)
 
 
 def write_slurm_script(
@@ -191,12 +188,12 @@ def write_slurm_script(
                 "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
                 "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
                 "inference_env_vars": inference_env_vars,
-                "evals_env_vars": {
+                "online_eval_env_vars": {
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
                 },
-                "eval_env_names": [source.resolved_name for source, _ in eval_env_servers(config)],
+                "eval_env_names": [source.resolved_name for source in eval_env_servers(config)],
             }
         script = template.render(
             **config.slurm.template_vars,
@@ -236,6 +233,7 @@ def sft_slurm(config: SFTConfig):
 
     online_eval = config.deployment.type == "multi_node" and config.eval is not None
 
+    logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
@@ -249,9 +247,8 @@ def sft_slurm(config: SFTConfig):
         # inference pool runs on its dedicated nodes in the same allocation.
         exclude = exclude | {"inference"}
     write_config(config, config_path, exclude=exclude)
-    logger.info(f"Wrote config to {config_path}")
 
-    # Trainer and evals processes log to a single shared W&B run.
+    # Trainer and online-eval processes log to a single shared W&B run.
     prl_run_id: str | None = None
     if online_eval and config.monitors.wandb is not None:
         prl_run_id = os.environ["PRL_RUN_ID"]
@@ -259,7 +256,7 @@ def sft_slurm(config: SFTConfig):
     launcher_dir = get_launcher_dir(config.run_dir)
     if online_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
-        logger.info(f"Wrote eval subconfigs to {config_dir}")
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
     write_slurm_script(config, config_path, log_dir, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
@@ -269,9 +266,9 @@ def sft_slurm(config: SFTConfig):
         log_dir=log_dir,
         trainer=True,
         num_train_nodes=num_nodes,
-        evals=online_eval,
+        eval=online_eval,
         inference=online_eval,
-        eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)] if online_eval else None,
+        env_names={"eval": [source.resolved_name for source in eval_env_servers(config)]} if online_eval else None,
         num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
     )
 
@@ -297,20 +294,28 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
+    logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
-    logger.info(f"Wrote config to {config_path}")
-
     if config.eval is not None:
         write_eval_subconfigs(config, config_dir)
-        logger.info(f"Wrote eval subconfigs to {config_dir}")
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
+    logger.info(
+        format_log_message(
+            log_dir=log_dir,
+            trainer=True,
+            eval=config.eval is not None,
+            inference=config.inference is not None,
+            env_names={"eval": [source.resolved_name for source in eval_env_servers(config)]},
+        )
+    )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     # Derive launcher-local GPU IDs (inference first, then the trainer) only when the
@@ -329,17 +334,17 @@ def sft_local(config: SFTConfig):
         infer_gpu_ids = physical_gpu_ids[:num_infer_gpus]
         trainer_gpu_ids = physical_gpu_ids[num_infer_gpus:total_requested_gpus]
 
-    # Trainer and evals log to a single shared W&B run whose id ($WANDB_RUN_ID)
+    # Trainer and online-eval log to a single shared W&B run whose id ($WANDB_RUN_ID)
     # equals $PRL_RUN_ID, one label per process.
     wandb_shared_env: dict[str, str] = {}
     if config.eval is not None:
-        # The trainer creates the run; the evals process (which drains its final evals
-        # after the trainer exits) finalizes it.
+        # The trainer creates the run; the online-eval process (which drains its final
+        # evals after the trainer exits) finalizes it.
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
             "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
             "WANDB_SHARED_PRIMARY": "trainer",
-            "WANDB_SHARED_FINISHER": "evals",
+            "WANDB_SHARED_FINISHER": "online-eval",
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
@@ -388,9 +393,9 @@ def sft_local(config: SFTConfig):
                 log_path=log_dir / "inference.log",
             )
 
-        # Start one env server per eval source. The evals process connects to each source's
-        # deterministic address, polling until the server is up.
-        for source, address in eval_env_servers(config):
+        # Start one env server per eval source. The online-eval process waits for each
+        # server's published address and polls until it answers.
+        for source in eval_env_servers(config):
             name = source.resolved_name
             logger.info(f"Starting {name} server")
             start_process(
@@ -401,10 +406,10 @@ def sft_local(config: SFTConfig):
             )
 
         if config.eval is not None:
-            logger.info("Starting evals")
+            logger.info("Starting online evals")
             start_process(
-                "evals",
-                ["evals", "@", (config_dir / EVALS_CONFIG).as_posix()],
+                "online-eval",
+                [sys.executable, "-m", "prime_rl.eval.online", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
@@ -414,9 +419,9 @@ def sft_local(config: SFTConfig):
                     "PRL_ATTEMPT_LOG_DIR": str(log_dir),
                     "PRL_LOG_DIR": str(log_dir),
                     **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "evals",
+                    "WANDB_SHARED_LABEL": "online-eval",
                 },
-                log_path=log_dir / "evals.log",
+                log_path=log_dir / "eval.log",
             )
 
         from prime_rl.utils.utils import get_free_port
@@ -455,11 +460,11 @@ def sft_local(config: SFTConfig):
         logger.success("Launcher complete")
         log_dashboard_url(logger, dashboard_url)
 
-        # Wait for the trainer (and the evals process, which drains its final evals after
-        # the trainer's last checkpoint) while surfacing any process failure.
+        # Wait for the trainer (and the online-eval process, which drains its final evals
+        # after the trainer's last checkpoint) while surfacing any process failure.
         terminal_events = [stop_events["trainer"]]
-        if "evals" in stop_events:
-            terminal_events.append(stop_events["evals"])
+        if "online-eval" in stop_events:
+            terminal_events.append(stop_events["online-eval"])
         while True:
             pending = [event for event in terminal_events if not event.is_set()]
             if error_queue:
@@ -497,12 +502,12 @@ def sft_local(config: SFTConfig):
 def clean_stale_eval_artifacts(config: SFTConfig) -> None:
     """Remove eval artifacts a previous run left behind: weight broadcasts and rollout
     trace dirs — everything on a fresh start, steps past the resume step on resume.
-    Without this the evals process would replay stale broadcasts (and then skip the
+    Without this the online-eval process would replay stale broadcasts (and then skip the
     re-trained ones at the same steps), and the append-only trace files would mix two
     policies' rollouts under one step."""
     logger = setup_logger(config.log.level or "info")
     if os.environ.get("NEVER_CLEAN"):
-        logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the evals process may replay them")
+        logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the online-eval process may replay them")
         return
     resume_step = resolve_resume_step(config)
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
