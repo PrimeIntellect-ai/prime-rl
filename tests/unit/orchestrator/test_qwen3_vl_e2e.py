@@ -1,20 +1,11 @@
-"""End-to-end integration test for the Qwen3-VL renderer path.
-
-Walks a multimodal request through ``renderers.client.generate`` — the
-tokenize + /inference/v1/generate features payload path the v1 train
-client drives — with the HTTP layer mocked, and verifies that vLLM can
-deserialize the features back into engine inputs identical to what its
-own server-side processor would have produced for the same messages.
-
-This is the strongest end-to-end check we can run without a GPU. The
-remaining missing piece (vLLM actually consuming the engine input,
-sampling tokens, and returning them) is exercised in real rollouts.
-"""
+"""End-to-end request-shape check for raw Qwen3-VL inference."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -47,25 +38,31 @@ class _FakeOpenAI:
     generate response so the parse-side of the flow runs.
     """
 
-    def __init__(self):
+    def __init__(self, image_pad_id: int):
         self.calls: list[dict[str, Any]] = []
         self.base_url = "http://fake-host:8000/v1"
+        self.image_pad_id = image_pad_id
 
     async def post(self, path, *, cast_to=dict, body=None, options=None):
         self.calls.append({"path": path, "body": body, "options": options})
         # Reply with two sampled tokens + <|im_end|>. The renderer's
         # parse_response slices the content tokens.
+        prompt_ids = list(body["token_ids"])
+        pad_index = prompt_ids.index(self.image_pad_id)
+        prompt_ids[pad_index : pad_index + 1] = [self.image_pad_id] * 4
         payload = {
             "request_id": "qwen-vl-e2e",
+            "prompt_token_ids": prompt_ids,
+            "mm_placeholders": {"image": [{"offset": pad_index, "length": 4}]},
             "choices": [
                 {
                     "index": 0,
                     "token_ids": [50, 60, 151645],
                     "logprobs": {
                         "content": [
-                            {"token": "t1", "logprob": -0.1},
-                            {"token": "t2", "logprob": -0.2},
-                            {"token": "t3", "logprob": -0.3},
+                            {"token": "token_id:50", "logprob": -0.1},
+                            {"token": "token_id:60", "logprob": -0.2},
+                            {"token": "token_id:151645", "logprob": -0.3},
                         ]
                     },
                     "finish_reason": "stop",
@@ -75,43 +72,30 @@ class _FakeOpenAI:
         return httpx.Response(200, content=json.dumps(payload).encode())
 
 
-def test_generate_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
-    """Walk a Qwen3-VL multimodal turn through ``renderers.client.generate``
-    and verify the resulting ``/inference/v1/generate`` body has a valid
-    ``features`` payload that:
-
-    1. parses through vLLM's ``GenerateRequest`` pydantic model,
-    2. decodes back to ``MultiModalKwargsItem`` instances carrying
-       ``pixel_values`` + ``image_grid_thw`` of the right shapes,
-    3. has placeholder ranges that exactly cover the ``<|image_pad|>``
-       runs in the prompt token sequence.
-    """
+def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
     from PIL import Image
     from renderers.base import load_tokenizer
     from renderers.client import generate
     from renderers.qwen3_vl import Qwen3VLRenderer
-    from transformers import AutoProcessor
-    from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
-    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
 
-    # ── Build a real Qwen3VLRenderer with a real processor. ─────────────
     tokenizer = load_tokenizer(_MODEL)
-    processor = AutoProcessor.from_pretrained(_MODEL)
-    renderer = Qwen3VLRenderer(tokenizer, processor=processor)
+    renderer = Qwen3VLRenderer(tokenizer)
 
     image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
 
-    fake = _FakeOpenAI()
+    fake = _FakeOpenAI(image_pad_id)
 
     # ── Build a user message with an image (OpenAI content-part shape). ─
     img = Image.new("RGB", (224, 224), color=(64, 128, 255))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    image_url = f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "text", "text": "What's in this picture?"},
-                # Embed the PIL image directly; the renderer consumes it as-is.
-                {"type": "image", "image": img},
+                {"type": "image_url", "image_url": {"url": image_url}},
             ],
         }
     ]
@@ -125,51 +109,16 @@ def test_generate_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
             sampling_params={"max_tokens": 16},
             # Explicit cap so generate() skips the /v1/models discovery round-trip.
             max_prompt_len=1_000_000,
+            process_multimodal=False,
         )
     )
 
-    # ── The HTTP body should carry a features payload. ──────────────────
     assert len(fake.calls) == 1
     body = fake.calls[0]["body"]
-    assert "features" in body, "generate should ship features for image content"
-    features = body["features"]
-
-    # ── Pydantic-roundtrip through vLLM's GenerateRequest model. ────────
-    gen_req = GenerateRequest(
-        token_ids=body["token_ids"],
-        features=features,
-        sampling_params=body["sampling_params"],
-    )
-    assert gen_req.features is not None
-    assert "image" in gen_req.features.mm_hashes
-    assert len(gen_req.features.mm_hashes["image"]) == 1
-
-    # ── Placeholder anchoring: the offset/length in features must land
-    #    exactly on a run of <|image_pad|> ids in the prompt. ───────────
-    placeholders = gen_req.features.mm_placeholders["image"]
-    assert len(placeholders) == 1
-    ph = placeholders[0]
-    pad_slice = body["token_ids"][ph.offset : ph.offset + ph.length]
-    assert all(t == image_pad_id for t in pad_slice), (
-        f"placeholder span ({ph.offset}, {ph.length}) does not cover image_pad tokens; slice={pad_slice[:8]}..."
-    )
-
-    # ── kwargs_data decodes to MultiModalKwargsItem with the right keys. ─
-    assert gen_req.features.kwargs_data is not None
-    encoded_items = gen_req.features.kwargs_data["image"]
-    assert len(encoded_items) == 1
-    item = decode_mm_kwargs_item(encoded_items[0])
-    assert set(item.keys()) == {"pixel_values", "image_grid_thw"}
-
-    # The image_grid_thw must match what the HF processor would have
-    # produced for the same PIL image — strongest signal that the engine
-    # sees the same image features the trainer will.
-    direct_proc_out = processor.image_processor(images=[img], return_tensors="pt")
-    expected_grid = direct_proc_out["image_grid_thw"][0].tolist()
-    assert item["image_grid_thw"].data.tolist() == expected_grid
-
-    # ── Response parsed through renderer's parse_response. ──────────────
+    assert "features" not in body
+    assert body["content_parts"] == [{"type": "image_url", "url": image_url}]
+    assert body["token_ids"].count(image_pad_id) == 1
+    assert result["renderer_prompt_ids"] == body["token_ids"]
+    assert result["prompt_ids"].count(image_pad_id) == 4
+    assert result["mm_placeholders"] == {"image": [{"offset": body["token_ids"].index(image_pad_id), "length": 4}]}
     assert result["completion_ids"] == [50, 60, 151645]
-    # multi_modal_data surfaces on the result so the caller can persist it.
-    assert result["multi_modal_data"] is not None
-    assert len(result["multi_modal_data"].mm_items["image"]) == 1
