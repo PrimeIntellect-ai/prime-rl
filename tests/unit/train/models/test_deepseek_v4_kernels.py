@@ -1280,11 +1280,11 @@ def test_fused_sinkhorn_matches_the_python_fallback(batch, seq_len, monkeypatch)
         weight = torch.randn(batch, seq_len, hc, hc)
     fused_input, fallback_input = streams.clone().requires_grad_(True), streams.clone().requires_grad_(True)
 
-    assert hyperconnections._use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
+    assert hyperconnections.can_use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
     _, fused_comb, _ = module(fused_input)
     (fused_comb * weight).sum().backward()
 
-    monkeypatch.setattr(hyperconnections, "_use_fused_mhc", lambda t, hc: False)
+    monkeypatch.setattr(hyperconnections, "can_use_fused_mhc", lambda t, hc: False)
     _, fallback_comb, _ = module(fallback_input)
     (fallback_comb * weight).sum().backward()
 
@@ -1304,11 +1304,11 @@ def test_fused_post_bda_matches_the_eager_fallback(monkeypatch):
     fused_post, fused_comb, fused_x, fused_streams = _leaves(post, comb, sublayer_out, streams)
     fallback_post, fallback_comb, fallback_x, fallback_streams = _leaves(post, comb, sublayer_out, streams)
 
-    assert hyperconnections._use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
+    assert hyperconnections.can_use_fused_mhc(streams, hc), "vacuous probe: the first run would not take the fused path"
     fused_out = hc_write_back(fused_post, fused_comb, fused_x, fused_streams)
     (fused_out * weight).sum().backward()
 
-    monkeypatch.setattr(hyperconnections, "_use_fused_mhc", lambda t, hc: False)
+    monkeypatch.setattr(hyperconnections, "can_use_fused_mhc", lambda t, hc: False)
     fallback_out = hc_write_back(fallback_post, fallback_comb, fallback_x, fallback_streams)
     (fallback_out * weight).sum().backward()
 

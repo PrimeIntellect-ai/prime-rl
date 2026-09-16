@@ -7,7 +7,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4 import dsv4_mhc
 from prime_rl.trainer.models.layers import norms
 
 
-def _use_fused_mhc(t: torch.Tensor, hc: int) -> bool:
+def can_use_fused_mhc(t: torch.Tensor, hc: int) -> bool:
     """The vendored Triton kernels tile the stream axis with `tl.arange`, so `hc` must be a power of two."""
     return t.is_cuda and hc & (hc - 1) == 0
 
@@ -69,7 +69,7 @@ class DeepseekV4HyperConnection(nn.Module):
         pre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps
         post = 2 * torch.sigmoid(post_w * post_scale + post_b)
         comb_logits = comb_w.view(*comb_w.shape[:-1], hc, hc) * comb_scale + comb_b.view(hc, hc)
-        if _use_fused_mhc(comb_logits, hc):
+        if can_use_fused_mhc(comb_logits, hc):
             comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
         else:
             comb = torch.softmax(comb_logits, dim=-1) + self.hc_eps
@@ -120,7 +120,7 @@ def hc_write_back(
     kernel applies that transpose internally, so both branches take `comb` untransposed.
     """
     dtype = hidden_streams.dtype
-    if _use_fused_mhc(hidden_streams, comb.shape[-1]):
+    if can_use_fused_mhc(hidden_streams, comb.shape[-1]):
         return dsv4_mhc.fused_post_bda(comb.to(dtype), hidden_streams, post.to(dtype), sublayer_out)
     return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
         comb.to(dtype).transpose(-1, -2), hidden_streams
