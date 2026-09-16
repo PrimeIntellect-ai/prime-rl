@@ -43,7 +43,13 @@ RUNS = {
     "fp8_held_ac": [*HELD_ARGS, "--ac", "full"],
     "toy": ["--wrap", "toy"],
     "toy_uninstalled": ["--wrap", "toy", "--install-prepared", "false"],
+    "none_compiled_ac": ["--wrap", "none", "--compile", "true", "--ac", "full"],
+    "fp8_compiled_ac": ["--wrap", "fp8", "--compile", "true", "--ac", "full"],
+    "none_compiled": ["--wrap", "none", "--compile", "true"],
+    "fp8_compiled": ["--wrap", "fp8", "--compile", "true"],
 }
+
+RUNS_ALLOWED_TO_CRASH = ("none_compiled", "fp8_compiled")
 
 
 @pytest.fixture(scope="session")
@@ -70,7 +76,11 @@ def metrics(tmp_path_factory) -> dict[str, dict]:
         ]
         completed = subprocess.run(command, env=environment, capture_output=True, text=True)
         if completed.returncode != 0:
-            pytest.fail(f"{name} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-4000:]}")
+            output = f"{completed.stdout[-4000:]}\n{completed.stderr[-4000:]}"
+            if name not in RUNS_ALLOWED_TO_CRASH:
+                pytest.fail(f"{name} failed:\n{output}")
+            results[name] = {"crash": output}
+            continue
         results[name] = json.loads(target.read_text())
     return results
 
@@ -113,3 +123,39 @@ def test_activation_checkpointing_leaves_the_loss_unchanged(metrics):
 
 def test_held_experts_match_the_resharding_run(metrics):
     assert metrics["fp8_held"]["first_step_microbatch_losses"] == metrics["fp8"]["first_step_microbatch_losses"]
+
+
+def test_compiled_run_under_activation_checkpointing_matches_the_uncompiled_losses(metrics):
+    assert (
+        metrics["none_compiled_ac"]["first_step_microbatch_losses"] == metrics["none"]["first_step_microbatch_losses"]
+    )
+    assert metrics["fp8_compiled_ac"]["first_step_microbatch_losses"] == metrics["fp8"]["first_step_microbatch_losses"]
+
+
+def test_compiling_does_not_silently_unwrap_the_experts(metrics):
+    assert (
+        metrics["fp8_compiled_ac"]["prepare_calls_per_measured_step"]
+        == metrics["fp8_ac"]["prepare_calls_per_measured_step"]
+    )
+
+
+@pytest.mark.xfail(
+    reason="Without activation checkpointing, inductor's assert_size_stride fires in backward because "
+    "prime_rl::grouped_fp8_gemm_backward's fake kernel inherits the weight's transposed strides while the kernel "
+    "returns a contiguous gradient. Unrelated to the cache: it also fires at ep=1 and with --install-prepared false.",
+    strict=True,
+)
+def test_compiled_unwrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
+    assert "crash" not in metrics["none_compiled"], metrics["none_compiled"]["crash"]
+    assert metrics["none_compiled"]["first_step_microbatch_losses"] == metrics["none"]["first_step_microbatch_losses"]
+
+
+@pytest.mark.xfail(
+    reason="Without activation checkpointing, pytorch#172556 fires: the compiled backward prologue expects an "
+    "UnshardedPreparedTensor tangent and gets a plain Tensor. This one is the subclass, not the fp8 op: it needs "
+    "ep>1, reproduces with the bf16 toy op, and is absent from the same toy run with --install-prepared false.",
+    strict=True,
+)
+def test_compiled_wrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
+    assert "crash" not in metrics["fp8_compiled"], metrics["fp8_compiled"]["crash"]
+    assert metrics["fp8_compiled"]["first_step_microbatch_losses"] == metrics["fp8"]["first_step_microbatch_losses"]
