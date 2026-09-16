@@ -334,6 +334,28 @@ class UnshardedPreparedTensor(PreparedTensorBase):
         return return_and_correct_aliasing(func, original_args, original_kwargs, wrapped)
 
 
+def unwrapped_master_shard(tensor: torch.Tensor) -> torch.Tensor:
+    """``tensor`` with any preparation wrapper replaced by a plain alias of the master shard."""
+    if isinstance(tensor, DTensor):
+        local = tensor._local_tensor
+        if not isinstance(local, ShardedPreparedTensor):
+            return tensor
+        return DTensor(local._tensor.detach(), tensor._spec, requires_grad=tensor.requires_grad)
+    if isinstance(tensor, ShardedPreparedTensor):
+        return tensor._tensor.detach()
+    return tensor
+
+
+def unwrap_prepared_state_dict_entries(module, state_dict, prefix, local_metadata) -> None:
+    """Keep the preparation wrapper out of the state dict, which is what reaches a checkpoint.
+
+    Torch stamps an attribute onto every hook it registers, so this has to be a plain function.
+    """
+    for key in list(state_dict):
+        if key.startswith(prefix):
+            state_dict[key] = unwrapped_master_shard(state_dict[key])
+
+
 def install_prepared_weights(
     module: nn.Module,
     prepare_fns: Mapping[str, PrepareFn],
@@ -363,6 +385,7 @@ def install_prepared_weights(
                 requires_grad=parameter.requires_grad,
             ),
         )
+    module.register_state_dict_post_hook(unwrap_prepared_state_dict_entries)
 
 
 def prepared_or_none(weight: torch.Tensor) -> Mapping[str, torch.Tensor] | None:
