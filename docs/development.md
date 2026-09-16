@@ -18,11 +18,12 @@ This page covers workflows for developing on `prime-rl` itself — running the t
 
 ## Test Suite
 
-The test suite is split into three tiers, each with its own CI workflow.
+The test suite is split into four tiers, each with its own CI job or workflow.
 
 ### Layout
 
 - **`tests/unit/`** — fast-running, hermetic tests for isolated logic: config parsing and validation, advantage / loss / scheduler / packer math, individual dataset paths, model-conversion roundtrips, etc. Tests that need a GPU are tagged with the `gpu` marker.
+- **`tests/distributed/`** — multi-GPU correctness tests that need a real NCCL process group (e.g. context-parallel attention), written as `DTest` subclasses (`tests/dtest.py`) so test methods get `self.rank`/`self.world_size`/`self.device` inside spawned workers.
 - **`tests/integration/`** — full-stack RL/SFT runs on a tiny model end-to-end through inference + orchestrator + trainer.
 - **`tests/nightly/`** — runs the configs in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) every night to catch regressions in the shipped examples.
 
@@ -31,6 +32,7 @@ The test suite is split into three tiers, each with its own CI workflow.
 ```bash
 uv run pytest -v                                           # everything
 uv run pytest tests/unit -v                                # unit only
+uv run pytest tests/distributed -v                         # distributed (multi-GPU) only
 uv run pytest tests/integration -v                         # integration only
 uv run pytest -v -m "not gpu"                              # CPU-only subset (mirrors CPU CI)
 uv run pytest -v -m gpu                                    # GPU-only subset
@@ -42,7 +44,7 @@ uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenar
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`cpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/cpu_tests.yaml) | every PR + push to `main` | `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`) | `ubuntu-latest` |
-| [`gpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu_tests.yaml) | every non-draft PR + push to `main` | `pytest tests/unit -m gpu`, plus a matrix of named integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `reverse_text_sft_lora`, `alphabet_sort`, `benchmark_regression`) | self-hosted GPU runners (`vm`, `4xa6000`) |
+| [`gpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu_tests.yaml) | every non-draft PR + push to `main` | `pytest tests/unit -m gpu` (single-GPU), `pytest tests/distributed -m distributed` (multi-GPU), plus a matrix of named integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `reverse_text_sft_lora`, `alphabet_sort`, `benchmark_regression`) | self-hosted GPU runners (`vm` for unit + most integration scenarios, `4xa6000` for distributed tests and `benchmark_regression`) |
 | [`nightly_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/nightly_tests.yaml) | 03:00 PST daily + manual `workflow_dispatch` (single-file filter optional) | every file in `tests/nightly/`, one matrix job per file | `research-cluster` |
 
 The GPU + Nightly workflows skip drafts — open the PR as **Draft** until you're ready to consume CI compute, then mark it ready for review to trigger the GPU matrix.
@@ -52,7 +54,7 @@ The GPU + Nightly workflows skip drafts — open the PR as **Draft** until you'r
 Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
-- `distributed` — gate a multi-GPU `DTest` subclass (`tests/dtest.py`). Auto-applied via `DTest.pytestmark`, inherited by every subclass — don't set it manually.
+- `distributed` — gate a multi-GPU `DTest` subclass (`tests/dtest.py`). Auto-applied via `DTest.pytestmark`, inherited by every subclass — don't set it manually. The distributed CI job uses `-m distributed`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
 
 ## Pre-Commit Hooks
