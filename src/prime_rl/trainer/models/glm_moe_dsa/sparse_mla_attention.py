@@ -7,7 +7,7 @@ from torch import nn
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
-from prime_rl.utils.cp import CPContext, gather_for_cp
+from prime_rl.utils.cp import CPContextMixin, gather_for_cp
 
 try:
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
@@ -111,7 +111,7 @@ class Indexer(nn.Module):
         return indices.view(1, s_local, 1, index_topk)
 
 
-class GlmMoeDsaAttention(nn.Module):
+class GlmMoeDsaAttention(nn.Module, CPContextMixin):
     def __init__(self, args: SparseMlaAttentionArgs):
         super().__init__()
         self.args = args
@@ -144,8 +144,6 @@ class GlmMoeDsaAttention(nn.Module):
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
-
-        self.cp_context = CPContext()
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))

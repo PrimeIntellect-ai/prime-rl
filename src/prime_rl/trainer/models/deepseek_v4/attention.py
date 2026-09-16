@@ -136,7 +136,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.cp import CPContext, gather_for_cp
+from prime_rl.utils.cp import CPContextMixin, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
@@ -635,7 +635,7 @@ COMPRESSOR_CLASSES = {
 }
 
 
-class DeepseekV4Attention(nn.Module):
+class DeepseekV4Attention(nn.Module, CPContextMixin):
     """DeepSeek-V4 self-attention.
 
     Four things set it apart from a standard attention block:
@@ -689,8 +689,6 @@ class DeepseekV4Attention(nn.Module):
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
-
-        self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""

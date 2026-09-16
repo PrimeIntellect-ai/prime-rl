@@ -23,7 +23,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
-from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
+from prime_rl.utils.cp import CPContextMixin, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -198,13 +198,12 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
-class Qwen3_5VLMModel(nn.Module):
+class Qwen3_5VLMModel(nn.Module, CPContextMixin):
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
         self.visual = Qwen3_5VisionModel(config.vision_config)
         self.language_model = Qwen3_5Model(config.text_config)
-        self.cp_context = CPContext()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.language_model.get_input_embeddings()
