@@ -1128,11 +1128,9 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   const tip = (html) => paneTips.push(html) - 1;
   const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   const tiles = [];
-  const tile = (label, value, tipHtml, { cls = "", sub = "" } = {}) =>
+  const tile = (label, value, tipHtml, { cls = "" } = {}) =>
     tiles.push(
-      `<div class="stat-card sum-tile${cls}" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div>` +
-        (sub ? `<div class="sum-sub muted">${sub}</div>` : "") +
-        `</div>`
+      `<div class="stat-card sum-tile${cls}" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div></div>`
     );
   for (const entry of scoreEntries.filter(Boolean)) {
     const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
@@ -1159,13 +1157,8 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   const inTok = distStats(idx.map((i) => series.input_tokens?.[i]));
   const outTok = distStats(idx.map((i) => series.output_tokens?.[i]));
   if (inTok || outTok) {
-    const total = distStats(idx.map((i) => (series.input_tokens?.[i] ?? 0) + (series.output_tokens?.[i] ?? 0)));
-    tile(
-      "mean tokens",
-      tok(total.mean),
-      `<div class="tip-head">tokens · ${fmtCompact(total.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(total[k]))).join("")}`,
-      { sub: `<span style="color:${TOKEN_COLORS.input}">in</span> ${inTok ? tok(inTok.mean) : "–"} · <span style="color:${TOKEN_COLORS.output}">out</span> ${outTok ? tok(outTok.mean) : "–"}` }
-    );
+    const block = (name, stats) => (stats ? `<div class="tip-head">${name} tokens · ${fmtCompact(stats.n)} episodes</div>${SWARM_STAT_ROWS.map((k) => rowTip(k, tok(stats[k]))).join("")}` : "");
+    tile("mean in / out tokens", `${inTok ? tok(inTok.mean) : "–"} / ${outTok ? tok(outTok.mean) : "–"}`, block("input", inTok) + block("output", outTok));
   }
   // cost is spent whether or not an episode errored, so the total covers every landed one
   const costs = all.map((i) => series.cost?.[i]).filter((v) => typeof v === "number" && isFinite(v));

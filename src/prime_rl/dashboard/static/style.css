@@ -399,7 +399,6 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
-.sum-sub { font-size: 11px; margin-top: 4px; }
 .tm-note { font-size: 10px; margin-top: 4px; }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }
