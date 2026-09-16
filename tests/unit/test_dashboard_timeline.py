@@ -1,3 +1,5 @@
+import pytest
+
 from prime_rl.dashboard.server import project_episode_timeline
 
 
@@ -156,42 +158,47 @@ def test_semantic_timeline_starts_new_context_after_compaction() -> None:
     ]
 
 
-def test_semantic_timeline_keeps_rejected_and_accepted_compaction_attempts() -> None:
-    nodes = [
-        _node(None, 0.0),
-        _node(0, 2.0),
-        _node(1, 4.0, [{"node": 1, "type": "compaction_attempt"}]),
-        _node(1, 5.0, [{"node": 1, "type": "compaction_attempt"}]),
-        _node(0, 7.0, [{"node": 3, "type": "compaction"}]),
-    ]
-    nodes[2]["mask"] = [True]
-    nodes[3]["mask"] = [True]
-    calls = [
-        _call(1, 1.0, 2.0),
-        _call(2, 3.0, 4.0),
-        _call(3, 4.0, 5.0),
-        _call(4, 6.0, 7.0),
-    ]
+@pytest.mark.parametrize("depth", [0, 1, 2], ids=["root", "child", "nested-child"])
+@pytest.mark.parametrize("accepted", [False, True], ids=["all-rejected", "retry-accepted"])
+def test_semantic_timeline_keeps_rejected_and_accepted_compaction_attempts(depth: int, accepted: bool) -> None:
+    nodes = [_node(None, 0.0), _node(0, 2.0)]
+    for _ in range(depth):
+        source = len(nodes) - 1
+        nodes.append(_node(0, 2.0 * len(nodes), [{"node": source, "type": "subagent_call"}]))
+    source = len(nodes) - 1
+    for _ in range(2):
+        nodes.append(_node(source, 2.0 * len(nodes), [{"node": source, "type": "compaction_attempt"}]))
+        nodes[-1]["mask"] = [True]
+    summary = len(nodes) - 1
+    nodes.append(
+        _node(
+            0,
+            2.0 * len(nodes),
+            [{"node": summary if accepted else source, "type": "compaction" if accepted else "continuation"}],
+        )
+    )
+    calls = [_call(index, 2.0 * index - 1, 2.0 * index) for index in range(1, len(nodes))]
 
     timeline = project_episode_timeline(_episode(nodes, calls))
-    attempts = [lane for lane in timeline["semantic_lanes"] if lane.get("compaction_attempt")]
+    lanes = timeline["semantic_lanes"][1:]
+    attempts = [lane for lane in lanes if lane.get("compaction_attempt")]
+    agent = f"subagent {depth}" if depth else "root"
 
-    assert [attempt["compaction_attempt"]["accepted"] for attempt in attempts] == [
-        False,
-        True,
+    assert [attempt["compaction_attempt"] for attempt in attempts] == [
+        {"source_node": source, "target_node": summary - 1, "accepted": False},
+        {"source_node": source, "target_node": summary, "accepted": accepted},
     ]
-    assert [attempt["spans"][1]["trainable"] for attempt in attempts] == [
-        True,
-        True,
-    ]
+    assert [attempt["spans"][1]["trainable"] for attempt in attempts] == [True, True]
     assert [attempt["context"] for attempt in attempts] == [
-        {"agent": "root", "index": 0},
-        {"agent": "root", "index": 0},
+        {"agent": agent, "index": 0},
+        {"agent": agent, "index": 0},
     ]
-    assert timeline["semantic_lanes"][-1]["context"] == {
-        "agent": "root",
-        "index": 1,
-    }
+    assert [attempt["depth"] for attempt in attempts] == [depth + 1, depth + 1]
+    resumed = next(lane for lane in lanes if any(span.get("node_index") == len(nodes) - 1 for span in lane["spans"]))
+    assert resumed["context"] == {"agent": agent, "index": int(accepted)}
+    assert resumed["depth"] == depth + 1
+    assert not any(lane["context"].get("unlinked") for lane in lanes)
+    assert sum(lane["usage"]["model_calls"] for lane in lanes) == len(calls)
 
 
 def test_semantic_timeline_falls_back_to_physical_only() -> None:
