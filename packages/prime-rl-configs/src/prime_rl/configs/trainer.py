@@ -148,7 +148,9 @@ MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
 # KV-cache storage dtypes the trainer can replay in its attention forward, matching
 # the inference-side ``kv_cache_dtype`` choices it can simulate (unit-scale 8-bit).
-SimulatedKVCacheDType: TypeAlias = Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+# ``fp8_kernel`` replays through the engine's own fp8 flash-attn kernel (exact forward
+# numerics) instead of a value-level round-trip.
+SimulatedKVCacheDType: TypeAlias = Literal["auto", "fp8", "fp8_kernel", "fp8_e4m3", "fp8_e5m2"]
 
 _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
@@ -337,9 +339,11 @@ class ModelConfig(BaseModelConfig):
     """Inference KV-cache storage dtype to replay in the trainer's attention forward.
     When inference serves rollouts with a quantized KV cache (``inference.vllm.kv_cache_dtype``),
     the trainer's full-precision forward disagrees with the engine's sampling distribution
-    on exactly the tokens the importance ratios compare — quantizing Q, K (post-RoPE) and V
-    through the same 8-bit round-trip reproduces the cache's error and closes most of that
-    gap (the KV-cache analogue of router replay). Auto-set from the inference side by the
+    on exactly the tokens the importance ratios compare. ``fp8`` replays by quantizing Q,
+    K (post-RoPE) and V through the same 8-bit round-trip (value replay); ``fp8_kernel``
+    goes further and runs the engine's own fp8 flash-attn kernel (fp8 tensor-core matmuls
+    and the in-kernel e4m3 attention-probability quantization), matching the engine's
+    forward numerics exactly at the cost of a bf16 re-forward in backward. Auto-set from the inference side by the
     rl entrypoint; ``"auto"`` disables the replay. Only the standard GQA/FlashAttention
     path is replayed — MLA and linear-attention layers keep their native numerics."""
 

@@ -38,6 +38,77 @@ _KV_CACHE_DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
+def _vllm_flash_attn_varlen():
+    """vLLM's vendored FA (3+), whose fp8 path the inference engines run."""
+    from vllm.vllm_flash_attn.flash_attn_interface import flash_attn_varlen_func
+
+    return flash_attn_varlen_func
+
+
+class Fp8KVKernelAttention(torch.autograd.Function):
+    """Attention through the engine's fp8 flash-attn kernel, with a bf16 straight-through backward.
+
+    The forward quantizes Q/K/V to e4m3 (unit scale, matching vLLM's uncalibrated fp8
+    cache and its per-tensor query quantization) and calls the same vendored FA3 entry
+    point the engines call with descales of 1.0 — reproducing not just the quantized
+    inputs but the kernel's own arithmetic (fp8 tensor-core matmuls, the in-kernel e4m3
+    quantization of the attention probabilities). The fp8 kernel has no backward, so
+    gradients re-run the standard bf16 kernel on the unquantized values: the forward
+    matches the engine exactly (which is what the mismatch KL measures), while the
+    backward treats the quantization as identity, like the value-level replay.
+    """
+
+    @staticmethod
+    def forward(
+        ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
+    ) -> torch.Tensor:
+        fp8_dtype = torch.float8_e4m3fn
+        q8, k8, v8 = (t.to(fp8_dtype).contiguous() for t in (q, k, v))
+        num_seqs = cu_seqlens.numel() - 1
+        num_kv_heads = k.shape[1]
+        descale = torch.ones((num_seqs, num_kv_heads), device=q.device, dtype=torch.float32)
+        out = _vllm_flash_attn_varlen()(
+            q8,
+            k8,
+            v8,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            causal=True,
+            q_descale=descale,
+            k_descale=descale,
+            v_descale=descale,
+            fa_version=3,
+        )
+        ctx.save_for_backward(q, k, v)
+        ctx.cu_seqlens = cu_seqlens
+        ctx.max_seqlen = max_seqlen
+        return out
+
+    @staticmethod
+    def backward(ctx, dout: torch.Tensor):
+        from prime_rl.trainer.models.layers.attn import FlashAttention
+
+        q, k, v = ctx.saved_tensors
+        q = q.detach().requires_grad_(True)
+        k = k.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        with torch.enable_grad():
+            out = FlashAttention._funcs[3](
+                q,
+                k,
+                v,
+                ctx.cu_seqlens,
+                ctx.cu_seqlens,
+                ctx.max_seqlen,
+                ctx.max_seqlen,
+                causal=True,
+            )
+            out.backward(dout)
+        return q.grad, k.grad, v.grad, None, None
+
+
 def simulate_kv_cache_dtype(x: torch.Tensor, kv_cache_dtype: str | None) -> torch.Tensor:
     """Round-trip Q/K/V through the simulated KV-cache storage dtype.
 
@@ -132,10 +203,14 @@ class FlashAttention(nn.Module):
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
+        if kv_cache_dtype == "fp8_kernel":
+            # Kernel-level replay: run the engine's own fp8 flash-attn kernel on
+            # unit-scale e4m3 Q/K/V, matching its forward numerics exactly.
+            return Fp8KVKernelAttention.apply(q, k, v, cu_seqlens, max_seqlen)
         if kv_cache_dtype is not None:
-            # Replay the inference KV cache storage dtype: K is post-RoPE here, matching
-            # what vLLM quantizes at cache-write time. vLLM also quantizes the query
-            # (QuantFP8, per-tensor scale) for fp8 KV caches, so the replay covers Q too.
+            # Value-level replay: K is post-RoPE here, matching what vLLM quantizes
+            # at cache-write time. vLLM also quantizes the query (QuantFP8, per-tensor
+            # scale) for fp8 KV caches, so the replay covers Q too.
             k = simulate_kv_cache_dtype(k, kv_cache_dtype)
             v = simulate_kv_cache_dtype(v, kv_cache_dtype)
             q = simulate_kv_cache_dtype(q, kv_cache_dtype)

@@ -192,6 +192,11 @@ def substitute_ulysses_attn(
         from prime_rl.trainer.models.layers.attn import simulate_kv_cache_dtype
 
         kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
+        if kv_cache_dtype == "fp8_kernel":
+            # The fp8 kernel replay is not wired into the Ulysses path; quantization
+            # is elementwise, so the value-level replay on local shards is the
+            # correct (if less exact) substitute.
+            kv_cache_dtype = "fp8"
         if kv_cache_dtype is not None:
             # Replay the inference KV cache storage dtype under context
             # parallelism too: quantization is elementwise, so replaying on the
