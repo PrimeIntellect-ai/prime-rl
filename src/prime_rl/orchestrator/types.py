@@ -83,6 +83,8 @@ class TaskRequest:
     step: int
     rollouts: int | None = None
     """Rollouts of the task this request asks for; None is the env's group size."""
+    group_id: str | None = None
+    """The group these rollouts join (a resume completing a task's landed group); None mints one."""
 
 
 @dataclass
@@ -124,6 +126,7 @@ class GroupState:
     target_episodes: int
     emitted: int = 0
     policy_version_at_start: int = 0
+    group_id: uuid.UUID | None = None
 
 
 @dataclass

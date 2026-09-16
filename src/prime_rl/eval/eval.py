@@ -40,11 +40,12 @@ class Eval:
             eval_env_names=[source.resolved_name for source in config.source],
             overview_flavor="eval",
         )
+        resume.stamp_config(config.run_dir, dump_resolved_config(config))
         await self.runner.setup()
         restored: list = []
         if config.resume:
-            restored, owed = resume.plan(landed, self.runner.eval_envs)
-            self.runner.eval_source.restore(owed)
+            restored, owed, groups = resume.plan(landed, self.runner.eval_envs)
+            self.runner.eval_source.restore(owed, groups)
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
                 f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed"

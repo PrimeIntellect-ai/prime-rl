@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -97,36 +98,42 @@ class LiveFolds:
 
     def __init__(self) -> None:
         self._folds: dict[Path, tuple[int, dict[str, Any], EpisodeAssembly]] = {}
+        # the list and the single-trace endpoints serve from one cache on a thread pool:
+        # a delta must fold once, and a caller serializes a copy, never the growing fold
+        self._lock = threading.Lock()
 
     def read(self, path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        try:
-            size = path.stat().st_size
-        except FileNotFoundError:
-            self._folds.pop(path, None)
-            return None
-        consumed, dispatch, assembly = self._folds.get(path) or (0, {}, EpisodeAssembly())
-        if size < consumed:  # replaced by a new attempt's file
-            consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
-        if size > consumed:
-            with path.open("rb") as f:
-                f.seek(consumed)
-                data = f.read()
+        with self._lock:
             try:
-                read, dispatch = fold_lines(data, dispatch, assembly)
-            except (orjson.JSONDecodeError, KeyError):
+                size = path.stat().st_size
+            except FileNotFoundError:
                 self._folds.pop(path, None)
                 return None
-            consumed += read
-            self._folds[path] = (consumed, dispatch, assembly)
-        if not assembly.traces:
-            return None
-        (trace,) = assembly.traces.values()
-        return dispatch, trace
+            consumed, dispatch, assembly = self._folds.get(path) or (0, {}, EpisodeAssembly())
+            if size < consumed:  # replaced by a new attempt's file
+                consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
+            if size > consumed:
+                with path.open("rb") as f:
+                    f.seek(consumed)
+                    data = f.read()
+                try:
+                    read, dispatch = fold_lines(data, dispatch, assembly)
+                except (orjson.JSONDecodeError, KeyError):
+                    self._folds.pop(path, None)
+                    return None
+                consumed += read
+                self._folds[path] = (consumed, dispatch, assembly)
+            if not assembly.traces:
+                return None
+            (trace,) = assembly.traces.values()
+            snapshot = orjson.dumps((dispatch, trace), option=orjson.OPT_NON_STR_KEYS)
+        return tuple(orjson.loads(snapshot))
 
     def forget_missing(self, live_dir: Path) -> None:
         present = set(live_dir.glob("*.jsonl")) if live_dir.is_dir() else set()
-        for path in [path for path in self._folds if path not in present]:
-            del self._folds[path]
+        with self._lock:
+            for path in [path for path in self._folds if path not in present]:
+                del self._folds[path]
 
 
 def list_live(output_dir: Path, folds: LiveFolds | None = None) -> list[tuple[dict[str, Any], dict[str, Any]]]:

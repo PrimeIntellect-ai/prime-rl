@@ -516,7 +516,7 @@ class Dispatcher:
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
-        gid = uuid.uuid4()
+        gid = fresh.group_id or uuid.uuid4()
         self.groups[gid] = fresh
         return await self.schedule_group_episode(gid, fresh)
 
@@ -545,6 +545,7 @@ class Dispatcher:
             episodes_to_schedule=rollouts,
             target_episodes=rollouts,
             policy_version_at_start=self.policy.version,
+            group_id=uuid.UUID(request.group_id) if request.group_id else None,
         )
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:

@@ -20,10 +20,11 @@ def _env(name: str, task_keys: list[str], *, group_size: int = 1) -> SimpleNames
     )
 
 
-def _record(env: str, key: str, *, ok: bool = True) -> dict:
+def _record(env: str, key: str, *, ok: bool = True, group: str | None = None) -> dict:
     return {
         "env": {"id": env, "name": env},
         "task": {"type": "Task", "data": {"idx": 0}, "key": key, "hash": key},
+        "group": {"id": group or f"group-{key}"},
         "ok": ok,
         "traces": [],
     }
@@ -40,7 +41,7 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None
         _record("code", "c0", ok=False),  # errored: owed again
     ]
 
-    kept, owed = resume.plan([record for record in landed if record["ok"]], envs)
+    kept, owed, groups = resume.plan([record for record in landed if record["ok"]], envs)
 
     assert [(episode.env.name, episode.task.key) for episode in kept] == [
         ("math", "m0"),
@@ -48,16 +49,18 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None
         ("math", "m1"),
     ]
     assert owed == {"math": {"m1": 1, "m2": 2}, "code": {"c0": 1}}
+    # the owed rollout of m1 completes the group its landed rollout opened
+    assert groups == {"math": {"m0": "group-m0", "m1": "group-m1"}}
 
 
 def test_trigger_queues_only_owed_rollouts() -> None:
     source = EvalSource([_env("math", ["m0", "m1", "m2"], group_size=2), _env("code", ["c0"])])
-    source.restore({"math": {"m1": 1, "m2": 2}, "code": {}})
+    source.restore({"math": {"m1": 1, "m2": 2}, "code": {}}, {"math": {"m1": "group-m1"}})
 
     assert source.trigger(0) == ["math", "code"]
-    assert [(request.env_name, request.task.key, request.rollouts) for request in source.queue] == [
-        ("math", "m1", 1),
-        ("math", "m2", 2),
+    assert [(request.env_name, request.task.key, request.rollouts, request.group_id) for request in source.queue] == [
+        ("math", "m1", 1, "group-m1"),
+        ("math", "m2", 2, None),
     ]
 
 
@@ -99,3 +102,11 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
     land("m0", "m2")
     assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1", "m2"]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
+
+
+def test_previous_config_is_the_one_stamped_beside_the_results(tmp_path) -> None:
+    resume.stamp_config(tmp_path, {"model": "a"})
+    resume.take_landed(tmp_path)  # the attempt that ran is archived; a rejected one never stamps
+    assert resume.previous_config(tmp_path) == {"model": "a"}
+    resume.stamp_config(tmp_path, {"model": "b"})
+    assert resume.previous_config(tmp_path) == {"model": "b"}

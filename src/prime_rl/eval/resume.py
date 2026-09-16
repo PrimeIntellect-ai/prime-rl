@@ -26,7 +26,7 @@ import verifiers.v1 as vf
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
 from prime_rl.orchestrator.envs import EvalEnvs
-from prime_rl.utils.pathing import get_config_dir, get_file_monitor_dir
+from prime_rl.utils.pathing import get_file_monitor_dir
 
 RESUMABLE = (
     "resume",
@@ -47,16 +47,25 @@ RESUMABLE = (
 never what is measured."""
 
 
+CONFIG_NAME = "eval.json"
+"""The resolved config an attempt stamps into its file monitor directory once it is
+running, beside the episodes it produces: a resume validates against the config those
+episodes were measured with, never against an attempt that was rejected or dry."""
+
+
+def stamp_config(run_dir: Path, config: dict) -> None:
+    directory = get_file_monitor_dir(run_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / CONFIG_NAME).write_bytes(orjson.dumps(config, option=orjson.OPT_INDENT_2))
+
+
 def previous_config(run_dir: Path) -> dict:
-    """The resolved config of the run's latest earlier attempt."""
-    current = get_config_dir(run_dir)
-    attempts = sorted(
-        (path for path in (run_dir / "configs").glob("attempt_*/resolved/eval.json") if path.parent != current),
-        key=lambda path: int(path.parts[-3].removeprefix("attempt_")),
-    )
-    if not attempts:
-        raise FileNotFoundError(f"Nothing to resume: {run_dir} has no earlier eval attempt")
-    return orjson.loads(attempts[-1].read_bytes())
+    """The config stamped beside the run's landed episodes: the current file monitor
+    directory's, else the newest archive's."""
+    for directory in [get_file_monitor_dir(run_dir), *reversed(archives(run_dir))]:
+        if (directory / CONFIG_NAME).is_file():
+            return orjson.loads((directory / CONFIG_NAME).read_bytes())
+    raise FileNotFoundError(f"Nothing to resume: {run_dir} holds no attempt that ran")
 
 
 def config_diff(previous, current, prefix: str = "") -> list[str]:
@@ -125,9 +134,12 @@ def take_landed(run_dir: Path) -> list[dict]:
     return list(landed.values())
 
 
-def plan(landed: list[dict], eval_envs: EvalEnvs) -> tuple[list[vf.WireEpisode], dict[str, dict[str, int]]]:
+def plan(
+    landed: list[dict], eval_envs: EvalEnvs
+) -> tuple[list[vf.WireEpisode], dict[str, dict[str, int]], dict[str, dict[str, str]]]:
     """Match the landed episodes to the run's tasks: the episodes to keep, in stream
-    order, and the rollouts still owed per env and task key."""
+    order, the rollouts still owed per env and task key, and the group id a task's kept
+    episodes carry, so the owed ones complete that group rather than open another."""
     targets: dict[str, Counter[str]] = {}
     for env in eval_envs:
         targets[env.name] = Counter(task.key for task in env.examples)
@@ -135,6 +147,7 @@ def plan(landed: list[dict], eval_envs: EvalEnvs) -> tuple[list[vf.WireEpisode],
             targets[env.name][key] *= env.config.group_size
     kept: list[vf.WireEpisode] = []
     counts: dict[str, Counter[str]] = defaultdict(Counter)
+    groups: dict[str, dict[str, str]] = defaultdict(dict)
     for record in landed:
         env_name = record["env"].get("name") or record["env"]["id"]
         key = record["task"]["key"]
@@ -142,6 +155,8 @@ def plan(landed: list[dict], eval_envs: EvalEnvs) -> tuple[list[vf.WireEpisode],
             continue
         kept.append(vf.WireEpisode.model_validate(record))
         counts[env_name][key] += 1
+        if (group := record.get("group") or {}).get("id"):
+            groups[env_name].setdefault(key, group["id"])
     owed = {
         env_name: {
             key: target - counts[env_name][key]
@@ -150,4 +165,4 @@ def plan(landed: list[dict], eval_envs: EvalEnvs) -> tuple[list[vf.WireEpisode],
         }
         for env_name, target_counts in targets.items()
     }
-    return kept, owed
+    return kept, owed, dict(groups)

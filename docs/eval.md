@@ -79,7 +79,7 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
-A landed episode counts toward the task with its `task.key`, so `num_examples` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The model, the sampling and each source's env must stay the same; a resume that changes them stops with the differing config paths. Use `--clean` to start over instead.
+A landed episode counts toward the task with its `task.key`, so `num_examples` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The model, the sampling and each source's env must match the config the landed episodes were measured with (kept beside them in `monitors/file/eval.json`); a resume that changes them stops with the differing config paths. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. Use `--clean` to start over instead.
 
 ## Monitors
 
