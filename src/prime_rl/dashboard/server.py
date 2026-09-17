@@ -37,6 +37,7 @@ from prime_rl.utils.process import set_proc_title
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
+    from fastapi.middleware.gzip import GZipMiddleware
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
@@ -47,6 +48,7 @@ MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=1)
 output_dirs: list[Path] = [default_output_dir()]
 
 # run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
