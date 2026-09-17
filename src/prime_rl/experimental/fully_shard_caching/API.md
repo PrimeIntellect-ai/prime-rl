@@ -23,9 +23,9 @@ wrapped, so a new recipe never needs its own subclass.
   high precision) and `fsdp_post_all_gather` (run `prepare_fn` on the gathered weight, hand the
   prepared tensors' storage to FSDP, release the high-precision gather buffer).
 - `UnshardedPreparedTensor`: what the module's forward sees between unshard and reshard. Holds no
-  high-precision storage, only the named tensors its `prepare_fn` produced, exposed as
-  `.prepared`, a read-only name -> tensor mapping. This attribute is how ops access the prepared
-  tensors.
+  high-precision storage, only the named tensors its `prepare_fn` produced. An op reads each one as
+  an attribute, `prepared_<name>`. The `.prepared` mapping, a read-only name -> tensor view of the
+  same set, is for code that has to iterate all of them, such as checkpointing.
 
 There is no cache-invalidation API. Reshard frees the prepared tensors; the next unshard rebuilds them
 from the current master shards, so optimizer updates (including offloaded or overlapped ones) are
@@ -59,6 +59,7 @@ class Op(Protocol):
 
 
 def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, PrepareFn]) -> None: ...
+def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor | None: ...
 ```
 
 - `prepare` must be a pure function of the weight and frozen config, and every value it returns
@@ -80,10 +81,12 @@ def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, Prepar
   parameter. This is intentional, since no current op needs per-weight preparation, but it may
   become a limitation. The mapping can already hold a different callable per parameter; we would
   only need to decide how such an op exposes them.
-- An op detects preparation itself: `isinstance(weight, UnshardedPreparedTensor)`, then read
-  `weight.prepared`. Unwrapped weights take today's code path, and an op may prepare only some of
-  its weights. A `ShardedPreparedTensor` at compute time means the op ran outside its weights'
-  unshard scope and errors.
+- An op detects preparation itself with `unsharded_prepared_or_none(weight)`, then reads each
+  prepared tensor as `weight.prepared_<name>`. Reading the `.prepared` mapping instead breaks the
+  dynamo graph, because dynamo derives a source only for the names `__tensor_flatten__` reports, so
+  the mapping's values reach a sourceless builder that cannot wrap a `FakeTensor`. Unwrapped weights
+  take today's code path, and an op may prepare only some of its weights. A `ShardedPreparedTensor`
+  at compute time means the op ran outside its weights' unshard scope and errors.
 
 ## Lifetime and scope
 
@@ -92,8 +95,8 @@ def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, Prepar
 Liveness belongs to storage, not to objects: the wrapper, its `.prepared` mapping, and every tensor
 in that mapping are the same objects for the whole run. Reshard frees the prepared tensors by
 resizing them to zero bytes, leaving the objects in place; the next unshard re-allocates their
-storage and `prepare` refills it. So an op re-reads `.prepared` on every call and never holds a
-prepared tensor across a reshard.
+storage and `prepare` refills it. So an op re-reads its `prepared_<name>` attributes on every call
+and never holds a prepared tensor across a reshard.
 
 ```
                           unshard                            reshard
@@ -156,8 +159,8 @@ class FusedFp8ExpertCompute:
         return blockwise_fp8_prepare(weight, self.block_size)
 
     def __call__(self, x, gate_up, down, num_tokens_per_expert):
-        gu = gate_up.prepared if isinstance(gate_up, UnshardedPreparedTensor) else None
-        dn = down.prepared if isinstance(down, UnshardedPreparedTensor) else None
+        gu = unsharded_prepared_or_none(gate_up)
+        dn = unsharded_prepared_or_none(down)
         return _fused_fp8_experts(x, gate_up, down, gu, dn, num_tokens_per_expert)
 
 
@@ -190,8 +193,8 @@ that is the op's own style, invisible to the machinery.
   realized at the call site.
 - Check the raw parameters for the subclass, before any dtype cast, `to_local`, or layout
   transform.
-- On the prepared branch, backward saves the wrapper and re-reads `.prepared` from it, never the
-  prepared tensors themselves, so a reshard-then-refill between forward and backward stays
+- On the prepared branch, backward saves the wrapper and re-reads its `prepared_<name>` attributes,
+  never the prepared tensors themselves, so a reshard-then-refill between forward and backward stays
   correct.
 - Joint preparation (one `prepare` over several weights) is out of scope; pack the weights into
   one parameter instead, as the existing QKV and gate_up fusions do.
