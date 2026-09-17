@@ -61,9 +61,13 @@ def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, Prepar
 - `prepare` must be a pure function of the weight and frozen config, and every value it returns
   must be a tensor: the values become FSDP-owned unsharded storage, gathered at unshard and freed
   at reshard.
-- `install_prepared_weights` wraps the named parameters in place. The caller supplies the mapping
-  from parameter name to prepare callable. A missing or already-wrapped parameter raises. Run before
-  `fully_shard`.
+- `install_prepared_weights` wraps the named parameters in place and registers a `state_dict` post
+  hook that replaces each wrapped entry with a plain alias of the master shard, so a checkpoint
+  never contains the subclass. Installation has to reach checkpointing because the governing
+  invariant is that a checkpoint must not encode whether caching was on: the wrapper is a runtime
+  choice, and a checkpoint that carried it would refuse to load into a model that did not make the
+  same choice. The caller supplies the mapping from parameter name to prepare callable. A missing or
+  already-wrapped parameter raises. Run before `fully_shard`.
 - Ops prepare all their weights the same way, so the caller passes `op.prepare` for every
   parameter. This is intentional, since no current op needs per-weight preparation, but it may
   become a limitation. The mapping can already hold a different callable per parameter; we would
