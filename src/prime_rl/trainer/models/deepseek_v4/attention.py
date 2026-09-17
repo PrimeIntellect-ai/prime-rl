@@ -745,7 +745,7 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
+        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, conjugate=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
