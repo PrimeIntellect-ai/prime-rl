@@ -185,8 +185,8 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: UnshardedPreparedTensor, offs: torch.Tensor):
-        qdata = weight._prepared_qdata
-        out = _fp8_grouped_gemm_prepared_forward(x, qdata, weight._prepared_scales, offs, qdata.size(1))
+        qdata = weight.prepared_qdata
+        out = _fp8_grouped_gemm_prepared_forward(x, qdata, weight.prepared_scales, offs, qdata.size(1))
         ctx.save_for_backward(x, offs)
         ctx.weight = weight
         return out
@@ -196,12 +196,12 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
         x, offs = ctx.saved_tensors
         weight = ctx.weight
         needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
-        _, out_features, in_features = weight._prepared_qdata.shape
+        _, out_features, in_features = weight.prepared_qdata.shape
         grad_x, grad_weight_t = _fp8_grouped_gemm_prepared_backward(
             grad_output,
             x.detach(),
-            weight._prepared_qdata_t,
-            weight._prepared_scales_t,
+            weight.prepared_qdata_t,
+            weight.prepared_scales_t,
             offs,
             in_features,
             out_features,
@@ -267,13 +267,13 @@ class PreparedRowScaledWeight(torch.autograd.Function):
     @staticmethod
     def forward(ctx, weight: UnshardedPreparedTensor):
         ctx.weight = weight
-        w_t = weight._prepared_w_t
+        w_t = weight.prepared_w_t
         # An alias, so autograd never attaches a grad_fn to FSDP-owned storage.
         return w_t.view_as(w_t)
 
     @staticmethod
     def backward(ctx, grad_w_t: torch.Tensor):
-        return grad_w_t.transpose(1, 2) / ctx.weight._prepared_row_absmax.unsqueeze(-1)
+        return grad_w_t.transpose(1, 2) / ctx.weight.prepared_row_absmax.unsqueeze(-1)
 
 
 @dataclass(frozen=True)
@@ -301,7 +301,7 @@ class RowScaledGroupedExpertCompute:
             row_absmax = weight.detach().abs().amax(dim=-1).clamp_min(1e-6)
             w_t = (weight / row_absmax.unsqueeze(-1)).transpose(1, 2).contiguous()
         else:
-            row_absmax = prepared._prepared_row_absmax
+            row_absmax = prepared.prepared_row_absmax
             w_t = PreparedRowScaledWeight.apply(prepared)
         out = torch._grouped_mm(x, w_t, offs=offs)
         scale = broadcast_expert_bias(row_absmax, num_tokens_per_expert, out.shape[0])

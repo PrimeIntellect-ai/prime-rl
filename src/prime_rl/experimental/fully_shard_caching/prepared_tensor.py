@@ -285,7 +285,7 @@ class UnshardedPreparedTensor(PreparedTensorBase):
         # __tensor_flatten__ reports inner tensors by attribute name and the subclass machinery
         # fetches them with a plain getattr, so each entry has to exist as an attribute too.
         for name, tensor in prepared.items():
-            setattr(self, f"_prepared_{name}", tensor)
+            setattr(self, f"prepared_{name}", tensor)
 
     @property
     def prepared(self) -> Mapping[str, torch.Tensor]:
@@ -303,12 +303,12 @@ class UnshardedPreparedTensor(PreparedTensorBase):
 
     def __tensor_flatten__(self):
         names = tuple(self._prepared)
-        return [f"_prepared_{name}" for name in names], (names, self.dtype)
+        return [f"prepared_{name}" for name in names], (names, self.dtype)
 
     @staticmethod
     def __tensor_unflatten__(inner_tensors, metadata, outer_size, outer_stride):
         names, dtype = metadata
-        prepared = {name: inner_tensors[f"_prepared_{name}"] for name in names}
+        prepared = {name: inner_tensors[f"prepared_{name}"] for name in names}
         return UnshardedPreparedTensor(
             next(iter(prepared.values())),
             prepared,
@@ -418,7 +418,7 @@ def install_prepared_weights(
 
 
 def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor | None:
-    """``weight``'s unsharded wrapper, whose prepared tensors an op reads as ``_prepared_<name>``."""
+    """``weight``'s unsharded wrapper, whose prepared tensors an op reads as ``prepared_<name>``."""
     local = weight.to_local() if isinstance(weight, DTensor) else weight
     if isinstance(local, UnshardedPreparedTensor):
         return local
