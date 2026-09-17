@@ -15,17 +15,30 @@ restricted to quantization use cases.
 
 FSDP2's tensor-subclass extension hooks turn the unshard/reshard lifecycle into a cache for
 derived operands. Two wrapper subclasses, adapted from torchtitan's mxfp8 prototype, serve every
-recipe: a weight's preparation is set by the `prepare` callable attached when the parameter is
-wrapped, so a new recipe never needs its own subclass.
+recipe: a weight's preparation is set by the op attached when the parameter is wrapped, so a new
+recipe never needs its own subclass.
 
-- `ShardedPreparedTensor(shard, prepare_fn)`: the persistent parameter, wrapping the sharded
-  master weight. Implements `fsdp_pre_all_gather` (cast the shard to param_dtype, all-gather in
-  high precision) and `fsdp_post_all_gather` (run `prepare_fn` on the gathered weight, hand the
-  prepared tensors' storage to FSDP, release the high-precision gather buffer).
+Preparation happens at one of two points, and the op's type decides which.
+
+- **After the all-gather.** The collective carries the high-precision weight and every rank prepares
+  the whole gathered tensor. An op that implements `prepare` alone takes this path.
+- **Before the all-gather.** Each rank prepares its own shard, the collective carries what that
+  produced, and a completion step derives anything that can only be built once the shards are
+  joined. An op that also implements `prepare_shard` and `complete_gathered` takes this path. The
+  collective then moves prepared bytes rather than high-precision ones, and the preparation each
+  rank performs shrinks with the number of shards.
+
+The second path is not available to every recipe, because preparing a shard in isolation has to
+agree with preparing the whole weight. `shard_blocking` is how an op declares when that holds; see
+`## API`.
+
+- `ShardedPreparedTensor(shard, op)`: the persistent parameter, wrapping the sharded master weight.
+  Implements `fsdp_pre_all_gather` and `fsdp_post_all_gather`, and routes each to the op's matching
+  method.
 - `UnshardedPreparedTensor`: what the module's forward sees between unshard and reshard. Holds no
-  high-precision storage, only the named tensors its `prepare_fn` produced. An op reads each one as
-  an attribute, `prepared_<name>`. The `.prepared` mapping, a read-only name -> tensor view of the
-  same set, is for code that has to iterate all of them, such as checkpointing.
+  high-precision storage, only the named tensors the op produced. An op reads each one as an
+  attribute, `prepared_<name>`. The `.prepared` mapping, a read-only name to tensor view of the same
+  set, is for code that has to iterate all of them, such as checkpointing.
 
 There is no cache-invalidation API. Reshard frees the prepared tensors; the next unshard rebuilds them
 from the current master shards, so optimizer updates (including offloaded or overlapped ones) are
@@ -47,18 +60,29 @@ picked up automatically.
 ## API
 
 ```python
-class PrepareFn(Protocol):
-    def __call__(self, weight: Tensor, *, out: dict[str, Tensor] | None = None) -> dict[str, Tensor]: ...
+Prepared = dict[str, Tensor]
+Out = Prepared | None
+
+# Per weight axis, the extent over which the recipe shares a scale.
+# None means the whole axis, so the recipe reduces across it.
+ShardBlocking = tuple[int | None, ...]
 
 
-class Op(Protocol):
+class PrepareOp(Protocol):
     def prepare(  # keys become the wrapper's flat schema
-        self, weight: Tensor, *, out: dict[str, Tensor] | None = None
-    ) -> dict[str, Tensor]: ...
+        self, weight: Tensor, *, out: Out = None
+    ) -> Prepared: ...
     def __call__(self, *args, **kwargs): ...  # tensors and scalars only, never modules
 
 
-def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, PrepareFn]) -> None: ...
+class ShardedPrepareOp(Protocol):  # also prepares before the all-gather
+    shard_blocking: ShardBlocking
+
+    def prepare_shard(self, shard: Tensor, *, out: Out = None) -> Prepared: ...
+    def complete_gathered(self, wire: Mapping[str, Tensor], *, out: Out = None) -> Prepared: ...
+
+
+def install_prepared_weights(module: nn.Module, ops: Mapping[str, PrepareOp | ShardedPrepareOp]) -> None: ...
 def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor | None: ...
 ```
 
@@ -66,27 +90,47 @@ def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor 
   must be a tensor: the values become FSDP-owned unsharded storage, gathered at unshard and freed
   at reshard. Each returned tensor must be contiguous and own its whole storage, since FSDP sizes
   that storage from `numel * itemsize` on every later unshard.
-- With `out` supplied (every unshard after the first), `prepare` must write into exactly the tensors
-  `out` holds and return the same mapping. Rebinding an entry to a fresh tensor raises: FSDP keeps
-  the original objects, so the op would read stale data. `out=None` means allocate, which is the
-  first unshard.
+- With `out` supplied (every unshard after the first), a preparation method must write into exactly
+  the tensors `out` holds and return the same mapping. Rebinding an entry to a fresh tensor raises:
+  FSDP keeps the original objects, so the op would read stale data. `out=None` means allocate, which
+  is the first unshard.
 - `install_prepared_weights` wraps the named parameters in place and registers a `state_dict` post
   hook that replaces each wrapped entry with a plain alias of the master shard, so a checkpoint
   never contains the subclass. Installation has to reach checkpointing because the governing
   invariant is that a checkpoint must not encode whether caching was on: the wrapper is a runtime
   choice, and a checkpoint that carried it would refuse to load into a model that did not make the
-  same choice. The caller supplies the mapping from parameter name to prepare callable. A missing or
-  already-wrapped parameter raises. Run before `fully_shard`.
-- Ops prepare all their weights the same way, so the caller passes `op.prepare` for every
-  parameter. This is intentional, since no current op needs per-weight preparation, but it may
-  become a limitation. The mapping can already hold a different callable per parameter; we would
-  only need to decide how such an op exposes them.
+  same choice. The caller supplies the mapping from parameter name to op, which may differ per
+  parameter. A missing or already-wrapped parameter raises, as does an op matching neither protocol.
+  Run before `fully_shard`.
 - An op detects preparation itself with `unsharded_prepared_or_none(weight)`, then reads each
   prepared tensor as `weight.prepared_<name>`. Reading the `.prepared` mapping instead breaks the
   dynamo graph, because dynamo derives a source only for the names `__tensor_flatten__` reports, so
   the mapping's values reach a sourceless builder that cannot wrap a `FakeTensor`. Unwrapped weights
   take today's code path, and an op may prepare only some of its weights. A `ShardedPreparedTensor`
   at compute time means the op ran outside its weights' unshard scope and errors.
+
+### Preparing before the all-gather
+
+An op opts in by implementing `prepare_shard` and `complete_gathered`. Implementing neither is the
+opt-out, so a recipe that cannot be sharded declares nothing and no flag selects the wrong path.
+Such an op normally keeps `prepare` as well, which makes the same compute measurable both ways.
+
+- **`prepare_shard` must be equivariant.** Preparing each shard and joining the results must equal
+  preparing the joined weight, bitwise. `shard_blocking` declares when that holds, one entry per
+  axis of the weight, giving the extent over which the recipe shares a scale: `1` for an axis whose
+  indices are computed independently, `n` for an axis tiled at extent `n`, and `None` for an axis
+  the recipe reduces across. Blockwise fp8 over experts declares `(1, 128, 128)`. Installation
+  cannot check this, because the mesh does not exist until `fully_shard` runs, so the first unshard
+  checks it and raises on every rank at once.
+- **A pre-gather recipe cannot depend on a statistic reduced across the sharded axis**, because the
+  data is already prepared by the time the shards meet. Per-tensor scaling is the usual example. A
+  recipe that needs one can still have it, by computing it in a separate collective after the
+  optimizer step and reading it as frozen config, but not from inside the hook.
+- **`complete_gathered` receives what the collective carried**, keyed by the names `prepare_shard`
+  returned, and returns the full prepared set. It must pass the gathered tensors through by identity
+  rather than copying them, and every one of them must appear in what it returns, or it would be
+  transported on every unshard and never read. Anything it derives is newly allocated storage that
+  FSDP then owns on the same terms as `prepare`'s output.
 
 ## Lifetime and scope
 
@@ -106,9 +150,10 @@ prepared tensors               P###############################        the cache
                                ^ prepare
 ```
 
-The gather buffer is released by default once `prepare` has consumed it, but FSDP gathers every
-parameter of a unit before preparing any of them, so the unit's full unsharded `param_dtype` size
-stays a momentary peak.
+The gather buffer is released once `prepare` has consumed it, but FSDP gathers every parameter of a
+unit before preparing any of them, so the unit's full unsharded `param_dtype` size stays a momentary
+peak. Preparing before the all-gather removes that peak, because no high-precision gather buffer is
+ever allocated: what the collective returns is already the cache.
 
 Two existing FSDP2 knobs set the resident window, both per unit: `reshard_after_forward` (RAF), a
 `fully_shard` argument, and `set_reshard_after_backward` (RAB), a method on the `FSDPModule`. `M` is
@@ -167,7 +212,7 @@ class FusedFp8ExpertCompute:
 # binding site (moe_runtime), setup time, before fully_shard
 op = FusedFp8ExpertCompute()
 moe.experts.compute = op
-install_prepared_weights(moe.experts, {"gate_up_proj": op.prepare, "down_proj": op.prepare})
+install_prepared_weights(moe.experts, {"gate_up_proj": op, "down_proj": op})
 
 
 # the module names its own parameters; the op never sees the module
@@ -204,18 +249,21 @@ that is the op's own style, invisible to the machinery.
 - Invalidation is free and always correct: the FSDP lifecycle is the cache lifecycle
 - One `prepare` covers forward, backward layouts, and AC recompute; one per optimizer step at RAF=False, RAB=False
 - Can lower resident unsharded memory: the gather buffer is released, so a weight costs only what
-  its `prepare` returned. Whether that is a net saving is a property of the recipe, not of the
-  mechanism (blockwise fp8 is a wash: two 1-byte layouts against a released 2-byte buffer)
+  its preparation returned. Whether that is a net saving is a property of the recipe, not of the
+  mechanism. Blockwise fp8 is a wash, two one-byte layouts against a released two-byte buffer, and
+  on sm90 that is forced rather than incidental: the fp8 matrix instruction reads only operands
+  whose stride 1 runs along the contracted axis, so the forward and the dx GEMM cannot share one
+  layout
 - Zero-cost when unwrapped, and a new preparation is one `prepare` method
 
 ## Cons
 
 - Dim-0 sharding only for now (an implementation limit, not fundamental): excludes
-  `shard_fused_on_dim1` params and parts of the MoE path
+  `fusions.shard_fused_on_dim1` params and parts of the MoE path
 - RAF=False with RAB=False holds every prepared tensor in the unit across the whole accumulation
   step, and needs train-loop wiring for the RAB toggle
 - Rides on private FSDP2 extension hooks and tensor-subclass machinery; torch.compile is the main risk
-- All-gather stays high precision: no communication savings
-- One homogeneous `prepare` per op is baked into the protocol; per-weight heterogeneous
-  preparation stays expressible through the install mapping but has no prescribed structure
-  (intentional, revisit when a real op needs it)
+- An op that prepares only after the all-gather keeps the collective at high precision and saves no
+  communication
+- Preparing before the all-gather rules out any recipe that reduces across the sharded axis, and
+  requires shards even enough that no rank carries padding
