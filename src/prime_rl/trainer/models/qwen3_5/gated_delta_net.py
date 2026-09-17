@@ -1,18 +1,19 @@
 import torch
 import torch.nn.functional as F
-from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d
+from fla.modules.conv import causal_conv1d as fla_causal_conv1d
 from fla.ops.cp import build_cp_context
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule as fla_chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNormGated
+from prime_rl.trainer.models.qwen3_5.ops import causal_conv1d, chunk_gated_delta_rule
 from prime_rl.utils.cp import CPContext
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
 # https://github.com/pytorch/pytorch/issues/155632
-causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
+causal_conv1d_with_context_parallelism = torch.compiler.disable(fla_causal_conv1d)
 
 
 class Qwen3_5GatedDeltaNet(nn.Module):
@@ -38,7 +39,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         )
         self.dt_bias = nn.Parameter(torch.ones(self.num_value_heads))
         self.A_log = nn.Parameter(torch.empty(self.num_value_heads).uniform_(0, 16).log_())
-        self.norm = FusedRMSNormGated(
+        self.norm = Qwen3_5RMSNormGated(
             self.value_head_dim,
             eps=config.rms_norm_eps,
             activation=config.output_gate_type,
@@ -71,15 +72,22 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 conv1d_kernel_size=self.conv_kernel_size,
             )
 
-        convolution = causal_conv1d_with_context_parallelism if context is not None else causal_conv1d
-        mixed_qkv, _ = convolution(
-            x=mixed_qkv,
-            weight=self.conv1d.weight.squeeze(1),
-            bias=self.conv1d.bias,
-            activation=self.activation,
-            cu_seqlens=cu_seqlens,
-            cp_context=context,
-        )
+        if context is None:
+            mixed_qkv = causal_conv1d(
+                mixed_qkv,
+                self.conv1d.weight.squeeze(1),
+                cu_seqlens,
+                self.activation,
+            )
+        else:
+            mixed_qkv, _ = causal_conv1d_with_context_parallelism(
+                x=mixed_qkv,
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cu_seqlens=cu_seqlens,
+                cp_context=context,
+            )
 
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         query = query.reshape(batch_size, sequence_length, self.num_key_heads, self.key_head_dim)
@@ -91,16 +99,19 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(heads_per_key, dim=2)
             key = key.repeat_interleave(heads_per_key, dim=2)
 
-        core_output, _ = chunk_gated_delta_rule(
-            q=query,
-            k=key,
-            v=value,
-            g=decay,
-            beta=beta,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=context.cu_seqlens if context is not None else cu_seqlens,
-            cp_context=context,
-        )
+        if context is None:
+            core_output = chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens)
+        else:
+            core_output, _ = fla_chunk_gated_delta_rule(
+                q=query,
+                k=key,
+                v=value,
+                g=decay,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=context.cu_seqlens,
+                cp_context=context,
+            )
 
         core_output = self.norm(
             core_output.reshape(-1, self.value_head_dim),
