@@ -364,8 +364,8 @@ def ring_attention_backward(
         else:
             reduced_dk = local_kv_grad[0]
             reduced_dv = local_kv_grad[1]
-        dist.reduce_scatter_tensor(reduced_dk, gathered_kv_grad[0], group=group)
-        dist.reduce_scatter_tensor(reduced_dv, gathered_kv_grad[1], group=group)
+        dist.reduce_scatter_single(reduced_dk, gathered_kv_grad[0], group=group)
+        dist.reduce_scatter_single(reduced_dv, gathered_kv_grad[1], group=group)
         if local_kv_grad is not None:
             kv_head_stop = kv_head_start + heads_k_stride
             dk[:, kv_head_start:kv_head_stop] = reduced_dk
