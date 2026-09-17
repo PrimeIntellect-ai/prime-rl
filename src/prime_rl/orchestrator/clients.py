@@ -124,7 +124,7 @@ class InferenceClient:
                     params={"session_id": session_id},
                 )
             except Exception as error:
-                get_logger().warning(f"Failed to release inference session {session_id}: {error!r}")
+                get_logger().debug(f"Failed to release inference session {session_id}: {error!r}")
 
         await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
 
