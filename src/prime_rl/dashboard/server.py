@@ -568,7 +568,9 @@ def read_metrics(run: str, offset: int = 0) -> dict:
     rows = []
     with path.open("rb") as f:
         f.seek(offset)
-        data = f.read(MAX_METRICS_CHUNK)
+        # Keep the first response small for quick initial chart rendering.
+        chunk_size = 4 * 1024 * 1024 if offset == 0 else MAX_METRICS_CHUNK
+        data = f.read(chunk_size)
         if data and b"\n" not in data:  # a single line larger than the chunk
             data += f.readline()
     consumed = data.rfind(b"\n") + 1  # leave a partially-written last line for the next poll
