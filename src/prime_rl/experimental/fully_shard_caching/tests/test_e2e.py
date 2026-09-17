@@ -39,6 +39,8 @@ RUNS = {
     "none": ["--wrap", "none"],
     "fp8": ["--wrap", "fp8"],
     "fp8_ac": ["--wrap", "fp8", "--ac", "full"],
+    "fp8_wire_both": ["--wrap", "fp8_wire_both"],
+    "fp8_wire_one": ["--wrap", "fp8_wire_one"],
     "fp8_held": HELD_ARGS,
     "fp8_held_ac": [*HELD_ARGS, "--ac", "full"],
     "toy": ["--wrap", "toy"],
@@ -90,6 +92,12 @@ def test_wrapped_fp8_matches_the_unwrapped_kernels(metrics):
     assert metrics["fp8"]["first_step_microbatch_losses"] == metrics["none"]["first_step_microbatch_losses"]
 
 
+def test_preparing_before_the_all_gather_matches_preparing_after(metrics):
+    reference = metrics["fp8"]["first_step_microbatch_losses"]
+    assert metrics["fp8_wire_both"]["first_step_microbatch_losses"] == reference
+    assert metrics["fp8_wire_one"]["first_step_microbatch_losses"] == reference
+
+
 def test_wrapped_toy_matches_its_own_unwrapped_branch(metrics):
     assert metrics["toy"]["first_step_microbatch_losses"] == metrics["toy_uninstalled"]["first_step_microbatch_losses"]
 
@@ -99,9 +107,10 @@ def test_unwrapped_run_never_prepares(metrics):
     assert metrics["toy_uninstalled"]["prepare_calls_total"] == 0
 
 
-def test_reshard_after_forward_prepares_twice_per_microbatch(metrics):
+@pytest.mark.parametrize("wrap", ["fp8", "fp8_wire_both", "fp8_wire_one"])
+def test_reshard_after_forward_prepares_twice_per_microbatch(metrics, wrap):
     expected = 2 * WRAPPED_PARAMETERS * GRAD_ACCUM
-    assert metrics["fp8"]["prepare_calls_per_measured_step"] == [expected, expected]
+    assert metrics[wrap]["prepare_calls_per_measured_step"] == [expected, expected]
 
 
 def test_held_experts_prepare_once_per_optimizer_step(metrics):

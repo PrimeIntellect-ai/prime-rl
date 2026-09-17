@@ -17,7 +17,9 @@ from prime_rl.configs.trainer import (
     MoERuntimeConfig,
 )
 from prime_rl.experimental.fully_shard_caching.ops import (
+    BothLayoutWireFp8GroupedExpertCompute,
     Fp8GroupedExpertCompute,
+    OneLayoutWireFp8GroupedExpertCompute,
     RowScaledGroupedExpertCompute,
 )
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import install_prepared_weights
@@ -63,7 +65,7 @@ GLM_4_5_AIR_CONFIG = dict(
     pad_token_id=151329,
 )
 
-WRAP_MODES = ("none", "fp8", "toy")
+WRAP_MODES = ("none", "fp8", "fp8_wire_both", "fp8_wire_one", "toy")
 
 DEFAULT_NUM_EXPERTS = GLM_4_5_AIR_CONFIG["n_routed_experts"]
 
@@ -107,6 +109,10 @@ class MiniModelSpec:
 def build_op(wrap: str, activation):
     if wrap == "fp8":
         return Fp8GroupedExpertCompute(activation=activation)
+    if wrap == "fp8_wire_both":
+        return BothLayoutWireFp8GroupedExpertCompute(activation=activation)
+    if wrap == "fp8_wire_one":
+        return OneLayoutWireFp8GroupedExpertCompute(activation=activation)
     if wrap == "toy":
         return RowScaledGroupedExpertCompute(activation=activation)
     raise ValueError(f"Unknown wrap mode {wrap!r}, expected one of {WRAP_MODES}.")

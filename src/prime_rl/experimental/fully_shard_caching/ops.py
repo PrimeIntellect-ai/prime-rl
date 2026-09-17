@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import ClassVar
 
 import torch
 
-from prime_rl.experimental.fully_shard_caching.fp8_cast import grouped_per_block_cast_to_fp8_both_layouts
+from prime_rl.experimental.fully_shard_caching.fp8_cast import (
+    grouped_per_block_cast_to_fp8,
+    grouped_per_block_cast_to_fp8_both_layouts,
+    transposed_blockwise_fp8,
+)
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
+    ShardBlocking,
     UnshardedPreparedTensor,
     unsharded_prepared_or_none,
 )
@@ -244,6 +251,54 @@ class Fp8GroupedExpertCompute:
         else:
             gate, up = self._gemm(x, gate_up_proj, offs).chunk(2, dim=-1)
         return self._gemm(self.activation.apply(gate, up), down_proj, offs)
+
+
+@dataclass(frozen=True)
+class PreGatherFp8GroupedExpertCompute(Fp8GroupedExpertCompute):
+    """Quantizes each shard before the all-gather, which is exact because the 128x128 tiles span the
+    feature axes while FSDP shards the expert axis."""
+
+    shard_blocking: ClassVar[ShardBlocking] = (1, GROUP_ALIGNMENT, GROUP_ALIGNMENT)
+
+
+@dataclass(frozen=True)
+class BothLayoutWireFp8GroupedExpertCompute(PreGatherFp8GroupedExpertCompute):
+    """Sends both fp8 layouts over the wire, leaving nothing to derive once the shards meet."""
+
+    def prepare_shard(
+        self, shard: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        return blockwise_fp8_prepare(shard, out=out)
+
+    def complete_gathered(
+        self, wire: Mapping[str, torch.Tensor], *, out: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        return dict(wire) if out is None else out
+
+
+@dataclass(frozen=True)
+class OneLayoutWireFp8GroupedExpertCompute(PreGatherFp8GroupedExpertCompute):
+    """Sends the forward layout over the wire, permuting the gathered bytes into the dx layout."""
+
+    def prepare_shard(
+        self, shard: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        use_ue8m0 = ue8m0_for_device(shard.device)
+        if out is None:
+            qdata, scales = grouped_per_block_cast_to_fp8(shard, use_ue8m0)
+            return {"qdata": qdata, "scales": scales}
+        grouped_per_block_cast_to_fp8(shard, use_ue8m0, out=out["qdata"], sf=out["scales"])
+        return out
+
+    def complete_gathered(
+        self, wire: Mapping[str, torch.Tensor], *, out: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]:
+        qdata, scales = wire["qdata"], wire["scales"]
+        if out is None:
+            qdata_t, scales_t = transposed_blockwise_fp8(qdata, scales)
+            return {"qdata": qdata, "scales": scales, "qdata_t": qdata_t, "scales_t": scales_t}
+        transposed_blockwise_fp8(qdata, scales, out=out["qdata_t"], sf=out["scales_t"])
+        return out
 
 
 def row_scaled_prepare(weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
