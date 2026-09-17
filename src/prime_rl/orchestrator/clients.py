@@ -196,6 +196,11 @@ class AdminPlane:
                     get_logger().warning(
                         "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
                     )
+                else:
+                    # The worker extension raises (e.g. the quantized-transfer
+                    # engine-contract check) and FastAPI answers 500 — a silent
+                    # success here would stage a run that cannot weight-sync.
+                    raise
 
         await asyncio.gather(
             *(

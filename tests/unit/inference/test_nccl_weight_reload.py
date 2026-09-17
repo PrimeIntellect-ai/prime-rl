@@ -18,8 +18,10 @@ checkpoint) must reject ``quantize_in_weight_transfer`` at
 
 Each engine runs in its own subprocess (see ``weight_reload_driver.py``) so
 every invocation gets a clean CUDA/distributed lifetime. Requires SM90+
-(blockwise fp8) and at least 2 GPUs; TP is the largest size up to 8 that fits
-the node, so an 8-GPU runner exercises the production TP8 topology.
+(blockwise fp8) and enough GPUs to leave one dedicated to the NCCL sender
+rank next to the engine's TP ranks: TP is the largest of 2/4/8 that fits, so
+a 9-GPU runner exercises the production TP8 topology and an 8-GPU node runs
+TP4.
 """
 
 from __future__ import annotations
@@ -42,8 +44,8 @@ pytestmark = [
         reason="needs CUDA (vLLM TP engines + NCCL)",
     ),
     pytest.mark.skipif(
-        __import__("torch").cuda.device_count() < 2,
-        reason="needs at least 2 GPUs for tensor-parallel sharding coverage",
+        torch.cuda.device_count() < 3,
+        reason="needs at least 3 GPUs: 2+ engine TP ranks plus a dedicated sender GPU",
     ),
     pytest.mark.skipif(
         torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 9,
@@ -74,7 +76,12 @@ def _run_driver(*args: str, timeout: int = DRIVER_TIMEOUT_S) -> subprocess.Compl
 
 
 def _tp_size(gpu_count: int) -> int:
-    return max(2, min(8, gpu_count))
+    """The largest TP (of the head-count divisors 2/4/8) that still leaves a
+    dedicated GPU for the NCCL sender rank."""
+    for tp in (8, 4, 2):
+        if gpu_count >= tp + 1:
+            return tp
+    return 0
 
 
 def _reference_tokens(model_dir: Path, tp: int, ep: str, out: Path) -> list[list[int]]:

@@ -91,6 +91,42 @@ def test_admin_plane_initializes_nccl():
     asyncio.run(admin_plane.aclose())
 
 
+def test_admin_plane_nccl_init_propagates_worker_rejection():
+    """A worker-side rejection of the NCCL broadcast init (e.g. the engine-
+    contract checks raising inside /init_broadcaster -> HTTP 500) must fail the
+    orchestrator's initialize call — a silent success would stage a run that
+    can never weight-sync."""
+    admin_plane = AdminPlane(ClientConfig())
+    client = AsyncMock()
+    response = httpx.Response(500, request=httpx.Request("POST", "http://worker/init_broadcaster"))
+    client.post.return_value = response
+    admin_plane.clients = [client]
+
+    with pytest.raises(httpx.HTTPStatusError, match="500"):
+        asyncio.run(
+            admin_plane.initialize_nccl(
+                host="trainer",
+                port=29501,
+                timeout=1200,
+                inference_world_size=1,
+                quantize_in_weight_transfer=True,
+            )
+        )
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_nccl_init_still_skips_missing_route():
+    """A 404 from an engine without /init_broadcaster stays a warning, not an error."""
+    admin_plane = AdminPlane(ClientConfig())
+    client = AsyncMock()
+    response = httpx.Response(404, request=httpx.Request("POST", "http://worker/init_broadcaster"))
+    client.post.return_value = response
+    admin_plane.clients = [client]
+
+    asyncio.run(admin_plane.initialize_nccl(host="trainer", port=29501, timeout=1200, inference_world_size=1))
+    asyncio.run(admin_plane.aclose())
+
+
 def test_setup_client_creates_renderer_client():
     from renderers import Qwen3VLRendererConfig
 

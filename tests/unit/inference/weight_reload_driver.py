@@ -43,11 +43,16 @@ TOKENIZER_FILES = ["tokenizer.json", "tokenizer_config.json", "special_tokens_ma
 TINY_CONFIG = dict(
     vocab_size=151552,
     hidden_size=512,
-    intermediate_size=256,
-    moe_intermediate_size=128,
+    # All sharded fp8 dimensions are 128-multiples at every supported TP size
+    # (vLLM's validate_fp8_block_shape checks the per-rank partitions):
+    # q_b out = 16*192 = 3072 -> 384 @TP8; kv_b out = 16*256 = 4096 -> 512 @TP8;
+    # o_proj input = 16*128 = 2048 -> 256 @TP8; gate/up/w2 shards of the 1024-wide
+    # MLPs -> 128 @TP8.
+    intermediate_size=1024,
+    moe_intermediate_size=1024,
     num_hidden_layers=2,
-    num_attention_heads=8,
-    num_key_value_heads=8,
+    num_attention_heads=16,
+    num_key_value_heads=16,
     n_shared_experts=1,
     n_routed_experts=8,
     routed_scaling_factor=2.5,
@@ -138,7 +143,9 @@ def _build_hf_state(seed: int):
         state[f"{a}.q_a_proj.weight"] = randn(q_lora, hidden)
         state[f"{a}.kv_a_proj_with_mqa.weight"] = randn(kv_lora + rope, hidden)
         state[f"{a}.q_a_layernorm.weight"] = randn(q_lora)
-        state[f"{a}.kv_a_layernorm.weight"] = randn(kv_lora + rope)
+        # The kv_a layernorm covers the compressed-KV (kv_lora) slice only —
+        # the rope slice is not normalized.
+        state[f"{a}.kv_a_layernorm.weight"] = randn(kv_lora)
         state[f"{a}.q_b_proj.weight"] = randn(heads * (nope + rope), q_lora)
         state[f"{a}.kv_b_proj.weight"] = randn(heads * (nope + v_dim), kv_lora)
         state[f"{a}.o_proj.weight"] = randn(hidden, heads * v_dim)
@@ -349,25 +356,48 @@ def mode_update(args: argparse.Namespace) -> None:
     import prime_rl.trainer.models  # noqa: F401 - AutoConfig registration
     from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
+    # The sender gets a GPU of its own, distinct from every engine TP rank
+    # (NCCL requires each communicator rank bound to a unique device).
+    sender_device = torch.device(f"cuda:{args.tp}")
+
     # Trainer-side wire rounds, and the matching on-disk reference checkpoints.
     template_dir = Path(args.model_dir)
-    wire1 = _wire_layers(_build_prime_model(seed=args.seed1))
+    wire1 = _wire_layers(_build_prime_model(seed=args.seed1, device=sender_device))
     _save_reference_checkpoint(Path(args.ref1_dir), wire1, template_dir)
-    wire2 = _wire_layers(_build_prime_model(seed=args.seed2))
+    wire2 = _wire_layers(_build_prime_model(seed=args.seed2, device=sender_device))
     _save_reference_checkpoint(Path(args.ref2_dir), wire2, template_dir)
 
     llm = _make_engine(args.model_dir, tp=args.tp, expert_parallel=args.ep == "on")
     baseline = _generate(llm)
 
+    # The receiver ranks are created by the init RPC while the sender (rank 0)
+    # forms the group: both sides rendezvous inside the store, so the two
+    # creations must run concurrently — running them sequentially deadlocks
+    # (each side waits for the other to join the store).
+    init_result: dict = {}
+
+    def init_rpc() -> None:
+        try:
+            llm.collective_rpc(
+                "init_broadcaster",
+                args=("127.0.0.1", args.port, 0, args.tp, args.timeout, True, "reload-test"),
+            )
+            init_result["ok"] = True
+        except BaseException as error:  # noqa: BLE001 - surfaced to the test
+            init_result["error"] = repr(error)
+
+    init_thread = threading.Thread(target=init_rpc)
+    init_thread.start()
     disable_nccl_p2p_if_unavailable()
     pg = StatelessProcessGroup.create(
         host="127.0.0.1", port=args.port, rank=0, world_size=args.tp + 1, store_timeout=args.timeout
     )
-    communicator = PyNcclCommunicator(pg, device=torch.device("cuda:0"))
-    llm.collective_rpc(
-        "init_broadcaster",
-        args=("127.0.0.1", args.port, 0, args.tp, args.timeout, True, "reload-test"),
-    )
+    communicator = PyNcclCommunicator(pg, device=sender_device)
+    init_thread.join(timeout=args.timeout)
+    if init_thread.is_alive():
+        raise RuntimeError("init_broadcaster did not return — receiver init likely wedged")
+    if init_result.get("error"):
+        raise RuntimeError(f"init_broadcaster failed: {init_result['error']}")
 
     _broadcast_and_update(llm, communicator, wire1)
     after_first = _generate(llm)
