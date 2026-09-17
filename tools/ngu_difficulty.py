@@ -65,7 +65,7 @@ def count_solves(records, task_ids: list[str]) -> dict[str, int]:
     outcomes = defaultdict(dict)
     seen = {}
     for record in records:
-        if (record.get("env") or {}).get("name") != "swerebench-profile":
+        if (record.get("env") or {}).get("name") != "swerebench-1k":
             continue
         if not record.get("ok"):
             continue
@@ -95,7 +95,7 @@ def count_solves(records, task_ids: list[str]) -> dict[str, int]:
 
 def source_for(bucket: str, manifest: Path) -> dict:
     return {
-        "name": f"swerebench-{bucket}",
+        "name": f"swerebench-1k-{bucket}",
         "num_examples": -1,
         "group_size": 1,
         "env": {
@@ -103,7 +103,7 @@ def source_for(bucket: str, manifest: Path) -> dict:
             "agent": {
                 "harness": {"id": "bash"},
                 "timeout": {"rollout": 3600},
-                "runtime": {"type": "prime", "labels": ["ngu-swe-difficulty"]},
+                "runtime": {"type": "prime"},
             },
         },
     }
@@ -141,7 +141,7 @@ def split(manifest_path: Path, run_dir: Path, output: Path) -> None:
             "taskset": {"id": "swebench-verified"},
             "agent": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "prime", "labels": ["ngu-swe-difficulty"]},
+                "runtime": {"type": "prime"},
                 "timeout": {"rollout": 3600},
             },
         },
@@ -152,7 +152,6 @@ def split(manifest_path: Path, run_dir: Path, output: Path) -> None:
                 "orchestrator": {
                     "eval": {
                         "interval": 20,
-                        "sampling": {"temperature": 1.0, "top_p": 1.0},
                         "source": [verified, *sources],
                     }
                 },

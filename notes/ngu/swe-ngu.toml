@@ -77,10 +77,6 @@ continuation_probability = 0.875
 history_max_policy_age = 4
 seed = 42
 
-[orchestrator.train.sampling]
-temperature = 1.0
-top_p = 1.0
-
 [orchestrator.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
@@ -91,7 +87,6 @@ env.taskset.id = "swerebench-v2"
 env.taskset.dataset_name = "PrimeIntellect/SWE-rebench-V2-Filtered-Verified"
 env.taskset.split = "train"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["glm45air-swe-ngu"]
 
 [orchestrator.eval]
 interval = 20
@@ -99,15 +94,10 @@ num_examples = -1
 group_size = 1
 skip_first_step = false
 
-[orchestrator.eval.sampling]
-temperature = 1.0
-top_p = 1.0
-
 [[orchestrator.eval.source]]
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
-env.agent.runtime.labels = ["glm45air-swe-ngu"]
 env.agent.timeout.rollout = 3600
 
 [inference]

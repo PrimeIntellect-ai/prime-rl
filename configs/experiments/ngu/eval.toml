@@ -5,7 +5,7 @@ output_dir = "outputs/ngu-profile"
 dashboard = false
 
 [run]
-name = "swerebench-1000-avg8"
+name = "swerebench-1k"
 
 [client]
 base_url = "http://localhost:8000/v1"
@@ -13,17 +13,12 @@ api_key_var = "VLLM_API_KEY"
 
 [concurrency]
 min_inflight = 256
-max_inflight = 256
-
-[sampling]
-temperature = 1.0
-top_p = 1.0
+max_inflight = 1000
 
 [[source]]
-name = "swerebench-profile"
+name = "swerebench-1k"
 env.taskset.id = "ngu-swe"
 env.taskset.manifest = "tools/ngu/sample-1000.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
-env.agent.runtime.labels = ["ngu-swe-profile"]
 env.agent.timeout.rollout = 3600

@@ -9,7 +9,7 @@ def episode(task, index, score, *, ok=True):
     return {
         "id": f"{task}-{index}",
         "ok": ok,
-        "env": {"name": "swerebench-profile"},
+        "env": {"name": "swerebench-1k"},
         "task": {"data": {"name": task}, "hash": f"hash-{task}"},
         "traces": [{"rewards": {"solved": {"score": score, "weight": 1}}}],
     }

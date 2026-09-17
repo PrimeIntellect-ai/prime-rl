@@ -7,11 +7,6 @@ gpus_per_node = 8
 
 [slurm]
 job_name = "ngu-swe-profile"
-partition = "all"
-time = "48:00:00"
-
-[server]
-port = 8000
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
@@ -25,4 +20,3 @@ data_parallel_size = 1
 enable_expert_parallel = true
 gpu_memory_utilization = 0.85
 max_model_len = 131072
-seed = 42

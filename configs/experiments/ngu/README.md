@@ -9,9 +9,9 @@ The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). No GPU job has be
 - Four independent H200 nodes, each eight GPUs: TP=8 + expert parallelism within each node, DP=1 per replica. One native router balances the four replicas. No trainer allocation.
 - SWE-rebench-V2 verified dataset, pinned to `03cc767ee33126b7fc7890ad57047e9dd6914cca`.
 - `tools/ngu/sample-1000.json` selects exactly 1,000 unique tasks, uniformly without replacement from the 6,272 source tasks’ sorted instance IDs using Python `random.Random(42)`. The manifest order is the evaluation order. It is not the first 1,000 dataset rows.
-- Eight independent episodes per task: 8,000 total. Bash harness, fresh Prime runtime, temperature/top-p 1/1, 131072 model context. No length penalty.
-- A 3,600-second **solve/agent** budget per episode, excluding setup and scoring. This is not a one-hour whole-job cap. The allocation wall-time guard is 48 hours.
-- 256 concurrent episodes across the four replicas. Track sandbox capacity and errors during launch; this is a concurrency ceiling, not a batch size.
+- Eight independent episodes per task: 8,000 total. Bash harness, fresh Prime runtime, default sampling settings, 131072 model context. No length penalty.
+- A 3,600-second **solve/agent** budget per episode, excluding setup and scoring. This is not a one-hour whole-job cap. No job time limit is specified; cluster policy applies.
+- Adaptive concurrency from 256 to 1,000 inflight episodes across the four replicas, driven by engine metrics. Track sandbox capacity and errors during launch.
 
 `avg@8` here means total solves / 8 per task, averaged across tasks (an estimate of pass@1), not pass@8's “any attempt solved.”
 
@@ -41,11 +41,10 @@ git submodule update --init --recursive
 uv sync --all-extras --all-packages
 ```
 
-Use the cluster's H200 partition and a persistent shared output path. The checked-in `partition="all"` matches the existing GLM Air recipe; override it if that partition is not exclusively suitable H200 nodes. Ensure existing Hugging Face model access and Prime sandbox credentials are available in the job environment / `.env`.
+Use a persistent shared output path. The SLURM partition uses the launcher default. Ensure existing Hugging Face model access and Prime sandbox credentials are available in the job environment / `.env`.
 
 ```bash
 uv run inference @ configs/experiments/ngu/inference.toml \
-  --slurm.partition "$NGU_H200_PARTITION" \
   --slurm.project-dir "$PWD" \
   --output-dir "$NGU_SHARED_OUTPUT"
 ```
@@ -69,7 +68,7 @@ uv run eval @ configs/experiments/ngu/eval.toml \
   --output-dir "$NGU_SHARED_OUTPUT/eval"
 uv run python tools/ngu_difficulty.py split \
   tools/ngu/sample-1000.json \
-  "$NGU_SHARED_OUTPUT/eval/swerebench-1000-avg8" \
+  "$NGU_SHARED_OUTPUT/eval/swerebench-1k" \
   "$NGU_SHARED_OUTPUT/difficulty"
 EVAL
 ```
@@ -80,7 +79,7 @@ Outputs under `$NGU_SHARED_OUTPUT`:
 
 - `launcher/logs/`: standard inference allocation logs; the attached eval step also streams to its invoking terminal.
 - `logs/latest/inference/`: native replica/router logs.
-- `eval/swerebench-1000-avg8/`: normal PRL eval configs, metrics and trace stream.
+- `eval/swerebench-1k/`: normal PRL eval configs, metrics and trace stream.
 - `difficulty/{easy,medium,hard,extra-hard}.json`: four frozen task manifests, generated only after complete measurement.
 - `difficulty/{easy,medium,hard,extra-hard}.toml`: four taskset configuration fragments.
 - `difficulty/results.json`: per-task solve counts, aggregate avg@8 and bucket sizes.
