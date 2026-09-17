@@ -191,3 +191,102 @@ def grouped_per_block_cast_to_fp8_both_layouts(
         num_warps=8,
     )
     return out, sf, out_t, sf_t
+
+
+@triton.jit
+def _transposed_blockwise_fp8_kernel(
+    qdata_ptr,
+    scales_ptr,
+    out_ptr,
+    sf_ptr,
+    rows,
+    cols,
+    stride_qg,
+    stride_qm,
+    stride_qn,
+    stride_sg,
+    stride_sm,
+    stride_sn,
+    stride_yg,
+    stride_ym,
+    stride_yn,
+    stride_tg,
+    stride_tm,
+    stride_tn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_g = tl.program_id(axis=0)
+    pid_m = tl.program_id(axis=1)
+    pid_n = tl.program_id(axis=2)
+    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    tile = tl.load(
+        qdata_ptr + pid_g * stride_qg + row_offsets[:, None] * stride_qm + col_offsets[None, :] * stride_qn,
+        mask=(row_offsets[:, None] < rows) & (col_offsets[None, :] < cols),
+    )
+    tl.store(
+        out_ptr + pid_g * stride_yg + col_offsets[:, None] * stride_ym + row_offsets[None, :] * stride_yn,
+        tl.trans(tile),
+        mask=(col_offsets[:, None] < cols) & (row_offsets[None, :] < rows),
+    )
+    scale = tl.load(scales_ptr + pid_g * stride_sg + pid_m * stride_sm + pid_n * stride_sn)
+    tl.store(sf_ptr + pid_g * stride_tg + pid_n * stride_tm + pid_m * stride_tn, scale)
+
+
+def transposed_blockwise_fp8(
+    qdata: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    out: torch.Tensor | None = None,
+    sf: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Transposed blockwise fp8 layout derived by permuting already-quantized bytes."""
+    assert qdata.dim() == 3
+    assert qdata.dtype == torch.float8_e4m3fn
+    assert qdata.is_contiguous()
+    assert (out is None) == (sf is None)
+    groups, rows, cols = qdata.shape
+    scale_rows, scale_cols = ceil_div(rows, GROUP_ALIGNMENT), ceil_div(cols, GROUP_ALIGNMENT)
+    assert scales.shape == (groups, scale_rows, scale_cols)
+    assert scales.dtype == torch.float32
+    assert scales.device == qdata.device
+    assert scales.is_contiguous()
+    if out is None:
+        out = torch.empty((groups, cols, rows), device=qdata.device, dtype=torch.float8_e4m3fn)
+        sf = torch.empty((groups, scale_cols, scale_rows), device=qdata.device, dtype=torch.float32)
+    else:
+        assert out.shape == (groups, cols, rows)
+        assert out.dtype == torch.float8_e4m3fn
+        assert out.device == qdata.device
+        assert out.is_contiguous()
+        assert sf.shape == (groups, scale_cols, scale_rows)
+        assert sf.dtype == torch.float32
+        assert sf.device == qdata.device
+        assert sf.is_contiguous()
+    qdata_bytes, out_bytes = qdata.view(torch.uint8), out.view(torch.uint8)
+    grid = (groups, scale_rows, scale_cols)
+    _transposed_blockwise_fp8_kernel[grid](
+        qdata_bytes,
+        scales,
+        out_bytes,
+        sf,
+        rows,
+        cols,
+        qdata_bytes.stride(0),
+        qdata_bytes.stride(1),
+        qdata_bytes.stride(2),
+        scales.stride(0),
+        scales.stride(1),
+        scales.stride(2),
+        out_bytes.stride(0),
+        out_bytes.stride(1),
+        out_bytes.stride(2),
+        sf.stride(0),
+        sf.stride(1),
+        sf.stride(2),
+        BLOCK_M=GROUP_ALIGNMENT,
+        BLOCK_N=GROUP_ALIGNMENT,
+        num_warps=8,
+    )
+    return out, sf
