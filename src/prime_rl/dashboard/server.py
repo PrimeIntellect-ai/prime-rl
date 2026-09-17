@@ -19,11 +19,13 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 
 import orjson
 
+from prime_rl.dashboard.flow import is_flow_run, project_flow
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -81,6 +83,8 @@ _series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
 _index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
+_flow_cache: OrderedDict[Path, tuple[str, dict]] = OrderedDict()
+_flow_state_cache: OrderedDict[Path, tuple[int, int, float | None, set[str], dict[str, str | None]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -244,6 +248,8 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
     if (configs / "eval.json").exists():
         return "eval", read_json(configs / "eval.json")
+    if is_flow_run(run_dir):
+        return "flow", read_json(run_dir / "config.json")
     return "other", {}
 
 
@@ -295,6 +301,45 @@ def eval_total_episodes(config: dict) -> int | None:
     return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
 
 
+def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
+    """Incrementally fold row state from the append-only flow event stream."""
+    path = run_dir / "events.jsonl"
+    try:
+        stat = path.stat()
+    except OSError:
+        return None, False
+    with _lock:
+        cached = _lru_get(_flow_state_cache, path)
+    if cached and cached[0] == stat.st_ino and cached[1] <= stat.st_size:
+        inode, read_from, started, rows, states = cached
+        rows, states = set(rows), dict(states)
+    else:
+        inode, read_from, started, rows, states = stat.st_ino, 0, None, set(), {}
+    with path.open("rb") as file:
+        file.seek(read_from)
+        for raw in file:
+            if not raw.endswith(b"\n"):
+                break
+            try:
+                event = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                break
+            read_from += len(raw)
+            if started is None:
+                try:
+                    started = datetime.fromisoformat(event["at"]).timestamp()
+                except (KeyError, TypeError, ValueError):
+                    pass
+            row = event.get("row")
+            if event.get("type") == "row_started" and isinstance(row, str):
+                rows.add(row)
+            elif event.get("type") == "row_finished" and isinstance(row, str):
+                states[row] = event.get("state")
+    with _lock:
+        _lru_put(_flow_state_cache, path, (inode, read_from, started, rows, states))
+    return started, bool(rows) and rows <= states.keys() and all(states[row] != "stopped" for row in rows)
+
+
 def run_meta(run_dir: Path) -> dict:
     configs = run_dir / "configs"
     run_type, config = main_config(run_dir)
@@ -315,6 +360,10 @@ def run_meta(run_dir: Path) -> dict:
                 started = orjson.loads(f.readline()).get("time")
             except orjson.JSONDecodeError:
                 started = None
+    flow_finished = False
+    if run_type == "flow":
+        started, flow_finished = flow_run_state(run_dir)
+        updated = (run_dir / "events.jsonl").stat().st_mtime
     # Liveness reads every artifact the processes touch: an eval ships its metrics at
     # epoch end and its first episode can take minutes, but its log ticks every few
     # seconds. The launch itself is the start until a metrics row says otherwise.
@@ -335,7 +384,11 @@ def run_meta(run_dir: Path) -> dict:
         started = resolved.stat().st_mtime
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
-    finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
+    if run_type == "flow":
+        finished = flow_finished
+    else:
+        finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
+
     plan_path = get_eval_plan_path(run_dir)
     eval_plan = orjson.loads(plan_path.read_bytes()) if plan_path.is_file() else {}
     platform_path = get_platform_run_path(run_dir)
@@ -347,7 +400,7 @@ def run_meta(run_dir: Path) -> dict:
         "eval_plan": eval_plan,
         "platform": platform,
         "model": model_name(config),
-        "dataset": (config.get("data") or {}).get("name"),
+        "dataset": config.get("data", {}).get("name") if isinstance(config.get("data"), dict) else None,
         "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": eval_env(config),
         "total_episodes": eval_total_episodes(config),
@@ -1459,8 +1512,13 @@ def index_rows(path: Path) -> list[dict] | None:
 
 
 def written_index(run_dir: Path) -> list[dict] | None:
-    """The stream's own index, when the stream's producer wrote one."""
-    return index_rows(stream_index_file(run_dir))
+    """The file monitor's episode index, not a producer-specific sibling index."""
+    rows = index_rows(stream_index_file(run_dir))
+    if rows == [] and is_flow_run(run_dir):
+        return None
+    if rows and not all("line" in row and "offset" in row for row in rows):
+        return None
+    return rows
 
 
 def episode_rows(run_dir: Path) -> list[dict]:
@@ -1921,7 +1979,7 @@ def get_episode(
 # filesystem reader: commands carry addresses and short highlight anchors, never
 # report or episode payloads.
 
-VIEW_TABS = {"metrics", "config", "traces", "logs", "report"}
+VIEW_TABS = {"metrics", "config", "flow", "traces", "logs", "report"}
 VIEW_KEYS = {"run", "tab", "step", "kind", "subset", "episode", "line", "trace", "branch", "report", "highlight"}
 HIGHLIGHT_KEYS = {"node", "quote", "prefix", "suffix", "reason", "field"}
 
@@ -2102,6 +2160,79 @@ async def view_events() -> "StreamingResponse":
 def get_episode_timeline(run: str, line: int) -> dict:
     run_dir = get_run_dir(run)
     return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
+
+
+def _flow_etag(run_dir: Path) -> str:
+    parts = []
+    for name in ("events.jsonl", "traces.jsonl"):
+        path = run_dir / name
+        try:
+            stat = path.stat()
+            parts.append(f"{stat.st_size}:{stat.st_mtime_ns}")
+        except OSError:
+            parts.append("0:0")
+    for path in sorted((run_dir / "steps").glob("*/*.json")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.parent.name}/{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    return hashlib.sha256(":".join(parts).encode()).hexdigest()[:16]
+
+
+def _flow_trace_lines(run_dir: Path) -> dict[str, tuple[int, str]]:
+    lines = {}
+    for row in episode_rows(run_dir):
+        line = row.get("line")
+        episode_id = row.get("id")
+        if not isinstance(line, int) or not isinstance(episode_id, str):
+            continue
+        for trace_id in row.get("trace_ids") or []:
+            if isinstance(trace_id, str):
+                lines[trace_id] = (line, episode_id)
+    return lines
+
+
+@app.get("/api/runs/{run}/flow")
+def get_flow(run: str, etag: str | None = None) -> dict:
+    run_dir = get_run_dir(run)
+    if not is_flow_run(run_dir):
+        raise HTTPException(404, "not a flow run")
+    current = _flow_etag(run_dir)
+    if etag == current:
+        return {"etag": current, "unchanged": True}
+    with _lock:
+        cached = _lru_get(_flow_cache, run_dir)
+    if cached and cached[0] == current:
+        projection = cached[1]
+    else:
+        projection = project_flow(run_dir, _flow_trace_lines(run_dir))
+        with _lock:
+            _lru_put(_flow_cache, run_dir, (current, projection))
+    return {"etag": current, **projection}
+
+
+@app.get("/api/runs/{run}/flow/traces/{trace_id}")
+def get_flow_trace(run: str, trace_id: str) -> dict:
+    run_dir = get_run_dir(run)
+    if not is_flow_run(run_dir):
+        raise HTTPException(404, "not a flow run")
+    address = _flow_trace_lines(run_dir).get(trace_id)
+    if address is None:
+        raise HTTPException(404, "flow trace not found")
+    line, episode_id = address
+    record = read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line))
+    for trace_index, trace in enumerate(record.get("traces") or []):
+        if trace.get("id") != trace_id:
+            continue
+        return {
+            "trace_id": trace_id,
+            "episode_id": episode_id,
+            "line": line,
+            "trace": trace_index,
+            "decision": (trace.get("info") or {}).get("decision"),
+        }
+    raise HTTPException(404, "trace id is not in its indexed episode")
 
 
 # -------------------------------------------------------------------------- static

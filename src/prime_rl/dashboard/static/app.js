@@ -66,6 +66,7 @@ const state = {
     },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
+  flow: { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
   follow: prefs.follow ?? true,
 };
@@ -142,8 +143,14 @@ async function loadRuns() {
   syncDressedSelects();
   const fresh = state.runs.find((r) => r.name === current);
   if (fresh && state.meta) {
+    const previousType = state.meta.type;
     Object.assign(state.meta, fresh);
-    renderOverview();
+    if (state.meta.type !== previousType) {
+      applyRunTypeControls();
+      await activateTab(state.tab, true);
+    } else {
+      renderOverview();
+    }
   }
 }
 
@@ -181,6 +188,10 @@ async function toggleCompare(name, on) {
    mode, and smoothing make no sense there */
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
+  const isFlow = state.meta?.type === "flow";
+  $("#flow-tab-button").hidden = !isFlow;
+  if (isFlow && state.tab === "metrics") state.tab = "flow";
+  if (!isFlow && state.tab === "flow") state.tab = "metrics";
   $("#metrics-mode").hidden = isEval;
   $("#metrics-filter-wrap").hidden = !isEval;
   $("#metrics-search").hidden = isEval;
@@ -222,6 +233,7 @@ async function selectRun(name, deferTab = false) {
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
     key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
+  state.flow = { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() };
   state.report = {
     ...state.report,
     loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
@@ -331,19 +343,26 @@ function renderOverview() {
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
-    meta.type === "eval"
-      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
-      : ["step", `<span class="val">${stepText}</span>`],
+    meta.type === "flow"
+      ? ["tasks", `<span class="val">${state.flow.data?.stats.tasks ?? "–"}</span>`]
+      : meta.type === "eval"
+        ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
+        : ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "n/a")}</span>`],
-    ...(meta.type === "eval"
-      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
-      : [
-          meta.type === "sft"
-            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "n/a")}</span>`]
-            : ["train envs", envListField(meta.train_envs)],
-          // an empty eval env list is a known "none", not missing data
-          ["eval envs", envListField(meta.eval_envs, "–")],
-        ]),
+    ...(meta.type === "flow"
+      ? [
+          ["traces", `<span class="val">${state.flow.data?.stats.traces ?? "–"}</span>`],
+          ["routes", `<span class="val">${state.flow.data?.stats.routes ?? "–"}</span>`],
+        ]
+      : meta.type === "eval"
+        ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
+        : [
+            meta.type === "sft"
+              ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "n/a")}</span>`]
+              : ["train envs", envListField(meta.train_envs)],
+            // an empty eval env list is a known "none", not missing data
+            ["eval envs", envListField(meta.eval_envs, "–")],
+          ]),
   ];
   const right = [
     ...(meta.type === "eval" && state.metrics.evalCost != null
@@ -378,6 +397,10 @@ async function activateTab(tab, force = false) {
   }
   if (tab === "config" && !state.config.loaded) await initConfig();
   if (tab === "logs" && !state.logs.loaded) await initLogs();
+  if (tab === "flow") {
+    if (!state.flow.loaded) await initFlow();
+    else if (state.live) await fetchFlow();
+  }
   if (tab === "traces") {
     if (!state.traces.loaded) await initTraces();
     else if (state.live) await refreshTraces();
@@ -386,6 +409,258 @@ async function activateTab(tab, force = false) {
     if (!state.report.loaded) await initReport();
     else if (state.live) await refreshReport();
   }
+}
+
+
+/* ------------------------------------------------------------------- flow */
+
+async function initFlow() {
+  state.flow.loaded = true;
+  await fetchFlow();
+}
+
+async function fetchFlow() {
+  if (!state.run || state.meta?.type !== "flow") return;
+  const flow = state.flow;
+  const run = state.run;
+  const suffix = flow.etag ? `?etag=${encodeURIComponent(flow.etag)}` : "";
+  const data = await api(`/api/runs/${encodeURIComponent(run)}/flow${suffix}`);
+  if (state.flow !== flow || state.run !== run || data.unchanged) return;
+  flow.etag = data.etag;
+  flow.data = data;
+  renderOverview();
+  if (flow.task !== "all" && !data.tasks.some((task) => task.id === flow.task)) flow.task = "all";
+  renderFlow();
+}
+
+function flowNodeMap() {
+  return new Map((state.flow.data?.nodes || []).map((node) => [node.id, node]));
+}
+
+function flowDuration(node) {
+  const start = Date.parse(node.started_at || "");
+  const finish = Date.parse(node.finished_at || "");
+  return Number.isFinite(start) && Number.isFinite(finish) ? fmtDuration((finish - start) / 1000) : "";
+}
+
+function flowStatusClass(status) {
+  if (status === "failed" || status === "cancelled") return "bad";
+  if (status === "running" || status === "retrying") return runStatus(currentStep()) === "running" ? "live" : "stale";
+  return "done";
+}
+
+function renderFlowInspector() {
+  if (state.flow.selectedEdge) {
+    selectFlowEdge(state.flow.selectedEdge, false);
+    return;
+  }
+  const hasRoutes = state.flow.data?.stats.routes;
+  $("#flow-inspector").innerHTML = hasRoutes
+    ? `<div class="empty"><span>select a route</span><small>click a labeled edge to see the agent decision</small></div>`
+    : `<div class="empty"><span>no route metadata</span><small>this run predates ctx.route; agent nodes still open their traces</small></div>`;
+}
+
+function renderFlow() {
+  const flow = state.flow;
+  const data = flow.data;
+  if (!data) return;
+  const taskSelect = $("#flow-task-select");
+  taskSelect.innerHTML = `<option value="all">all tasks</option>` + data.tasks.map((task) =>
+    `<option value="${esc(task.id)}">${esc(task.name)}</option>`
+  ).join("");
+  taskSelect.value = flow.task;
+  syncDressedSelects();
+
+  const stat = (label, value) => `<div class="flow-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  $("#flow-summary").innerHTML = [
+    stat("tasks", data.stats.tasks), stat("steps", data.stats.steps), stat("active", data.stats.running),
+    stat("failed", data.stats.failed), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
+  ].join("");
+  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : "caught up"} · ${data.stats.routes} routes`;
+
+  $("#flow-tasks").innerHTML =
+    `<button class="flow-task ${flow.task === "all" ? "active" : ""}" data-flow-task="all">
+      <span><b>all tasks</b><small>run trajectory</small></span><em>${data.tasks.length}</em>
+    </button>` +
+    data.tasks.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
+      <i class="${flowStatusClass(task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
+    </button>`).join("");
+  renderFlowGraph();
+  renderFlowInspector();
+}
+
+function flowGraphLayout(data, selected, viewportWidth) {
+  const task = data.tasks.find((item) => item.id === selected);
+  const runGroup = task && data.groups.find((group) => group.kind === "run" && group.row === task.row);
+  const groups = selected === "all" ? data.groups.map((group) => group.id) : [runGroup?.id, selected].filter(Boolean);
+  const wanted = new Set(groups);
+  const nodes = data.nodes.filter((node) => wanted.has(node.group));
+  const positions = new Map();
+  const lanes = [];
+  const width = Math.max(520, viewportWidth || 900);
+  const columns = Math.max(3, Math.floor((width - 72) / 166));
+  const xStep = (width - 72 - 142) / Math.max(1, columns - 1);
+  let top = 0;
+  groups.forEach((group) => {
+    const items = nodes.filter((node) => node.group === group).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    const rows = Math.max(1, Math.ceil(items.length / columns));
+    const height = Math.max(150, 78 + rows * 92);
+    lanes.push({ group, top, height });
+    items.forEach((node, i) => {
+      const row = Math.floor(i / columns);
+      const offset = i % columns;
+      const column = row % 2 ? columns - 1 - offset : offset;
+      positions.set(node.id, { x: 36 + column * xStep, y: top + 50 + row * 92 });
+    });
+    top += height;
+  });
+  return { groups, lanes, nodes, positions, width, height: Math.max(250, top) };
+}
+
+function flowEdgePath(a, b) {
+  const sameRow = Math.abs(a.y - b.y) < 8;
+  if (sameRow) {
+    const forward = b.x >= a.x;
+    const x1 = forward ? a.x + 142 : a.x;
+    const x2 = forward ? b.x : b.x + 142;
+    const y = a.y + 27;
+    const bend = Math.max(28, Math.abs(x2 - x1) * 0.45);
+    return `M ${x1} ${y} C ${x1 + (forward ? bend : -bend)} ${y}, ${x2 + (forward ? -bend : bend)} ${y}, ${x2} ${y}`;
+  }
+  const x1 = a.x + 71, y1 = a.y + 54, x2 = b.x + 71, y2 = b.y;
+  const bend = Math.max(30, Math.abs(y2 - y1) * 0.45);
+  return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
+}
+
+function renderFlowGraph() {
+  const data = state.flow.data;
+  const graph = $("#flow-graph");
+  if (!data?.nodes.length) {
+    graph.innerHTML = emptyState("waiting for steps", "the trajectory grows here as the ledger is written");
+    return;
+  }
+  const layout = flowGraphLayout(data, state.flow.task, graph.clientWidth);
+  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const visible = new Set(nodeById.keys());
+  const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target ? edge.kind === "route" : visible.has(edge.target)));
+  const edgeTarget = (edge) => {
+    const target = edge.target && layout.positions.get(edge.target);
+    if (target) return target;
+    const source = layout.positions.get(edge.source);
+    return source.x + 326 < layout.width ? { x: source.x + 184, y: source.y } : { x: source.x, y: source.y + 78 };
+  };
+  const groupById = new Map(data.groups.map((group) => [group.id, group]));
+  const lanes = layout.lanes.map((lane) => {
+    const group = groupById.get(lane.group);
+    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.kind === "run" ? `run · ${group.name}` : group?.name || lane.group)}</span></div>`;
+  }).join("");
+  const edgeSvg = edges.map((edge) => {
+    const a = layout.positions.get(edge.source), b = edgeTarget(edge);
+    if (!a || !b) return "";
+    return `<path class="fg-edge ${edge.kind} ${edge.target ? "" : "pending"}" d="${flowEdgePath(a, b)}" marker-end="url(#fg-${edge.kind})"></path>`;
+  }).join("");
+  const labeledRoutes = [];
+  const routeKeys = new Set();
+  for (const edge of edges.filter((edge) => edge.kind === "route")) {
+    const key = `${edge.source}:${edge.outcome}:${edge.to}`;
+    if (routeKeys.has(key)) continue;
+    routeKeys.add(key);
+    labeledRoutes.push(edge);
+  }
+  const routeLabels = labeledRoutes.map((edge) => {
+    const a = layout.positions.get(edge.source), b = edgeTarget(edge);
+    const sameRow = Math.abs(a.y - b.y) < 8;
+    const left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + 80;
+    const top = sameRow ? a.y - 25 : a.y + 62;
+    return `<button class="fg-route ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" style="left:${left}px;top:${top}px">${esc(edge.outcome || "route")}</button>`;
+  }).join("");
+  const cards = layout.nodes.map((node) => {
+    const pos = layout.positions.get(node.id);
+    if (!pos) return "";
+    const suffix = node.index == null ? (node.occurrence ? ` · ${node.occurrence + 1}` : "") : ` · ${node.index + 1}`;
+    const duration = flowDuration(node);
+    const trace = node.trace_id ? " trace" : "";
+    return `<button class="fg-node ${flowStatusClass(node.status)} kind-${esc(node.kind || "step")}${trace}" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.kind || "step")} · ${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}</small>
+    </button>`;
+  }).join("");
+  graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
+    <svg class="fg-svg" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}">
+      <defs>
+        <marker id="fg-sequence" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
+        <marker id="fg-spread" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
+        <marker id="fg-route" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
+      </defs>${edgeSvg}
+    </svg>${routeLabels}${cards}</div>`;
+}
+
+async function loadFlowDetail(traceId) {
+  if (!traceId) return null;
+  const flow = state.flow;
+  const run = state.run;
+  if (!flow.detail.has(traceId)) {
+    const detail = await api(`/api/runs/${encodeURIComponent(run)}/flow/traces/${encodeURIComponent(traceId)}`);
+    if (state.flow !== flow || state.run !== run) return null;
+    flow.detail.set(traceId, detail);
+  }
+  return flow.detail.get(traceId);
+}
+
+function flowInspectorButton(node, label = "open trace") {
+  return node?.trace_id ? `<button class="btn flow-open-trace" data-flow-node="${esc(node.id)}">${esc(label)}</button>` : "";
+}
+
+async function selectFlowEdge(edgeId, redraw = true) {
+  const flow = state.flow;
+  flow.selectedEdge = edgeId;
+  if (redraw) renderFlowGraph();
+  const edge = flow.data.edges.find((item) => item.id === edgeId);
+  const source = flowNodeMap().get(edge?.source);
+  $("#flow-inspector").innerHTML = `<div class="flow-inspector-head"><span class="t-label">route</span><b>${esc(edge?.outcome || "")}</b></div><div class="flow-inspector-loading">reading decision trace…</div>`;
+  let detail = null;
+  let detailError = null;
+  try {
+    detail = source?.trace_id ? await loadFlowDetail(source.trace_id) : null;
+  } catch (error) {
+    detailError = String(error);
+  }
+  if (state.flow !== flow || flow.selectedEdge !== edgeId) return;
+  const decision = detail?.decision;
+  const extra = decision ? Object.entries(decision).filter(([key]) => !["outcome", "summary"].includes(key)) : [];
+  $("#flow-inspector").innerHTML = `
+    <div class="flow-inspector-head"><span class="t-label">route</span><b>${esc(edge?.outcome || "")}</b></div>
+    <div class="flow-route-pair"><span>${esc(source?.name || "step")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
+    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(detailError || decision?.summary || "No agent decision summary was recorded for this route.")}</p></div>
+    ${extra.length ? `<div class="flow-inspector-section"><span class="t-label">decision</span>${extra.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(typeof value === "string" ? value : JSON.stringify(value))}</b></div>`).join("")}</div>` : ""}
+    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>
+    ${flowInspectorButton(source, "open decision trace")}`;
+}
+
+function selectFlowNode(nodeId) {
+  const node = flowNodeMap().get(nodeId);
+  if (!node) return;
+  if (node.trace_id) return openFlowTrace(node);
+  state.flow.selectedEdge = null;
+  renderFlowGraph();
+  if (node.kind === "spread") {
+    const attempts = state.flow.data.nodes.filter((item) => item.row === node.row && item.path === node.path && item.index != null).sort((a, b) => a.index - b.index);
+    $("#flow-inspector").innerHTML = `
+      <div class="flow-inspector-head"><span class="t-label">spread</span><b>${attempts.length} traces</b></div>
+      <div class="flow-inspector-section"><span class="t-label">attempts</span>
+        <div class="flow-attempts">${attempts.map((item) => `<button data-flow-node="${esc(item.id)}"><span>attempt ${item.index + 1}</span><small>${esc(item.status)}</small></button>`).join("")}</div>
+      </div>
+      <div class="flow-inspector-section"><span class="t-label">path</span><code>${esc(node.path)}</code></div>`;
+    return;
+  }
+  $("#flow-inspector").innerHTML = `
+    <div class="flow-inspector-head"><span class="t-label">step</span><b>${esc(node.name)}</b></div>
+    <div class="flow-inspector-section"><span class="t-label">state</span><p>${esc(node.status)}${flowDuration(node) ? ` · ${esc(flowDuration(node))}` : ""}</p></div>
+    <div class="flow-inspector-section"><span class="t-label">path</span><code>${esc(node.path)}</code></div>`;
+}
+
+async function openFlowTrace(node) {
+  if (!node?.episode_line) return toastMsg("this step has no trace");
+  await applyViewCommand({ run: state.run, tab: "traces", episode: node.episode_id, line: node.episode_line, trace: 0 });
 }
 
 /* ---------------------------------------------------------------- metrics */
@@ -6252,6 +6527,32 @@ function syncTraceFilterControls() {
 }
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
+$("#flow-task-select").addEventListener("change", (event) => {
+  state.flow.task = event.target.value;
+  state.flow.selectedEdge = null;
+  renderFlow();
+});
+$("#flow-tasks").addEventListener("click", (event) => {
+  const task = event.target.closest("[data-flow-task]");
+  if (!task) return;
+  state.flow.task = task.dataset.flowTask;
+  state.flow.selectedEdge = null;
+  renderFlow();
+});
+$("#flow-graph").addEventListener("click", (event) => {
+  const edge = event.target.closest("[data-flow-edge]");
+  if (edge) return selectFlowEdge(edge.dataset.flowEdge);
+  const node = event.target.closest("[data-flow-node]");
+  if (node) selectFlowNode(node.dataset.flowNode);
+});
+$("#flow-inspector").addEventListener("click", (event) => {
+  const node = event.target.closest("[data-flow-node]");
+  if (node) selectFlowNode(node.dataset.flowNode);
+});
+$("#flow-fit").addEventListener("click", () => $("#flow-graph").scrollTo({ left: 0, top: 0, behavior: "smooth" }));
+window.addEventListener("resize", debounce(() => {
+  if (state.tab === "flow" && state.flow.data) renderFlowGraph();
+}, 100));
 
 document.querySelectorAll("#metrics-mode button").forEach((b) =>
   b.addEventListener("click", () => {
@@ -7062,6 +7363,7 @@ async function pollDashboard() {
     syncDressedSelects();
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
+    else if (state.tab === "flow" && state.flow.loaded) await fetchFlow();
     else if (state.tab === "traces" && state.traces.loaded) await refreshTraces();
     else if (state.tab === "report" && state.report.loaded) await refreshReport();
     await runsRefresh;
@@ -7098,7 +7400,7 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#metrics-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#flow-task-select", "#trace-env", "#metrics-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);
