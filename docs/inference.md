@@ -191,7 +191,7 @@ Both backends support the 2 most important things:
 
 ### Routing policies
 The policies you might want to configure are:
-- `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases the router session when the rollout completes.
+- `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases sessions when rollouts complete, fail, or are cancelled, including traces discarded during retries. Failed release requests are logged without disabling future cleanup.
 
 - `consistent_hash` - hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica, preserving KV cache reuse without considering current load.
 

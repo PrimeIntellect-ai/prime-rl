@@ -74,6 +74,8 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 ## `inference` — vLLM server
 
+Router session cleanup runs on successful, failed, and cancelled episodes, including discarded retry traces. Cleanup failures are logged per session and do not disable subsequent releases.
+
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly. The default `sticky_least_loaded` policy keeps each rollout on one replica while assigning new sessions to the least-loaded replica; RL and SFT online eval automatically release completed sessions.
 
 ```bash
