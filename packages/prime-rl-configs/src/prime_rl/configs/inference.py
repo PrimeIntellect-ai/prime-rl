@@ -13,9 +13,6 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 # TODO: Set thinking/ solution budget
 
 
-QuantizationBackend = Literal["fp8_per_block"]
-
-
 class ServerConfig(BaseConfig):
     host: str | None = None
     """Host to bind to."""
@@ -40,6 +37,8 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_one_sided",
     "flashinfer_nvlink_two_sided",
 ]
+
+QuantizationType = Literal["fp8_per_block"]
 
 
 class VllmConfig(BaseConfig):
