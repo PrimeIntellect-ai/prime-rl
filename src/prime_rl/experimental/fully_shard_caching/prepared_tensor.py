@@ -7,9 +7,9 @@ from the keys of the dict ``prepare`` returns rather than from an operands datac
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 from torch import nn
@@ -17,7 +17,14 @@ from torch.distributed.tensor import DTensor
 from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import _disable_current_modes, return_and_correct_aliasing
 
-PrepareFn = Callable[[torch.Tensor], dict[str, torch.Tensor]]
+
+class PrepareFn(Protocol):
+    """Derives a weight's prepared tensors, filling ``out``'s tensors in place when it is given."""
+
+    def __call__(
+        self, weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None
+    ) -> dict[str, torch.Tensor]: ...
+
 
 FSDP_SHARDED_OPS = {
     torch.ops.aten.empty_like.default,
@@ -80,6 +87,17 @@ def validate_prepared(prepared: Any, prepare_fn: PrepareFn) -> dict[str, torch.T
             raise TypeError(f"{prepare_fn} returned a non-string key {name!r}.")
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(f"{prepare_fn} returned a non-tensor value for {name!r}.")
+        dense = (
+            tensor.is_contiguous()
+            and tensor.storage_offset() == 0
+            and tensor.untyped_storage().size() == tensor.numel() * tensor.itemsize
+        )
+        if not dense:
+            raise ValueError(
+                f"{prepare_fn} returned a non-dense entry for {name!r}; FSDP's alloc_storage sizes "
+                "each entry's storage from numel * itemsize, so anything larger is truncated on the "
+                "next unshard. Return a contiguous tensor owning its whole storage."
+            )
     storages = {tensor.untyped_storage().data_ptr() for tensor in prepared.values()}
     if len(storages) != len(prepared):
         raise ValueError(
@@ -89,9 +107,27 @@ def validate_prepared(prepared: Any, prepare_fn: PrepareFn) -> dict[str, torch.T
     return prepared
 
 
-def run_prepare(prepare_fn: PrepareFn, logical_tensor: torch.Tensor) -> dict[str, torch.Tensor]:
+def run_prepare(
+    prepare_fn: PrepareFn,
+    logical_tensor: torch.Tensor,
+    *,
+    out: dict[str, torch.Tensor] | None = None,
+) -> dict[str, torch.Tensor]:
     PREPARE_CALLS.increment()
-    return validate_prepared(prepare_fn(logical_tensor), prepare_fn)
+    if out is None:
+        return validate_prepared(prepare_fn(logical_tensor), prepare_fn)
+    expected = tuple(out.values())
+    filled = prepare_fn(logical_tensor, out=out)
+    actual = tuple(out.values())
+    same_tensors = len(actual) == len(expected) and all(
+        entry is original for entry, original in zip(actual, expected, strict=True)
+    )
+    if filled is not out or not same_tensors:
+        raise RuntimeError(
+            f"{prepare_fn} replaced the tensors it was given instead of filling them; FSDP keeps the "
+            "originals, so the op would read stale data. Write into out's tensors and return out."
+        )
+    return out
 
 
 class PreparedTensorBase(torch.Tensor):
@@ -198,8 +234,8 @@ class ShardedPreparedTensor(PreparedTensorBase):
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
         # Under activation checkpointing this hook fires inside the recompute region, where the
-        # first unshard allocates and every later one copies, so a recorded op sequence taken with
-        # the ambient dispatch modes on would not line up with the forward's.
+        # first unshard allocates and every later one refills in place, so the two record different
+        # op sequences and a sequence taken with the ambient dispatch modes on would not line up.
         with _disable_current_modes():
             return self._post_all_gather(all_gather_outputs, metadata, out)
 
@@ -228,14 +264,7 @@ class ShardedPreparedTensor(PreparedTensorBase):
             # A refill must not invalidate the version checks of tensors an op saved for backward.
             torch.autograd._unsafe_preserve_version_counter(managed),
         ):
-            refilled = run_prepare(self._prepare_fn, logical_tensor)
-            if refilled.keys() != existing.keys():
-                raise RuntimeError(
-                    f"prepare returned keys {sorted(refilled)} on refill but {sorted(existing)} on the "
-                    "first unshard; the schema must be constant for a parameter."
-                )
-            for name, tensor in refilled.items():
-                existing[name].copy_(tensor)
+            run_prepare(self._prepare_fn, logical_tensor, out=existing)
         self._release_gather_buffer(gathered)
 
     def _release_gather_buffer(self, gathered: torch.Tensor) -> None:

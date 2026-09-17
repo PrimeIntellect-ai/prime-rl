@@ -47,11 +47,14 @@ picked up automatically.
 ## API
 
 ```python
-PrepareFn = Callable[[Tensor], dict[str, Tensor]]
+class PrepareFn(Protocol):
+    def __call__(self, weight: Tensor, *, out: dict[str, Tensor] | None = None) -> dict[str, Tensor]: ...
 
 
 class Op(Protocol):
-    def prepare(self, weight: Tensor) -> dict[str, Tensor]: ...  # keys become the wrapper's flat schema
+    def prepare(  # keys become the wrapper's flat schema
+        self, weight: Tensor, *, out: dict[str, Tensor] | None = None
+    ) -> dict[str, Tensor]: ...
     def __call__(self, *args, **kwargs): ...  # tensors and scalars only, never modules
 
 
@@ -60,7 +63,12 @@ def install_prepared_weights(module: nn.Module, prepare_fns: Mapping[str, Prepar
 
 - `prepare` must be a pure function of the weight and frozen config, and every value it returns
   must be a tensor: the values become FSDP-owned unsharded storage, gathered at unshard and freed
-  at reshard.
+  at reshard. Each returned tensor must be contiguous and own its whole storage, since FSDP sizes
+  that storage from `numel * itemsize` on every later unshard.
+- With `out` supplied (every unshard after the first), `prepare` must write into exactly the tensors
+  `out` holds and return the same mapping. Rebinding an entry to a fresh tensor raises: FSDP keeps
+  the original objects, so the op would read stale data. `out=None` means allocate, which is the
+  first unshard.
 - `install_prepared_weights` wraps the named parameters in place and registers a `state_dict` post
   hook that replaces each wrapped entry with a plain alias of the master shard, so a checkpoint
   never contains the subclass. Installation has to reach checkpointing because the governing

@@ -5,29 +5,47 @@ from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
+from prime_rl.experimental.fully_shard_caching.ops import blockwise_fp8_prepare, row_scaled_prepare
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     PREPARE_CALLS,
     ShardedPreparedTensor,
     UnshardedPreparedTensor,
     install_prepared_weights,
     prepared_or_none,
+    run_prepare,
 )
 
 EXPERTS = 4
 OUT_FEATURES = 6
 IN_FEATURES = 8
+BLOCK_ALIGNED_SHAPE = (2, 256, 384)
+SENTINEL_VALUE = 1e30
+SENTINEL_BYTE = 0xA5
 
 
-def scale_prepare(weight: torch.Tensor) -> dict[str, torch.Tensor]:
-    return {
-        "doubled": (weight * 2).contiguous(),
-        "row_absmax": weight.abs().amax(dim=-1).contiguous(),
-    }
+def scale_prepare(weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
+    if out is None:
+        return {
+            "doubled": (weight * 2).contiguous(),
+            "row_absmax": weight.abs().amax(dim=-1).contiguous(),
+        }
+    torch.mul(weight, 2, out=out["doubled"])
+    torch.amax(weight.abs(), dim=-1, out=out["row_absmax"])
+    return out
 
 
 def aliasing_prepare(weight: torch.Tensor) -> dict[str, torch.Tensor]:
     doubled = (weight * 2).contiguous()
     return {"doubled": doubled, "same": doubled.view(-1)}
+
+
+def out_ignoring_prepare(weight: torch.Tensor, *, out: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return scale_prepare(weight)
+
+
+def out_rebinding_prepare(weight: torch.Tensor, *, out: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    out["doubled"] = (weight * 2).contiguous()
+    return out
 
 
 class Weights(nn.Module):
@@ -215,3 +233,35 @@ def test_prepared_or_none_looks_through_a_dtensor(module, ep_mesh):
     unsharded = DTensor.from_local(UnshardedPreparedTensor(local, prepared), ep_mesh, [Shard(0)], run_check=False)
 
     assert dict(prepared_or_none(unsharded)) == prepared
+
+
+@pytest.mark.parametrize("prepare", [blockwise_fp8_prepare, row_scaled_prepare])
+def test_filling_out_matches_allocating_bitwise(prepare):
+    if not torch.cuda.is_available():
+        pytest.skip("needs a GPU")
+    torch.manual_seed(0)
+    weight = torch.randn(BLOCK_ALIGNED_SHAPE, device="cuda", dtype=torch.bfloat16)
+    reference = prepare(weight)
+
+    out = {name: torch.empty_like(tensor) for name, tensor in reference.items()}
+    for tensor in out.values():
+        if tensor.dtype == torch.float8_e4m3fn:
+            tensor.view(torch.uint8).fill_(SENTINEL_BYTE)
+        else:
+            tensor.fill_(SENTINEL_VALUE)
+    handed_out = dict(out)
+
+    filled = prepare(weight, out=out)
+
+    assert filled is out
+    for name, expected in reference.items():
+        assert out[name] is handed_out[name]
+        assert torch.equal(out[name].view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.parametrize("prepare", [out_ignoring_prepare, out_rebinding_prepare])
+def test_prepare_that_does_not_fill_out_raises(prepare, module):
+    weight = module.gate_proj.data
+    out = scale_prepare(weight)
+    with pytest.raises(RuntimeError, match="replaced the tensors it was given"):
+        run_prepare(prepare, weight, out=out)

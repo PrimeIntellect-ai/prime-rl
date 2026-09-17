@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
+from prime_rl.experimental.fully_shard_caching.fp8_cast import grouped_per_block_cast_to_fp8
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     UnshardedPreparedTensor,
     prepared_or_none,
@@ -13,7 +14,6 @@ from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
     build_grouped_layout,
-    grouped_per_block_cast_to_fp8_triton,
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
     unpack_rows_triton,
@@ -23,12 +23,18 @@ from prime_rl.trainer.models.layers.fp8_grouped_gemm import _compute_grad_weight
 from prime_rl.trainer.models.layers.moe import broadcast_expert_bias
 
 
-def blockwise_fp8_prepare(weight: torch.Tensor) -> dict[str, torch.Tensor]:
+def blockwise_fp8_prepare(
+    weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None
+) -> dict[str, torch.Tensor]:
     """The forward GEMM consumes ``(experts, out_features, in_features)``, the dx GEMM its transpose."""
     use_ue8m0 = ue8m0_for_device(weight.device)
-    qdata, scales = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
-    qdata_t, scales_t = grouped_per_block_cast_to_fp8_triton(weight.transpose(1, 2), use_ue8m0, GROUP_ALIGNMENT)
-    return {"qdata": qdata, "scales": scales, "qdata_t": qdata_t, "scales_t": scales_t}
+    if out is None:
+        qdata, scales = grouped_per_block_cast_to_fp8(weight, use_ue8m0)
+        qdata_t, scales_t = grouped_per_block_cast_to_fp8(weight.transpose(1, 2), use_ue8m0)
+        return {"qdata": qdata, "scales": scales, "qdata_t": qdata_t, "scales_t": scales_t}
+    grouped_per_block_cast_to_fp8(weight, use_ue8m0, out=out["qdata"], sf=out["scales"])
+    grouped_per_block_cast_to_fp8(weight.transpose(1, 2), use_ue8m0, out=out["qdata_t"], sf=out["scales_t"])
+    return out
 
 
 @torch.library.custom_op("fully_shard_caching::prepared_grouped_fp8_gemm", mutates_args=())
@@ -215,8 +221,8 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
 class Fp8GroupedExpertCompute:
     activation: type[Activation]
 
-    def prepare(self, weight: torch.Tensor) -> dict[str, torch.Tensor]:
-        return blockwise_fp8_prepare(weight)
+    def prepare(self, weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
+        return blockwise_fp8_prepare(weight, out=out)
 
     def _gemm(self, x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
         if prepared_or_none(weight) is None:
@@ -241,11 +247,19 @@ class Fp8GroupedExpertCompute:
         return self._gemm(self.activation.apply(gate, up), down_proj, offs)
 
 
-def row_scaled_prepare(weight: torch.Tensor) -> dict[str, torch.Tensor]:
+def row_scaled_prepare(weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
     """Split a weight into a unit-row-norm transpose and the per-row absmax that restores it."""
-    row_absmax = weight.detach().abs().amax(dim=-1).clamp_min(1e-6)
-    w_t = (weight / row_absmax.unsqueeze(-1)).transpose(1, 2).contiguous()
-    return {"w_t": w_t, "row_absmax": row_absmax}
+    if out is None:
+        row_absmax = weight.detach().abs().amax(dim=-1).clamp_min(1e-6)
+        w_t = (weight / row_absmax.unsqueeze(-1)).transpose(1, 2).contiguous()
+        return {"w_t": w_t, "row_absmax": row_absmax}
+    experts, out_features, in_features = weight.shape
+    assert out["row_absmax"].shape == (experts, out_features)
+    assert out["w_t"].shape == (experts, in_features, out_features)
+    torch.amax(weight.detach().abs(), dim=-1, out=out["row_absmax"])
+    out["row_absmax"].clamp_min_(1e-6)
+    torch.div(weight, out["row_absmax"].unsqueeze(-1), out=out["w_t"].transpose(1, 2))
+    return out
 
 
 class PreparedRowScaledWeight(torch.autograd.Function):
@@ -274,8 +288,8 @@ class RowScaledGroupedExpertCompute:
 
     activation: type[Activation]
 
-    def prepare(self, weight: torch.Tensor) -> dict[str, torch.Tensor]:
-        return row_scaled_prepare(weight)
+    def prepare(self, weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
+        return row_scaled_prepare(weight, out=out)
 
     def _gemm(
         self,
