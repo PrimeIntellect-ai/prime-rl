@@ -9,7 +9,6 @@ gpus_per_node = 8
 job_name = "ngu-swe-profile"
 partition = "all"
 time = "48:00:00"
-template_path = "configs/experiments/ngu/profile.sbatch.j2"
 
 [server]
 port = 8000

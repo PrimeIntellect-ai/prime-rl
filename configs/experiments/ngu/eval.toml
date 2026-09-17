@@ -22,7 +22,7 @@ top_p = 1.0
 [[source]]
 name = "swerebench-profile"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "configs/experiments/ngu/sample-1000.json"
+env.taskset.manifest = "tools/ngu/sample-1000.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.runtime.labels = ["ngu-swe-profile"]
