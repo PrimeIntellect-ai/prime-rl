@@ -25,14 +25,24 @@ def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
 
 
 @torch.compile
-def rotate_interleaved(rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def rotate_interleaved(rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, conjugate: bool) -> torch.Tensor:
+    cos = cos.repeat_interleave(2, dim=-1)
+    sin = sin.repeat_interleave(2, dim=-1)
+    if conjugate:
+        sin = -sin
     return ((rope.float() * cos) + (rotate_half_interleaved(rope).float() * sin)).to(rope.dtype)
 
 
 # `emulate_precision_casts` keeps the intermediate bf16 roundings that the naive autograd graph
 # performs, so the input gradient stays bitwise-identical to the pre-fusion implementation.
 @torch.compile(options={"emulate_precision_casts": True})
-def rotate_interleaved_grad(grad_rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def rotate_interleaved_grad(
+    grad_rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, conjugate: bool
+) -> torch.Tensor:
+    cos = cos.repeat_interleave(2, dim=-1)
+    sin = sin.repeat_interleave(2, dim=-1)
+    if conjugate:
+        sin = -sin
     grad = grad_rope.float()
     return (grad * cos).to(grad_rope.dtype) - rotate_half_interleaved((grad * sin).to(grad_rope.dtype))
 
@@ -46,32 +56,33 @@ class ApplyRotaryInterleavedFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        rope_dim = cos.shape[-1]
+    def forward(ctx, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, conjugate: bool) -> torch.Tensor:
+        rope_dim = 2 * cos.shape[-1]
         out = x.clone()
-        out[..., -rope_dim:] = rotate_interleaved(x[..., -rope_dim:], cos, sin)
+        out[..., -rope_dim:] = rotate_interleaved(x[..., -rope_dim:], cos, sin, conjugate)
         ctx.save_for_backward(cos, sin)
+        ctx.conjugate = conjugate
         return out
 
     @staticmethod
-    def backward(ctx, grad_out: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+    def backward(ctx, grad_out: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
         cos, sin = ctx.saved_tensors
-        rope_dim = cos.shape[-1]
+        rope_dim = 2 * cos.shape[-1]
         grad_x = grad_out.clone()
-        grad_x[..., -rope_dim:] = rotate_interleaved_grad(grad_out[..., -rope_dim:], cos, sin)
-        return grad_x, None, None
+        grad_x[..., -rope_dim:] = rotate_interleaved_grad(grad_out[..., -rope_dim:], cos, sin, ctx.conjugate)
+        return grad_x, None, None, None
 
 
 def apply_rotary_pos_emb_interleaved(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1, conjugate: bool = False
 ) -> torch.Tensor:
     """Apply interleaved RoPE to the trailing rotary slice of `x`.
 
     `cos` and `sin` arrive at half width (one entry per interleaved pair) and are widened
-    with `repeat_interleave`. Each head is laid out as `[nope | rope]`, so only the last
-    `2 * cos.shape[-1]` channels rotate and the leading ones pass through untouched.
-    `cos` and `sin` are float32 regardless of `x`'s dtype: the rotation runs in fp32 and the
-    result is cast back to `x`'s dtype.
+    inside the fused rotation, so no full-width table is ever materialized. Each head is laid
+    out as `[nope | rope]`, so only the last `2 * cos.shape[-1]` channels rotate and the
+    leading ones pass through untouched. `cos` and `sin` are float32 regardless of `x`'s dtype:
+    the rotation runs in fp32 and the result is cast back to `x`'s dtype.
 
     Args:
         x: Tensor whose last dimension is the head dimension.
@@ -79,10 +90,12 @@ def apply_rotary_pos_emb_interleaved(
         sin: Half-width sines, same shape as `cos`.
         unsqueeze_dim: Axis of `x` that `cos` / `sin` must broadcast over. Use `1` for a
             `(batch, heads, seq, head_dim)` layout and `2` for `(batch, seq, heads, head_dim)`.
+        conjugate: Rotate by the negated angle, which undoes a rotation applied at these
+            same positions.
     """
-    cos = cos.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
-    sin = sin.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
-    return ApplyRotaryInterleavedFn.apply(x, cos, sin)
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    return ApplyRotaryInterleavedFn.apply(x, cos, sin, conjugate)
 
 
 class DeepseekV4RotaryEmbedding(nn.Module):
@@ -95,7 +108,8 @@ class DeepseekV4RotaryEmbedding(nn.Module):
     `<type>_attention_scaling` scalar.
 
     Because the rotation is interleaved, `forward` returns `cos` / `sin` at half the
-    rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them.
+    rotary width (one entry per pair). The rotation fused inside
+    `apply_rotary_pos_emb_interleaved` widens them.
     The tables are float32 whatever dtype the model runs at.
 
     `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
