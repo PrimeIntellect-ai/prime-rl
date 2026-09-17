@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from prime_rl.experimental.fully_shard_caching.fp8_cast import grouped_per_block_cast_to_fp8
+from prime_rl.experimental.fully_shard_caching.fp8_cast import grouped_per_block_cast_to_fp8_both_layouts
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     UnshardedPreparedTensor,
     unsharded_prepared_or_none,
@@ -29,11 +29,11 @@ def blockwise_fp8_prepare(
     """The forward GEMM consumes ``(experts, out_features, in_features)``, the dx GEMM its transpose."""
     use_ue8m0 = ue8m0_for_device(weight.device)
     if out is None:
-        qdata, scales = grouped_per_block_cast_to_fp8(weight, use_ue8m0)
-        qdata_t, scales_t = grouped_per_block_cast_to_fp8(weight.transpose(1, 2), use_ue8m0)
+        qdata, scales, qdata_t, scales_t = grouped_per_block_cast_to_fp8_both_layouts(weight, use_ue8m0)
         return {"qdata": qdata, "scales": scales, "qdata_t": qdata_t, "scales_t": scales_t}
-    grouped_per_block_cast_to_fp8(weight, use_ue8m0, out=out["qdata"], sf=out["scales"])
-    grouped_per_block_cast_to_fp8(weight.transpose(1, 2), use_ue8m0, out=out["qdata_t"], sf=out["scales_t"])
+    grouped_per_block_cast_to_fp8_both_layouts(
+        weight, use_ue8m0, out=out["qdata"], sf=out["scales"], out_t=out["qdata_t"], sf_t=out["scales_t"]
+    )
     return out
 
 
