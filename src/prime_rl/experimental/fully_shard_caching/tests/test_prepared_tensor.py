@@ -11,7 +11,7 @@ from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     ShardedPreparedTensor,
     UnshardedPreparedTensor,
     install_prepared_weights,
-    prepared_or_none,
+    unsharded_prepared_or_none,
     run_prepare,
 )
 
@@ -178,13 +178,13 @@ def test_reshard_frees_the_prepared_storage(sharded_module):
 def test_op_reading_a_sharded_tensor_raises(module):
     install_prepared_weights(module, {"gate_proj": scale_prepare})
     with pytest.raises(RuntimeError, match="outside its weights' unshard scope"):
-        prepared_or_none(module.gate_proj.data)
+        unsharded_prepared_or_none(module.gate_proj.data)
 
 
 def test_op_reading_a_resharded_fsdp_parameter_raises(sharded_module):
     sharded_module.reshard()
     with pytest.raises(RuntimeError, match="outside its weights' unshard scope"):
-        prepared_or_none(sharded_module.gate_proj.data)
+        unsharded_prepared_or_none(sharded_module.gate_proj.data)
 
 
 def test_install_rejects_keeping_the_gather_buffer(module):
@@ -193,7 +193,7 @@ def test_install_rejects_keeping_the_gather_buffer(module):
 
 
 def test_unwrapped_weight_reports_no_preparation(module):
-    assert prepared_or_none(module.gate_proj) is None
+    assert unsharded_prepared_or_none(module.gate_proj) is None
 
 
 def test_prepare_returning_aliased_entries_raises(module, single_rank_process_group):
@@ -221,18 +221,18 @@ def test_distributing_a_wrapped_parameter_keeps_the_wrapper_inside(module, ep_me
     assert torch.equal(sharded._local_tensor._tensor, original)
 
 
-def test_prepared_or_none_looks_through_a_dtensor(module, ep_mesh):
+def test_unsharded_prepared_or_none_looks_through_a_dtensor(module, ep_mesh):
     install_prepared_weights(module, {"gate_proj": scale_prepare})
     sharded = distribute_tensor(module.gate_proj, ep_mesh, [Shard(0)])
 
     with pytest.raises(RuntimeError, match="outside its weights' unshard scope"):
-        prepared_or_none(sharded)
+        unsharded_prepared_or_none(sharded)
 
     local = sharded.to_local()._tensor
     prepared = scale_prepare(local)
     unsharded = DTensor.from_local(UnshardedPreparedTensor(local, prepared), ep_mesh, [Shard(0)], run_check=False)
 
-    assert dict(prepared_or_none(unsharded)) == prepared
+    assert dict(unsharded_prepared_or_none(unsharded).prepared) == prepared
 
 
 @pytest.mark.parametrize("prepare", [blockwise_fp8_prepare, row_scaled_prepare])

@@ -426,7 +426,3 @@ def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor 
         raise RuntimeError("An op read a ShardedPreparedTensor, so it ran outside its weights' unshard scope.")
     return None
 
-
-def prepared_or_none(weight: torch.Tensor) -> Mapping[str, torch.Tensor] | None:
-    unsharded = unsharded_prepared_or_none(weight)
-    return None if unsharded is None else unsharded.prepared
