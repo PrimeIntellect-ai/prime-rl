@@ -7,13 +7,17 @@ with ``sys.executable`` and asserts on the emitted JSON.
 Modes:
   prepare    write the tiny GLM-MoE-DSA checkpoints (serialized blockwise-FP8
              and plain bf16) used by the other modes.
-  update     start a TP engine from the FP8 checkpoint, receive TWO successive
+  update     start a TP engine from the FP8 checkpoint (prefix caching
+             disabled, per-round disjoint prompt sets), receive TWO successive
              quantized NCCL weight updates sent from a "trainer-side" prime
              model over the production wire protocol, and dump deterministic
-             greedy generations taken before / after each update. The wire
-             rounds are also saved as reference FP8 checkpoints.
-  reference  fresh-load an engine from a checkpoint dir and dump the same
-             greedy generations.
+             greedy generations with chosen-token logprobs taken around each
+             update, plus per-rank parameter fingerprints after the initial
+             load and after each update. The wire rounds are also saved as
+             reference FP8 checkpoints.
+  reference  fresh-load an engine from a checkpoint dir (prefix caching
+             disabled), dump per-rank parameter fingerprints and the round's
+             greedy generations twice (a determinism control).
   reject     start a TP1 engine that quantizes a bf16 checkpoint on the fly
              (``quantization="fp8"``, no serialized fp8 checkpoint) and assert
              that ``init_broadcaster`` with ``quantize_in_weight_transfer=true``
@@ -99,8 +103,14 @@ TINY_CONFIG = dict(
     moe_router_dtype="float32",
 )
 
-# Fixed prompts (raw token ids — no tokenizer semantics involved).
-PROMPTS = [[(i * 7 + j) % 1000 + 5 for j in range(64)] for i in range(6)]
+
+# Fixed prompts (raw token ids — no tokenizer semantics involved). Each round
+# uses its OWN, disjoint prompt set: identical prompts across rounds would let a
+# stale prefix cache leak old-weight KV into a later round's generations even
+# with caching disabled at the engine level — the discriminating control keeps
+# them disjoint on top of that.
+def _prompts(round_idx: int) -> list[list[int]]:
+    return [[round_idx * 10_000 + i * 7 + j for j in range(64)] for i in range(6)]
 
 
 def _hf_config_dict() -> dict:
@@ -250,20 +260,38 @@ def _make_engine(model_dir: str, tp: int, expert_parallel: bool, **overrides):
         gpu_memory_utilization=0.5,
         enforce_eager=True,
         disable_log_stats=True,
+        # KV blocks cached under a previous policy's weights must never leak
+        # into a later round's generations.
+        enable_prefix_caching=False,
         worker_extension_cls="prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
         **overrides,
     )
 
 
-def _generate(llm) -> list[list[int]]:
+def _generate(llm, round_idx: int) -> dict:
+    """Greedy generations for one round's prompt set, with the chosen-token
+    logprobs kept so a mismatch can be measured instead of only observed."""
     from vllm import SamplingParams
     from vllm.inputs import TokensPrompt
 
     outputs = llm.generate(
-        [TokensPrompt(prompt_token_ids=prompt) for prompt in PROMPTS],
-        SamplingParams(temperature=0.0, max_tokens=24, detokenize=False),
+        [TokensPrompt(prompt_token_ids=prompt) for prompt in _prompts(round_idx)],
+        SamplingParams(temperature=0.0, max_tokens=24, detokenize=False, logprobs=1),
     )
-    return [list(output.outputs[0].token_ids) for output in outputs]
+    tokens, logprobs = [], []
+    for output in outputs:
+        tokens.append(list(output.outputs[0].token_ids))
+        # logprobs=1: one entry per generated token, a dict of the chosen
+        # token's Logprob — kept so a mismatch can be quantified at the first
+        # diverging position.
+        row = output.outputs[0].logprobs or []
+        logprobs.append([None if not step else next(iter(step.values())).logprob for step in row])
+    return {"tokens": tokens, "logprobs": logprobs}
+
+
+def _fingerprint(llm) -> list[dict[str, str]]:
+    """Per-rank per-tensor digests of the live engine parameters."""
+    return llm.collective_rpc("fingerprint")
 
 
 def _build_prime_model(seed: int, device: str):
@@ -379,7 +407,8 @@ def mode_update(args: argparse.Namespace) -> None:
     _save_reference_checkpoint(Path(args.ref2_dir), wire2, template_dir)
 
     llm = _make_engine(args.model_dir, tp=args.tp, expert_parallel=args.ep == "on")
-    baseline = _generate(llm)
+    baseline = _generate(llm, round_idx=0)
+    fingerprint_c0 = _fingerprint(llm)
 
     # The receiver ranks are created by the init RPC while the sender (rank 0)
     # forms the group: both sides rendezvous inside the store, so the two
@@ -410,20 +439,38 @@ def mode_update(args: argparse.Namespace) -> None:
     if init_result.get("error"):
         raise RuntimeError(f"init_broadcaster failed: {init_result['error']}")
 
+    # Fingerprints are taken immediately after each update, before any
+    # generation, so the weight-level comparison is independent of the
+    # generation/KV-cache state.
     _broadcast_and_update(llm, communicator, wire1)
-    after_first = _generate(llm)
+    fingerprint_1 = _fingerprint(llm)
+    after_first = _generate(llm, round_idx=1)
     _broadcast_and_update(llm, communicator, wire2)
-    after_second = _generate(llm)
+    fingerprint_2 = _fingerprint(llm)
+    after_second = _generate(llm, round_idx=2)
 
     Path(args.out).write_text(
-        json.dumps({"baseline": baseline, "after_first": after_first, "after_second": after_second})
+        json.dumps(
+            {
+                "baseline": baseline,
+                "after_first": after_first,
+                "after_second": after_second,
+                "fingerprint_c0": fingerprint_c0,
+                "fingerprint_1": fingerprint_1,
+                "fingerprint_2": fingerprint_2,
+            }
+        )
     )
 
 
 def mode_reference(args: argparse.Namespace) -> None:
     llm = _make_engine(args.model_dir, tp=args.tp, expert_parallel=args.ep == "on")
-    tokens = _generate(llm)
-    Path(args.out).write_text(json.dumps({"tokens": tokens}))
+    fingerprint = _fingerprint(llm)
+    # Generate the round's prompt set twice: with prefix caching disabled both
+    # passes must be identical, pinning the reference's own determinism.
+    first = _generate(llm, round_idx=args.prompt_set)
+    second = _generate(llm, round_idx=args.prompt_set)
+    Path(args.out).write_text(json.dumps({"first": first, "second": second, "fingerprint": fingerprint}))
 
 
 def mode_reject(args: argparse.Namespace) -> None:
@@ -472,6 +519,7 @@ def main() -> None:
     reference.add_argument("--out", required=True)
     reference.add_argument("--tp", type=int, required=True)
     reference.add_argument("--ep", choices=["on", "off"], required=True)
+    reference.add_argument("--prompt-set", type=int, choices=[1, 2], required=True)
     reference.set_defaults(func=mode_reference)
 
     reject = subparsers.add_parser("reject")

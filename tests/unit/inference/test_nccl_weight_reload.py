@@ -84,7 +84,7 @@ def _tp_size(gpu_count: int) -> int:
     return 0
 
 
-def _reference_tokens(model_dir: Path, tp: int, ep: str, out: Path) -> list[list[int]]:
+def _reference(model_dir: Path, tp: int, ep: str, prompt_set: int, out: Path) -> dict:
     result = _run_driver(
         "reference",
         "--model-dir",
@@ -95,9 +95,47 @@ def _reference_tokens(model_dir: Path, tp: int, ep: str, out: Path) -> list[list
         str(tp),
         "--ep",
         ep,
+        "--prompt-set",
+        str(prompt_set),
     )
     assert result.returncode == 0, f"reference ({model_dir.name}, ep={ep}) failed:\n{result.stdout}\n{result.stderr}"
-    return json.loads(out.read_text())["tokens"]
+    return json.loads(out.read_text())
+
+
+def _assert_fingerprints_match(updated: list[dict], reference: list[dict], context: str) -> None:
+    """Per-rank per-tensor digests must match a fresh load of the same wire
+    content; on mismatch, report exactly which tensors differ."""
+    assert len(updated) == len(reference)
+    for rank, (updated_rank, reference_rank) in enumerate(zip(updated, reference)):
+        only_updated = set(updated_rank) - set(reference_rank)
+        only_reference = set(reference_rank) - set(updated_rank)
+        assert not only_updated and not only_reference, (
+            f"{context}: rank {rank} parameter sets differ "
+            f"(only-updated={sorted(only_updated)}, only-reference={sorted(only_reference)})"
+        )
+        differing = [name for name in updated_rank if updated_rank[name] != reference_rank[name]]
+        assert not differing, (
+            f"{context}: rank {rank} tensors differ from the fresh-load reference after NCCL reload: "
+            + ", ".join(
+                f"{name} (updated={updated_rank[name]}, fresh={reference_rank[name]})" for name in differing[:16]
+            )
+        )
+
+
+def _first_divergence_report(updated: dict, reference: dict) -> str:
+    """Quantify the first divergence: token position and both logprob values."""
+    for prompt_idx, (updated_row, reference_row) in enumerate(zip(updated["tokens"], reference["tokens"])):
+        if updated_row == reference_row:
+            continue
+        for pos, (updated_tok, reference_tok) in enumerate(zip(updated_row, reference_row)):
+            if updated_tok != reference_tok:
+                updated_lp = (updated.get("logprobs", [[]] * 8)[prompt_idx] or [None] * 32)[pos : pos + 1]
+                reference_lp = (reference.get("logprobs", [[]] * 8)[prompt_idx] or [None] * 32)[pos : pos + 1]
+                return (
+                    f"first divergence: prompt {prompt_idx}, token {pos} "
+                    f"({updated_tok} != {reference_tok}); logprobs updated={updated_lp} reference={reference_lp}"
+                )
+    return "no token-level divergence found (logprob values differ)"
 
 
 @pytest.fixture(scope="module")
@@ -155,26 +193,49 @@ def reload_rounds(checkpoints: dict[str, Path], tmp_path_factory: pytest.TempPat
 @pytest.mark.parametrize("ep", ["off", "on"])
 def test_reload_reproduces_fresh_load(reload_rounds: dict[str, dict], ep: str):
     """The two successive NCCL updates must leave the engine in exactly the
-    state a fresh engine loads from the same quantized tensors on disk."""
+    state a fresh engine loads from the same quantized tensors on disk.
+
+    Discriminating controls: prefix caching is disabled and every round uses a
+    disjoint prompt set, so stale-KV prefixes cannot leak across rounds;
+    per-rank per-tensor fingerprints (including the MLA absorbed tensors) are
+    compared against the fresh-load reference before any generation comparison;
+    each reference generation is repeated to pin its own determinism; and a
+    generation mismatch is quantified at the first diverging token.
+    """
     rounds = reload_rounds[ep]
     tp = rounds["tp"]
     payload = rounds["payload"]
 
-    ref1 = _reference_tokens(rounds["ref1"], tp, ep, rounds["refs_out"] / f"ref1-tokens-{ep}.json")
-    assert payload["after_first"] == ref1, (
-        f"generations after NCCL update 1 (ep={ep}) differ from the fresh-load reference"
+    # The updates must have actually mutated the engine (prompt-independent,
+    # fingerprint-level mutation check).
+    assert payload["fingerprint_c0"] != payload["fingerprint_1"], (
+        f"NCCL update 1 (ep={ep}) did not change any engine parameter"
+    )
+    assert payload["fingerprint_1"] != payload["fingerprint_2"], (
+        f"NCCL update 2 (ep={ep}) did not change any engine parameter"
     )
 
-    ref2 = _reference_tokens(rounds["ref2"], tp, ep, rounds["refs_out"] / f"ref2-tokens-{ep}.json")
-    assert payload["after_second"] == ref2, (
-        f"generations after NCCL update 2 (ep={ep}) differ from the fresh-load reference"
-    )
+    for round_idx, after_key, fingerprint_key, ref_dir, prompt_set in (
+        (1, "after_first", "fingerprint_1", rounds["ref1"], 1),
+        (2, "after_second", "fingerprint_2", rounds["ref2"], 2),
+    ):
+        reference = _reference(ref_dir, tp, ep, prompt_set, rounds["refs_out"] / f"ref{round_idx}-{ep}.json")
 
-    # The updates must have actually changed the policy (not a silent no-op).
-    assert payload["baseline"] != payload["after_first"], f"NCCL update 1 (ep={ep}) did not change the engine outputs"
-    assert payload["after_first"] != payload["after_second"], (
-        f"NCCL update 2 (ep={ep}) did not change the engine outputs"
-    )
+        # Reference determinism: two passes over the same prompt set with
+        # prefix caching disabled must be identical.
+        assert reference["first"]["tokens"] == reference["second"]["tokens"], (
+            f"reference generation is not deterministic (ep={ep}, round {round_idx})"
+        )
+
+        # Weight-level equality, per rank and per tensor, before comparing
+        # any generation output.
+        _assert_fingerprints_match(payload[fingerprint_key], reference["fingerprint"], f"update {round_idx} (ep={ep})")
+
+        # Token-exact generation equality against the fresh-load reference.
+        assert payload[after_key]["tokens"] == reference["first"]["tokens"], (
+            f"generations after NCCL update {round_idx} (ep={ep}) differ from the fresh-load reference; "
+            f"{_first_divergence_report(payload[after_key], reference['first'])}"
+        )
 
 
 def test_online_fp8_engine_rejects_quantized_wire(checkpoints: dict[str, Path], tmp_path: Path):

@@ -144,6 +144,30 @@ class NCCLWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
+    def fingerprint(self) -> dict[str, str]:
+        """Per-tensor digests of this rank's live parameters.
+
+        Read-only ops/debug RPC: name -> "sha256[:16]:shape:dtype" over the
+        current parameter bytes (all dtypes, including fp8 and the MLA
+        absorbed tensors). Lets an operator or the reload regression test
+        compare a live engine's applied weights against a fresh-load
+        reference rank for rank, and pinpoints exactly which tensors differ.
+        """
+        import hashlib
+
+        model_runner = self.model_runner
+        model = model_runner.model.runnable if hasattr(model_runner.model, "runnable") else model_runner.model
+        assert isinstance(model, Module)
+
+        fingerprint: dict[str, str] = {}
+        for name, param in model.named_parameters():
+            if param.numel() == 0:
+                continue
+            raw = param.detach().contiguous().view(torch.uint8)
+            digest = hashlib.sha256(raw.cpu().numpy().tobytes()).hexdigest()[:16]
+            fingerprint[name] = f"{digest}:{tuple(param.shape)}:{param.dtype}"
+        return fingerprint
+
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator.
 
