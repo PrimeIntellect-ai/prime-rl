@@ -1,0 +1,6 @@
+# PROPOSED SCHEMA: requires stage 1; binary solved reward, without length shaping.
+[orchestrator.algo]
+type = "ngu"
+continuation_probability = 0.875
+history_max_policy_age = 4
+seed = 42

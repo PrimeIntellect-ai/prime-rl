@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ num_nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --partition={{ partition }}
+{% if account %}#SBATCH --account={{ account }}
+{% endif %}{% if time %}#SBATCH --time={{ time }}
+{% endif %}{% if nodelist %}#SBATCH --nodelist={{ nodelist }}
+{% endif %}{% if exclude %}#SBATCH --exclude={{ exclude }}
+{% endif %}#SBATCH --exclusive
+#SBATCH --output={{ launcher_log_dir }}/profile_%j.log
+#SBATCH --error={{ launcher_log_dir }}/profile_%j.log
+
+set -euo pipefail
+cd '{{ project_dir | string | replace("'", "'\"'\"'") }}'
+[ ! -f .env ] || source .env
+export PYTHONPATH="$PWD/configs/experiments/ngu/tasksets${PYTHONPATH:+:$PYTHONPATH}"
+mkdir -p '{{ config_dir | string | replace("'", "'\"'\"'") }}'
+NATIVE_SCRIPT='{{ (config_dir ~ '/native-inference.sh') | string | replace("'", "'\"'\"'") }}'
+cat > "$NATIVE_SCRIPT" <<'NGU_NATIVE_SCRIPT'
+{% include 'native-inference.sbatch.j2' %}
+NGU_NATIVE_SCRIPT
+setsid bash "$NATIVE_SCRIPT" &
+INFERENCE_PID=$!
+cleanup() {
+    kill -TERM -- "-$INFERENCE_PID" 2>/dev/null || true
+    wait "$INFERENCE_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The batch shell runs on the first allocated node, alongside replica zero.
+mapfile -t NGU_HOSTS < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
+NGU_ROUTER="http://${NGU_HOSTS[0]}:{{ router_port }}/v1"
+DEADLINE=$((SECONDS + 3600))
+while true; do
+    kill -0 "$INFERENCE_PID" || { echo 'Inference job step exited before readiness'; exit 1; }
+    READY=1
+    for host in "${NGU_HOSTS[@]}"; do
+        curl --silent --fail --max-time 5 "http://$host:{{ backend_port }}/health" >/dev/null || READY=0
+    done
+    curl --silent --fail --max-time 5 -H "Authorization: Bearer ${VLLM_API_KEY:-EMPTY}" "$NGU_ROUTER/models" >/dev/null || READY=0
+    if [ "$READY" -eq 1 ]; then break; fi
+    if [ "$SECONDS" -ge "$DEADLINE" ]; then echo 'Inference readiness timed out'; exit 1; fi
+    sleep 5
+done
+
+# These commands run on the allocated master node, never on the login node.
+CUDA_VISIBLE_DEVICES="" uv run eval @ configs/experiments/ngu/eval.toml \
+    --client.base-url "$NGU_ROUTER" \
+    --output-dir '{{ (output_dir ~ '/eval') | string | replace("'", "'\"'\"'") }}'
+CUDA_VISIBLE_DEVICES="" uv run python tools/ngu_difficulty.py split \
+    configs/experiments/ngu/sample-1000.json \
+    '{{ (output_dir ~ '/eval/swerebench-1000-avg8') | string | replace("'", "'\"'\"'") }}' \
+    '{{ (output_dir ~ '/difficulty') | string | replace("'", "'\"'\"'") }}'
+echo "NGU profiling and difficulty tasksets complete."
