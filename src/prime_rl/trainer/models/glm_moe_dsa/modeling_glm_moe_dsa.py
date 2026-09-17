@@ -16,7 +16,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     conversion_chain,
-    convert_tt_layer_to_vllm_kernel,
+    quantize_tt_layer_to_vllm_fp8_checkpoint,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -154,10 +154,8 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
     @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
-    ) -> dict[str, Tensor]:
-        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
+    def quantize_layer_to_vllm_fp8_checkpoint(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return quantize_tt_layer_to_vllm_fp8_checkpoint(state_dict, layer_idx)
 
 
 @auto_docstring

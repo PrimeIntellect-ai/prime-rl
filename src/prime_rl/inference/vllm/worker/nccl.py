@@ -1,5 +1,4 @@
-import pickle
-from typing import TYPE_CHECKING, Generator, cast
+from typing import TYPE_CHECKING
 
 import torch
 from torch.nn import Module
@@ -7,11 +6,8 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import (
-    load_weights_checkpoint_layerwise,
-    load_weights_kernel,
-    update_mla_absorbed_weights,
-)
+from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.transports.wire import receive_integer, receive_state_dict
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -23,42 +19,6 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
-
-
-def receive_integer(communicator: PyNcclCommunicator) -> int:
-    """Receive an integer from the trainer master rank using NCCL communicator."""
-    integer_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
-    communicator.broadcast(integer_tensor, src=0)
-    return cast(int, integer_tensor.item())
-
-
-def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
-    """Stream tensors in a state dict broadcasted over NCCL."""
-    size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
-    communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
-    communicator.broadcast(state_tensor, src=0)
-
-    metadata = pickle.loads(bytes(state_tensor.cpu().numpy()))
-
-    # Receive concatenated tensors per dtype and split them back
-    for dtype, tensor_info_list in metadata.items():
-        # Receive concatenated tensor for this dtype
-        total_elements = sum(numel for _, _, numel in tensor_info_list)
-        concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
-        communicator.broadcast(concatenated, src=0)
-
-        # Split concatenated tensor back into individual tensors
-        offset = 0
-        for key, shape, numel in tensor_info_list:
-            tensor = concatenated[offset : offset + numel].view(shape)
-            offset += numel
-            try:
-                yield key, tensor
-            finally:
-                del tensor
-
-        del concatenated
 
 
 class NCCLWeightBroadcastReceiver:
@@ -136,7 +96,16 @@ class NCCLWeightUpdateWorker(Worker):
         return None
 
     def update_weights_from_path(self, weight_dir: str) -> None:
-        """Update weights with the nccl communicator."""
+        """Update weights with the nccl communicator.
+
+        The incoming stream is checkpoint-format weights — bf16 when
+        ``quantize_in_weight_transfer`` is off, fp8 e4m3 plus fp32
+        ``weight_scale_inv`` scales when it is on. Both flow through vLLM's own
+        checkpoint weight-loading path (``model.load_weights`` under the
+        layerwise reload lifecycle), which owns the TP/EP slicing, the fused
+        parameter layouts, and the quantization post-processing — identical to
+        how the engine loads weights from disk.
+        """
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
@@ -145,11 +114,6 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        if self.quantize_in_weight_transfer:
-            load_weights_kernel(model, state_iter)
-            update_mla_absorbed_weights(model)
-            return
-
         load_weights_checkpoint_layerwise(
             model,
             state_iter,

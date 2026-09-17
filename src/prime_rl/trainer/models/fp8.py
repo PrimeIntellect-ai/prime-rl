@@ -1,3 +1,5 @@
+from typing import Callable
+
 import torch
 from torch import Tensor
 
@@ -39,26 +41,33 @@ def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Te
     return quantized, scales.float().contiguous()
 
 
-def quantize_to_vllm_kernel_format(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
-    """Quantize a weight into the FP8 layout used by vLLM kernels.
+def quantize_to_fp8_checkpoint(
+    state_dict: dict[str, Tensor],
+    block_size: int = 128,
+    keep_unquantized: Callable[[str, Tensor], bool] | None = None,
+) -> dict[str, Tensor]:
+    """Quantize an HF-checkpoint-named state dict to the blockwise-fp8 checkpoint layout.
 
-    Hopper kernels consume the regular blockwise scale grid. On SM100, vLLM's
-    DeepGEMM kernels instead use UE8M0 scales in an architecture-specific packed
-    layout. Reuse vLLM's own post-processing so tensors sent over the kernel
-    weight-transfer path have the same representation as the loaded parameters.
+    This is the layout of the official FP8 checkpoints of MLA-MoE models
+    (e.g. DeepSeek-V3-FP8 / GLM-*-FP8) and the only fp8 format vLLM loads
+    natively: for every quantized 2D ``.weight`` tensor ``X.weight`` the dict
+    carries the fp8 e4m3 weight of shape ``[out, in]`` plus an fp32
+    ``X.weight_scale_inv`` of shape ``[ceil(out / block), ceil(in / block)]``.
+
+    A tensor is quantized when it is a 2D ``.weight`` and ``keep_unquantized``
+    does not exclude it. Everything else (norms, routers, biases, scales)
+    passes through unchanged. Tensors not divisible by the block size are
+    zero-padded internally; emitted weights and scales are exact slices.
     """
-    quantized, scales = quantize_to_fp8_blockwise(weight, block_size)
-
-    if not weight.is_cuda or torch.cuda.get_device_capability(weight.device) != (10, 0):
-        return quantized, scales
-
-    from vllm.model_executor.layers.quantization.utils.fp8_utils import (
-        deepgemm_post_process_fp8_weight_block,
-    )
-
-    return deepgemm_post_process_fp8_weight_block(
-        wq=quantized,
-        ws=scales,
-        quant_block_shape=(block_size, block_size),
-        use_e8m0=True,
-    )
+    out: dict[str, Tensor] = {}
+    for name, tensor in state_dict.items():
+        should_quantize = tensor.ndim == 2 and name.endswith(".weight")
+        if keep_unquantized is not None:
+            should_quantize = should_quantize and not keep_unquantized(name, tensor)
+        if should_quantize:
+            fp8_weight, scales = quantize_to_fp8_blockwise(tensor, block_size)
+            out[name] = fp8_weight
+            out[name.removesuffix(".weight") + ".weight_scale_inv"] = scales
+        else:
+            out[name] = tensor
+    return out

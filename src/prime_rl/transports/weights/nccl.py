@@ -1,4 +1,3 @@
-import pickle
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -15,53 +14,11 @@ from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.wire import broadcast_integer, broadcast_state_dict
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
-
-
-def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
-    """Broadcast an integer to a process group using NCCL communicator."""
-    integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
-    communicator.broadcast(integer_tensor, src=0)
-
-
-def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclCommunicator) -> None:
-    """Broadcast a state dict to NCCL process group using the PyNcclCommunicator."""
-    # Group tensors by dtype
-    dtype_groups: dict[torch.dtype, list[tuple[str, Tensor]]] = {}
-    for key, value in state_dict.items():
-        assert not isinstance(value, DTensor), (
-            "DTensor is not supported for broadcast, should have been converted to tensor already"
-        )
-        dtype = value.dtype
-        if dtype not in dtype_groups:
-            dtype_groups[dtype] = []
-        dtype_groups[dtype].append((key, value))
-
-    # Build metadata: for each dtype group, store keys and shapes
-    metadata = {}
-    for dtype, items in dtype_groups.items():
-        metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
-
-    # Send metadata
-    state = pickle.dumps(metadata)
-    size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
-    communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.ByteTensor(list(state)).cuda()
-    communicator.broadcast(state_tensor, src=0)
-
-    # Concatenate and broadcast tensors grouped by dtype
-    for dtype, items in dtype_groups.items():
-        # Flatten all tensors and concatenate
-        flat_tensors = [value.flatten() for _, value in items]
-        concatenated = torch.cat(flat_tensors)
-        communicator.broadcast(concatenated, src=0)
-        del concatenated
-        # Clean up individual tensors
-        for _, value in items:
-            del value
 
 
 def filter_state_dict_by_layers(
@@ -119,9 +76,19 @@ def preprocess_layer_quantized(
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
+    """Quantize one layer to the FP8 checkpoint wire format.
+
+    The wire format is the HF checkpoint layout (via ``preprocess_layer_checkpoint``)
+    with the fp8-quantizable tensors replaced by fp8 e4m3 weights + fp32
+    ``weight_scale_inv`` scales. Engines consume it through vLLM's own
+    checkpoint weight-loading path, which owns all TP/EP slicing and the
+    fused-parameter layouts — so the sender never needs to know the engine's
+    parallel layout.
+    """
     if layer_idx < 0:
         return layer_state_dict
-    return model.convert_layer_to_vllm_kernel(layer_state_dict, layer_idx, quantize_fp8=True)
+    hf_layer = preprocess_layer_checkpoint(model, layer_state_dict, layer_idx)
+    return model.quantize_layer_to_vllm_fp8_checkpoint(hf_layer, layer_idx)
 
 
 class NCCLBroadcaster:

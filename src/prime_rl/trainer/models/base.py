@@ -144,21 +144,25 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         return state_dict
 
     @classmethod
-    def convert_layer_to_vllm_kernel(
+    def quantize_layer_to_vllm_fp8_checkpoint(
         cls,
         state_dict: dict[str, Tensor],
         layer_idx: int,
-        quantize_fp8: bool = False,
     ) -> dict[str, Tensor]:
-        """
-        Convert a single layer's state dict from PrimeRL format to vLLM kernel format.
+        """Quantize one layer from HF checkpoint naming to the FP8 checkpoint wire format.
+
+        The input is a single layer in HF checkpoint naming (as produced by
+        ``preprocess_layer_checkpoint``); the output carries fp8 e4m3 weights
+        plus fp32 ``weight_scale_inv`` scales for the tensors a vLLM fp8
+        engine stores quantized. Engines receive this format through vLLM's
+        own checkpoint weight-loading path, so no engine-side kernel-layout
+        remapping is needed.
 
         Args:
-            state_dict: Layer weights in PrimeRL format.
-            layer_idx: Layer index to convert.
-            quantize_fp8: Whether to emit FP8 (e4m3) kernel weights with per-block scales.
+            state_dict: Layer weights in HF checkpoint naming.
+            layer_idx: Layer index to quantize.
         """
-        raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
+        raise NotImplementedError(f"quantize_layer_to_vllm_fp8_checkpoint is not implemented for {cls.__name__}")
 
     def init_buffers_post_meta(self) -> None:
         """
