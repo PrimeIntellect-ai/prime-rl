@@ -259,14 +259,18 @@ def _generate(llm) -> list[list[int]]:
     return [list(output.outputs[0].token_ids) for output in outputs]
 
 
-def _build_prime_model(seed: int):
-    """A trainer-side tiny GLM-MoE-DSA model on cuda:0, deterministically filled."""
+def _build_prime_model(seed: int, device: str):
+    """A trainer-side tiny GLM-MoE-DSA model on ``device``, deterministically filled.
+
+    The device must be the sender's dedicated GPU (not one of the engine's TP
+    ranks): NCCL requires each communicator rank bound to a unique device.
+    """
     import torch
 
     from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 
     config = GlmMoeDsaConfig(**TINY_CONFIG)
-    model = GlmMoeDsaForCausalLM(config).to(torch.bfloat16)
+    model = GlmMoeDsaForCausalLM(config).to(torch.bfloat16).to(device)
     generator = torch.Generator().manual_seed(seed)
     for name, param in model.named_parameters():
         fill = torch.randn(param.shape, generator=generator).to(param.dtype)
@@ -276,7 +280,7 @@ def _build_prime_model(seed: int):
     for name, param in model.named_parameters():
         if name.endswith("mlp.router.selection_bias"):
             param.data = param.data.to(torch.float32)
-    return model.cuda()
+    return model
 
 
 def _wire_layers(model) -> list[dict]:
