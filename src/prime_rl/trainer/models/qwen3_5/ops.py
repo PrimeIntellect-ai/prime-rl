@@ -99,6 +99,12 @@ def _chunk_gated_delta_rule(
     torch.Tensor,
     torch.Tensor,
 ]:
+    # The low-level FLA kernels require the layout enforced by their public wrapper's input_guard.
+    query = query.contiguous()
+    key = key.contiguous()
+    value = value.contiguous()
+    decay = decay.contiguous()
+    beta = beta.contiguous()
     normalized_query, query_rstd = l2norm_fwd(query)
     normalized_key, key_rstd = l2norm_fwd(key)
     chunk_indices = prepare_chunk_indices(cu_seqlens, 64)
@@ -170,6 +176,7 @@ def _chunk_gated_delta_rule_backward(
     grad_output: torch.Tensor,
     scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    grad_output = grad_output.contiguous()
     chunk_indices = prepare_chunk_indices(cu_seqlens, 64)
     grad_query, grad_key, grad_value, grad_beta, grad_decay, _, _, _ = chunk_gated_delta_rule_bwd(
         q=normalized_query,
