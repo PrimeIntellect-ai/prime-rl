@@ -86,6 +86,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
 
+    # Policy version the rollout was sampled under (``train_work(episode).policy.start``).
+    # ``None`` on synthetic samples (e.g. fake data).
+    sampling_version: int | None = None
+
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -122,4 +126,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # TrainingSample.trace_id). ``""`` / ``-1`` mark an unknown sequence
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
+
+    # Per-sequence sampling policy versions, parallel to ``sequence_lengths``
+    # (see TrainingSample.sampling_version). ``-1`` marks an unknown version.
+    # ``None`` when no packed sample carried one.
+    sampling_versions: list[int] | None = None
     branch_indices: list[int] | None = None

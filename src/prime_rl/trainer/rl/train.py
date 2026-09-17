@@ -334,6 +334,7 @@ def train(config: TrainerConfig):
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
+        on_policy_masks: list[list[torch.Tensor] | None] = [None] * len(micro_batches)
 
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -481,6 +482,25 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
+            micro_on_policy_masks = None
+            micro_on_policy_packed = None
+            if config.exact_on_policy_ratio:
+                versions = micro_batch.get("sampling_versions")
+                if versions is not None:
+                    # The weights being trained at step k are version k-1 (the startup
+                    # broadcast sends v(start_step-1), each finished step broadcasts its
+                    # own version). A sequence sampled under that same version is exactly
+                    # on-policy: its true importance ratio is 1 by construction.
+                    current_version = progress.step - 1
+                    packed = torch.zeros(inference_logprobs.shape[1], dtype=torch.bool, device="cuda")
+                    offset = 0
+                    for v, n in zip(versions, sequence_lengths):
+                        if v == current_version:
+                            packed[offset : offset + n] = True
+                        offset += n
+                    micro_on_policy_packed = packed  # aligned with the packed [1, seq] tensors
+                    micro_on_policy_masks = list(packed.split(sequence_lengths))  # per-sequence, for the loss
+            on_policy_masks[micro_step] = micro_on_policy_packed
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
@@ -494,6 +514,7 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                on_policy_masks=micro_on_policy_masks,
             )
 
             # Backward pass
@@ -530,9 +551,12 @@ def train(config: TrainerConfig):
                 has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():
-                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                    _, _, mismatch_kl, engine_mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+                        out["logprobs"], inference_logprobs, micro_on_policy_packed
+                    )
                 mismatch_kl = mismatch_kl[mismatch_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
+                tensors["engine_mismatch_kl/all"].append(engine_mismatch_kl[mismatch_mask].detach().to("cpu"))
                 mismatch_env_names = [
                     env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
                 ]
@@ -650,6 +674,8 @@ def train(config: TrainerConfig):
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats['entropy/all/mean']:.4f}"
         if "mismatch_kl/all/mean" in tensor_stats:
             step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"
+        if "engine_mismatch_kl/all/mean" in tensor_stats and config.exact_on_policy_ratio:
+            step_message += f" | Engine KL {tensor_stats['engine_mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f} GiB"

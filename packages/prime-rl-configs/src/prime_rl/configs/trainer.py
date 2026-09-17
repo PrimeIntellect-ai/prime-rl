@@ -745,6 +745,16 @@ class TrainerConfig(BaseConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    exact_on_policy_ratio: bool = False
+    """Set the importance ratio of exactly on-policy sequences to 1 in the loss.
+
+    Sequences sampled under the weights currently training have a true ratio of 1 by
+    construction, so the engine's returned logprobs contribute nothing but numerics
+    noise there (e.g. fp8-KV drift — see ``model.kv_cache_dtype``). With this on, the
+    ratio for those sequences is exactly 1, the logged ``Mismatch KL`` reflects what
+    the loss actually uses, and the raw engine drift is logged separately as
+    ``Engine KL``. Genuinely stale sequences keep their engine-derived ratio."""
+
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 

@@ -27,6 +27,7 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    on_policy_mask: Bool[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -129,12 +130,23 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 
 def compute_importance_ratio_and_mismatch_kl(
-    trainer_logprobs: Tensor, inference_logprobs: Tensor
-) -> tuple[Tensor, Tensor, Tensor]:
-    log_importance_ratio = trainer_logprobs - inference_logprobs
+    trainer_logprobs: Tensor, inference_logprobs: Tensor, on_policy_mask: Tensor | None = None
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    engine_log_ratio = trainer_logprobs - inference_logprobs
+    if on_policy_mask is not None:
+        # Sequences sampled under the current weights have a true importance ratio of
+        # exactly 1, so the engine-side logprob gap there is pure numerics noise (e.g.
+        # fp8-KV drift). Replace the gap with trainer - trainer.detach(): the forward
+        # value is exactly 0 (ratio 1, no noise) while the gradient still flows through
+        # the current policy logprobs — masked_fill alone would zero the training signal.
+        on_policy_log_ratio = trainer_logprobs - trainer_logprobs.detach()
+        log_importance_ratio = torch.where(on_policy_mask, on_policy_log_ratio, engine_log_ratio)
+    else:
+        log_importance_ratio = engine_log_ratio
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
-    return log_importance_ratio, importance_ratio, mismatch_kl
+    engine_mismatch_kl = torch.exp(engine_log_ratio) - engine_log_ratio - 1
+    return log_importance_ratio, importance_ratio, mismatch_kl, engine_mismatch_kl
 
 
 class IPOLoss:
@@ -152,8 +164,8 @@ class IPOLoss:
         advantages = inputs.advantages
         loss_mask = inputs.loss_mask
 
-        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            trainer_logprobs, inference_logprobs
+        log_importance_ratio, importance_ratio, mismatch_kl, engine_mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            trainer_logprobs, inference_logprobs, inputs.on_policy_mask
         )
 
         abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
@@ -173,6 +185,7 @@ class IPOLoss:
             "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
             "is_masked": _safe_mean(is_masked, loss_mask),
+            "engine_mismatch_kl": _safe_mean(engine_mismatch_kl, loss_mask),
         }
 
         return LossOutputs(loss=loss, metrics=metrics)
@@ -187,8 +200,8 @@ class IcePopLoss:
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
-        log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            inputs.trainer_logprobs, inputs.inference_logprobs
+        log_importance_ratio, _, mismatch_kl, engine_mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            inputs.trainer_logprobs, inputs.inference_logprobs, inputs.on_policy_mask
         )
 
         log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
@@ -209,6 +222,7 @@ class IcePopLoss:
             "masked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask & is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": _safe_mean(is_masked, inputs.loss_mask),
+            "engine_mismatch_kl": _safe_mean(engine_mismatch_kl, inputs.loss_mask),
         }
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
@@ -315,6 +329,7 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    on_policy_masks: list[Bool[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -375,6 +390,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
+    on_policy_iter = iter(on_policy_masks) if on_policy_masks is not None else None
     for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
         trainer_logprobs,
         inference_logprobs,
@@ -385,6 +401,7 @@ def compute_loss(
         ce_weights,
         ref_kl_weights,
     ):
+        on_policy_mask = next(on_policy_iter) if on_policy_iter is not None else None
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
             return LossInputs(
@@ -394,6 +411,7 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                on_policy_mask=on_policy_mask,
             )
 
         if rl_w is None:
