@@ -910,14 +910,14 @@ def _validate_flash_attn_4_installed() -> None:
 def resolve_auto_attn(config: ModelConfig) -> None:
     """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
 
-    FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
+    FA4 on datacenter Blackwell (SM100/SM103), FA3 on Hopper (SM90), FA2 otherwise.
     Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
     can't run the Hopper-only FA3 kernels, so they fall back to FA2.
     """
     if config.attn != "auto":
         return
     major, minor = torch.cuda.get_device_capability()
-    if (major, minor) == (10, 0):
+    if (major, minor) in ((10, 0), (10, 3)):
         resolved = "flash_attention_4"
     elif major == 9:
         resolved = "flash_attention_3"
