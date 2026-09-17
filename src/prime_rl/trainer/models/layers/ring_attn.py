@@ -313,9 +313,9 @@ def ring_attention_backward(
         if heads_k_stride != num_kv_heads
         else None
     )
-    dq = torch.empty_like(q)
-    dk = torch.empty_like(k)
-    dv = torch.empty_like(v)
+    dq = q.new_empty(q.shape)
+    dk = k.new_empty(k.shape)
+    dv = v.new_empty(v.shape)
 
     communication = AllGatherComm(group)
     communication.all_gather(next_gathered_kv[0], k[:, :heads_k_stride].contiguous())
@@ -395,7 +395,7 @@ def _ring_attention_backward_fake(
     window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+    return q.new_empty(q.shape), k.new_empty(k.shape), v.new_empty(v.shape)
 
 
 def _ring_attention_setup_context(ctx, inputs, output) -> None:
