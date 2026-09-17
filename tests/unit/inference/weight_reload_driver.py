@@ -82,7 +82,11 @@ TINY_CONFIG = dict(
     index_head_dim=128,
     indexer_rope_interleave=True,
     pad_token_id=0,
-    index_topk=16,
+    # The sparse-MLA index remap kernel (sparse_utils.triton_convert_req_index_
+    # to_global_index) asserts NUM_TOPK_TOKENS (= index_topk, the per-token
+    # top-k column count) is divisible by its BLOCK_N=128; use the production
+    # value (short prompts simply pad with -1, as in production).
+    index_topk=2048,
     use_index_cache=False,
     index_topk_freq=1,
     index_topk_pattern=None,
