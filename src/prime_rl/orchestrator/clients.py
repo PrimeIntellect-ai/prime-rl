@@ -169,7 +169,6 @@ class AdminPlane:
         port: int,
         timeout: int,
         inference_world_size: int,
-        quantize_in_weight_transfer: bool = False,
     ) -> None:
         gpus_per_server = inference_world_size // len(self.clients)
         get_logger().info(
@@ -187,7 +186,6 @@ class AdminPlane:
                         "rank_offset": rank_offset,
                         "inference_world_size": inference_world_size,
                         "timeout": timeout,
-                        "quantize_in_weight_transfer": quantize_in_weight_transfer,
                     },
                 )
                 response.raise_for_status()
@@ -513,7 +511,6 @@ async def init_nixl_broadcast(
                 "rank_offset": rank_offset,
                 "inference_world_size": inference_world_size,
                 "timeout": timeout,
-                "quantize_in_weight_transfer": False,
                 "session_id": session_id,
             },
         )
