@@ -613,6 +613,7 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            enable_scale_out=True,
         )
 
         extra_fields = self.vllm.model_extra or {}
