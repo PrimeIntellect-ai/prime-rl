@@ -272,7 +272,7 @@ def _ring_attention_forward_fake(
     window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.empty_like(q), q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
+    return q.new_empty(q.shape), q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
 
 
 @torch.library.custom_op("prime_rl_ring::attention_backward", mutates_args=())

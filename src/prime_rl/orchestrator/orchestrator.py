@@ -11,7 +11,7 @@ and drives the pipeline. Components are single-purpose:
 - ``TrainEpisodes`` / ``EvalEpisodes`` preserve episode boundaries and build per-step metrics.
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
-  ``_timestamp``-axis pipeline log.
+  pipeline log, a time-keyed row through the monitors.
 
 Components don't reference the orchestrator. The orchestrator wires them
 in ``setup()`` and drives them from ``main_loop()``.
@@ -41,7 +41,7 @@ from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
+from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -336,7 +336,6 @@ class Orchestrator:
         )
 
         log_interval = config.log.interval
-        wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
@@ -398,24 +397,7 @@ class Orchestrator:
         self.periodic_logger = PeriodicLogger(
             name="Pipeline",
             collect=self.collect_pipeline_view,
-            metric_keys=[
-                *list(self.dispatcher.gauges().keys()),
-                *list(self.concurrency.gauges().keys()),
-                *DispatcherMetrics.drain_keys(
-                    train_envs={e.name for e in self.train_envs},
-                    eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
-                ),
-                *list(self.watcher.gauges().keys()),
-                "event_loop_lag/min",
-                "event_loop_lag/mean",
-                "event_loop_lag/median",
-                "event_loop_lag/p90",
-                "event_loop_lag/p99",
-                "event_loop_lag/max",
-                "event_loop_lag/n",
-            ],
             interval=log_interval,
-            wandb_enabled=wandb_enabled,
         )
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
@@ -457,10 +439,12 @@ class Orchestrator:
             elapsed = format_time(time.perf_counter() - start_time)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
-                # The collector logs to the W&B run, so it must stop before
-                # finalize marks the run finished
+                # The background loggers write through the monitors, so they must
+                # stop before finalize marks the run finished
                 if self.inference_metrics is not None:
                     await self.inference_metrics.stop()
+                if self.periodic_logger is not None:
+                    await self.periodic_logger.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
                 await monitors.finalize()
@@ -830,7 +814,7 @@ class Orchestrator:
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
-        ``(console_body, wandb_payload)``. Per-env ``(env=N, …)``
+        ``(console_body, payload)``. Per-env ``(env=N, …)``
         breakdowns inline only when there's more than one train / eval env;
         the eval halves drop entirely when nothing is accumulating."""
         disp_gauges = self.dispatcher.gauges()

@@ -92,8 +92,8 @@ class DispatcherMetrics:
 
     def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
         """Return per-tick counters and clear them. Emits the full pre-
-        registered key set every tick (zero when no activity) so the wandb
-        time axis stays dense and ``define_metric`` lines up."""
+        registered key set every tick (zero when no activity) so the
+        time-keyed series stay dense on every monitor."""
         out: dict[str, float] = {}
         for kind in ("train", "eval"):
             envs = train_envs if kind == "train" else eval_envs
@@ -111,21 +111,6 @@ class DispatcherMetrics:
         self.cancelled_by_kind_env.clear()
         self.errored_by_kind_env.clear()
         return out
-
-    @staticmethod
-    def drain_keys(*, train_envs: set[str], eval_envs: set[str]) -> list[str]:
-        """Full set of keys ``drained`` may emit; used by the periodic
-        logger for ``wandb.define_metric``."""
-        keys = [
-            "dispatcher/cancelled/train",
-            "dispatcher/cancelled/eval",
-            "dispatcher/errored/train",
-            "dispatcher/errored/eval",
-        ]
-        for env in train_envs | eval_envs:
-            keys.append(f"dispatcher/cancelled/{env}")
-            keys.append(f"dispatcher/errored/{env}")
-        return keys
 
 
 def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:

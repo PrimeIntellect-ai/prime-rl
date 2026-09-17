@@ -531,7 +531,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
-            env_names={"train": train_env_names, "eval": eval_env_names},
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
             **modelexpress_vars,
         )
     else:
@@ -571,7 +572,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
-            env_names={"train": train_env_names, "eval": eval_env_names},
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
             **modelexpress_vars,
         )
 
