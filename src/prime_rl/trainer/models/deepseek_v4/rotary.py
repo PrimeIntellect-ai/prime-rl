@@ -33,9 +33,7 @@ def rotate_interleaved(rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
     return ((rope.float() * cos) + (rotate_half_interleaved(rope).float() * sin)).to(rope.dtype)
 
 
-# `emulate_precision_casts` keeps the intermediate bf16 roundings that the naive autograd graph
-# performs, so the input gradient stays bitwise-identical to the pre-fusion implementation.
-@torch.compile(options={"emulate_precision_casts": True})
+@torch.compile
 def rotate_interleaved_grad(
     grad_rope: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, conjugate: bool
 ) -> torch.Tensor:
@@ -44,7 +42,7 @@ def rotate_interleaved_grad(
     if conjugate:
         sin = -sin
     grad = grad_rope.float()
-    return (grad * cos).to(grad_rope.dtype) - rotate_half_interleaved((grad * sin).to(grad_rope.dtype))
+    return (grad * cos - rotate_half_interleaved(grad * sin)).to(grad_rope.dtype)
 
 
 class ApplyRotaryInterleavedFn(torch.autograd.Function):
@@ -52,7 +50,7 @@ class ApplyRotaryInterleavedFn(torch.autograd.Function):
 
     The forward matches the naive `cat([nope, rotated])` formulation bitwise while touching only
     `rope_dim / head_dim` of the data with compute; the backward applies the conjugate rotation to
-    the rope slice of the gradient with the same bf16 rounding points as the naive autograd graph.
+    the rope slice of the gradient in float32.
     """
 
     @staticmethod
