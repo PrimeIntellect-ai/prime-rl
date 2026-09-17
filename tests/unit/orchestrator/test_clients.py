@@ -1,15 +1,19 @@
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
+    ADMIN_TIMEOUT_S,
     AdminPlane,
     _is_retryable_lora_error,
     check_health,
+    env_timeout,
     load_lora_adapter,
     setup_client,
 )
@@ -108,6 +112,27 @@ def test_setup_client_creates_renderer_client():
     assert client.base_url == "http://worker-a:8000/v1"
     assert "X-data-parallel-rank" not in client.headers
     assert client.headers["X-Test"] == "test"
+
+
+def test_env_timeout_reads_env_at_call_time():
+    os.environ["PRL_ADMIN_TIMEOUT_S"] = "1234"
+    assert env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S) == 1234.0
+
+
+def test_env_timeout_defaults_when_unset():
+    assert env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S) == ADMIN_TIMEOUT_S
+
+
+def test_env_timeout_raises_on_non_numeric_value():
+    os.environ["PRL_ADMIN_TIMEOUT_S"] = "abc"
+    with pytest.raises(ValueError, match="PRL_ADMIN_TIMEOUT_S"):
+        env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
+
+
+def test_env_timeout_raises_on_negative_value():
+    os.environ["PRL_ADMIN_TIMEOUT_S"] = "-1"
+    with pytest.raises(ValueError, match="PRL_ADMIN_TIMEOUT_S"):
+        env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
 
 
 def test_check_health_retries_non_success_status():
