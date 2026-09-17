@@ -93,6 +93,7 @@ members = [
     "multiswe",
     "nl2repobench",
     "numina",
+    "officeqa-pro-v2",
     "oolong-pairs",
     "oolong-real",
     "oolong-synth",
@@ -126,6 +127,7 @@ members = [
     "terminal-bench-2",
     "terminal-lego",
     "tmax",
+    "trace-cheating-recall-500",
     "triviaqa",
     "unscramble",
     "uuid-ctf",
@@ -1403,7 +1405,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "deepseek-prover"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/deepseek_prover" }
 dependencies = [
     { name = "verifiers" },
@@ -1611,7 +1613,7 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
@@ -1948,7 +1950,7 @@ wheels = [
 
 [[package]]
 name = "forth-lang"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
     { name = "verifiers" },
@@ -2088,7 +2090,7 @@ wheels = [
 
 [[package]]
 name = "goedel-pset"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/goedel_pset" }
 dependencies = [
     { name = "verifiers" },
@@ -2545,7 +2547,7 @@ wheels = [
 
 [[package]]
 name = "i3-code"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/code/i3_code" }
 dependencies = [
     { name = "orjson" },
@@ -2560,7 +2562,7 @@ requires-dist = [
 
 [[package]]
 name = "i3-logic"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/reasoning/i3_logic" }
 dependencies = [
     { name = "markdown" },
@@ -2577,7 +2579,7 @@ requires-dist = [
 
 [[package]]
 name = "i3-math"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/math/i3_math" }
 dependencies = [
     { name = "verifiers" },
@@ -2588,7 +2590,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "i3-science"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/science/i3_science" }
 dependencies = [
     { name = "verifiers" },
@@ -3006,7 +3008,7 @@ wheels = [
 
 [[package]]
 name = "kimina"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/kimina" }
 dependencies = [
     { name = "verifiers" },
@@ -3283,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "longcot-env"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/long_context/longcot_env" }
 dependencies = [
     { name = "longcot" },
@@ -3313,7 +3315,7 @@ requires-dist = [
 
 [[package]]
 name = "longpdfs"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "deps/prime-envs/environments/long_context/longpdfs" }
 dependencies = [
     { name = "verifiers" },
@@ -3392,7 +3394,7 @@ wheels = [
 
 [[package]]
 name = "math-env"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/math/math_env" }
 dependencies = [
     { name = "verifiers" },
@@ -3485,7 +3487,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -3620,7 +3622,7 @@ wheels = [
 
 [[package]]
 name = "mmk12"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/multimodal/mmk12" }
 dependencies = [
     { name = "pillow" },
@@ -3873,7 +3875,7 @@ wheels = [
 
 [[package]]
 name = "multiswe"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/swe/multiswe" }
 dependencies = [
     { name = "multi-swe-bench" },
@@ -4038,7 +4040,7 @@ wheels = [
 
 [[package]]
 name = "numina"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/numina" }
 dependencies = [
     { name = "verifiers" },
@@ -4362,6 +4364,22 @@ wheels = [
 ]
 
 [[package]]
+name = "officeqa-pro-v2"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/search/officeqa_pro_v2" }
+dependencies = [
+    { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.34.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.28.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4481,7 +4499,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "openswe"
-version = "0.1.3"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/swe/openswe" }
 dependencies = [
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -4739,7 +4757,7 @@ wheels = [
 
 [[package]]
 name = "patterned-needle-in-haystack"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/long_context/patterned_needle_in_haystack" }
 dependencies = [
     { name = "nltk" },
@@ -5364,7 +5382,7 @@ requires-dist = [
 
 [[package]]
 name = "prolog"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "deps/prime-envs/environments/reasoning/prolog" }
 dependencies = [
     { name = "verifiers" },
@@ -6009,7 +6027,7 @@ wheels = [
 
 [[package]]
 name = "r2e-gym"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/swe/r2e_gym" }
 dependencies = [
     { name = "verifiers" },
@@ -6307,7 +6325,7 @@ wheels = [
 
 [[package]]
 name = "scaleswe"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/swe/scaleswe" }
 dependencies = [
     { name = "verifiers" },
@@ -6837,7 +6855,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1
 
 [[package]]
 name = "swelego"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/swe/swelego" }
 dependencies = [
     { name = "verifiers" },
@@ -6848,7 +6866,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "swerebench-v2"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/swe/swerebench_v2" }
 dependencies = [
     { name = "verifiers" },
@@ -6864,7 +6882,7 @@ source = { git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0#9b74ac0
 
 [[package]]
 name = "swesmith-env"
-version = "0.1.3"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/swe/swesmith_env" }
 dependencies = [
     { name = "swebench" },
@@ -7021,7 +7039,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1
 
 [[package]]
 name = "terminal-lego"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/terminal/terminal_lego" }
 dependencies = [
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -7177,7 +7195,7 @@ wheels = [
 
 [[package]]
 name = "tmax"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/terminal/tmax" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7487,6 +7505,24 @@ wheels = [
 ]
 
 [[package]]
+name = "trace-cheating-recall-500"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/judges/trace_cheating_recall_500" }
+dependencies = [
+    { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "1.28.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "orjson" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.34.0" },
+    { name = "orjson", specifier = ">=3.10.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
+]
+
+[[package]]
 name = "traitlets"
 version = "5.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7708,7 +7744,7 @@ wheels = [
 
 [[package]]
 name = "unscramble"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/reasoning/unscramble" }
 dependencies = [
     { name = "verifiers" },
@@ -7728,7 +7764,7 @@ wheels = [
 
 [[package]]
 name = "uuid-ctf"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/reasoning/uuid_ctf" }
 dependencies = [
     { name = "verifiers" },
@@ -7776,7 +7812,7 @@ wheels = [
 
 [[package]]
 name = "verbatim-copy"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/long_context/verbatim_copy" }
 dependencies = [
     { name = "faker" },
@@ -7896,7 +7932,7 @@ examples = [
 
 [[package]]
 name = "virl39k"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/multimodal/virl39k" }
 dependencies = [
     { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -8566,7 +8602,7 @@ requires-dist = [
 
 [[package]]
 name = "wikispeedia"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/reasoning/wikispeedia" }
 dependencies = [
     { name = "verifiers" },
