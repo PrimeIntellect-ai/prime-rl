@@ -21,6 +21,50 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
 
+def _reject_eplb(vllm_config) -> None:
+    """The checkpoint-format reload maps experts with the *initial* EPLB
+    assignment, while the router keeps routing on the current rebalanced map —
+    after a rebalance this would silently write a logical expert into a
+    physical slot owned by another one. Ordinary expert parallelism is fine:
+    its mapping never changes."""
+    if vllm_config.parallel_config.enable_eplb:
+        raise ValueError(
+            "NCCL weight transfer does not support enable_eplb=true: the "
+            "checkpoint-format reload path maps expert weights with the initial "
+            "EPLB assignment, not the live rebalanced one. Use plain "
+            "enable_expert_parallel until live-map-aware reloading is implemented."
+        )
+
+
+def _validate_serialized_fp8_quantization(vllm_config) -> None:
+    """The fp8 wire format (fp8 e4m3 weight + fp32 ``weight_scale_inv``) can
+    only be applied by engines whose quantization config is a serialized
+    blockwise-FP8 checkpoint layout — i.e. engines serving the model's
+    blockwise-FP8 checkpoint. An engine quantizing a bf16 checkpoint on the
+    fly (``quantization="fp8"`` without a serialized fp8 checkpoint) holds
+    bf16-source online/per-tensor quant methods: it cannot consume fp8 codes
+    plus block scales, and feeding it ``weight_scale_inv`` tensors fails the
+    load mid-apply."""
+    from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+
+    quant_config = vllm_config.quant_config
+    if not isinstance(quant_config, Fp8Config) or not quant_config.is_checkpoint_fp8_serialized:
+        raise ValueError(
+            "quantize_in_weight_transfer requires an engine initialized from a "
+            "serialized blockwise-FP8 checkpoint (the model's FP8 release). This "
+            "engine's quantization config does not match: fp8 wire tensors "
+            "(weight + weight_scale_inv) cannot be applied by an engine that "
+            "quantizes a bf16 checkpoint on the fly. Serve the FP8 checkpoint of "
+            "the model or disable quantize_in_weight_transfer."
+        )
+    if list(quant_config.weight_block_size or []) != [128, 128]:
+        raise ValueError(
+            "quantize_in_weight_transfer requires [128, 128] fp8 weight blocks "
+            "(the grid of the wire's weight_scale_inv tensors), got "
+            f"{quant_config.weight_block_size}"
+        )
+
+
 class NCCLWeightBroadcastReceiver:
     def __init__(
         self,
@@ -70,6 +114,11 @@ class NCCLWeightUpdateWorker(Worker):
         """
         del session_id
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
+        # Fail fast, before any rank can strand in a blocking NCCL read, when
+        # this engine cannot safely apply the streamed checkpoint-format weights.
+        _reject_eplb(self.vllm_config)
+        if quantize_in_weight_transfer:
+            _validate_serialized_fp8_quantization(self.vllm_config)
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
@@ -112,6 +161,9 @@ class NCCLWeightUpdateWorker(Worker):
         else:
             model = model_runner.model
         assert isinstance(model, Module)
+
+        if self.quantize_in_weight_transfer:
+            _validate_serialized_fp8_quantization(self.vllm_config)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         load_weights_checkpoint_layerwise(

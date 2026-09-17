@@ -538,19 +538,20 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_eplb_requires_quantized_weight_transfer(self):
+    def validate_eplb_unsupported(self):
         if self.inference is None or not self.inference.vllm.enable_eplb:
             return self
 
-        # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
-        trainer_weight_broadcast = self.trainer.weight_broadcast
-        if trainer_weight_broadcast.type != "nccl" or not trainer_weight_broadcast.quantize_in_weight_transfer:
-            raise ValueError(
-                "inference.vllm.enable_eplb requires weight_broadcast.type = 'nccl' and "
-                "weight_broadcast.quantize_in_weight_transfer = true."
-            )
-
-        return self
+        # Weight updates reload experts with the *initial* EPLB assignment while the
+        # router routes on the live rebalanced map, silently corrupting expert weights
+        # after a rebalance. Reject until live-map-aware reloading exists.
+        # Plain expert parallelism (enable_expert_parallel) is unaffected.
+        raise ValueError(
+            "inference.vllm.enable_eplb is not supported: weight reloading maps "
+            "expert weights with the initial EPLB assignment, not the live rebalanced "
+            "one. Use enable_expert_parallel without EPLB until live-map-aware "
+            "weight reloading is implemented."
+        )
 
     @model_validator(mode="after")
     def auto_setup_lora(self):

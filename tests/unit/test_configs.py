@@ -939,3 +939,28 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def _rl_config(**inference_vllm: bool) -> RLConfig:
+    """A minimal valid RLConfig with the given [inference.vllm] overrides."""
+    return RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"vllm": dict(max_model_len=128) | inference_vllm},
+        }
+    )
+
+
+def test_eplb_is_rejected_until_live_map_reloading_exists():
+    """EPLB routes on a live expert map while weight reload uses the initial
+    assignment — the combination silently corrupts expert weights after a
+    rebalance, so the shared config must reject it outright."""
+    with pytest.raises(ValidationError, match="enable_eplb is not supported"):
+        _rl_config(enable_eplb=True)
+
+
+def test_plain_expert_parallel_remains_supported():
+    config = _rl_config(enable_expert_parallel=True)
+    assert config.inference.vllm.enable_expert_parallel is True
+    assert config.inference.vllm.enable_eplb is False
