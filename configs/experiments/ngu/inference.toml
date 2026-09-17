@@ -20,3 +20,6 @@ data_parallel_size = 1
 enable_expert_parallel = true
 gpu_memory_utilization = 0.85
 max_model_len = 131072
+enable_auto_tool_choice = true
+tool_call_parser = "glm45"
+reasoning_parser = "glm45"
