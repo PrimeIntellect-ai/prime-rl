@@ -23,6 +23,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_deepseek_v4_attn_sink_loading()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -229,6 +230,58 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """A weight update silently leaves DeepSeek V4's attention sinks at their boot values.
+
+    ``attn_sink`` is the only parameter ``DeepseekV4Model.load_weights`` writes without calling
+    ``param.weight_loader``; it gets a bare ``params_dict[name][:n].copy_()``. Layerwise reload has
+    already moved that parameter to meta, so the copy is discarded, ``load_numel`` stays 0, and the
+    loader still records the name as loaded. Sinks are trainable, so the engine serves stale ones
+    for the rest of the run.
+
+    The sink tensor has one entry per attention head, and each tensor-parallel rank loads only its
+    own ``n_heads // tp_size`` slice. The parameter is longer than that slice: some attention
+    backends allocate their query and output buffers at a rounded-up head count, and the sinks are
+    sized to match, with the tail left at ``-inf`` meaning no sink. That is why upstream writes only
+    the leading entries. Padding the incoming slice back up to the full length with ``-inf`` makes
+    it an ordinary whole-parameter load.
+
+    Remove this patch once the pinned vLLM loads ``attn_sink`` through a weight loader; as of
+    0.29.0 the same fix exists only in vllm-project/vllm#54955, an open draft.
+    """
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
 
 
 def monkey_patch_nano_v3_reasoning_parser():
@@ -632,8 +685,8 @@ def monkey_patch_tokenize_params_validation():
         if self.max_total_tokens is None or tokenizer is None:
             return text
 
+        max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
         if self.truncate_prompt_tokens is None:
-            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
             if len(text) > max_chars:
                 raise VLLMValidationError(
                     f"You passed {len(text)} input characters. "
@@ -644,6 +697,11 @@ def monkey_patch_tokenize_params_validation():
                     parameter="input_text",
                     value=len(text),
                 )
+        elif self.truncation_side is not None and len(text) > max_chars:
+            if self.truncation_side == "left":
+                text = text[-max_chars:]
+            else:
+                text = text[:max_chars]
         return text
 
     def _patched_get_encode_kwargs(self):
@@ -657,6 +715,14 @@ def monkey_patch_tokenize_params_validation():
             max_length = self.max_total_tokens
         elif max_length is None and self.max_total_tokens is not None:
             max_length = self.max_total_tokens + 1
+
+        # Match upstream: a truncation-side override needs the full token sequence so
+        # _token_truncation can slice from the requested side; _text_len_check pre-trims.
+        if self.truncation_side is not None and self.truncate_prompt_tokens is not None:
+            return dict(
+                truncation=False,
+                add_special_tokens=self.add_special_tokens,
+            )
 
         return dict(
             truncation=max_length is not None,
@@ -755,68 +821,6 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
-
-
-def monkey_patch_fp32_lm_head():
-    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
-
-    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
-    matmul accumulates and emits fp32 directly without zero-padding the bf16
-    operands or maintaining a separate fp32 weight copy. This avoids the
-    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
-    where lm_head precision actually leaks before the sampler's softmax.
-
-    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
-    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
-    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
-    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
-    instance — reading it from ``_get_logits`` during serving doesn't work
-    because vLLM doesn't keep the context set during forwards.
-
-    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
-    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
-    and just as correct.
-    """
-    import torch
-    from vllm.config import get_current_vllm_config
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.logits_processor import LogitsProcessor
-
-    logger = init_logger(__name__)
-
-    _original_init = LogitsProcessor.__init__
-    _original_get_logits = LogitsProcessor._get_logits
-
-    def _patched_init(self, *args, **kwargs):
-        _original_init(self, *args, **kwargs)
-        vllm_config = get_current_vllm_config()
-        additional_config = vllm_config.additional_config or {}
-        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
-        if self._fp32_lm_head_enabled:
-            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
-
-    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
-        if not getattr(self, "_fp32_lm_head_enabled", False):
-            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
-
-        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
-        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
-        # flatten defensively in case some future caller passes 3D.
-        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
-        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
-        if embedding_bias is not None:
-            logits = logits + embedding_bias.to(torch.float32)
-        if hidden_states.dim() > 2:
-            logits = logits.reshape(*hidden_states.shape[:-1], -1)
-
-        logits = self._gather_logits(logits)
-        if logits is not None:
-            logits = logits[..., : self.org_vocab_size]
-        return logits
-
-    LogitsProcessor.__init__ = _patched_init
-    LogitsProcessor._get_logits = _patched_get_logits
-    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
 
 
 def monkey_patch_dp_coordinator_startup_timeout():
@@ -935,6 +939,8 @@ def monkey_patch_deepseek_v4_per_layer_rope():
     Note that nothing in vLLM's DeepSeek V4 calls the module's `forward`; every consumer reads
     `cos_sin_cache` and hands it to a fused kernel. The class choice is therefore about the
     cache's dtype and row count, not about which channels the module would rotate.
+
+    Remove this patch once the pin includes vllm-project/vllm#54815, which ships in 0.29.1.
     """
     from vllm.models.deepseek_v4.common import rope as dsv4_rope
 
