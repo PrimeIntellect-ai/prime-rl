@@ -121,7 +121,7 @@ def _fp8_grouped_gemm_prepared_backward(
         grad_weight = _compute_grad_weight(
             x,
             grad_output,
-            weight_t_shape,
+            grad_weight,
             padded_total_m,
             block_to_group,
             ks_tensor,

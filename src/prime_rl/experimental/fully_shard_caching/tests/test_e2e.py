@@ -49,7 +49,6 @@ RUNS = {
     "fp8_compiled": ["--wrap", "fp8", "--compile", "true"],
 }
 
-RUNS_ALLOWED_TO_CRASH = ("none_compiled", "fp8_compiled")
 
 COMPILED_LOSS_RTOL = 1e-3
 
@@ -82,11 +81,7 @@ def metrics(tmp_path_factory) -> dict[str, dict]:
         ]
         completed = subprocess.run(command, env=environment, capture_output=True, text=True)
         if completed.returncode != 0:
-            output = f"{completed.stdout[-4000:]}\n{completed.stderr[-4000:]}"
-            if name not in RUNS_ALLOWED_TO_CRASH:
-                pytest.fail(f"{name} failed:\n{output}")
-            results[name] = {"crash": output}
-            continue
+            pytest.fail(f"{name} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-4000:]}")
         results[name] = json.loads(target.read_text())
     return results
 
@@ -147,21 +142,13 @@ def test_compiling_does_not_silently_unwrap_the_experts(metrics):
     )
 
 
-@pytest.mark.xfail(
-    reason="Without activation checkpointing, inductor's assert_size_stride fires in backward because "
-    "prime_rl::grouped_fp8_gemm_backward's fake kernel inherits the weight's transposed strides while the kernel "
-    "returns a contiguous gradient. Unrelated to the cache: it also fires at ep=1 and with --install-prepared false.",
-    strict=True,
-)
 def test_compiled_unwrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
-    assert "crash" not in metrics["none_compiled"], metrics["none_compiled"]["crash"]
     assert_losses_close(
         metrics["none_compiled"]["first_step_microbatch_losses"], metrics["none"]["first_step_microbatch_losses"]
     )
 
 
 def test_compiled_wrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
-    assert "crash" not in metrics["fp8_compiled"], metrics["fp8_compiled"]["crash"]
     assert_losses_close(
         metrics["fp8_compiled"]["first_step_microbatch_losses"], metrics["fp8"]["first_step_microbatch_losses"]
     )
