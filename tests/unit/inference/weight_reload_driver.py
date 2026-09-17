@@ -75,7 +75,10 @@ TINY_CONFIG = dict(
     rope_theta=10000.0,
     attention_bias=False,
     attention_dropout=0.0,
-    index_n_heads=8,
+    # The indexer MQA-logits fp8 kernel (fp8_fp4_paged_mqa_logits) requires
+    # head-group sizes it tiles over: use the production value (GLM uses 32
+    # index heads at head_dim 128) instead of a toy 8.
+    index_n_heads=32,
     index_head_dim=128,
     indexer_rope_interleave=True,
     pad_token_id=0,
