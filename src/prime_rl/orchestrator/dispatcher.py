@@ -790,6 +790,41 @@ class Dispatcher:
             )
         return cancelled
 
+    async def cancel_drain_work(self, *, reason: CancelReason) -> int:
+        """Cancel every remaining eval group and queued request once the drain
+        stalls, emitting one ``GroupCancellation`` per group so each epoch
+        finalizes with the episodes it already collected. Any in-flight train
+        episode that survived the drain-start cancellation is swept without a
+        marker — late train batches are dropped in drain mode anyway."""
+        cancelled = 0
+        if self.eval_source is not None and self.eval_envs is not None:
+            async with self.scheduling_lock:
+                queued = list(self.eval_source.queue)
+                self.eval_source.queue.clear()
+                group_ids = [gid for gid, group in self.groups.items() if group.kind == "eval"]
+
+            for group_id in group_ids:
+                cancelled += await self.drop_group(group_id, reason=reason)
+            for request in queued:
+                count = self.eval_envs.get(request.env_name).config.group_size
+                cancelled += count
+                self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
+                await self.out_q.put(
+                    GroupCancellation(
+                        kind="eval",
+                        env_name=request.env_name,
+                        group_id=str(uuid.uuid4()),
+                        step=request.step,
+                        count=count,
+                        reason=reason,
+                    )
+                )
+
+        # Sweep whatever is left (train stragglers): no markers, just permits.
+        if self.inflight:
+            await self.cancel_inflight_episodes()
+        return cancelled
+
     # ── metrics ────────────────────────────────────────────────────────────
 
     def gauges(self) -> dict[str, float]:

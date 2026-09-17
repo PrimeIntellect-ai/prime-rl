@@ -156,6 +156,10 @@ class Orchestrator:
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
         self.draining = False
+        # Last out_q arrival while draining; a drain that makes no progress for
+        # ``drain_timeout`` is stuck on episodes that will never complete
+        self.last_drain_progress: float | None = None
+        self.drain_stalled = False
         # Previous ``TrainBatch`` arrival timestamp; reset every ship so
         # ``step_time`` in the success log is real sink-to-sink cycle time
         self.last_batch_at = None
@@ -529,10 +533,18 @@ class Orchestrator:
                 item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
+                await self.cancel_stalled_drain()
                 continue
+            if self.draining:
+                self.last_drain_progress = time.perf_counter()
 
             if isinstance(item, GroupCancellation):
-                assert item.kind == "train"  # eval groups are never dropped
+                if item.kind == "eval":
+                    assert self.eval_sink is not None  # eval drops only exist with eval configured
+                    eval_batch = self.eval_sink.cancel(item)
+                    if eval_batch is not None:
+                        await self.finalize_eval_batch(eval_batch)
+                    continue
                 train_batch = await self.train_sink.cancel(item)
                 if train_batch is not None and not self.draining and not self.stopped.is_set():
                     await self.finalize_train_batch(train_batch)
@@ -792,11 +804,33 @@ class Orchestrator:
         """Stop scheduling train work and let the pipeline empty; triggered
         eval epochs still run to completion."""
         self.draining = True
+        self.last_drain_progress = time.perf_counter()
         self.dispatcher.disable_train_scheduling()
         n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
         get_logger().info(
             f"{reason} — draining pipeline (cancelled {n_cancelled} in-flight "
             f"train episode(s); any in-flight evals will complete)"
+        )
+
+    async def cancel_stalled_drain(self) -> None:
+        """Cancel the remaining eval work when the drain stalls.
+
+        Once the final train batch ships, in-flight eval episodes are expected to
+        complete and empty the pipeline. A hung env episode never completes, so
+        without this bound the drain — and with it the SLURM allocation — would be
+        held indefinitely. Episodes already collected finalize their epoch; the
+        rest are cancelled so the run can exit and release the nodes."""
+        if not self.draining or self.drain_stalled or self.config.drain_timeout is None:
+            return
+        if self.last_drain_progress is None:
+            return
+        if time.perf_counter() - self.last_drain_progress < self.config.drain_timeout:
+            return
+        self.drain_stalled = True
+        n_cancelled = await self.dispatcher.cancel_drain_work(reason="stalled")
+        get_logger().warning(
+            f"Drain stalled for {format_time(self.config.drain_timeout)} without a completed "
+            f"rollout — cancelling {n_cancelled} remaining eval episode(s) so the run can exit"
         )
 
     async def trigger_eval(self, step: int) -> None:

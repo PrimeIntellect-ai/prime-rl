@@ -64,6 +64,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
+| `orchestrator.drain_timeout` | Max time the post-`max_steps` drain may go without a completed rollout (default 2h) before the remaining in-flight eval episodes are cancelled, so the run exits and the SLURM allocation releases — a hung env episode would otherwise hold the nodes indefinitely. `None` waits forever. |
 
 **Monitoring:**
 
