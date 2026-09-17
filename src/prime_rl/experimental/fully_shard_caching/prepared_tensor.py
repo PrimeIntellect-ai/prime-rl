@@ -7,23 +7,42 @@ from the keys of the dict ``prepare`` returns rather than from an operands datac
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 import torch
 from torch import nn
+from torch._prims_common import make_contiguous_strides_for
 from torch.distributed.tensor import DTensor
 from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import _disable_current_modes, return_and_correct_aliasing
 
+Prepared = dict[str, torch.Tensor]
+Out = Prepared | None
+ShardBlocking = tuple[int | None, ...]
 
-class PrepareFn(Protocol):
-    """Derives a weight's prepared tensors, filling ``out``'s tensors in place when it is given."""
 
-    def __call__(
-        self, weight: torch.Tensor, *, out: dict[str, torch.Tensor] | None = None
-    ) -> dict[str, torch.Tensor]: ...
+@runtime_checkable
+class PrepareOp(Protocol):
+    """Derives a whole weight's prepared tensors, filling ``out``'s tensors in place when given."""
+
+    def prepare(self, weight: torch.Tensor, *, out: Out = None) -> Prepared: ...
+
+
+@runtime_checkable
+class ShardedPrepareOp(Protocol):
+    """Prepares a weight's shard before the all-gather, completing the gathered set afterwards.
+
+    ``shard_blocking`` gives, per weight axis, the extent over which the recipe shares a scale, and
+    ``None`` means the recipe reduces across that whole axis.
+    """
+
+    shard_blocking: ShardBlocking
+
+    def prepare_shard(self, shard: torch.Tensor, *, out: Out = None) -> Prepared: ...
+
+    def complete_gathered(self, wire: Mapping[str, torch.Tensor], *, out: Out = None) -> Prepared: ...
 
 
 FSDP_SHARDED_OPS = {
@@ -77,16 +96,16 @@ class PrepareCallCounter:
 PREPARE_CALLS = PrepareCallCounter()
 
 
-def validate_prepared(prepared: Any, prepare_fn: PrepareFn) -> dict[str, torch.Tensor]:
+def validate_prepared(prepared: Any, prepare: Callable[..., Prepared]) -> Prepared:
     if not isinstance(prepared, dict):
-        raise TypeError(f"{prepare_fn} must return a dict of tensors, got {type(prepared).__name__}.")
+        raise TypeError(f"{prepare} must return a dict of tensors, got {type(prepared).__name__}.")
     if not prepared:
-        raise ValueError(f"{prepare_fn} returned no tensors.")
+        raise ValueError(f"{prepare} returned no tensors.")
     for name, tensor in prepared.items():
         if not isinstance(name, str):
-            raise TypeError(f"{prepare_fn} returned a non-string key {name!r}.")
+            raise TypeError(f"{prepare} returned a non-string key {name!r}.")
         if not isinstance(tensor, torch.Tensor):
-            raise TypeError(f"{prepare_fn} returned a non-tensor value for {name!r}.")
+            raise TypeError(f"{prepare} returned a non-tensor value for {name!r}.")
         dense = (
             tensor.is_contiguous()
             and tensor.storage_offset() == 0
@@ -94,40 +113,85 @@ def validate_prepared(prepared: Any, prepare_fn: PrepareFn) -> dict[str, torch.T
         )
         if not dense:
             raise ValueError(
-                f"{prepare_fn} returned a non-dense entry for {name!r}; FSDP's alloc_storage sizes "
+                f"{prepare} returned a non-dense entry for {name!r}; FSDP's alloc_storage sizes "
                 "each entry's storage from numel * itemsize, so anything larger is truncated on the "
                 "next unshard. Return a contiguous tensor owning its whole storage."
             )
     storages = {tensor.untyped_storage().data_ptr() for tensor in prepared.values()}
     if len(storages) != len(prepared):
         raise ValueError(
-            f"{prepare_fn} returned entries aliasing the same storage; FSDP owns each entry's "
+            f"{prepare} returned entries aliasing the same storage; FSDP owns each entry's "
             "storage and would free it twice. Derive such a view inside the op instead."
         )
     return prepared
 
 
-def run_prepare(
-    prepare_fn: PrepareFn,
-    logical_tensor: torch.Tensor,
+def prepare_and_validate(
+    prepare: Callable[..., Prepared],
+    source: torch.Tensor | Mapping[str, torch.Tensor],
     *,
-    out: dict[str, torch.Tensor] | None = None,
-) -> dict[str, torch.Tensor]:
-    PREPARE_CALLS.increment()
+    out: Out = None,
+) -> Prepared:
     if out is None:
-        return validate_prepared(prepare_fn(logical_tensor), prepare_fn)
+        return validate_prepared(prepare(source), prepare)
     expected = tuple(out.values())
-    filled = prepare_fn(logical_tensor, out=out)
+    filled = prepare(source, out=out)
     actual = tuple(out.values())
     same_tensors = len(actual) == len(expected) and all(
         entry is original for entry, original in zip(actual, expected, strict=True)
     )
     if filled is not out or not same_tensors:
         raise RuntimeError(
-            f"{prepare_fn} replaced the tensors it was given instead of filling them; FSDP keeps the "
+            f"{prepare} replaced the tensors it was given instead of filling them; FSDP keeps the "
             "originals, so the op would read stale data. Write into out's tensors and return out."
         )
     return out
+
+
+def run_prepare(
+    prepare: Callable[..., Prepared],
+    source: torch.Tensor,
+    *,
+    out: Out = None,
+) -> Prepared:
+    PREPARE_CALLS.increment()
+    return prepare_and_validate(prepare, source, out=out)
+
+
+class UnshardMetadata(NamedTuple):
+    outer_size: torch.Size
+    wire_keys: tuple[str, ...]
+
+
+def check_sharding_is_preparable(
+    blocking: ShardBlocking,
+    outer_size: torch.Size,
+    sharded_dim: int,
+    mesh_size: int,
+    name: str,
+) -> None:
+    """Raise unless ``name``'s shard can be prepared without seeing the rest of the weight."""
+    logical = outer_size[sharded_dim]
+    if logical % mesh_size != 0:
+        raise ValueError(
+            f"{name} is sharded unevenly: dimension {sharded_dim} has size {logical}, which the "
+            f"{mesh_size}-way FSDP mesh does not divide. FSDP requires every all-gather input on a "
+            "rank holding padding to have the padded sharded size, which a set of differently "
+            "shaped prepared tensors can never satisfy, so preparation must wait for the gather."
+        )
+    extent = blocking[sharded_dim]
+    if extent is None:
+        raise ValueError(
+            f"{name} reduces across dimension {sharded_dim}, which FSDP shards {mesh_size} ways, so "
+            "one shard does not hold everything its scales are computed from."
+        )
+    shard_extent = logical // mesh_size
+    if shard_extent % extent != 0:
+        raise ValueError(
+            f"{name}'s shard boundary cuts a quantization tile: dimension {sharded_dim} of size "
+            f"{logical} gives each of the {mesh_size} ranks {shard_extent}, which the recipe's "
+            f"blocking {extent} does not divide."
+        )
 
 
 class PreparedTensorBase(torch.Tensor):
@@ -152,36 +216,35 @@ class ShardedPreparedTensor(PreparedTensorBase):
     def __init__(
         self,
         tensor: torch.Tensor,
-        prepare_fn: PrepareFn,
-        release_all_gather_outputs: bool = True,
+        op: PrepareOp | ShardedPrepareOp,
         **logical_metadata: Any,
     ) -> None:
         self._tensor = tensor
-        self._prepare_fn = prepare_fn
-        self._release_all_gather_outputs = release_all_gather_outputs
+        self._op = op
 
     @property
-    def prepare_fn(self) -> PrepareFn:
-        return self._prepare_fn
+    def op(self) -> PrepareOp | ShardedPrepareOp:
+        return self._op
 
     def fsdp_should_release_all_gather_outputs_after_post_all_gather(self) -> bool:
         """Named and shaped for the upstream hook added in pytorch#194114.
 
-        FSDP calls this itself once the torch pin has that commit; until then ``_post_all_gather``
-        reads it and frees the buffer by hand.
+        FSDP calls this itself once the torch pin has that commit; until then ``_prepare_gathered``
+        reads it and frees the buffer by hand. A ``ShardedPrepareOp``'s gathered tensors are the
+        cache itself, so they have to outlive the hook.
         """
-        return self._release_all_gather_outputs
+        return not isinstance(self._op, ShardedPrepareOp)
 
     def __repr__(self) -> str:
         return f"ShardedPreparedTensor(shape={tuple(self.shape)}, dtype={self.dtype}, device={self.device})"
 
     def __tensor_flatten__(self):
-        return ["_tensor"], (self._prepare_fn, self._release_all_gather_outputs)
+        return ["_tensor"], (self._op,)
 
     @classmethod
     def __tensor_unflatten__(cls, inner_tensors, metadata, outer_size, outer_stride):
-        prepare_fn, release_all_gather_outputs = metadata
-        return cls(inner_tensors["_tensor"], prepare_fn, release_all_gather_outputs)
+        (op,) = metadata
+        return cls(inner_tensors["_tensor"], op)
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs=None):
@@ -192,8 +255,8 @@ class ShardedPreparedTensor(PreparedTensorBase):
             nonlocal template
             if template is None:
                 template = tensor
-            elif preserve_wrapper and tensor._prepare_fn is not template._prepare_fn:
-                raise RuntimeError("FSDP operation mixed sharded tensors with different prepare callables")
+            elif preserve_wrapper and tensor._op is not template._op:
+                raise RuntimeError("FSDP operation mixed sharded tensors prepared by different ops")
             return tensor._tensor
 
         output = func(
@@ -203,9 +266,8 @@ class ShardedPreparedTensor(PreparedTensorBase):
         if not preserve_wrapper:
             return output
         assert template is not None
-        prepare_fn = template._prepare_fn
-        release = template._release_all_gather_outputs
-        return pytree.tree_map_only(torch.Tensor, lambda t: cls(t, prepare_fn, release), output)
+        prepare_op = template._op
+        return pytree.tree_map_only(torch.Tensor, lambda t: cls(t, prepare_op), output)
 
     def fsdp_pre_all_gather(self, mesh, outer_size, outer_stride, module, mp_policy):
         sharded_dims = [
@@ -224,36 +286,87 @@ class ShardedPreparedTensor(PreparedTensorBase):
                 f"{tuple(outer_size)} is sharded on dimension {sharded_dims[0]}."
             )
         dtype = mp_policy.param_dtype or self._tensor.dtype
+        shard = self._tensor.to(dtype)
+        if isinstance(self._op, ShardedPrepareOp):
+            name = type(module).__name__
+            check_sharding_is_preparable(
+                self._op.shard_blocking,
+                outer_size,
+                sharded_dim=0,
+                mesh_size=mesh.size(),
+                name=name,
+            )
+            wire = run_prepare(self._op.prepare_shard, shard)
+            if mesh.size() == 1 and len(wire) > 1:
+                raise ValueError(
+                    f"{name} prepares {len(wire)} tensors before the all-gather, but its FSDP mesh "
+                    "has size 1, where torch copies all_gather_inputs[0] into a single output and "
+                    "drops every later input. Prepare after the gather at this geometry."
+                )
+            return tuple(wire.values()), UnshardMetadata(outer_size, tuple(wire))
         padded_rows = math.ceil(outer_size[0] / mesh.size())
-        if self._tensor.size(0) != padded_rows:
-            source = self._tensor.new_zeros((padded_rows, *self._tensor.shape[1:]), dtype=dtype)
-            source.narrow(0, 0, self._tensor.size(0)).copy_(self._tensor)
+        if shard.size(0) != padded_rows:
+            source = shard.new_zeros((padded_rows, *shard.shape[1:]))
+            source.narrow(0, 0, shard.size(0)).copy_(shard)
         else:
-            source = self._tensor.to(dtype)
-        return (source,), outer_size
+            source = shard
+        return (source,), UnshardMetadata(outer_size, ())
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
         # Under activation checkpointing this hook fires inside the recompute region, where the
         # first unshard allocates and every later one refills in place, so the two record different
         # op sequences and a sequence taken with the ambient dispatch modes on would not line up.
         with _disable_current_modes():
-            return self._post_all_gather(all_gather_outputs, metadata, out)
+            if metadata.wire_keys:
+                return self._complete_gathered(all_gather_outputs, metadata, param_dtype, out)
+            return self._prepare_gathered(all_gather_outputs, metadata, out)
 
-    def _post_all_gather(self, all_gather_outputs, metadata, out):
+    def _prepare_gathered(self, all_gather_outputs, metadata, out):
         (gathered,) = all_gather_outputs
         logical_tensor = gathered
         # An unevenly sharded parameter gathers padding rows past the logical size, which would
         # reach prepare as real data.
-        if metadata is not None and logical_tensor.size(0) != metadata[0]:
-            logical_tensor = logical_tensor.narrow(0, 0, metadata[0])
+        if logical_tensor.size(0) != metadata.outer_size[0]:
+            logical_tensor = logical_tensor.narrow(0, 0, metadata.outer_size[0])
 
         if out is None:
             with torch.no_grad():
-                prepared = run_prepare(self._prepare_fn, logical_tensor)
+                prepared = run_prepare(self._op.prepare, logical_tensor)
             unsharded = UnshardedPreparedTensor(logical_tensor, prepared)
             self._release_gather_buffer(gathered)
             return unsharded, tuple(prepared.values())
 
+        self._refill(run_prepare, self._op.prepare, logical_tensor, out)
+        self._release_gather_buffer(gathered)
+
+    def _complete_gathered(self, all_gather_outputs, metadata, param_dtype, out):
+        wire = dict(zip(metadata.wire_keys, all_gather_outputs, strict=True))
+        if out is not None:
+            self._refill(prepare_and_validate, self._op.complete_gathered, wire, out)
+            return
+        with torch.no_grad():
+            prepared = prepare_and_validate(self._op.complete_gathered, wire)
+        prepared_ids = {id(tensor) for tensor in prepared.values()}
+        dropped = [name for name, tensor in wire.items() if id(tensor) not in prepared_ids]
+        if dropped:
+            raise RuntimeError(
+                f"{self._op} dropped the gathered tensors {dropped} in complete_gathered; FSDP "
+                "transports them on every unshard, so nothing would ever read them. Return each "
+                "gathered tensor, or stop sending it over the wire."
+            )
+        unsharded = UnshardedPreparedTensor(
+            next(iter(prepared.values())),
+            prepared,
+            logical_size=metadata.outer_size,
+            logical_stride=make_contiguous_strides_for(metadata.outer_size),
+            logical_dtype=param_dtype,
+        )
+        gathered_ids = {id(tensor) for tensor in all_gather_outputs}
+        # FSDP allocates and frees the gathered tensors itself, so naming one here manages it twice.
+        derived = tuple(tensor for tensor in prepared.values() if id(tensor) not in gathered_ids)
+        return unsharded, derived
+
+    def _refill(self, runner, prepare, source, out) -> None:
         target = out._local_tensor if isinstance(out, DTensor) else out
         if not isinstance(target, UnshardedPreparedTensor):
             raise RuntimeError(f"FSDP refill target is not an UnshardedPreparedTensor: {type(target).__name__}")
@@ -264,8 +377,7 @@ class ShardedPreparedTensor(PreparedTensorBase):
             # A refill must not invalidate the version checks of tensors an op saved for backward.
             torch.autograd._unsafe_preserve_version_counter(managed),
         ):
-            run_prepare(self._prepare_fn, logical_tensor, out=existing)
-        self._release_gather_buffer(gathered)
+            runner(prepare, source, out=existing)
 
     def _release_gather_buffer(self, gathered: torch.Tensor) -> None:
         if self.fsdp_should_release_all_gather_outputs_after_post_all_gather():
@@ -385,23 +497,15 @@ def unwrap_prepared_state_dict_entries(module, state_dict, prefix, local_metadat
             state_dict[key] = unwrapped_master_shard(state_dict[key])
 
 
-def install_prepared_weights(
-    module: nn.Module,
-    prepare_fns: Mapping[str, PrepareFn],
-    *,
-    release_all_gather_outputs: bool = True,
-) -> None:
+def install_prepared_weights(module: nn.Module, ops: Mapping[str, PrepareOp | ShardedPrepareOp]) -> None:
     """Wrap the named parameters of ``module`` in place, before ``fully_shard``."""
-    if not release_all_gather_outputs:
-        # release=False means the op still needs the gathered high-precision weight, which we cannot
-        # honor: UnshardedPreparedTensor drops it, and that is what makes releasing safe.
-        # Supporting it means retaining the gathered tensor and exposing it next to .prepared, but
-        # never listing it in __tensor_flatten__, since FSDP already owns that storage.
-        raise NotImplementedError(
-            "release_all_gather_outputs=False is not supported: the unsharded wrapper keeps no "
-            "high-precision storage, so an op has no way to read the gathered weight."
-        )
-    for name, prepare_fn in prepare_fns.items():
+    for name, op in ops.items():
+        if not isinstance(op, (PrepareOp, ShardedPrepareOp)):
+            raise TypeError(
+                f"{type(module).__name__}.{name} was given {op!r}, which is neither a PrepareOp "
+                "(a prepare method) nor a ShardedPrepareOp (shard_blocking, prepare_shard and "
+                "complete_gathered)."
+            )
         parameter = getattr(module, name, None)
         if not isinstance(parameter, nn.Parameter):
             raise ValueError(f"{type(module).__name__} has no parameter {name!r} to prepare.")
@@ -410,7 +514,7 @@ def install_prepared_weights(
         module.register_parameter(
             name,
             nn.Parameter(
-                ShardedPreparedTensor(parameter.data, prepare_fn, release_all_gather_outputs),
+                ShardedPreparedTensor(parameter.data, op),
                 requires_grad=parameter.requires_grad,
             ),
         )

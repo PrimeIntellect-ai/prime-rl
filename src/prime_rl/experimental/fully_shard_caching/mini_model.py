@@ -156,7 +156,7 @@ def initialize(model: nn.Module, seed: int, device: torch.device) -> None:
 def install_expert_preparation(experts_modules: list[GroupedExperts]) -> None:
     for experts in experts_modules:
         names = [name for name, _ in experts.named_parameters(recurse=False)]
-        install_prepared_weights(experts, {name: experts.compute.prepare for name in names})
+        install_prepared_weights(experts, {name: experts.compute for name in names})
 
 
 def expert_modules(model: nn.Module) -> list[GroupedExperts]:

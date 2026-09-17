@@ -49,7 +49,7 @@ def build_experts(compile_backend: str | None, install: bool, op, dim, hidden_di
     for parameter in experts.parameters():
         torch.nn.init.normal_(parameter, std=0.02)
     if install:
-        install_prepared_weights(experts, {name: experts.compute.prepare for name, _ in experts.named_parameters()})
+        install_prepared_weights(experts, {name: experts.compute for name, _ in experts.named_parameters()})
     if dp_ep_mesh is not None:
         shard_expert_weights(experts, dp_ep_mesh[EP_MESH_DIM])
     if compile_backend is not None:
