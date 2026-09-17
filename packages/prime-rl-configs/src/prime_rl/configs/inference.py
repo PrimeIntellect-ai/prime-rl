@@ -13,6 +13,9 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 # TODO: Set thinking/ solution budget
 
 
+QuantizationBackend = Literal["fp8_per_block"]
+
+
 class ServerConfig(BaseConfig):
     host: str | None = None
     """Host to bind to."""
@@ -105,7 +108,7 @@ class VllmConfig(BaseConfig):
     enable_prefix_caching: bool | None = None
     """Enable prefix caching."""
 
-    quantization: str | None = None
+    quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
     enable_lora: bool = False
