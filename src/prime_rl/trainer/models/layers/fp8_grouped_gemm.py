@@ -165,8 +165,8 @@ def _grouped_fp8_gemm_backward(
         block_starts_tensor,
     ) = build_grouped_layout(offs, total_m=x.size(0))
     grad_output = grad_output.contiguous()
-    grad_x = torch.empty(x.shape, device=x.device, dtype=x.dtype)
-    grad_weight = torch.empty(weight.shape, device=weight.device, dtype=weight.dtype)
+    grad_x = x.new_empty(x.shape)
+    grad_weight = weight.new_empty(weight.shape)
 
     if needs_grad_weight:
         grad_weight = _compute_grad_weight(

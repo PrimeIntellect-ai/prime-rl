@@ -48,8 +48,8 @@ def _fp8_blockwise_mm_backward(
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(grad_output.device)
-    grad_x = torch.empty(x.shape, device=x.device, dtype=x.dtype)
-    grad_weight = torch.empty(weight.shape, device=weight.device, dtype=weight.dtype)
+    grad_x = x.new_empty(x.shape)
+    grad_weight = weight.new_empty(weight.shape)
 
     if needs_grad_x:
         grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
