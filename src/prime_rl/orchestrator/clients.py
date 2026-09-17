@@ -198,7 +198,7 @@ class AdminPlane:
                         admin_client,
                         "/update_weights",
                         json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                        timeout_s=env_timeout("PRL_UPDATE_WEIGHTS_TIMEOUT_S", UPDATE_WEIGHTS_TIMEOUT_S),
                     )
                     for admin_client in self.clients
                 ]
@@ -356,11 +356,33 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
     return False
 
 
+def env_timeout(name: str, default: float) -> float:
+    """Resolve a timeout in seconds from the environment, falling back to ``default``.
+
+    Read at call time, not import time: entrypoints apply config ``env_vars`` to
+    ``os.environ`` after this module is imported. Invalid values raise instead of
+    silently falling back to the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number of seconds, got {raw!r}") from None
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative, got {raw!r}")
+    return value
+
+
 # Per-attempt read timeout for admin ops, overridable per call. The admin
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
 # weight update forever: the read timeout converts a hang into a TimeoutException
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
+# Call-time overrides: `$PRL_ADMIN_TIMEOUT_S`, `$PRL_UPDATE_WEIGHTS_TIMEOUT_S`
+# (via ``env_timeout``) — e.g. a large model whose `/update_weights` collectives
+# run far longer than the default.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
@@ -391,8 +413,12 @@ async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
+    admin_timeout_s = env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
     await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
+        *[
+            _admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}, timeout_s=admin_timeout_s)
+            for client in admin_clients
+        ]
     )
     logger.debug("All inference engines paused")
 
@@ -404,7 +430,8 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
+    admin_timeout_s = env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
+    await asyncio.gather(*[_admin_post(client, "/resume", timeout_s=admin_timeout_s) for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -479,7 +506,7 @@ async def init_nixl_broadcast(
         await _admin_post(
             admin_client,
             "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            timeout_s=max(env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S), timeout),
             json={
                 "host": host,
                 "port": port,
