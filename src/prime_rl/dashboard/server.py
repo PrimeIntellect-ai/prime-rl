@@ -552,7 +552,7 @@ def read_report(run: str, file: str) -> dict:
 # ------------------------------------------------------------------------- metrics
 
 
-MAX_METRICS_CHUNK = 4 * 1024 * 1024
+MAX_METRICS_CHUNK = 32 * 1024 * 1024
 """Per-response cap on /metrics: huge runs stream in chunks the client loops over,
 so the first charts paint long before a 100MB metrics.jsonl finishes loading."""
 
