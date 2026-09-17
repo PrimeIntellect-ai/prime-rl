@@ -1956,7 +1956,8 @@ function renderKeyTree(parent, name, keys, depth) {
   const children = new Map();
   for (const key of keys) {
     const segments = key.split("/");
-    if (segments.length === depth + 1) renderPanelCard(grid, { metric: key }, true);
+    // a bare key (no path) is a pane of its own top-level section
+    if (segments.length <= depth + 1) renderPanelCard(grid, { metric: key }, true);
     else {
       const segment = segments[depth];
       if (!children.has(segment)) children.set(segment, []);
