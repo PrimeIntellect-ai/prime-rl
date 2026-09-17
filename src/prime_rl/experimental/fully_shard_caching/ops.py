@@ -9,7 +9,7 @@ import torch
 from prime_rl.experimental.fully_shard_caching.fp8_cast import grouped_per_block_cast_to_fp8
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     UnshardedPreparedTensor,
-    prepared_or_none,
+    unsharded_prepared_or_none,
 )
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
@@ -185,9 +185,8 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: UnshardedPreparedTensor, offs: torch.Tensor):
-        prepared = weight.prepared
-        qdata = prepared["qdata"]
-        out = _fp8_grouped_gemm_prepared_forward(x, qdata, prepared["scales"], offs, qdata.size(1))
+        qdata = weight._prepared_qdata
+        out = _fp8_grouped_gemm_prepared_forward(x, qdata, weight._prepared_scales, offs, qdata.size(1))
         ctx.save_for_backward(x, offs)
         ctx.weight = weight
         return out
@@ -196,14 +195,13 @@ class PreparedFp8GroupedGemm(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor):
         x, offs = ctx.saved_tensors
         weight = ctx.weight
-        prepared = weight.prepared
         needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
-        _, out_features, in_features = prepared["qdata"].shape
+        _, out_features, in_features = weight._prepared_qdata.shape
         grad_x, grad_weight_t = _fp8_grouped_gemm_prepared_backward(
             grad_output,
             x.detach(),
-            prepared["qdata_t"],
-            prepared["scales_t"],
+            weight._prepared_qdata_t,
+            weight._prepared_scales_t,
             offs,
             in_features,
             out_features,
@@ -225,9 +223,10 @@ class Fp8GroupedExpertCompute:
         return blockwise_fp8_prepare(weight, out=out)
 
     def _gemm(self, x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-        if prepared_or_none(weight) is None:
+        prepared = unsharded_prepared_or_none(weight)
+        if prepared is None:
             return grouped_fp8_gemm(x, weight.transpose(1, 2).bfloat16(), offs)
-        return PreparedFp8GroupedGemm.apply(x, weight, offs)
+        return PreparedFp8GroupedGemm.apply(x, prepared, offs)
 
     def __call__(
         self,
@@ -267,15 +266,14 @@ class PreparedRowScaledWeight(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, weight: UnshardedPreparedTensor):
-        prepared = weight.prepared
         ctx.weight = weight
+        w_t = weight._prepared_w_t
         # An alias, so autograd never attaches a grad_fn to FSDP-owned storage.
-        return prepared["w_t"].view_as(prepared["w_t"])
+        return w_t.view_as(w_t)
 
     @staticmethod
     def backward(ctx, grad_w_t: torch.Tensor):
-        row_absmax = ctx.weight.prepared["row_absmax"]
-        return grad_w_t.transpose(1, 2) / row_absmax.unsqueeze(-1)
+        return grad_w_t.transpose(1, 2) / ctx.weight._prepared_row_absmax.unsqueeze(-1)
 
 
 @dataclass(frozen=True)
@@ -298,13 +296,13 @@ class RowScaledGroupedExpertCompute:
         offs: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
-        prepared = prepared_or_none(weight)
+        prepared = unsharded_prepared_or_none(weight)
         if prepared is None:
             row_absmax = weight.detach().abs().amax(dim=-1).clamp_min(1e-6)
             w_t = (weight / row_absmax.unsqueeze(-1)).transpose(1, 2).contiguous()
         else:
-            row_absmax = prepared["row_absmax"]
-            w_t = PreparedRowScaledWeight.apply(weight)
+            row_absmax = prepared._prepared_row_absmax
+            w_t = PreparedRowScaledWeight.apply(prepared)
         out = torch._grouped_mm(x, w_t, offs=offs)
         scale = broadcast_expert_bias(row_absmax, num_tokens_per_expert, out.shape[0])
         return out * scale

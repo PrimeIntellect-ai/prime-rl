@@ -417,10 +417,16 @@ def install_prepared_weights(
     module.register_state_dict_post_hook(unwrap_prepared_state_dict_entries)
 
 
-def prepared_or_none(weight: torch.Tensor) -> Mapping[str, torch.Tensor] | None:
+def unsharded_prepared_or_none(weight: torch.Tensor) -> UnshardedPreparedTensor | None:
+    """``weight``'s unsharded wrapper, whose prepared tensors an op reads as ``_prepared_<name>``."""
     local = weight.to_local() if isinstance(weight, DTensor) else weight
     if isinstance(local, UnshardedPreparedTensor):
-        return local.prepared
+        return local
     if isinstance(local, ShardedPreparedTensor):
         raise RuntimeError("An op read a ShardedPreparedTensor, so it ran outside its weights' unshard scope.")
     return None
+
+
+def prepared_or_none(weight: torch.Tensor) -> Mapping[str, torch.Tensor] | None:
+    unsharded = unsharded_prepared_or_none(weight)
+    return None if unsharded is None else unsharded.prepared
