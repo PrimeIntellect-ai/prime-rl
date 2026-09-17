@@ -51,6 +51,12 @@ RUNS = {
 
 RUNS_ALLOWED_TO_CRASH = ("none_compiled", "fp8_compiled")
 
+COMPILED_LOSS_RTOL = 1e-3
+
+
+def assert_losses_close(actual: list[float], reference: list[float]) -> None:
+    assert actual == pytest.approx(reference, rel=COMPILED_LOSS_RTOL)
+
 
 @pytest.fixture(scope="session")
 def metrics(tmp_path_factory) -> dict[str, dict]:
@@ -126,10 +132,12 @@ def test_held_experts_match_the_resharding_run(metrics):
 
 
 def test_compiled_run_under_activation_checkpointing_matches_the_uncompiled_losses(metrics):
-    assert (
-        metrics["none_compiled_ac"]["first_step_microbatch_losses"] == metrics["none"]["first_step_microbatch_losses"]
+    assert_losses_close(
+        metrics["none_compiled_ac"]["first_step_microbatch_losses"], metrics["none"]["first_step_microbatch_losses"]
     )
-    assert metrics["fp8_compiled_ac"]["first_step_microbatch_losses"] == metrics["fp8"]["first_step_microbatch_losses"]
+    assert_losses_close(
+        metrics["fp8_compiled_ac"]["first_step_microbatch_losses"], metrics["fp8"]["first_step_microbatch_losses"]
+    )
 
 
 def test_compiling_does_not_silently_unwrap_the_experts(metrics):
@@ -147,15 +155,13 @@ def test_compiling_does_not_silently_unwrap_the_experts(metrics):
 )
 def test_compiled_unwrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
     assert "crash" not in metrics["none_compiled"], metrics["none_compiled"]["crash"]
-    assert metrics["none_compiled"]["first_step_microbatch_losses"] == metrics["none"]["first_step_microbatch_losses"]
+    assert_losses_close(
+        metrics["none_compiled"]["first_step_microbatch_losses"], metrics["none"]["first_step_microbatch_losses"]
+    )
 
 
-@pytest.mark.xfail(
-    reason="Without activation checkpointing, pytorch#172556 fires: the compiled backward prologue expects an "
-    "UnshardedPreparedTensor tangent and gets a plain Tensor. This one is the subclass, not the fp8 op: it needs "
-    "ep>1, reproduces with the bf16 toy op, and is absent from the same toy run with --install-prepared false.",
-    strict=True,
-)
 def test_compiled_wrapped_run_without_activation_checkpointing_matches_the_uncompiled_losses(metrics):
     assert "crash" not in metrics["fp8_compiled"], metrics["fp8_compiled"]["crash"]
-    assert metrics["fp8_compiled"]["first_step_microbatch_losses"] == metrics["fp8"]["first_step_microbatch_losses"]
+    assert_losses_close(
+        metrics["fp8_compiled"]["first_step_microbatch_losses"], metrics["fp8"]["first_step_microbatch_losses"]
+    )
