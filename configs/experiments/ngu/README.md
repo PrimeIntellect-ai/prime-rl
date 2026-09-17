@@ -1,7 +1,7 @@
 # NGU: SWE-rebench difficulty profile
 
 Prepared on `feat/ngu`, based on latest fetched `origin/main` `a563a03d6`.
-The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). No GPU job has been submitted.
+The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling is running as SLURM job 737; runtime artifacts are under `outputs/ngu-profile-20260917`.
 
 ## Measurement
 
@@ -69,7 +69,7 @@ uv run eval @ configs/experiments/ngu/eval.toml \
 uv run python tools/ngu_difficulty.py split \
   tools/ngu/sample-1000.json \
   "$NGU_SHARED_OUTPUT/eval/swerebench-1k" \
-  "$NGU_SHARED_OUTPUT/difficulty"
+  "$NGU_SHARED_OUTPUT/difficulty" --allow-partial
 EVAL
 ```
 
@@ -85,7 +85,9 @@ Outputs under `$NGU_SHARED_OUTPUT`:
 - `difficulty/results.json`: per-task solve counts, aggregate avg@8 and bucket sizes.
 - `difficulty/online-eval.toml`: training-time eval overlay with four separately named sources plus SWE-Bench Verified. Empty buckets retain manifests but are omitted from online eval and reported as size zero.
 
-The splitter deduplicates episode IDs across resumed trace archives, rejects inconsistent copies/task hashes, and requires exactly eight valid outcomes for every selected task. It does not silently bin missing/error results as failures. On an incomplete run, resume the **same native eval** in a compute allocation with `--resume`; repeat splitting only once eight valid outcomes/task are available. Existing frozen split directories are never overwritten.
+The splitter deduplicates episode IDs across resumed trace archives and rejects inconsistent copies/task hashes. For this run, finish the current evaluation without rerunning failed attempts, then split with `--allow-partial`. Failed episodes are excluded from each task's denominator; a solve timeout is a valid zero. Buckets use observed pass rate: easy ≥75%, medium ≥37.5%, hard >0%, extra-hard 0%. Tasks with no valid outcomes remain unclassified.
+
+`results.json` records valid counts and rates per task, the equally weighted task-mean pass rate, and the pooled valid-attempt pass rate. `avg_at_8` is null unless every task has eight valid outcomes. With no `--allow-partial`, the splitter requires exactly eight valid outcomes per task. Existing frozen split directories are never overwritten.
 
 ## Observe curves during the two training runs
 

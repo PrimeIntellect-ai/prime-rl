@@ -9,12 +9,12 @@ from pathlib import Path
 BUCKETS = ("easy", "medium", "hard", "extra-hard")
 
 
-def bucket_for(solves: int) -> str:
-    if not 0 <= solves <= 8:
-        raise ValueError(f"Expected 0–8 solves, got {solves}")
-    if solves >= 6:
+def bucket_for(solves: int, attempts: int = 8) -> str:
+    if not 1 <= attempts <= 8 or not 0 <= solves <= attempts:
+        raise ValueError(f"Invalid solve count {solves} / {attempts}")
+    if solves / attempts >= 0.75:
         return "easy"
-    if solves >= 3:
+    if solves / attempts >= 0.375:
         return "medium"
     return "hard" if solves else "extra-hard"
 
@@ -60,7 +60,7 @@ def records_from_run(run_dir: Path):
                     yield json.loads(line)
 
 
-def count_solves(records, task_ids: list[str]) -> dict[str, int]:
+def count_outcomes(records, task_ids: list[str], *, allow_partial: bool = False) -> dict[str, dict[str, int]]:
     selected = set(task_ids)
     outcomes = defaultdict(dict)
     seen = {}
@@ -85,12 +85,21 @@ def count_solves(records, task_ids: list[str]) -> dict[str, int]:
         seen[record["id"]] = identity
         outcomes[task_id][record["id"]] = (record["task"]["hash"], int(score))
     incomplete = {task: len(outcomes[task]) for task in task_ids if len(outcomes[task]) != 8}
-    if incomplete:
+    if incomplete and not allow_partial:
         raise ValueError(f"Need exactly 8 valid episodes per task; resume eval first: {incomplete}")
+    if any(len(samples) > 8 for samples in outcomes.values()):
+        raise ValueError("More than 8 valid episodes for a task")
     for task, samples in outcomes.items():
-        if len({item[0] for item in samples.values()}) != 1:
+        if len({item[0] for item in samples.values()}) > 1:
             raise ValueError(f"Task content changed during eval: {task}")
-    return {task: sum(item[1] for item in outcomes[task].values()) for task in task_ids}
+    return {
+        task: {"solves": sum(item[1] for item in outcomes[task].values()), "attempts": len(outcomes[task])}
+        for task in task_ids
+    }
+
+
+def count_solves(records, task_ids: list[str]) -> dict[str, int]:
+    return {task: result["solves"] for task, result in count_outcomes(records, task_ids).items()}
 
 
 def source_for(bucket: str, manifest: Path) -> dict:
@@ -109,18 +118,26 @@ def source_for(bucket: str, manifest: Path) -> dict:
     }
 
 
-def split(manifest_path: Path, run_dir: Path, output: Path) -> None:
+def split(manifest_path: Path, run_dir: Path, output: Path, *, allow_partial: bool = False) -> None:
     import tomli_w
 
     manifest = json.loads(manifest_path.read_text())
-    solves = count_solves(records_from_run(run_dir), manifest["task_ids"])
+    counts = count_outcomes(records_from_run(run_dir), manifest["task_ids"], allow_partial=allow_partial)
+    rates = {task: row["solves"] / row["attempts"] for task, row in counts.items() if row["attempts"]}
+    total_attempts = sum(row["attempts"] for row in counts.values())
+    if not total_attempts:
+        raise ValueError("No valid scored episodes")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite frozen splits: {output}")
     output.mkdir(parents=True)
     sources = []
     sizes = {}
     for bucket in BUCKETS:
-        ids = [task for task in manifest["task_ids"] if bucket_for(solves[task]) == bucket]
+        ids = [
+            task
+            for task, row in counts.items()
+            if row["attempts"] and bucket_for(row["solves"], row["attempts"]) == bucket
+        ]
         path = output / f"{bucket}.json"
         write_json(path, {**manifest, "bucket": bucket, "task_ids": ids, "profile_run": str(run_dir.resolve())})
         sizes[bucket] = len(ids)
@@ -129,9 +146,17 @@ def split(manifest_path: Path, run_dir: Path, output: Path) -> None:
     write_json(
         output / "results.json",
         {
-            "avg_at_8": sum(solves.values()) / (8 * len(solves)),
+            "avg_at_8": sum(rates.values()) / len(rates)
+            if all(row["attempts"] == 8 for row in counts.values())
+            else None,
+            "task_mean_pass_rate": sum(rates.values()) / len(rates),
+            "valid_attempt_pass_rate": sum(row["solves"] for row in counts.values()) / total_attempts,
+            "valid_attempts": total_attempts,
+            "unclassified_tasks": [task for task, row in counts.items() if not row["attempts"]],
+            "counts": counts,
+            "pass_rates": rates,
             "bucket_sizes": sizes,
-            "solves": solves,
+            "solves": {task: row["solves"] for task, row in counts.items()},
         },
     )
     # Source lists replace on composition; include the existing held-out SWE eval.
@@ -183,11 +208,14 @@ def main():
     classify.add_argument("manifest", type=Path)
     classify.add_argument("run_dir", type=Path)
     classify.add_argument("output", type=Path)
+    classify.add_argument(
+        "--allow-partial", action="store_true", help="Use valid attempts only; classify by observed pass rate"
+    )
     args = parser.parse_args()
     if args.command == "select":
         select(args.parquet, args.output, args.revision, args.seed, args.count)
     else:
-        split(args.manifest, args.run_dir, args.output)
+        split(args.manifest, args.run_dir, args.output, allow_partial=args.allow_partial)
 
 
 if __name__ == "__main__":

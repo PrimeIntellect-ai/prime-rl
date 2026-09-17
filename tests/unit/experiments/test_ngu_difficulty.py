@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from tools.ngu_difficulty import bucket_for, count_solves, split
+from tools.ngu_difficulty import bucket_for, count_outcomes, count_solves, split
 
 
 def episode(task, index, score, *, ok=True):
@@ -27,6 +27,12 @@ def test_difficulty_boundaries():
         "easy",
         "easy",
     ]
+    assert bucket_for(3, 4) == "easy"
+    assert bucket_for(2, 4) == "medium"
+    assert bucket_for(1, 4) == "hard"
+    assert bucket_for(0, 4) == "extra-hard"
+    with pytest.raises(ValueError):
+        bucket_for(0, 0)
     with pytest.raises(ValueError):
         bucket_for(9)
 
@@ -61,3 +67,21 @@ def test_split_is_disjoint_exhaustive_and_preserves_eval(tmp_path):
     overlay = tomllib.loads((output / "online-eval.toml").read_text())
     assert len(overlay["orchestrator"]["eval"]["source"]) == 5
     assert overlay["orchestrator"]["eval"]["source"][0]["name"] == "swebench-verified"
+
+
+def test_partial_split_uses_valid_denominators(tmp_path):
+    manifest = tmp_path / "sample.json"
+    manifest.write_text(json.dumps({"task_ids": ["a", "b", "c"], "revision": "fixed"}))
+    stream = tmp_path / "run/monitors/file/traces/stream"
+    stream.mkdir(parents=True)
+    rows = [episode("a", n, int(n < 3)) for n in range(4)] + [episode("b", 0, 0), episode("c", 0, 0, ok=False)]
+    (stream / "00000.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    split(manifest, tmp_path / "run", tmp_path / "split", allow_partial=True)
+    result = json.loads((tmp_path / "split/results.json").read_text())
+    assert result["task_mean_pass_rate"] == 0.375
+    assert result["valid_attempt_pass_rate"] == 0.6
+    assert result["unclassified_tasks"] == ["c"]
+    assert result["bucket_sizes"] == {"easy": 1, "medium": 0, "hard": 0, "extra-hard": 1}
+    assert result["avg_at_8"] is None
+    with pytest.raises(ValueError, match="More than 8"):
+        count_outcomes([episode("a", n, 1) for n in range(9)], ["a"], allow_partial=True)
