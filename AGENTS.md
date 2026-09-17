@@ -43,9 +43,9 @@ Namespaces are one honking great idea -- let's do more of those!
 
 ## Skills
 
-Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs). When you make changes to the codebase, check if any skills need to be updated to stay accurate.
+Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs).
 
-You are responsible for maintaining the skills folder. When a workflow fails and you fix it – whether with help from the user or through trial and error – you must update the skills to make implicit knowledge explicit. You are also responsible for keeping the skills up to date whenever you or anyone else modifies the code.
+If a repository skill could benefit from an update, suggest the specific change, explain why it would help, and ask the user for approval before making it. Wait for approval before creating, modifying, renaming, or deleting skills, including their supporting files and symlinks. If the user has already explicitly requested or approved the skill change, proceed without asking again. Requests to change code, fix workflows, update documentation, or open a PR do not implicitly authorize skill changes. You may read and follow skills without changing them.
 
 ## Testing
 
