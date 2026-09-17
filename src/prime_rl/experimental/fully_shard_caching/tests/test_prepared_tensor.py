@@ -5,6 +5,10 @@ from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
+from prime_rl.experimental.fully_shard_caching.fp8_cast import (
+    grouped_per_block_cast_to_fp8,
+    grouped_per_block_cast_to_fp8_both_layouts,
+)
 from prime_rl.experimental.fully_shard_caching.ops import blockwise_fp8_prepare, row_scaled_prepare
 from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     PREPARE_CALLS,
@@ -14,11 +18,13 @@ from prime_rl.experimental.fully_shard_caching.prepared_tensor import (
     unsharded_prepared_or_none,
     run_prepare,
 )
+from prime_rl.trainer.models.kernels.fp8_utils import ue8m0_for_device
 
 EXPERTS = 4
 OUT_FEATURES = 6
 IN_FEATURES = 8
 BLOCK_ALIGNED_SHAPE = (2, 256, 384)
+RAGGED_SHAPE = (2, 200, 300)
 SENTINEL_VALUE = 1e30
 SENTINEL_BYTE = 0xA5
 
@@ -265,3 +271,36 @@ def test_prepare_that_does_not_fill_out_raises(prepare, module):
     out = scale_prepare(weight)
     with pytest.raises(RuntimeError, match="replaced the tensors it was given"):
         run_prepare(prepare, weight, out=out)
+
+
+@pytest.mark.parametrize("shape", [BLOCK_ALIGNED_SHAPE, RAGGED_SHAPE])
+@pytest.mark.parametrize("fill_out", [False, True])
+def test_both_layouts_matches_two_casts_bitwise(shape, fill_out):
+    if not torch.cuda.is_available():
+        pytest.skip("needs a GPU")
+    torch.manual_seed(0)
+    weight = torch.randn(shape, device="cuda", dtype=torch.bfloat16)
+    use_ue8m0 = ue8m0_for_device(weight.device)
+    expected_out, expected_sf = grouped_per_block_cast_to_fp8(weight, use_ue8m0)
+    expected_out_t, expected_sf_t = grouped_per_block_cast_to_fp8(weight.transpose(1, 2), use_ue8m0)
+
+    if fill_out:
+        expected = (expected_out, expected_sf, expected_out_t, expected_sf_t)
+        destinations = [torch.empty_like(tensor) for tensor in expected]
+        for tensor in destinations:
+            if tensor.dtype == torch.float8_e4m3fn:
+                tensor.view(torch.uint8).fill_(SENTINEL_BYTE)
+            else:
+                tensor.fill_(SENTINEL_VALUE)
+        out, sf, out_t, sf_t = grouped_per_block_cast_to_fp8_both_layouts(
+            weight, use_ue8m0, out=destinations[0], sf=destinations[1], out_t=destinations[2], sf_t=destinations[3]
+        )
+        for returned, destination in zip((out, sf, out_t, sf_t), destinations):
+            assert returned is destination
+    else:
+        out, sf, out_t, sf_t = grouped_per_block_cast_to_fp8_both_layouts(weight, use_ue8m0)
+
+    assert torch.equal(out.view(torch.uint8), expected_out.view(torch.uint8))
+    assert torch.equal(out_t.view(torch.uint8), expected_out_t.view(torch.uint8))
+    assert torch.equal(sf, expected_sf)
+    assert torch.equal(sf_t, expected_sf_t)
