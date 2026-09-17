@@ -140,6 +140,7 @@ def test_to_namespace_resolves_parsers():
     assert ns.tool_call_parser == "deepseek_v32"
     assert ns.reasoning_parser == "deepseek_r1"
     assert ns.enable_auto_tool_choice is True
+    assert ns.enable_scale_out is True
 
 
 def test_to_namespace_none_strips_parser_attrs_from_namespace():
