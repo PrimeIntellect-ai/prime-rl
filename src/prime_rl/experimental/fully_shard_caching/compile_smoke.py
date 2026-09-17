@@ -102,6 +102,7 @@ def main() -> None:
     toy = RowScaledGroupedExpertCompute(activation=Silu)
     toy_shape = (DIM, HIDDEN_DIM, EXPERTS)
     num_tokens_per_expert = torch.full((EXPERTS,), TOKENS_PER_EXPERT, dtype=torch.int64, device="cuda")
+    torch.manual_seed(0)
     x = torch.randn(EXPERTS * TOKENS_PER_EXPERT, DIM, device="cuda", dtype=torch.bfloat16)
 
     for backend in (None, "eager", "inductor"):
@@ -125,6 +126,7 @@ def main() -> None:
     fp8 = Fp8GroupedExpertCompute(activation=Silu)
     fp8_shape = (FP8_DIM, FP8_HIDDEN_DIM, FP8_EXPERTS)
     fp8_counts = torch.full((FP8_EXPERTS,), FP8_TOKENS_PER_EXPERT, dtype=torch.int64, device="cuda")
+    torch.manual_seed(0)
     fp8_x = torch.randn(FP8_EXPERTS * FP8_TOKENS_PER_EXPERT, FP8_DIM, device="cuda", dtype=torch.bfloat16)
 
     for backend in (None, "eager", "inductor"):
