@@ -102,6 +102,7 @@ def test_admin_plane_initialize_nccl_fails_closed_on_500():
                 inference_world_size=1,
             )
         )
+    client.post.assert_awaited_once()
     asyncio.run(admin_plane.aclose())
 
 
