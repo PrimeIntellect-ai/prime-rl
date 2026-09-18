@@ -266,11 +266,6 @@ class PackedContext:
     ) -> "PackedContext":
         """Derive every field from one `seq_lens`, ensuring mutual consistency.
 
-        `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
-        sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. The sequence is as long as
-        `seq_lens` says, padding included: both packers fold their padding into the last document.
-
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
         values addressing them stay global, so only the query side narrows.
