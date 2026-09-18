@@ -1,6 +1,6 @@
 # NGU: SWE training comparison and difficulty profile
 
-Prepared on `feat/ngu`, based on latest fetched `origin/main` `a563a03d6`.
+Prepared on `feat/ngu`, merged with `origin/main` `776053131`.
 The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finished and job 737 was released; runtime artifacts are under `outputs/ngu-profile-20260917`.
 
 ## Training configurations

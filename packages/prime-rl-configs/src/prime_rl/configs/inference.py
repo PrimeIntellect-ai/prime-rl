@@ -38,6 +38,8 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
+QuantizationType = Literal["fp8_per_block"]
+
 
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
@@ -105,7 +107,7 @@ class VllmConfig(BaseConfig):
     enable_prefix_caching: bool | None = None
     """Enable prefix caching."""
 
-    quantization: str | None = None
+    quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
     enable_lora: bool = False

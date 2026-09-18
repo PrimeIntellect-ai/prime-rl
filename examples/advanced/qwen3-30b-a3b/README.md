@@ -13,10 +13,11 @@ RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The
 ## Requirements
 
 - A Slurm cluster with 8-GPU nodes and a shared filesystem. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path.
-- **Sandboxes** (`swe.toml` only) — the SWE agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, log the `prime` CLI in (it ships with prime-rl's dependencies):
+- **Sandboxes** (`swe.toml` only) — the SWE agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, install the `prime` CLI separately and log in:
 
 ```bash
-uv run prime login   # or: uv run prime config set-api-key <your-key>
+uv tool install prime
+prime login   # or: prime config set-api-key <your-key>
 ```
 
   To run on your own infrastructure instead, swap `env.agent.runtime` on the source for a runtime your environments support (e.g. a local Docker backend).

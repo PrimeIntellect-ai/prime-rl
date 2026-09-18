@@ -40,21 +40,35 @@ def get_config_files() -> list[Path]:
     return config_files + example_files + k8s_files
 
 
+def can_parse(config_cls: type, args: list[str]) -> bool:
+    """Whether `cli` parses the given `@` config file args into `config_cls`."""
+    try:
+        cli(config_cls, args=args)
+        return True
+    except (ValidationError, ConfigFileError, SystemExit):
+        return False
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path, monkeypatch):
-    """Tests that all config files can be loaded by at least one config class."""
+    """Tests that all config files can be loaded by at least one config class.
+
+    A file that no class parses standalone is an overlay — a checked-in config that only carries
+    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
+    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
+    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
+    "TOML Composition").
+    """
     if config_file.parent == Path("configs/experiments/ngu"):
         monkeypatch.syspath_prepend(str(Path("tools/ngu/tasksets").resolve()))
-    could_parse = []
-    for config_cls in CONFIG_CLASSES:
-        try:
-            args = ["@", config_file.as_posix()]
-            if config_file == Path("configs/experiments/ngu/difficulty-eval.toml"):
-                args = ["@", "configs/experiments/ngu/train-static.toml", *args]
-            cli(config_cls, args=args)
-            could_parse.append(True)
-        except (ValidationError, ConfigFileError, SystemExit):
-            could_parse.append(False)
+    could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
+    if not any(could_parse):
+        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
+        could_parse = [
+            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
+            for base in sibling_bases
+            for config_cls in CONFIG_CLASSES
+        ]
     assert any(could_parse), f"No config class could be parsed from {config_file}"
 
 

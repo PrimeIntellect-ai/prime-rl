@@ -60,8 +60,8 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             page.on("pageerror", lambda e: errors.append(f"page: {e}"))
             base = f"http://127.0.0.1:{port}"
 
-            # metrics: the run resolves and the overview renders charts with data
-            page.goto(f"{base}/#run={run_name}&tab=metrics")
+            # overview: the run resolves and the curated view renders with data
+            page.goto(f"{base}/#run={run_name}&tab=overview")
             page.wait_for_timeout(PAGE_SETTLE_MS)
             status = page.locator("#run-overview .badge").first.inner_text()
             assert status, "overview card did not render a status"
@@ -81,6 +81,14 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert charts >= 5, f"expected >=5 metric panels, got {charts}"
                 with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
                 assert with_data >= 5, f"expected >=5 mounted charts, got {with_data}"
+
+            # metrics: every key in metrics.jsonl, one pane each, for every run type
+            page.click("#tabs [data-tab=metrics]")
+            page.wait_for_timeout(PAGE_SETTLE_MS)
+            panes = page.locator("#metrics-body .chart-card").count()
+            assert panes >= 5, f"expected >=5 metric panes, got {panes}"
+            mounted = page.evaluate("""() => document.querySelectorAll('#metrics-body .chart-card .u-wrap').length""")
+            assert mounted >= 1, f"expected mounted metric panes, got {mounted}"
 
             # config: the default view renders (launch TOML on new runs), and the
             # resolved concatenated document renders as a tree
