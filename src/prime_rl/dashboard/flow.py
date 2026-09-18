@@ -1,4 +1,11 @@
-"""Read-only projection of a verifiers flow ledger for the web dashboard."""
+"""Read-only projection of a verifiers flow root for the web dashboard.
+
+A flow root holds units (`campaign/`, `tasks/<id>/`: git repositories whose `state.json` says
+where each stands), `transitions.jsonl` (one line per stage start and per transition), `calls/`
+(one record per durable call, with the trace it made) and `live/` (a snapshot per seat in
+flight). Every stage run is a node in its unit's lane; a transition is a labeled edge to the
+stage the unit moved to; the calls a stage made are its children, each opening its trace.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +16,13 @@ from typing import Any
 
 import orjson
 
+TRANSITIONS = "transitions.jsonl"
+STATUS = {"ready": "completed", "terminal": "completed", "waiting": "completed", "held": "failed"}
+"""A transition's unit status as the node's status: a hold is the failure an operator sees."""
+
 
 def is_flow_run(run_dir: Path) -> bool:
-    return (run_dir / "config.json").is_file() and (run_dir / "events.jsonl").is_file() and (run_dir / "steps").is_dir()
+    return (run_dir / "flow.json").is_file() and (run_dir / TRANSITIONS).is_file()
 
 
 def read_complete_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -32,17 +43,8 @@ def read_complete_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _part(part: str) -> tuple[str, int]:
-    name, mark, occurrence = part.rpartition("#")
-    return (name, int(occurrence)) if mark and occurrence.isdigit() else (part, 0)
-
-
-def _node_id(row: str, path: str, index: int | None) -> str:
-    return f"{row}:{path}" + (f":{index}" if index is not None else "")
-
-
-@lru_cache(maxsize=4096)
-def _record(path: str, size: int, mtime_ns: int) -> dict[str, Any] | None:
+@lru_cache(maxsize=8192)
+def _json_file(path: str, size: int, mtime_ns: int) -> dict[str, Any] | None:
     try:
         row = orjson.loads(Path(path).read_bytes())
     except (OSError, orjson.JSONDecodeError):
@@ -50,248 +52,224 @@ def _record(path: str, size: int, mtime_ns: int) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def _record_rows(run_dir: Path) -> list[dict[str, Any]]:
-    rows = []
-    for path in (run_dir / "steps").glob("*/*.json"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        row = _record(str(path), stat.st_size, stat.st_mtime_ns)
-        if row is not None:
-            rows.append(row)
-    return rows
+def _read(path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return _json_file(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+def unit_states(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """Every unit's `state.json`: the campaign first, then the tasks by id."""
+    states = {}
+    if (campaign := _read(run_dir / "campaign" / "state.json")) is not None:
+        states["campaign"] = campaign
+    for path in sorted((run_dir / "tasks").glob("*/state.json")):
+        if (state := _read(path)) is not None:
+            states[path.parent.name] = state
+    return states
+
+
+def call_records(run_dir: Path) -> list[dict[str, Any]]:
+    return [r for p in sorted((run_dir / "calls").glob("*/*.json")) if (r := _read(p)) is not None]
+
+
+def live_stages(run_dir: Path) -> set[tuple[str, str]]:
+    """(unit, stage) pairs with a seat in flight, from the live snapshot names `<unit>--<key>.json`."""
+    out = set()
+    for path in (run_dir / "live").glob("*.json"):
+        unit, _, key = path.stem.partition("--")
+        out.add((unit, key.split("__")[0]))
+    return out
 
 
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
-    """Fold flow events and step records into a generic run/task/step graph."""
-    events = read_complete_jsonl(run_dir / "events.jsonl")
+    """Fold transitions, unit states and call records into the run/task/step graph the UI draws."""
+    events = read_complete_jsonl(run_dir / TRANSITIONS)
     trace_lines = trace_lines or {}
-    nodes: dict[tuple[str, str, int | None], dict[str, Any]] = {}
-    row_info: dict[str, dict[str, Any]] = {}
-    routes: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
+    row = run_dir.name
+    states = unit_states(run_dir)
+    nodes: list[dict[str, Any]] = []
+    open_by_unit: dict[str, dict[str, Any]] = {}
+    occurrences: dict[tuple[str, str], int] = defaultdict(int)
 
-    def node(row: str, path: str, index: int | None, order: int) -> dict[str, Any]:
-        key = (row, path, index)
-        if key not in nodes:
-            parts = path.split("/")
-            name, occurrence = _part(parts[-1])
-            nodes[key] = {
-                "id": _node_id(row, path, index),
+    def group_id(unit: str) -> str:
+        return f"{row}/" if unit == "campaign" else f"{row}/{unit}"
+
+    for order, event in enumerate(events):
+        kind, unit, stage = event.get("type"), event.get("unit"), event.get("stage")
+        if not isinstance(unit, str) or not isinstance(stage, str):
+            continue
+        if kind == "started":
+            n = occurrences[(unit, stage)]
+            occurrences[(unit, stage)] += 1
+            node = {
+                "id": f"{row}:{unit}/{stage}#{n}",
                 "row": row,
-                "path": path,
-                "scope": parts[:-1],
-                "name": name,
-                "occurrence": occurrence,
-                "index": index,
-                "kind": None,
-                "status": "pending",
+                "unit": unit,
+                "path": f"{unit}/{stage}#{n}",
+                "scope": [unit],
+                "name": stage,
+                "occurrence": n,
+                "index": None,
+                "kind": "stage",
+                "status": "running",
                 "attached": False,
                 "reason": None,
                 "error": None,
                 "attempts": None,
-                "started_at": None,
+                "started_at": event.get("at"),
                 "finished_at": None,
                 "trace_id": None,
                 "episode_line": None,
                 "episode_id": None,
                 "order": order,
+                "group": group_id(unit),
+                "outcome": None,
+                "to": None,
             }
-        return nodes[key]
+            nodes.append(node)
+            open_by_unit[unit] = node
+        elif kind in ("transition", "stopped") and (node := open_by_unit.pop(unit, None)) is not None:
+            node["finished_at"] = event.get("at")
+            if kind == "stopped":
+                node["status"] = "cancelled"
+                continue
+            status = event.get("status")
+            node["status"] = STATUS.get(status, "completed")
+            node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
+            if status == "held":
+                node["error"] = event.get("reason")
 
-    for order, event in enumerate(events):
-        kind = event.get("type")
-        row = event.get("row")
-        if kind == "row_started" and isinstance(row, str):
-            row_info.setdefault(
-                row, {"id": row, "status": "running", "started_at": event.get("at"), "finished_at": None}
-            )
-        elif kind == "row_finished" and isinstance(row, str):
-            info = row_info.setdefault(row, {"id": row, "status": "running", "started_at": None, "finished_at": None})
-            info.update(status=event.get("state") or "completed", finished_at=event.get("at"))
-        if not isinstance(row, str) or not isinstance(event.get("path"), str):
+    # The calls a stage made are its children; the last seat's trace is the stage's own (its decision).
+    by_unit_stage: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        by_unit_stage[(node["unit"], node["name"])].append(node)
+    children: list[dict[str, Any]] = []
+    for record in call_records(run_dir):
+        unit, stage, finished = record.get("unit"), record.get("stage"), record.get("finished_at") or ""
+        candidates = by_unit_stage.get((unit, stage)) or []
+        parent = next(
+            (n for n in candidates if (n["started_at"] or "") <= finished <= (n["finished_at"] or "9")),
+            candidates[-1] if candidates else None,
+        )
+        if parent is None:
             continue
-        path, index = event["path"], event.get("index")
-        if kind == "spread_started":
-            item = node(row, path, None, order)
-            item.update(kind="spread", status="running", started_at=event.get("at"), items=event.get("items"))
-        elif kind == "spread_finished":
-            item = node(row, path, None, order)
-            landed = event.get("landed")
-            count = event.get("items")
-            status = "failed" if isinstance(landed, int) and isinstance(count, int) and landed < count else "completed"
-            item.update(kind="spread", status=status, finished_at=event.get("at"), landed=landed)
-        elif kind and kind.startswith("step_"):
-            item = node(row, path, index, order)
-            if kind == "step_started":
-                item.update(status="running", started_at=event.get("at"), reason=event.get("reason"))
-            elif kind == "step_attached":
-                item.update(status="completed", attached=True)
-            elif kind == "step_retrying":
-                item.update(status="retrying", error=event.get("error"), attempts=event.get("attempt"))
-            elif kind == "step_completed":
-                item.update(status="completed", finished_at=event.get("at"))
-            elif kind == "step_failed":
-                item.update(status="failed", error=event.get("error"), finished_at=event.get("at"))
-            elif kind == "step_cancelled":
-                item.update(status="cancelled", finished_at=event.get("at"))
-        elif kind == "route":
-            key = (row, path, str(event.get("outcome") or ""), event.get("to"))
-            routes.setdefault(
-                key, {"row": row, "path": path, "outcome": event.get("outcome"), "to": event.get("to"), "order": order}
-            )
-
-    for record in _record_rows(run_dir):
-        row, path = record.get("row"), record.get("path")
-        if not isinstance(row, str) or not isinstance(path, str):
-            continue
-        item = node(row, path, record.get("index"), len(events))
         trace_id = record.get("trace_id")
         episode = trace_lines.get(trace_id) if isinstance(trace_id, str) else None
-        item.update(
-            kind=record.get("kind"),
-            status="completed" if record.get("terminal") == "completed" else "failed",
-            error=record.get("error"),
-            attempts=record.get("attempts"),
-            started_at=record.get("started_at") or item.get("started_at"),
-            finished_at=record.get("finished_at") or item.get("finished_at"),
-            trace_id=trace_id,
-            episode_line=episode[0] if episode else None,
-            episode_id=episode[1] if episode else None,
-        )
-
-    task_roots = {
-        (item["row"], item["scope"][0]) for item in nodes.values() if item["name"] == "init" and item["scope"]
-    }
-
-    def group_id(row: str, task: str | None = None) -> str:
-        return f"{row}/{task or ''}"
-
-    for item in nodes.values():
-        root = item["scope"][0] if item["scope"] else None
-        item["group"] = group_id(item["row"], root if (item["row"], root) in task_roots else None)
-
-    edges: list[dict[str, Any]] = []
-    by_scope: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = defaultdict(list)
-    for item in nodes.values():
-        if item["index"] is None:
-            by_scope[(item["row"], item["group"], tuple(item["scope"]))].append(item)
-    for items in by_scope.values():
-        ordered = sorted(items, key=lambda item: (item["order"], item["id"]))
-        for source, target in zip(ordered, ordered[1:]):
-            if source["id"] != target["id"]:
-                edges.append(
-                    {
-                        "id": f"sequence:{source['id']}:{target['id']}",
-                        "kind": "sequence",
-                        "source": source["id"],
-                        "target": target["id"],
-                    }
-                )
-
-    for item in nodes.values():
-        if item["index"] is None:
-            continue
-        parent = nodes.get((item["row"], item["path"], None))
-        if parent and parent.get("kind") == "spread":
-            edges.append(
-                {
-                    "id": f"spread:{parent['id']}:{item['id']}",
-                    "kind": "spread",
-                    "source": parent["id"],
-                    "target": item["id"],
-                }
-            )
-
-    ordered_nodes = sorted(nodes.values(), key=lambda item: (item["order"], item["id"]))
-    for route in routes.values():
-        source = nodes.get((route["row"], route["path"], None))
-        if source is None:
-            continue
-        run_group = group_id(route["row"])
-        targets = (
-            [
-                item
-                for item in ordered_nodes
-                if item["row"] == route["row"]
-                and item["name"] == route["to"]
-                and item["order"] > route["order"]
-                and (source["group"] == run_group or item["group"] == source["group"])
-            ]
-            if route["to"] is not None
-            else []
-        )
-        if source["group"] == run_group:
-            first_by_group = {}
-            for item in targets:
-                first_by_group.setdefault(item["group"], item)
-            targets = list(first_by_group.values())
-        else:
-            targets = targets[:1]
-        if not targets:
-            edges.append(
-                {
-                    "id": f"route:{source['id']}:{route['outcome']}:{route['to']}",
-                    "kind": "route",
-                    "source": source["id"],
-                    "target": None,
-                    "outcome": route["outcome"],
-                    "to": route["to"],
-                }
-            )
-        for target in targets:
-            edges.append(
-                {
-                    "id": f"route:{source['id']}:{target['id']}:{route['outcome']}:{route['to']}",
-                    "kind": "route",
-                    "source": source["id"],
-                    "target": target["id"],
-                    "outcome": route["outcome"],
-                    "to": route["to"],
-                }
-            )
-
-    tasks = []
-    for row, task_name in sorted(task_roots):
-        task_id = group_id(row, task_name)
-        task_nodes = sorted(
-            (item for item in nodes.values() if item["group"] == task_id), key=lambda item: (item["order"], item["id"])
-        )
-        latest = task_nodes[-1] if task_nodes else None
-        tasks.append(
+        index = sum(c["path"] == parent["path"] for c in children)
+        children.append(
             {
-                "id": task_id,
-                "name": task_name,
-                "row": row,
-                "stage": latest["name"] if latest else None,
-                "status": latest["status"] if latest else "pending",
-                "nodes": len(task_nodes),
-                "traces": sum(item["trace_id"] is not None for item in task_nodes),
+                **parent,
+                "id": f"{parent['id']}:{index}",
+                "index": index,
+                "name": str(record.get("key") or record.get("kind")),
+                "kind": record.get("kind"),
+                "status": "completed",
+                "reason": None,
+                "error": None,
+                "outcome": None,
+                "to": None,
+                "started_at": record.get("started_at"),
+                "finished_at": record.get("finished_at"),
+                "trace_id": trace_id,
+                "episode_line": episode[0] if episode else None,
+                "episode_id": episode[1] if episode else None,
             }
         )
+        if trace_id is not None:
+            parent["trace_id"], parent["episode_line"], parent["episode_id"] = trace_id, *(episode or (None, None))
 
-    rows = list(row_info.values())
-    for row in {item["row"] for item in nodes.values()}:
-        if row not in row_info:
-            rows.append({"id": row, "status": "unknown", "started_at": None, "finished_at": None})
-    groups = [
-        {"id": group_id(row["id"]), "name": row["id"], "row": row["id"], "kind": "run"}
-        for row in sorted(rows, key=lambda item: item["id"])
-    ] + [{"id": task["id"], "name": task["name"], "row": task["row"], "kind": "task"} for task in tasks]
-    result_nodes = sorted(nodes.values(), key=lambda item: (item["order"], item["id"]))
+    edges: list[dict[str, Any]] = []
+    by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        by_unit[node["unit"]].append(node)
+    for lane in by_unit.values():
+        for source, target in zip(lane, lane[1:]):
+            edges.append(
+                {
+                    "id": f"sequence:{source['id']}:{target['id']}",
+                    "kind": "sequence",
+                    "source": source["id"],
+                    "target": target["id"],
+                }
+            )
+        for i, source in enumerate(lane):
+            if source["outcome"] is None:
+                continue
+            target = lane[i + 1] if i + 1 < len(lane) else None
+            edges.append(
+                {
+                    "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
+                    "kind": "route",
+                    "source": source["id"],
+                    "target": target["id"] if target else None,
+                    "outcome": source["outcome"],
+                    "to": source["to"],
+                    "summary": source["reason"],
+                }
+            )
+    for child in children:
+        parent_id = child["id"].rsplit(":", 1)[0]
+        edges.append(
+            {"id": f"spread:{parent_id}:{child['id']}", "kind": "spread", "source": parent_id, "target": child["id"]}
+        )
+
+    live = live_stages(run_dir)
+    for node in nodes:
+        if (
+            node["status"] == "running"
+            and (node["unit"], node["name"]) not in live
+            and open_by_unit.get(node["unit"]) is not node
+        ):
+            node["status"] = "cancelled"
+
+    tasks = []
+    for unit, state in states.items():
+        if unit == "campaign":
+            continue
+        lane = by_unit.get(unit, [])
+        tasks.append(
+            {
+                "id": group_id(unit),
+                "name": unit,
+                "row": row,
+                "stage": state.get("stage"),
+                "status": state.get("status"),
+                "reason": state.get("reason"),
+                "nodes": len(lane),
+                "traces": sum(c["trace_id"] is not None for c in children if c["unit"] == unit),
+            }
+        )
+    all_nodes = sorted([*nodes, *children], key=lambda n: (n["order"], n["id"]))
+    finished = bool(tasks) and all(t["status"] == "terminal" for t in tasks)
+    rows = [
+        {
+            "id": row,
+            "status": "completed" if finished else "running",
+            "started_at": events[0]["at"] if events else None,
+            "finished_at": events[-1]["at"] if finished and events else None,
+        }
+    ]
+    groups = [{"id": group_id("campaign"), "name": row, "row": row, "kind": "run"}] + [
+        {"id": t["id"], "name": t["name"], "row": row, "kind": "task"} for t in tasks
+    ]
     return {
-        "rows": sorted(rows, key=lambda item: item["id"]),
+        "rows": rows,
         "groups": groups,
         "tasks": tasks,
-        "nodes": result_nodes,
+        "nodes": all_nodes,
         "edges": edges,
         "stats": {
-            "rows": len(rows),
+            "rows": 1,
             "tasks": len(tasks),
-            "steps": len(result_nodes),
-            "running": sum(item["status"] in {"running", "retrying"} for item in result_nodes),
-            "failed": sum(item["status"] == "failed" for item in result_nodes),
-            "traces": sum(item["trace_id"] is not None for item in result_nodes),
-            "routes": len(routes),
+            "steps": len(nodes),
+            "running": sum(n["status"] == "running" for n in nodes),
+            "failed": sum(n["status"] == "failed" for n in nodes),
+            "traces": sum(c["trace_id"] is not None for c in children),
+            "routes": sum(e["kind"] == "route" for e in edges),
+            "held": sum(t["status"] == "held" for t in tasks),
+            "waiting": sum(t["status"] == "waiting" for t in tasks),
         },
     }

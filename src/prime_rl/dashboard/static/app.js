@@ -457,7 +457,7 @@ function renderFlowInspector() {
   const hasRoutes = state.flow.data?.stats.routes;
   $("#flow-inspector").innerHTML = hasRoutes
     ? `<div class="empty"><span>select a route</span><small>click a labeled edge to see the agent decision</small></div>`
-    : `<div class="empty"><span>no route metadata</span><small>this run predates ctx.route; agent nodes still open their traces</small></div>`;
+    : `<div class="empty"><span>no transitions yet</span><small>a stage's edge shows its outcome and reason; agent nodes open their traces</small></div>`;
 }
 
 function renderFlow() {
@@ -483,7 +483,7 @@ function renderFlow() {
       <span><b>all tasks</b><small>run trajectory</small></span><em>${data.tasks.length}</em>
     </button>` +
     data.tasks.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
-      <i class="${flowStatusClass(task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
+      <i class="${flowStatusClass(task.status === "held" ? "failed" : task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${esc(task.status || "")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
     </button>`).join("");
   renderFlowGraph();
   renderFlowInspector();
@@ -630,7 +630,7 @@ async function selectFlowEdge(edgeId, redraw = true) {
   $("#flow-inspector").innerHTML = `
     <div class="flow-inspector-head"><span class="t-label">route</span><b>${esc(edge?.outcome || "")}</b></div>
     <div class="flow-route-pair"><span>${esc(source?.name || "step")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
-    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(detailError || decision?.summary || "No agent decision summary was recorded for this route.")}</p></div>
+    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(detailError || decision?.summary || edge?.summary || "No reason was recorded for this transition.")}</p></div>
     ${extra.length ? `<div class="flow-inspector-section"><span class="t-label">decision</span>${extra.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(typeof value === "string" ? value : JSON.stringify(value))}</b></div>`).join("")}</div>` : ""}
     <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>
     ${flowInspectorButton(source, "open decision trace")}`;

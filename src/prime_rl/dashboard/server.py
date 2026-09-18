@@ -25,7 +25,7 @@ from pathlib import Path
 
 import orjson
 
-from prime_rl.dashboard.flow import is_flow_run, project_flow
+from prime_rl.dashboard.flow import is_flow_run, project_flow, read_complete_jsonl, unit_states
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -84,7 +84,6 @@ _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, i
 _index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
 _flow_cache: OrderedDict[Path, tuple[str, dict]] = OrderedDict()
-_flow_state_cache: OrderedDict[Path, tuple[int, int, float | None, set[str], dict[str, str | None]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -249,7 +248,7 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
     if (configs / "eval.json").exists():
         return "eval", read_json(configs / "eval.json")
     if is_flow_run(run_dir):
-        return "flow", read_json(run_dir / "config.json")
+        return "flow", read_json(run_dir / "flow.json")
     return "other", {}
 
 
@@ -302,42 +301,17 @@ def eval_total_episodes(config: dict) -> int | None:
 
 
 def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
-    """Incrementally fold row state from the append-only flow event stream."""
-    path = run_dir / "events.jsonl"
-    try:
-        stat = path.stat()
-    except OSError:
-        return None, False
-    with _lock:
-        cached = _lru_get(_flow_state_cache, path)
-    if cached and cached[0] == stat.st_ino and cached[1] <= stat.st_size:
-        inode, read_from, started, rows, states = cached
-        rows, states = set(rows), dict(states)
-    else:
-        inode, read_from, started, rows, states = stat.st_ino, 0, None, set(), {}
-    with path.open("rb") as file:
-        file.seek(read_from)
-        for raw in file:
-            if not raw.endswith(b"\n"):
-                break
-            try:
-                event = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                break
-            read_from += len(raw)
-            if started is None:
-                try:
-                    started = datetime.fromisoformat(event["at"]).timestamp()
-                except (KeyError, TypeError, ValueError):
-                    pass
-            row = event.get("row")
-            if event.get("type") == "row_started" and isinstance(row, str):
-                rows.add(row)
-            elif event.get("type") == "row_finished" and isinstance(row, str):
-                states[row] = event.get("state")
-    with _lock:
-        _lru_put(_flow_state_cache, path, (inode, read_from, started, rows, states))
-    return started, bool(rows) and rows <= states.keys() and all(states[row] != "stopped" for row in rows)
+    """When the flow started (its first transition line) and whether every task unit is terminal."""
+    events = read_complete_jsonl(run_dir / "transitions.jsonl")
+    started = None
+    for event in events:
+        try:
+            started = datetime.fromisoformat(event["at"]).timestamp()
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
+    tasks = [state for unit, state in unit_states(run_dir).items() if unit != "campaign"]
+    return started, bool(tasks) and all(state.get("status") == "terminal" for state in tasks)
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -363,7 +337,7 @@ def run_meta(run_dir: Path) -> dict:
     flow_finished = False
     if run_type == "flow":
         started, flow_finished = flow_run_state(run_dir)
-        updated = (run_dir / "events.jsonl").stat().st_mtime
+        updated = (run_dir / "transitions.jsonl").stat().st_mtime
     # Liveness reads every artifact the processes touch: an eval ships its metrics at
     # epoch end and its first episode can take minutes, but its log ticks every few
     # seconds. The launch itself is the start until a metrics row says otherwise.
