@@ -117,6 +117,14 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         if not isinstance(unit, str) or not isinstance(stage, str):
             continue
         if kind == "started":
+            if (abandoned := open_by_unit.pop(unit, None)) is not None:
+                # the same unit starting again means the earlier run never finished: its
+                # process died (a kill, a crash) before a transition or a stop was written
+                abandoned["status"], abandoned["finished_at"], abandoned["done_order"] = (
+                    "cancelled",
+                    event.get("at"),
+                    order,
+                )
             n = occurrences[(unit, stage)]
             occurrences[(unit, stage)] += 1
             node = {
@@ -170,7 +178,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         unit, stage, finished = record.get("unit"), record.get("stage"), record.get("finished_at") or ""
         candidates = by_unit_stage.get((unit, stage)) or []
         parent = next(
-            (n for n in candidates if (n["started_at"] or "") <= finished <= (n["finished_at"] or "9")),
+            (n for n in reversed(candidates) if (n["started_at"] or "") <= finished <= (n["finished_at"] or "9")),
             candidates[-1] if candidates else None,
         )
         if parent is None:
