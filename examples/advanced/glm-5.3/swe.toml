@@ -74,7 +74,7 @@ initial_inflight = 4096
 max_inflight = 8192
 
 [orchestrator.renderer]
-name = "glm-5.1"
+name = "glm-5.3"
 
 [orchestrator.eval]
 interval = 20

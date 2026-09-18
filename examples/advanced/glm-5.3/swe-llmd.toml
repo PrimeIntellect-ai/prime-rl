@@ -127,7 +127,7 @@ max_inflight = 512
 name = "zai-org/GLM-5.3"
 
 [orchestrator.renderer]
-name = "glm-5.1"
+name = "glm-5.3"
 clear_thinking = false
 
 [orchestrator.train.sampling]
