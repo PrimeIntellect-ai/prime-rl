@@ -6541,7 +6541,11 @@ $("#flow-modal").addEventListener("click", (event) => {
   if (!row) return;
   const call = state.flow.modal?.calls[Number(row.dataset.fmCall)];
   if (!call) return;
-  if (call.kind === "agent") return call.episode_line ? openFlowTrace(call) : toastMsg(call.status === "running" ? "still running" : "this call has no trace");
+  if (call.kind === "agent") {
+    if (!call.episode_line) return toastMsg(call.status === "running" ? "still running" : "this call has no trace");
+    closeFlowStage();
+    return openFlowTrace(call);
+  }
   row.nextElementSibling?.toggleAttribute("hidden");
 });
 document.addEventListener("keydown", (event) => {
