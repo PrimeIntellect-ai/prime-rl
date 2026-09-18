@@ -1,0 +1,48 @@
+# Runtime benchmark: prime sandboxes. PRIME_API_KEY authenticates sandbox creation
+# and Prime Inference. The first sandbox on each task image waits for the platform's
+# VM image build (~10 min); PrimeRuntimeInfo.image_cached records which rollouts did.
+#
+#   uv run eval @ benchmarks/runtimes/prime.toml --run.name runtime-bench-prime
+
+model = "deepseek/deepseek-v4.1-flash"
+
+[concurrency]
+min_inflight = 1000
+max_inflight = 1000
+
+# Terminal-Bench 2 at avg@4 (89 tasks x 4)
+[[source]]
+name = "tb2"
+group_size = 4
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["runtime-bench"]
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+# Sandbox failures are a result of this benchmark, so only provider errors retry.
+env.agent.retries.include = ["ProviderError"]
+
+# SWE-bench Verified at avg@1 (500 tasks)
+[[source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["runtime-bench"]
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+# Sandbox failures are a result of this benchmark, so only provider errors retry.
+env.agent.retries.include = ["ProviderError"]
+
+# SWE-bench Pro at avg@1 (731 tasks)
+[[source]]
+name = "swebench-pro"
+env.taskset.id = "swebench-pro"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["runtime-bench"]
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+# Sandbox failures are a result of this benchmark, so only provider errors retry.
+env.agent.retries.include = ["ProviderError"]
