@@ -13,10 +13,11 @@ Large-scale RL and serving for the GLM-5 family — `zai-org/GLM-5`, `GLM-5.1`, 
 
 - A Slurm cluster with 8-GPU nodes, a shared filesystem, and at least **32 nodes** (16 trainer + 16 inference) for the RL configs. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path. If you have fewer nodes, drop `seq_len`, lower `num_train_nodes`, and reduce `cp` (llm-d variant) accordingly.
 - InfiniBand/RDMA NICs for the Mooncake KV pool (llm-d variants).
-- **Sandboxes.** Rollout and eval agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, log the `prime` CLI in — it ships with prime-rl's dependencies:
+- **Sandboxes.** Rollout and eval agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, install the `prime` CLI separately and log in:
 
 ```bash
-uv run prime login   # or: uv run prime config set-api-key <your-key>
+uv tool install prime
+prime login   # or: prime config set-api-key <your-key>
 ```
 
   To run on your own infrastructure instead, swap `env.agent.runtime` on each source for a runtime your environments support (e.g. a local Docker backend).

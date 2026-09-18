@@ -15,10 +15,11 @@ Inference serves the bf16 checkpoint as-is (no quantization), with `tensor_paral
 ## Requirements
 
 - A Slurm cluster with 8-GPU nodes and a shared filesystem. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path.
-- **Sandboxes.** Rollout and eval agents run in sandboxes. These configs are wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default — if you use those, log the `prime` CLI in (it ships with prime-rl's dependencies), and each config's `slurm.pre_run_command` will clean up the run's orphaned sandboxes by label before launching:
+- **Sandboxes.** Rollout and eval agents run in sandboxes. These configs are wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. Install the `prime` CLI separately and log in. Each config's `slurm.pre_run_command` then cleans up the run's orphaned sandboxes by label before launch:
 
 ```bash
-uv run prime login   # or: uv run prime config set-api-key <your-key>
+uv tool install prime
+prime login   # or: prime config set-api-key <your-key>
 ```
 
   To run on your own infrastructure instead, swap `env.agent.runtime` on each source for a runtime your environments support (e.g. a local Docker backend) and drop the `slurm.pre_run_command` cleanup line.

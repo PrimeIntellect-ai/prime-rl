@@ -24,7 +24,7 @@ def resolve_api_key(api_key_var: str) -> str:
     CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
     api_key = os.environ.get(api_key_var)
     if not api_key and api_key_var == "PRIME_API_KEY":
-        from prime_cli.core.config import Config as PrimeConfig
+        from prime_sandboxes import Config as PrimeConfig
 
         api_key = PrimeConfig().api_key
     return api_key or "EMPTY"
@@ -39,7 +39,7 @@ def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
     }
     headers = {**client_config.headers, **env_headers}
     if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
-        from prime_cli.core.config import Config as PrimeConfig
+        from prime_sandboxes import Config as PrimeConfig
 
         if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
             headers["X-Prime-Team-ID"] = team_id
