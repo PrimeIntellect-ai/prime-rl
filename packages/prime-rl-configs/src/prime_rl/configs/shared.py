@@ -44,6 +44,9 @@ class BaseWeightBroadcastConfig(BaseConfig):
 
 
 class RunConfig(BaseConfig):
+    project: str = "prime-rl"
+    """Project the run belongs to. A project groups runs (training and eval alike) the way a W&B project does: the local dashboard lists projects and lets you pick and overlay the runs of one; the W&B project inherits it unless set explicitly. It is a tag on the run, not a directory."""
+
     name: str | None = None
     """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
 

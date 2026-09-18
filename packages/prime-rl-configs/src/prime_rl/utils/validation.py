@@ -104,8 +104,9 @@ def propagate_shared_fields(data: Any) -> Any:
             f"orchestrator.monitors.wandb.{leaf}",
         )
 
-    # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
-    propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
+    # [monitors.file] leaves. (Bare empty ``[monitors.file]`` block enablement is at the end.)
+    for leaf in ("project", "path"):
+        propagate(f"monitors.file.{leaf}", f"trainer.monitors.file.{leaf}", f"orchestrator.monitors.file.{leaf}")
 
     # [monitors.prime] leaf → orchestrator only (the trainer has no platform integration).
     propagate("monitors.prime.name", "orchestrator.monitors.prime.name")

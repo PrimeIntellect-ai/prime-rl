@@ -4,8 +4,8 @@ from prime_rl.utils.config import BaseConfig
 
 
 class WandbMonitorConfig(BaseConfig):
-    project: str = "prime-rl"
-    """W&B project to log to."""
+    project: str | None = None
+    """W&B project to log to. Inherits ``run.project`` when unset."""
 
     entity: str | None = None
     """W&B entity to log to."""
@@ -24,6 +24,9 @@ class WandbMonitorConfig(BaseConfig):
 
 
 class FileMonitorConfig(BaseConfig):
+    project: str | None = None
+    """Project the run is filed under in the local dashboard. Inherits ``run.project`` when unset."""
+
     path: Path = Path("metrics.jsonl")
     """Path of the metrics JSONL file, relative to the file monitor's directory under the
     component's ``output_dir`` (``monitors/file/``; absolute paths win)."""

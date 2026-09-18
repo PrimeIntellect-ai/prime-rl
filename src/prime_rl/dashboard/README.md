@@ -3,9 +3,14 @@
 `uv run dashboard [output_dir ...]` — a local web dashboard for run output
 directories (a curated overview, every logged metric, resolved configs,
 rollout traces, cited reports, component logs) at
-http://localhost:7788. The trace viewer includes transcript, synchronized
-agent timeline, and terminal replay views; timeline activities open the
-corresponding transcript call. Needs the `dashboard` extra. Every instance also serves
+http://localhost:7788. Runs are filed under their project (`run.project`,
+read from the file monitor's `monitors/file/run.json`; unstamped runs fall
+under `prime-rl`): the top bar picks a project, then one or more of its runs.
+Several picked runs overlay on the metrics tab and page on every other tab;
+the hash carries the picks as `#run=<focused>&runs=<a>,<b>&tab=<tab>`. The
+trace viewer includes transcript, synchronized agent timeline, and terminal
+replay views; timeline activities open the corresponding transcript call.
+Needs the `dashboard` extra. Every instance also serves
 the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 (one dashboard per host per user); `--isolated` serves only the given dirs and
 skips the registry. See `skills/dashboard/SKILL.md` for discovery,

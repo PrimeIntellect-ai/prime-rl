@@ -63,8 +63,8 @@ class SharedLogConfig(BaseConfig):
 
 
 class SharedWandbConfig(BaseConfig):
-    project: str | None = "prime-rl"
-    """W&B project."""
+    project: str | None = None
+    """W&B project. Inherits ``run.project`` when unset."""
 
     entity: str | None = None
     """W&B entity."""
@@ -425,9 +425,10 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Default the W&B and Prime platform run names to ``run.name``.
+        """Default the W&B and Prime platform run names to ``run.name`` and the W&B and
+        file monitor projects to ``run.project``.
 
-        Explicit names always win: only unset names inherit. Runs after the
+        Explicit values always win: only unset ones inherit. Runs after the
         orchestrator's own ``auto_setup_prime_monitor_name``, so an explicitly
         set W&B name still takes precedence for the platform run name. The run
         identity itself is runtime-only ($PRL_RUN_ID / $PRL_RUN_NAME, set by the
@@ -437,6 +438,11 @@ class RLConfig(BaseConfig):
         for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
+            if wandb is not None and wandb.project is None:
+                wandb.project = self.run.project
+        for file in (self.monitors.file, self.trainer.monitors.file, self.orchestrator.monitors.file):
+            if file is not None and file.project is None:
+                file.project = self.run.project
         for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
             if prime is not None and prime.name is None:
                 prime.name = self.run.name

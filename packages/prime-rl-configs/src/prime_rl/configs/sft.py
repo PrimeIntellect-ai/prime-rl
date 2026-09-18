@@ -246,7 +246,8 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory and W&B run name to it when not set explicitly."""
+        default the run directory and W&B run name to it, and the W&B and file monitor
+        projects to ``run.project``, when not set explicitly."""
         if self.run.name is None:
             dataset = str(getattr(self.data, "name", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
@@ -256,6 +257,10 @@ class SFTConfig(BaseConfig):
             self.run.dir = self.run.name
         if self.monitors.wandb is not None and self.monitors.wandb.name is None:
             self.monitors.wandb.name = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.project is None:
+            self.monitors.wandb.project = self.run.project
+        if self.monitors.file is not None and self.monitors.file.project is None:
+            self.monitors.file.project = self.run.project
         return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"

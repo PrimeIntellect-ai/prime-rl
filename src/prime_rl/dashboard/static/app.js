@@ -24,6 +24,11 @@ const DEFAULT_SORTS = { stream: "arrival:desc", step: "group:asc" };
 
 const state = {
   runs: [],
+  // a project is a tag on the run (run.project, stamped by the file monitor); the
+  // picked runs all belong to the open project, the focused one is what every tab
+  // but metrics shows, and metrics overlays them all
+  project: null,
+  selected: [],
   run: null,
   meta: null,
   tab: "overview",
@@ -37,7 +42,7 @@ const state = {
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
-  compare: { runs: [], data: new Map() },
+  overlays: new Map(), // run name -> metric store for the other picked runs
   config: {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
     files: [], file: null, fmt: "toml", commandText: "", cache: new Map(),
@@ -128,53 +133,68 @@ const emptyState = (title, detail = "") =>
 
 /* ------------------------------------------------------------------- runs */
 
+/* runs that predate the project stamp file under the default project */
+const DEFAULT_PROJECT = "prime-rl";
+const runProject = (r) => r?.project ?? DEFAULT_PROJECT;
+const runByName = (name) => state.runs.find((r) => r.name === name);
+/* projects in order of their most recent run (the run list is newest first) */
+const projects = () => [...new Set(state.runs.map(runProject))];
+const projectRuns = (project) => state.runs.filter((r) => runProject(r) === project);
+const runColor = (name) => PALETTE[Math.max(0, state.selected.indexOf(name)) % PALETTE.length];
+/* the metrics tab draws every picked run into the same panes; every other tab pages */
+const overlaying = () => state.tab === "metrics" && state.selected.length > 1;
+
 async function loadRuns() {
   const data = await api("/api/runs");
   state.runs = data.runs;
   state.outputDir = data.output_dir;
-  const sel = $("#run-select");
-  const current = state.run;
-  sel.disabled = !state.runs.length;
-  sel.innerHTML = state.runs.length
-    ? state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("")
-    : `<option>no runs found</option>`;
-  if (current && state.runs.some((r) => r.name === current)) sel.value = current;
-  syncDressedSelects();
-  const fresh = state.runs.find((r) => r.name === current);
+  // a picked run whose directory went away drops out; the focused one stays until
+  // the reader moves on, so an open trace or log does not vanish mid-read
+  state.selected = state.selected.filter((name) => name === state.run || runByName(name));
+  renderProjectSelect();
+  renderRunMenu();
+  const fresh = runByName(state.run);
   if (fresh && state.meta) {
     Object.assign(state.meta, fresh);
     renderOverview();
   }
 }
 
-function renderCompareMenu() {
-  const menu = $("#compare-menu");
-  const others = state.runs.filter((r) => r.name !== state.run);
-  menu.innerHTML = others.length
-    ? others
-        .map(
-          (r) =>
-            `<label class="file-item"><input type="checkbox" data-compare="${esc(r.name)}"` +
-            `${state.compare.runs.includes(r.name) ? " checked" : ""}><span>${esc(r.name)}</span></label>`
-        )
-        .join("")
-    : `<div class="muted" style="padding:6px 8px">no other runs</div>`;
-  const btn = $("#compare-btn");
-  const n = state.compare.runs.length;
-  btn.textContent = n ? `compare (${n})` : "compare";
-  btn.classList.toggle("active", n > 0);
+function renderProjectSelect() {
+  const sel = $("#project-select");
+  const names = projects();
+  sel.disabled = !names.length;
+  sel.innerHTML = names.length
+    ? names.map((p) => `<option value="${esc(p)}">${esc(p)} (${projectRuns(p).length})</option>`).join("")
+    : `<option>no projects</option>`;
+  if (state.project && names.includes(state.project)) sel.value = state.project;
+  syncDressedSelects();
 }
 
-async function toggleCompare(name, on) {
-  const runs = state.compare.runs;
-  if (on && !runs.includes(name)) runs.push(name);
-  if (!on) {
-    state.compare.runs = runs.filter((r) => r !== name);
-    state.compare.data.delete(name);
-  }
-  renderCompareMenu();
-  await fetchCompares();
-  renderMetricsBody();
+function renderRunMenu() {
+  const menu = $("#run-menu");
+  const runs = projectRuns(state.project);
+  const many = state.selected.length > 1;
+  menu.innerHTML = runs.length
+    ? runs
+        .map((r) => {
+          const picked = state.selected.includes(r.name);
+          const swatch = many && picked ? `<span class="run-swatch" style="--c:${runColor(r.name)}"></span>` : "";
+          return (
+            `<div class="file-item run-item${r.name === state.run ? " focused" : ""}">` +
+            `<input type="checkbox" data-run="${esc(r.name)}"${picked ? " checked" : ""} title="overlay on the metrics tab">` +
+            swatch +
+            `<span class="run-name" data-pick="${esc(r.name)}" title="show only this run">${esc(r.name)}</span>` +
+            `<span class="run-kind">${esc(r.type)}</span>` +
+            `</div>`
+          );
+        })
+        .join("")
+    : `<div class="muted" style="padding:6px 8px">no runs in this project</div>`;
+  const btn = $("#run-btn");
+  btn.querySelector("span").textContent = many ? `${state.selected.length} runs` : (state.run ?? "no runs");
+  btn.disabled = !state.runs.length;
+  btn.classList.toggle("active", many);
 }
 
 /* eval runs have one env and no steps: the step bar, kind/subset toggles and
@@ -195,13 +215,16 @@ function applyRunTypeControls() {
   if (isEval) state.traces.mode = "stream";
 }
 
-async function selectRun(name, deferTab = false) {
+/* the focused run is the page every tab but metrics shows; focusing a run outside
+   the picked set (a fresh pick, a view command, a deep link) makes it the only pick */
+async function focusRun(name, deferTab = false) {
   if (!name) return;
   state.run = name;
-  state.compare = { runs: [], data: new Map() };
-  $("#run-select").value = name;
-  syncDressedSelects();
-  state.meta = state.runs.find((r) => r.name === name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
+  state.meta = runByName(name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
+  state.project = runProject(state.meta);
+  if (!state.selected.includes(name)) state.selected = [name];
+  state.selected = state.selected.filter((n) => runProject(runByName(n)) === state.project);
+  for (const other of [...state.overlays.keys()]) if (!state.selected.includes(other)) state.overlays.delete(other);
   state.metrics = {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
@@ -225,12 +248,41 @@ async function selectRun(name, deferTab = false) {
     ...state.report,
     loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
   };
+  renderProjectSelect();
+  renderRunMenu();
   applyRunTypeControls();
   renderOverview();
-  renderCompareMenu();
   updateHash();
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   if (!deferTab) await activateTab(state.tab, true);
+}
+
+async function selectRun(name, deferTab = false) {
+  state.selected = [name];
+  state.overlays.clear();
+  await focusRun(name, deferTab);
+}
+
+async function selectProject(project) {
+  state.project = project;
+  const newest = projectRuns(project)[0];
+  if (newest) await selectRun(newest.name);
+}
+
+async function toggleRun(name, on) {
+  const selected = state.selected.filter((r) => r !== name);
+  if (on) selected.push(name);
+  if (!selected.length) return renderRunMenu(); // the last pick stays
+  state.selected = selected;
+  if (!on) state.overlays.delete(name);
+  if (!selected.includes(state.run)) return focusRun(selected[0]);
+  renderRunMenu();
+  renderOverview();
+  updateHash();
+  if (state.tab === "metrics") {
+    await fetchOverlays();
+    renderMetricsBody();
+  }
 }
 
 /* durations and counts read the way verifiers' format_time / format_count write
@@ -309,6 +361,30 @@ function renderPlatformLink(meta) {
   }
 }
 
+/* the picked runs, one chip each in their overlay color: on the metrics tab the
+   legend of the overlay, elsewhere the pager over the runs */
+function runStripHtml() {
+  if (state.selected.length < 2) return "";
+  const overlay = overlaying();
+  const idx = state.selected.indexOf(state.run);
+  const chips = state.selected
+    .map((name) => {
+      const classes = ["run-chip", overlay && "legend", !overlay && name === state.run && "active"].filter(Boolean);
+      const action = overlay ? "" : ` data-focus="${esc(name)}"`;
+      return (
+        `<button type="button" class="${classes.join(" ")}"${action} style="--c:${runColor(name)}" title="${esc(name)}">` +
+        `<span class="run-swatch"></span><span class="txt">${esc(name)}</span></button>`
+      );
+    })
+    .join("");
+  const tail = overlay
+    ? `<span class="muted">${state.selected.length} runs overlaid</span>`
+    : `<button type="button" class="btn run-page" data-page="-1"${idx <= 0 ? " disabled" : ""}>‹</button>` +
+      `<span class="muted">${idx + 1} / ${state.selected.length}</span>` +
+      `<button type="button" class="btn run-page" data-page="1"${idx >= state.selected.length - 1 ? " disabled" : ""}>›</button>`;
+  return `<div class="run-strip">${chips}<div class="spacer"></div>${tail}</div>`;
+}
+
 function renderOverview() {
   const el = $("#run-overview");
   const meta = state.meta;
@@ -318,6 +394,11 @@ function renderOverview() {
     return;
   }
   el.hidden = false;
+  // an overlay has no single run to describe: the card is the legend alone
+  if (overlaying()) {
+    el.innerHTML = runStripHtml();
+    return;
+  }
   const step = currentStep();
   const status = runStatus(step);
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
@@ -352,6 +433,7 @@ function renderOverview() {
     ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
   ];
   el.innerHTML =
+    runStripHtml() +
     `<div class="ov-top">` +
     left.map(field).join("") +
     `<div class="spacer"></div>` +
@@ -361,6 +443,7 @@ function renderOverview() {
 
 function updateHash() {
   const parts = [`run=${encodeURIComponent(state.run || "")}`, `tab=${state.tab}`];
+  if (state.selected.length > 1) parts.push(`runs=${state.selected.map(encodeURIComponent).join(",")}`);
   if (state.tab === "report" && state.report.file) parts.push(`report=${encodeURIComponent(state.report.file)}`);
   location.hash = `#${parts.join("&")}`;
 }
@@ -371,9 +454,11 @@ async function activateTab(tab, force = false) {
   setActive("#tabs", "tab", tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
+  renderOverview(); // the run strip pages on one tab and reads as a legend on the other
   if (isChartTab(tab)) {
     if (!state.metrics.loaded) await initMetrics();
     else {
+      if (overlaying()) await fetchOverlays();
       renderMetricsBody();
       if (state.live) await fetchMetrics();
     }
@@ -457,8 +542,8 @@ function rowProducer(row, meta) {
   return Object.keys(row).some((k) => k.startsWith("progress/")) ? "orch" : "trainer";
 }
 
-/* store = {byKey, timeKeys, timeZero} — the primary run's is state.metrics,
-   compared runs get their own */
+/* store = {byKey, timeKeys, timeZero} — the focused run's is state.metrics,
+   overlaid runs get their own */
 function ingestInto(store, rows, meta) {
   const touched = new Set();
   for (const row of rows) {
@@ -511,9 +596,9 @@ async function fetchMetricRows(m) {
   let showedProgress = false;
   for (let first = true; ; first = false) {
     const requestedOffset = m.offset;
-    const [data, compared] = await Promise.all([
+    const [data, overlaid] = await Promise.all([
       api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
-      first ? fetchCompares() : false,
+      first ? fetchOverlays() : false,
     ]);
     if (state.metrics !== m) return total; // the run changed mid-load
     m.offset = data.offset;
@@ -523,9 +608,9 @@ async function fetchMetricRows(m) {
       touched = ingestInto(m, data.rows, state.meta);
       renderOverview();
     }
-    if ((data.rows.length || compared) && rowsChartHere()) {
-      if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
-      else updateCharts(compared ? null : touched); // compares may touch any panel
+    if ((data.rows.length || overlaid) && rowsChartHere()) {
+      if (keyCount() !== m.renderedKeys) renderMetricsBody();
+      else updateCharts(overlaid ? null : touched); // an overlay may touch any panel
     }
     // A writer can leave one incomplete JSONL record at EOF. Wait for the
     // next poll instead of repeatedly requesting the same partial record.
@@ -1358,13 +1443,15 @@ $("#overview-body").addEventListener("click", (e) => {
   else openEpisode(+cell.dataset.line);
 });
 
-async function fetchCompares() {
+/* the other picked runs' metrics, fetched only where they draw (the metrics tab) */
+async function fetchOverlays() {
+  if (!overlaying()) return false;
   const results = await Promise.all(
-    state.compare.runs.map(async (name) => {
-      let store = state.compare.data.get(name);
+    state.selected.filter((name) => name !== state.run).map(async (name) => {
+      let store = state.overlays.get(name);
       if (!store) {
         store = { offset: 0, byKey: new Map(), timeKeys: new Set(), timeZero: null, maxStep: null, meta: null };
-        state.compare.data.set(name, store);
+        state.overlays.set(name, store);
       }
       try {
         store.meta ??= await api(`/api/runs/${encodeURIComponent(name)}`);
@@ -1375,7 +1462,7 @@ async function fetchCompares() {
           return true;
         }
       } catch (err) {
-        console.warn(`compare fetch failed for ${name}`, err);
+        console.warn(`overlay fetch failed for ${name}`, err);
       }
       return false;
     })
@@ -1437,27 +1524,37 @@ function buildSections(meta) {
 
 let activeFilter = null;
 
-function compareStores() {
+function overlayStores() {
   const stores = [{ run: state.run, store: state.metrics }];
-  for (const name of state.compare.runs) {
-    const store = state.compare.data.get(name);
-    if (store) stores.push({ run: name, store });
+  if (!overlaying()) return stores;
+  for (const name of state.selected) {
+    const store = state.overlays.get(name);
+    if (store && name !== state.run) stores.push({ run: name, store });
   }
   return stores;
+}
+
+/* every key on screen, across the overlaid stores */
+function overlayKeys() {
+  return [...new Set(overlayStores().flatMap(({ store }) => [...store.byKey.keys()]))];
+}
+
+function keyCount() {
+  return overlayStores().reduce((n, { store }) => n + store.byKey.size, 0);
 }
 
 /* split panels fan a regex out into one card per matched key */
 function splitPanelKeys(panel) {
   const re = new RegExp(`^(?:${panel.regex})$`);
   const keys = new Set();
-  for (const { store } of compareStores())
+  for (const { store } of overlayStores())
     for (const key of store.byKey.keys()) if (re.test(key) && (!activeFilter || activeFilter.test(key))) keys.add(key);
   return [...keys].sort();
 }
 
 function resolvePanel(panel) {
   const series = [];
-  for (const { run, store } of compareStores()) {
+  for (const { run, store } of overlayStores()) {
     let keys;
     if (panel.metric) keys = store.byKey.has(panel.metric) ? [panel.metric] : [];
     else if (panel.metrics) keys = panel.metrics.filter((k) => store.byKey.has(k));
@@ -1514,10 +1611,7 @@ function panelGroups(seriesList) {
 }
 
 function groupColors(groups) {
-  if (state.compare.runs.length) {
-    const runs = [state.run, ...state.compare.runs];
-    return groups.map((g) => PALETTE[Math.max(0, runs.indexOf(g.run)) % PALETTE.length]);
-  }
+  if (overlaying()) return groups.map((g) => runColor(g.run));
   return groups.length > 1 ? groups.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
 }
 
@@ -1600,7 +1694,7 @@ function layoutData(layout) {
 }
 
 function seriesLabels(series) {
-  const comparing = state.compare.runs.length > 0;
+  const comparing = overlaying();
   if (series.length === 1 && !comparing) return [""];
   const keyParts = series.map((s) => s.key.split("/"));
   let start = 0;
@@ -1977,7 +2071,7 @@ function renderMetricsBody() {
     m.renderedKeys = -1; // nothing on screen: the next chart tab renders afresh
     return;
   }
-  m.renderedKeys = m.byKey.size;
+  m.renderedKeys = keyCount();
   const view = chartView();
   const body = $(view.body);
   for (const other of chartBodies()) other.innerHTML = ""; // the other tab's panes lost their charts above
@@ -1994,7 +2088,7 @@ function renderMetricsBody() {
   );
   if (state.tab === "overview" && state.meta?.type === "eval") return renderEvalPane(body);
   activeFilter = makeFilter(m.searches[state.tab].trim());
-  if (!state.meta?.has_metrics && !m.byKey.size) {
+  if (!state.meta?.has_metrics && !keyCount()) {
     body.innerHTML = emptyState("no metrics yet");
     $(view.status).textContent = "";
     return;
@@ -2019,10 +2113,11 @@ function renderMetricsBody() {
   }
   // all: one pane per key - flat lists a section per parent path, nested walks
   // the path segments as a tree of sections
-  const keys = [...m.byKey.keys()].filter((key) => !activeFilter || activeFilter.test(key)).sort();
-  $(view.status).textContent = activeFilter ? `${keys.length} / ${m.byKey.size} keys` : "";
+  const allKeys = overlayKeys();
+  const keys = allKeys.filter((key) => !activeFilter || activeFilter.test(key)).sort();
+  $(view.status).textContent = activeFilter ? `${keys.length} / ${allKeys.length} keys` : "";
   if (!keys.length) {
-    body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
+    body.innerHTML = emptyState("no keys match", `0 of ${allKeys.length} keys match the filter`);
     return;
   }
   const bySegment = (keys, at) => {
@@ -6011,9 +6106,9 @@ function primeTraceCommand(cmd) {
 async function applyOneViewCommand(cmd) {
   let runChanged = false;
   if (cmd.run && cmd.run !== state.run) {
-    if (!state.runs.some((r) => r.name === cmd.run)) await loadRuns();
-    if (!state.runs.some((r) => r.name === cmd.run)) return toastMsg(`unknown run ${esc(cmd.run)}`);
-    await selectRun(cmd.run, true);
+    if (!runByName(cmd.run)) await loadRuns();
+    if (!runByName(cmd.run)) return toastMsg(`unknown run ${esc(cmd.run)}`);
+    await focusRun(cmd.run, true);
     runChanged = true;
   }
   if (cmd.report) {
@@ -6145,14 +6240,26 @@ $("#report-body").addEventListener("click", (e) => {
 
 /* ---------------------------------------------------------------- wiring */
 
-$("#run-select").addEventListener("change", (e) => selectRun(e.target.value));
+$("#project-select").addEventListener("change", (e) => selectProject(e.target.value));
+$("#run-menu").addEventListener("change", (e) => {
+  const box = e.target.closest("[data-run]");
+  if (box) toggleRun(box.dataset.run, box.checked);
+});
+$("#run-menu").addEventListener("click", (e) => {
+  const name = e.target.closest("[data-pick]");
+  if (!name) return;
+  $("#run-menu").hidden = true;
+  selectRun(name.dataset.pick);
+});
+$("#run-overview").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-focus]");
+  if (chip) return focusRun(chip.dataset.focus);
+  const page = e.target.closest("[data-page]");
+  if (page) return focusRun(state.selected[state.selected.indexOf(state.run) + +page.dataset.page]);
+});
 $("#live-toggle").addEventListener("change", async (e) => {
   state.live = e.target.checked;
   if (state.live) await pollDashboard();
-});
-$("#compare-menu").addEventListener("change", (e) => {
-  const box = e.target.closest("[data-compare]");
-  if (box) toggleCompare(box.dataset.compare, box.checked);
 });
 // one delegated handler for every .dd-wrap dropdown: button toggles its menu,
 // clicking anywhere else closes them all (a dropdown nested inside another
@@ -6179,11 +6286,11 @@ document.addEventListener("click", () => {
     const menu = wrap.querySelector(".dd-menu");
     if (wrap.classList.contains("dd-select")) rebuildSelectMenu(wrap);
     menu.hidden = !menu.hidden;
-    if (!menu.hidden && menu.id === "compare-menu") renderCompareMenu();
+    if (!menu.hidden && menu.id === "run-menu") renderRunMenu();
   }
 });
 
-/* native selects wear the compare-dropdown look: the hidden <select> stays the
+/* native selects wear the run-picker look: the hidden <select> stays the
    source of truth (existing change listeners keep working), the .dd-menu lists
    its live options each time it opens */
 const dressedSelects = new Set();
@@ -7139,7 +7246,7 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#overview-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#project-select", "#trace-env", "#overview-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-layout", "layout", state.metrics.allLayout);
@@ -7153,8 +7260,11 @@ document.addEventListener("visibilitychange", () => {
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${state.tab}`));
   await loadRuns();
   const wanted = params.get("run");
-  const run = state.runs.find((r) => r.name === wanted)?.name ?? state.runs[0]?.name;
-  if (run) await selectRun(run);
-  else $("#overview-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
+  const picked = (params.get("runs") || "").split(",").filter((name) => runByName(name));
+  const run = runByName(wanted)?.name ?? picked[0] ?? state.runs[0]?.name;
+  if (run) {
+    state.selected = picked.includes(run) ? picked : [run];
+    await focusRun(run);
+  } else $("#overview-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
   connectViewEvents();
 })();

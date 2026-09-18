@@ -280,6 +280,12 @@ def get_file_monitor_dir(output_dir: Path) -> Path:
     return output_dir / "monitors" / "file"
 
 
+def get_file_monitor_run_path(output_dir: Path) -> Path:
+    """What the file monitor knows about the run itself: ``{"project": name}``, the
+    project the dashboard files the run under."""
+    return get_file_monitor_dir(output_dir) / "run.json"
+
+
 def get_eval_dir(output_dir: Path) -> Path:
     return output_dir / "eval"
 

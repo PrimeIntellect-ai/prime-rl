@@ -92,7 +92,7 @@ body {
 #topbar .toggle { margin-left: auto; }
 #topbar .toggle + .toggle { margin-left: 0; }
 #platform-wrap { margin-left: 14px; }
-/* looks like the run and compare pickers; the arrow says it leaves the page */
+/* looks like the project and run pickers; the arrow says it leaves the page */
 #platform-wrap .platform { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; cursor: pointer; }
 #platform-wrap .platform:hover { color: var(--accent); border-color: var(--accent); }
 #platform-wrap .platform.disabled { color: var(--grey-4); border-color: var(--grey-3); cursor: default; }
@@ -179,7 +179,12 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 }
 .btn:hover { border-color: var(--grey-6); color: var(--grey-6); }
 .btn:active { background: rgba(255, 255, 255, 0.04); }
-#run-select { max-width: 340px; font-size: 12px; }
+/* project / run breadcrumb: the project is a dressed select, the run picker a
+   checkbox menu that wears the same lowercase look */
+#project-select { max-width: 260px; font-size: 12px; }
+.crumb-sep { color: var(--grey-3); font: 400 14px var(--font-mono); margin: 0 -8px; user-select: none; }
+#run-btn { text-transform: none; letter-spacing: var(--track-mono); font-size: 12px; max-width: 340px; }
+#run-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .badge {
   font: 400 10px var(--font-mono);
@@ -290,19 +295,57 @@ main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; 
 .seg button.active { background: var(--grey-2); color: var(--accent); }
 .seg button:disabled { opacity: 0.35; cursor: default; }
 
-/* checkbox rows (compare menu, filter menus) */
+/* checkbox rows (run menu, filter menus) */
 .file-item { display: flex; align-items: center; gap: 8px; padding: 3px 4px; cursor: pointer; font-size: 11px; }
 .file-item:hover { background: var(--grey-2); }
 .file-item input { appearance: none; width: 9px; height: 9px; border: 1px solid var(--grey-3); margin: 0; flex-shrink: 0; }
 .file-item input:checked { background: var(--accent); border-color: var(--accent); }
 
-/* multi-run compare menu */
-#compare-menu {
+/* run picker: the checkbox overlays, the name focuses */
+#run-menu {
   left: 0;
   min-width: 320px;
   max-height: 50vh;
   overflow-y: auto;
+  white-space: nowrap;
 }
+.run-item { cursor: default; }
+.run-item .run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: var(--grey-5); }
+.run-item .run-name:hover { color: var(--accent); }
+.run-item.focused .run-name { color: var(--grey-6); }
+.run-kind {
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  border: 1px solid var(--grey-3);
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+.run-swatch { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex-shrink: 0; }
+
+/* the picked runs above the run card: legend on the metrics tab, pager elsewhere */
+.run-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  max-width: 320px;
+  padding: 0 10px;
+  border: 1px solid var(--grey-3);
+  background: transparent;
+  color: var(--grey-4);
+  font: 400 11px var(--font-mono);
+  letter-spacing: var(--track-mono);
+  cursor: pointer;
+}
+.run-chip .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-chip:hover { color: var(--grey-6); border-color: var(--grey-6); }
+.run-chip.active { color: var(--grey-6); border-color: var(--c); }
+.run-chip.legend { color: var(--grey-5); cursor: default; }
+.run-chip.legend:hover { border-color: var(--grey-3); }
+.run-page { height: 24px; padding: 0 9px; font-size: 13px; }
 
 /* --------------------------------------------------------------- metrics */
 /* stable gutter: no layout shift when collapsing sections hides the scrollbar */

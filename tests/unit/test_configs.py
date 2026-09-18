@@ -813,14 +813,21 @@ def test_run_dir_propagates_through_cli(tmp_path):
         },
     )
     shared_out = tmp_path / "shared"
-    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp"])
+    config = cli(
+        RLConfig,
+        args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp", "--run.project", "my-proj"],
+    )
     assert config.run_dir == shared_out / "my-exp"
     assert config.trainer.output_dir == shared_out / "my-exp"
     assert config.orchestrator.output_dir == shared_out / "my-exp"
-    # Unset monitor names inherit run.name
+    # Unset monitor names inherit run.name, unset monitor projects run.project
     assert config.monitors.wandb is not None and config.monitors.wandb.name == "my-exp"
     assert config.trainer.monitors.wandb is not None and config.trainer.monitors.wandb.name == "my-exp"
     assert config.orchestrator.monitors.wandb is not None and config.orchestrator.monitors.wandb.name == "my-exp"
+    assert config.monitors.wandb.project == "my-proj"
+    assert config.trainer.monitors.wandb.project == "my-proj"
+    assert config.trainer.monitors.file is not None and config.trainer.monitors.file.project == "my-proj"
+    assert config.orchestrator.monitors.file is not None and config.orchestrator.monitors.file.project == "my-proj"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

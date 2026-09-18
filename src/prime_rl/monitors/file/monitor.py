@@ -16,7 +16,7 @@ from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import update_index_row
-from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
+from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_file_monitor_run_path
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -39,6 +39,12 @@ class FileMonitor(Monitor):
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.config.project is not None:
+            # every process of a run writes the same project, so the last writer wins harmlessly
+            run_path = get_file_monitor_run_path(output_dir)
+            tmp = run_path.with_suffix(".json.tmp")
+            tmp.write_bytes(orjson.dumps({"project": self.config.project}))
+            tmp.replace(run_path)
         self._live_cleared = False
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115

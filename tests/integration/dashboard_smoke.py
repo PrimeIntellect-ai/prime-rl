@@ -63,6 +63,9 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             # overview: the run resolves and the curated view renders with data
             page.goto(f"{base}/#run={run_name}&tab=overview")
             page.wait_for_timeout(PAGE_SETTLE_MS)
+            # the run is filed under its project and is the focused pick
+            assert page.locator("#project-select").input_value(), "project selector did not resolve a project"
+            assert page.locator("#run-btn span").inner_text() == run_name, "run picker did not focus the run"
             status = page.locator("#run-overview .badge").first.inner_text()
             assert status, "overview card did not render a status"
             fields = page.evaluate(

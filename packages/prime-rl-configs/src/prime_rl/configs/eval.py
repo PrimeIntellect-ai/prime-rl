@@ -92,7 +92,8 @@ class EvalConfig(ServedEvalConfig):
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<envs>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform evaluation name to it."""
+        default the run directory, W&B run name and platform evaluation name to it, and
+        the W&B and file monitor projects to ``run.project``."""
         if self.run.name is None:
             envs = "+".join(dict.fromkeys(source.resolved_name for source in self.source))
             model = self.model.split("/")[-1]
@@ -101,6 +102,10 @@ class EvalConfig(ServedEvalConfig):
             self.run.dir = self.run.name
         if self.monitors.wandb is not None and self.monitors.wandb.name is None:
             self.monitors.wandb.name = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.project is None:
+            self.monitors.wandb.project = self.run.project
+        if self.monitors.file is not None and self.monitors.file.project is None:
+            self.monitors.file.project = self.run.project
         if self.monitors.prime is not None and self.monitors.prime.name is None:
             self.monitors.prime.name = self.run.name
         return self
