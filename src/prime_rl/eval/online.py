@@ -20,6 +20,7 @@ from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
+from prime_rl.orchestrator.clients import env_timeout
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -28,7 +29,9 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
 # Budget for the trainer's startup broadcast: it is always coming, but only
-# after the trainer has finished loading the model.
+# after the trainer has finished loading the model. Call-time override:
+# `$PRL_STARTUP_BROADCAST_TIMEOUT_S` (a large model's first broadcast can take
+# much longer than the default).
 STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
@@ -84,7 +87,9 @@ class OnlineEval:
         # its startup broadcast until this receive, and for filesystem it guarantees the
         # served weights match the trainer's incoming policy.
         startup_step = config.resume_step or 0
-        await self.receiver.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)
+        await self.receiver.sync_startup(
+            startup_step, timeout=env_timeout("PRL_STARTUP_BROADCAST_TIMEOUT_S", STARTUP_BROADCAST_TIMEOUT_S)
+        )
         self.runner.policy.version = startup_step
 
         if config.resume_step is None:
