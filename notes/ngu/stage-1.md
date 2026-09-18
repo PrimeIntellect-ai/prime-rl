@@ -1,56 +1,33 @@
-# Stage 1: proposed prime-rl implementation
+# Stage 1: NGU implementation
 
-## Existing flow and the missing abstraction
+Binary NGU is implemented in `orchestrator/ngu.py`, the NGU algorithm, TrainSource and TrainSink. See [configuration and semantics](../../docs/algorithms.md#never-give-up-ngu) and [cluster verification](smoke.md).
 
-`TrainSource.next_task` → `TaskRequest` → `Dispatcher` → episodes/failures/cancellations → `TrainSink` → `Algorithm.finalize_group` → curriculum admission → tokenization/packing → trainer.
+## Ownership
 
-Relevant files:
+The dispatcher still handles ordinary K-sized physical groups. Every retry receives a new group ID and current dispatch step, and starts fresh episodes of the same task. Scheduling does not run inside the environment or trainer.
 
-- `src/prime_rl/orchestrator/train_source.py`: task selection, source mixing, curriculum callbacks, checkpointed sampler state. No continuation queue.
-- `dispatcher.py`, `types.py`: async scheduling already supports requested rollout counts and group IDs. Every physical group has a single dispatch version and terminal accounting.
-- `train_sink.py`: waits for configured group_size, scores immediately, queues traces individually, drops stale traces and slices batches by trace count.
-- `algo/base.py`, `algo/grpo.py`: native-episode hooks and centered reward credit; no scheduling result or historical baseline context.
-- `ckpt.py`: saves progress and TrainSource state, not unfinished sink cohorts or algorithm state.
-- `packages/prime-rl-configs/src/prime_rl/configs/algorithm.py`: named typed algorithm variants.
+`TrainSource` owns one `NGUController` per NGU source. A logical visit spans physical rounds and owns its task, unique visit ID, historical attempt/success counts and retained episodes. Independent visits to the same task have separate histories. Queued retries run before fresh source selection; source ratios therefore describe fresh selections rather than compute shares.
 
-A curriculum-only implementation is insufficient: `on_result` returns a boolean after scoring and cannot supply historical baseline statistics or postpone terminal scoring. A retry loop inside an env would also be wrong: it hides independently sampled completions, their behavior policies, and compute from the orchestrator.
+`TrainSink` commits completed rounds to the controller. An all-zero round either queues a retry with probability p or ends the visit. A round with a positive reward returns its retained history for scoring. Errors, missing trainable payloads and cancellations terminate the visit without converting those attempts into zeros.
 
-## Proposed ownership
+`NGUAlgorithm` computes the historical centered binary baseline and anchors positive advantages. The sink uses the existing routing, trace conversion and trainer transport. No changes to the trainer loss, model numerical dtypes, or dispatcher are required.
 
-1. **Physical round**: retain the dispatcher's existing K-sized group, fresh group ID, current dispatch version, and failure/cancellation accounting.
-2. **Logical visit**: introduce a chain ID that follows multiple rounds. Key state by source + visit ID; record task key/hash as provenance. Independent visits to the same task must not share history.
-3. **Continuation queue**: TrainSource accepts a retry TaskRequest for the exact same task and chain, with a new physical group ID. Each finished failed round can enqueue at most one next round. Service queued retries FIFO while existing work proceeds; instrument fresh-versus-retry wait times. Source ratios describe fresh selections, not resulting compute shares.
-4. **Group lifecycle**: a small controller at the sink boundary merges a completed round into visit state and returns a typed decision: retry, discard, or finalize with retained episodes and immutable history statistics. Standard GRPO's default is immediate finalize. Scheduling remains outside Algorithm.
-5. **NGUAlgorithm**: named `ngu` implementation assigns anchored advantages to an eligible finalized cohort; reuse loss routing, trace conversion and trainer transport. Pass history as explicit group context, not as fake episodes or rewritten task rewards.
+## Correctness and limits
 
-Initial proposed config contract (not implemented): `[orchestrator.algo] type="ngu"`, `continuation_probability`, `history_max_policy_age`, `seed`. Centering and positive anchoring are the named algorithm's defaults. `p=0` must reduce to standard GRPO credit and filtering on valid binary cohorts. Both arms use unshaped binary rewards. Require `0 <= p < 1` in production configs; p=1 requires a separately bounded diagnostic if ever needed.
+- Live-policy, single-agent episodes with one trainable trace and rewards exactly 0 or 1. Binary rewards are checked at runtime. No length penalty.
+- Historical counts survive payload expiry. Retention uses inclusive age `(training_step - 1) - policy.start`, bounded by both NGU history age and the global off-policy limit.
+- Retained positives get `1-S/C`; negatives are rescaled to center the retained cohort. The sink checks freshness again before shipping and recomputes advantages after removing stale payloads. A cohort without both reward classes is discarded.
+- Explicit `preserve_groups=true` ships whole cohorts, allowing the last cohort to exceed the trace/token batch target. Both experiment arms enable it; the default for other runs remains false.
+- `max_history_tokens` bounds retained graph tokens across unsuccessful visits per source. Oldest payloads are evicted while counts remain. This is not a global memory limit: finalized cohorts and pending metric windows are outside the budget. Dispatcher concurrency bounds physical work; there is no fixed retry-count cap.
+- A configurable no-output guard counts unsuccessful retry rounds. The default remains ten batch equivalents; both SWE arms use 100.
+- Generation episodes are logged once. Later shipment annotations record visit ID, round, historical counts and advantage without duplicating episode records.
 
-## Correctness decisions before coding
+## Checkpoint and resume
 
-- Initially support live-policy, single-agent, one-trainable-trace episodes with raw task rewards exactly 0 or 1. No length penalty or reward shaping; use binary solved reward for continuation, historical counts and credit. Reject incompatible algorithm/env combinations at config resolution when knowable; validate reward values at runtime.
-- Count valid scored attempts only in C/S. Transport failures, verifier errors, cancellations and empty/untrainable results are not reward-zero samples. Still count their compute and terminal accounting. Proposed policy: terminate affected chains on incomplete/error rounds for an unambiguous first implementation; log this separately from probabilistic give-up.
-- Expire payloads by the oldest actual generation version: `age = (training_step - 1) - policy.start`. Preserve C/S. The effective bound is the minimum of history_max_policy_age and the existing trainer staleness bound; do not change either policy provenance or numerical dtype settings.
-- Re-score after freshness filtering at the point of shipment. If either reward class is absent, drop the cohort with an explicit reason. Never retain expired negatives just to balance positives.
-- **Batch policy needs an explicit change**: current trace slicing can split a finalized cohort across optimizer updates. Prefer whole-cohort FIFO packing with a nominal trace target and final-cohort overshoot, across *all experiment arms*. Actual batch size must be measured. This changes exact fixed-trace batching, so keep it explicit and preserve existing default behavior for unrelated runs. If exact-size batches are required, use a separately reviewed balanced-subset policy; silently truncating is not acceptable.
-- Even within an age window, fast retries can accumulate many payloads at one policy version. Add a visible retained-token/byte limit and bound active visits; payload eviction keeps historical counts and logs the event. No hidden retry cap masquerading as paper NGU.
-- The sink's current 10 zero-output-batch guard can fire during intentional persistence. Keep a fail-fast progress guard, but distinguish queued productive work from a prolonged no-signal run; expose any experiment-specific threshold rather than disabling it globally.
-- Separate accounting for generated episodes and later trained episodes. Reporting a buffered failure again when its chain succeeds must not double-count tokens, rewards, traces, or samples.
-- New task requests after a retry must use the current step/version; never reuse the original physical group's stale dispatch version.
+The checkpoint manager snapshots source and sink state on the orchestrator event loop. It saves the continuation RNG, source sampler, committed visit histories and queued training cohorts. Wire episodes serialize to data dictionaries with float rounding disabled, retaining behavior logprobs, advantages and training arrays.
 
-## Resume and cancellation
+On resume, unfinished physical rounds restart with new group IDs. Only completed rounds contributed historical counts, so partial results are not counted twice. Queued cohorts retain their identities and are rechecked for freshness. This restores committed NGU state; it does not reproduce in-flight generations or exact asynchronous ordering.
 
-Persist continuation RNG, chain IDs/provenance, C/S, retained payload references, retry queue, and completed-round markers through a unified state owner. Snapshot completed rounds consistently with training progress. Do not pickle asyncio tasks. On resume, reschedule incomplete physical rounds with new IDs and discard their incomplete output; preserve only committed round statistics. Exactly-once completed-round ingestion prevents duplicate negative counts.
+## Verification
 
-This is stronger than current orchestrator resume, which restores source state but not all pending payloads. If exact recovery is deferred, explicitly clear and count unfinished chains on restart, label the run non-exact, and exclude interrupted runs from the adoption experiment. Do not claim faithful NGU resume from sampler state alone.
-
-## Implementation sequence and verification
-
-1. Implement the isolated binary visit state machine and anchoring transformation, with explicit invariants.
-2. Add typed config, named algorithm and lifecycle result; default lifecycle keeps static behavior.
-3. Connect continuation requests through TrainSource/Dispatcher; leave physical-round completion accounting intact.
-4. Add cohort-aware freshness/packing, one-time metrics and state persistence.
-5. Resolve config and perform a capped SWE launch sanity check before the two full runs; no separate calibration or pilot training campaign.
-
-Targeted additions to existing algorithm/advantage/config tests are justified for: p=0 equivalence; all-fail retry/give-up; fresh all-success filter; mixed-history acceptance; historical counts after expiration; anchored sum and scale; zero-negative case; independent visit IDs; incomplete-round exclusion; replayed-round deduplication. Test pure transformations and state transitions, not a heavily mocked end-to-end dispatcher. Use a capped real integration check for scheduling, staleness and restart behavior.
-
-Acceptance: no duplicate episode accounting; no expired payload reaches training; deterministic continuation decisions from persisted RNG; no task/visit mixing; valid cohorts have zero-sum sample advantages; active sampling still replenishes batches; p=0 matches static GRPO credit and filtering on valid binary cohorts. For multi-turn SWE, preserve every turn’s behavior logprobs and router replay data and reset the sandbox on every retry.
+Pure tests cover anchoring, expiry, visit isolation, give-up, incomplete rounds, eviction, configuration validation, RNG restoration and lossless wire checkpoint round trips. The small real reverse-text cluster run exercises retries, expanded cohorts, batch overshoot, training, checkpoint saving and resume. The six-node SWE experiment remains a separate deployment.

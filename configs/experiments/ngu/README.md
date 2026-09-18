@@ -6,7 +6,7 @@ The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finishe
 ## Training configurations
 
 - [`train-static.toml`](train-static.toml): static GRPO, K=16, batch target 256. Validated with the native RL dry-run entrypoint.
-- [`train-ngu.toml`](train-ngu.toml): **non-runnable draft** for NGU, K=16, continuation probability .875, payload history age 4, positive anchoring planned. The algorithm and continuation scheduler are not implemented; the current schema intentionally rejects `type = "ngu"`. Do not replace it with GRPO and call that an NGU run.
+- [`train-ngu.toml`](train-ngu.toml): NGU, K=16, continuation probability .875, inclusive payload history age 4, historical binary baseline and positive anchoring.
 - [`difficulty-eval.toml`](difficulty-eval.toml): optional overlay adding the four fixed training-difficulty subsets while preserving both held-out sources.
 
 Both arms start from `PrimeIntellect/GLM-4.5-Air-Scaleswe` with fresh optimizer state. They use two H200 trainer nodes and four independent eight-GPU inference replicas (48 GPUs total), TP8 + EP, 131072 context, router replay, CP4/ulysses, Muon LR 1e-6, and the same IPO loss. No length penalty or sampling override. Adaptive concurrency is 256–1000. The model's numerical dtype defaults are unchanged. `max_steps=10000` is a guard, not an enforced GPU-hour budget; compare checkpoints at equal allocated H200-hours. Checkpoints save every 50 steps.
@@ -24,7 +24,7 @@ The held-out manifest `tools/ngu/eval-500.json` uses the same pinned snapshot as
 
 Every source uses the bash harness, Prime sandboxes, a one-hour solve budget and a **two-hour scoring timeout**. Scoring failures remain errors. The manifest-backed SWE environment counts solve-budget exhaustion as a valid zero, as in profiling.
 
-Commands below prepare/launch training only when explicitly requested; no training has been submitted. From the repository root, export the taskset path for config resolution (the config also propagates it to the orchestrator and env servers):
+Commands below prepare/launch training only when explicitly requested; no SWE training has been submitted. From the repository root, export the taskset path for config resolution (the config also propagates it to the orchestrator and env servers):
 
 ```bash
 export PYTHONPATH="$PWD/tools/ngu/tasksets${PYTHONPATH:+:$PYTHONPATH}"
@@ -33,9 +33,9 @@ uv run rl @ configs/experiments/ngu/train-static.toml --dry-run
 uv run rl @ configs/experiments/ngu/train-static.toml @ configs/experiments/ngu/difficulty-eval.toml --dry-run
 ```
 
-NGU's configuration matches the static arm except run labels and algorithm settings. Before it can launch, implement the continuation lifecycle, historical reward accounting, staleness filtering and anchored advantages described in [stage 1](../../../notes/ngu/stage-1.md), including a consistent cohort batching policy for the comparison. No placeholder runtime support was added merely to accept the draft.
+NGU's configuration matches the static arm except run labels and algorithm settings. Both enable whole-cohort batching (`preserve_groups=true`) and a 100-batch-equivalent no-output guard. NGU retries failed rounds with fresh episodes, keeps historical reward counts after payload expiry, and rescores anchored advantages after freshness filtering. See [algorithm semantics](../../../docs/algorithms.md#never-give-up-ngu) for memory limits and resume behavior. The small reverse-text integration run is documented in [the smoke report](../../../notes/ngu/smoke.md). The six-node SWE training runs have not been launched.
 
-Track each held-out source's resolved rate, error rate and rollout length against allocated GPU-hours, alongside throughput, trainer idle time and trained/generated samples. The optional buckets are **training-set diagnostics**, not held-out evaluation. NGU additionally needs retry/first-success cost, history age/eviction, give-up rate and advantage-balance metrics when implemented.
+Track each held-out source's resolved rate, error rate and rollout length against allocated GPU-hours, alongside throughput, trainer idle time and trained/generated samples. The optional buckets are **training-set diagnostics**, not held-out evaluation. NGU logs retry rounds, first-success attempt totals, history eviction, give-up rates and accepted cohort sizes under `ngu/<source>/`; trace annotations expose the anchored advantages and history counts.
 
 ## Completed profile
 
@@ -139,4 +139,4 @@ The splitter deduplicates episode IDs across resumed trace archives and rejects 
 - All 1,000 unique task objects loaded from the real pinned Hub snapshot.
 - Isolated tests cover every bucket boundary, resume duplicate handling, incomplete/error rejection, disjoint/exhaustive splits, and preservation of the existing eval source.
 
-Training configs and frozen manifests are ready for review. NGU runtime implementation remains outstanding.
+Training configs and frozen manifests are ready for review. NGU runtime is implemented; use the native dry-run before deployment.

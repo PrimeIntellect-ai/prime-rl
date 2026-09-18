@@ -65,6 +65,8 @@ kl_tau = 0.001
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
+preserve_groups = true
+max_zero_output_batches = 100
 
 [orchestrator.env_vars]
 PYTHONPATH = "tools/ngu/tasksets"

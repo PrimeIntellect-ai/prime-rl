@@ -1,15 +1,15 @@
 # NGU preparation
 
-Status: design and source review, not an implementation or a launched experiment. Prepared 2026-09-17.
+Status: binary NGU is implemented on this branch; SWE profiling is complete and the training configs are prepared. The small reverse-text cluster test completed five optimizer steps plus a two-step checkpoint resume. The paper review was prepared 2026-09-17.
 
-Recommendation: implement binary-reward NGU as a group lifecycle plus a named credit-assignment algorithm. Make the adoption decision with one large PrimeIntellect/GLM-4.5-Air-Scaleswe baseline on a new SWE taskset (provisionally SWE-rebench-V2) and one matching NGU run, evaluated on SWE-Bench Verified at equal H200-hours. Preserve prime-rl's trainer loss across all comparison arms; this tests NGU in prime-rl rather than claiming an exact reproduction of Open-Instruct.
+Binary-reward NGU is implemented as a group lifecycle plus a named credit-assignment algorithm. Make the adoption decision with one large PrimeIntellect/GLM-4.5-Air-Scaleswe baseline on a new SWE taskset (provisionally SWE-rebench-V2) and one matching NGU run, evaluated on SWE-Bench Verified at equal H200-hours. Preserve prime-rl's trainer loss across all comparison arms; this tests NGU in prime-rl rather than claiming an exact reproduction of Open-Instruct.
 
 ## Sources and confidence
 
 - [Paper, v1](https://arxiv.org/html/2609.13443v1), especially sections 3–6 and appendices C–E; [PDF](https://arxiv.org/pdf/2609.13443).
 - [Authors' code snapshot](https://github.com/mnoukhov/never-give-up/tree/96e70fd001af0dc710136be66300b2b795f63bbb), especially `open_instruct/data_loader.py` and `data_loader_utils.py`.
 - The supplied validation transcript is useful secondary context. Reported scores below agree with its tables; qualifications below affect how to interpret them.
-- Repository architecture was inspected at this worktree. Dependency directories are empty; available tasksets were inspected remotely at the pinned revisions: verifiers `28f0893`, prime-envs `1f1e050`.
+- Repository architecture was inspected at this worktree. The taskset survey used the pinned revisions: verifiers `28f0893`, prime-envs `1f1e050`.
 
 The paper is CC BY-NC-SA 4.0, by Michael Noukhovitch, Hamish Ivison, Nathan Lambert, and Aaron Courville. This document paraphrases its method and distinguishes our proposed implementation choices.
 
@@ -89,6 +89,6 @@ The difficulty diagnosis is observational, not proof of a single cause. The abla
 - Empirical zero successes in 64 or 1024 samples does not imply zero true success probability. Use “0 observed successes,” preserve counts, and report bucket sizes.
 - “Does not permanently alter the dataset” does not mean unchanged training distribution: NGU deliberately changes exposure and accepted-cohort composition.
 
-See [stage 1](stage-1.md) and [stage 2](stage-2.md) for the implementation and experiment proposals.
+See [stage 1](stage-1.md) for the implementation, [the smoke report](smoke.md) for verification, and [stage 2](stage-2.md) for experiment preparation.
 
-Current frozen 1,000-task training configs and the disjoint 500-task held-out evaluation are in [the experiment directory](../../configs/experiments/ngu/README.md). Its training TOMLs supersede the preparation drafts in this notes directory. NGU runtime support is not implemented.
+Current frozen 1,000-task training configs and the disjoint 500-task held-out evaluation are in [the experiment directory](../../configs/experiments/ngu/README.md). Its training TOMLs supersede the preparation drafts in this notes directory. NGU runtime support is implemented; current semantics are documented in [algorithms](../../docs/algorithms.md#never-give-up-ngu).

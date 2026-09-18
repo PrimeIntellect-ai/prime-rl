@@ -41,12 +41,17 @@ def get_config_files() -> list[Path]:
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
-def test_load_configs(config_file: Path):
+def test_load_configs(config_file: Path, monkeypatch):
     """Tests that all config files can be loaded by at least one config class."""
+    if config_file.parent == Path("configs/experiments/ngu"):
+        monkeypatch.syspath_prepend(str(Path("tools/ngu/tasksets").resolve()))
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
-            cli(config_cls, args=["@", config_file.as_posix()])
+            args = ["@", config_file.as_posix()]
+            if config_file == Path("configs/experiments/ngu/difficulty-eval.toml"):
+                args = ["@", "configs/experiments/ngu/train-static.toml", *args]
+            cli(config_cls, args=args)
             could_parse.append(True)
         except (ValidationError, ConfigFileError, SystemExit):
             could_parse.append(False)

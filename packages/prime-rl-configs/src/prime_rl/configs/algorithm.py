@@ -1,7 +1,7 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
+on ``type`` (``grpo``, ``ngu``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
 ``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
@@ -209,6 +209,27 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
+class NGUAlgoConfig(BaseAlgoConfig):
+    type: Literal["ngu"] = "ngu"
+    """Binary-reward Never Give Up with historical baselines and positive anchoring."""
+
+    continuation_probability: float = Field(0.875, ge=0, lt=1)
+    """Probability of another independent group after an all-failure round."""
+
+    history_max_policy_age: int = Field(4, ge=0)
+    """Maximum inclusive policy age of retained payloads; reward counts never expire."""
+
+    max_history_tokens: int = Field(2_000_000, ge=1)
+    """Per-source graph-token budget for unsuccessful visit history; excludes pending metric windows and finalized cohorts."""
+
+    seed: int = 42
+    """Seed for this source's checkpointed continuation RNG."""
+
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        if not isinstance(env_config, vf.SingleAgentEnvConfig):
+            raise ValueError("NGU requires a single-agent environment with binary rewards")
+
+
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
@@ -393,6 +414,7 @@ class DebugAlgoConfig(BaseAlgoConfig):
 
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
+    | NGUAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
     | RAEAlgoConfig

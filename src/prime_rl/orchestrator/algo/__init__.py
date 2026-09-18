@@ -28,6 +28,7 @@ from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
+from prime_rl.orchestrator.algo.ngu import NGUAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 # each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
+    "ngu": NGUAlgorithm,
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
@@ -69,6 +71,7 @@ __all__ = [
     "DebugAlgorithm",
     "EchoAlgorithm",
     "GRPOAlgorithm",
+    "NGUAlgorithm",
     "HierarchicalGRPOAlgorithm",
     "MaxRLAlgorithm",
     "OPDAlgorithm",

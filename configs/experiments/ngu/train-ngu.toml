@@ -1,5 +1,4 @@
-# DRAFT: requires the unimplemented NGU scheduler and algorithm.
-# Intentionally rejected by the current schema; do not launch as static GRPO.
+# NGU on the frozen 1,000-task profile; six H200 nodes.
 max_steps = 10000
 seq_len = 131072
 output_dir = "outputs/ngu-swe"
@@ -66,6 +65,8 @@ kl_tau = 0.001
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
+preserve_groups = true
+max_zero_output_batches = 100
 
 [orchestrator.env_vars]
 PYTHONPATH = "tools/ngu/tasksets"

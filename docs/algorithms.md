@@ -7,6 +7,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [The Algorithm Abstraction](#the-algorithm-abstraction)
   - [Model References](#model-references)
   - [The Algorithms](#the-algorithms)
+  - [Never Give Up (NGU)](#never-give-up-ngu)
   - [Customizing Components](#customizing-components)
   - [Per-Env Algorithms](#per-env-algorithms)
   - [The Algorithm Classes](#the-algorithm-classes)
@@ -35,7 +36,7 @@ A training algorithm in `prime-rl` is configured under `[orchestrator.algo]`, wh
 1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
 2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
-The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, batch packing, or trainer hot path.
+The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. NGU additionally coordinates retries through the train source and preserves successful cohorts in the train sink; it uses the same dispatcher, batch packing, and trainer loss.
 
 ### Model References
 
@@ -68,6 +69,7 @@ type = "grpo"  # the default
 | `type` | Sampling | Loss | What it is |
 |---|---|---|---|
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
+| `ngu` | policy | `rl` on actions | Binary Never Give Up: retry unsuccessful groups, retain reward history, and anchor positive advantages. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
 | `rae` | policy | `rl` on actions | RAE (SPIRAL, [arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): reward minus a per-agent EMA baseline of that agent's own rewards — the estimator for multi-agent self-play envs, where the group mean would mix the agents' opposite reward scales. See [Self-Play Advantage](#self-play-advantage-rae). |
 | `hierarchical_grpo` | policy | `rl` on actions | GRPO for proposer-solver envs. Solvers are compared only with attempts on the same proposed problem; proposers are compared with the other proposals in the group. See [Hierarchical GRPO](#hierarchical-grpo). |
@@ -75,6 +77,39 @@ type = "grpo"  # the default
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
+
+### Never Give Up (NGU)
+
+NGU dynamically spends additional rollout rounds on unsuccessful tasks. It supports single-agent environments with one trainable trace per episode and unshaped binary rewards. Each retry is a fresh episode of the same task, with a new physical group ID and current dispatch version. Independent visits to the same task keep separate histories.
+
+```toml
+[orchestrator]
+group_size = 16
+batch_size = 256
+preserve_groups = true
+max_zero_output_batches = 100
+
+[orchestrator.algo]
+type = "ngu"
+continuation_probability = 0.875
+history_max_policy_age = 4
+max_history_tokens = 2000000
+seed = 42
+```
+
+After a complete all-zero round, NGU schedules another round with probability `continuation_probability`; otherwise the visit ends. A positive reward ends the visit. Errors, missing trainable payloads and dispatcher cancellations terminate the visit without treating those attempts as zero rewards. All-success visits have no gradient. `p=0` yields ordinary centered GRPO credit for complete valid binary groups. Values of `p=1` are rejected.
+
+For a successful visit, let `C` be its total valid attempts and `S` its successes, including expired payloads. The positive advantage is `1 - S/C`. With `n_pos` positives and `n_neg` negatives still available for training, each negative receives `-(n_pos/n_neg) * (1 - S/C)`. A cohort without both reward classes is discarded. This preserves rare-positive credit while centering the retained cohort.
+
+The history window uses **inclusive policy age**: `(training_step - 1) - policy.start <= history_max_policy_age`, additionally bounded by `max_off_policy_steps`. Queued cohorts are checked again before shipment; after expiry their negative advantages are recomputed. `max_history_tokens` bounds retained graph tokens across unsuccessful visits per source; oldest payloads are evicted while reward counts remain. It does not cap retry rounds or total process memory: pending generation-metric windows and finalized cohorts waiting for training are outside this budget.
+
+`preserve_groups` sends whole finalized cohorts to an optimizer update, allowing the last cohort to exceed the nominal trace/token batch target. Enable it in a matched static baseline as well. NGU requires `constant_trainer_batch_size=true`. The configurable no-output guard counts unsuccessful retry rounds too; it still aborts prolonged runs without learning signal.
+
+Checkpoints retain committed visit history, continuation RNG, source sampler state and queued training cohorts. Incomplete physical rounds restart with new group IDs on resume; their partial results never enter historical counts. This is not an exact replay of in-flight generations or asynchronous scheduling.
+
+Counters appear under `ngu/<source>/`: fresh visits, rounds, continuations, retry rounds, give-ups, successful visits, first-success attempt totals, accepted cohorts/payloads/history, expired/evicted payloads, active visits and history tokens. Trace info includes `ngu_visit` and `ngu_round`; shipped annotations also include `ngu_attempts` and `ngu_successes`. Raw generation episodes are recorded once, independently of later admission.
+
+A small cluster integration config is [`configs/debug/ngu.toml`](../configs/debug/ngu.toml). It uses binary reverse-text success (LCS similarity ≥ 0.8) rather than the taskset's fractional LCS reward.
 
 ### Customizing Components
 
