@@ -66,7 +66,7 @@ const state = {
     },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
-  flow: { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() },
+  flow: { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map(), expanded: new Set() },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
   follow: prefs.follow ?? true,
 };
@@ -233,7 +233,7 @@ async function selectRun(name, deferTab = false) {
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
     key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
-  state.flow = { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() };
+  state.flow = { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map(), expanded: new Set() };
   state.report = {
     ...state.report,
     loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
@@ -494,7 +494,8 @@ function flowGraphLayout(data, selected, viewportWidth) {
   const runGroup = task && data.groups.find((group) => group.kind === "run" && group.row === task.row);
   const groups = selected === "all" ? data.groups.map((group) => group.id) : [runGroup?.id, selected].filter(Boolean);
   const wanted = new Set(groups);
-  const nodes = data.nodes.filter((node) => wanted.has(node.group));
+  const expanded = state.flow.expanded || new Set();
+  const nodes = data.nodes.filter((node) => wanted.has(node.group) && (!node.parent || expanded.has(node.parent)));
   const positions = new Map();
   const lanes = [];
   const width = Math.max(520, viewportWidth || 900);
@@ -580,8 +581,10 @@ function renderFlowGraph() {
     const suffix = node.index == null ? (node.occurrence ? ` · ${node.occurrence + 1}` : "") : ` · ${node.index + 1}`;
     const duration = flowDuration(node);
     const trace = node.trace_id ? " trace" : "";
-    return `<button class="fg-node ${flowStatusClass(node.status)} kind-${esc(node.kind || "step")}${trace}" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
-      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.kind || "step")} · ${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}</small>
+    const open = state.flow.expanded?.has(node.id);
+    const toggle = node.calls ? `<em class="fg-toggle" data-flow-toggle="${esc(node.id)}" title="${open ? "hide" : "show"} the calls this stage made">${open ? "▾" : "▸"} ${node.calls} call${node.calls === 1 ? "" : "s"}</em>` : "";
+    return `<button class="fg-node ${flowStatusClass(node.status)} kind-${esc(node.kind || "step")}${trace}${node.parent ? " call" : ""}" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.kind || "step")} · ${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}</small>${toggle}
     </button>`;
   }).join("");
   graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
@@ -6542,6 +6545,13 @@ $("#flow-tasks").addEventListener("click", (event) => {
 $("#flow-graph").addEventListener("click", (event) => {
   const edge = event.target.closest("[data-flow-edge]");
   if (edge) return selectFlowEdge(edge.dataset.flowEdge);
+  const toggle = event.target.closest("[data-flow-toggle]");
+  if (toggle) {
+    const id = toggle.dataset.flowToggle;
+    const expanded = state.flow.expanded;
+    expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+    return renderFlowGraph();
+  }
   const node = event.target.closest("[data-flow-node]");
   if (node) selectFlowNode(node.dataset.flowNode);
 });

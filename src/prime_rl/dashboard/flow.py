@@ -97,8 +97,12 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     def group_id(unit: str) -> str:
         return f"{row}/" if unit == "campaign" else f"{row}/{unit}"
 
+    steers: list[dict[str, Any]] = []
     for order, event in enumerate(events):
         kind, unit, stage = event.get("type"), event.get("unit"), event.get("stage")
+        if kind == "steer" and isinstance(unit, str):
+            steers.append({**event, "order": order})
+            continue
         if not isinstance(unit, str) or not isinstance(stage, str):
             continue
         if kind == "started":
@@ -131,6 +135,9 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "live": [],
                 "links": [],
                 "done_order": None,
+                "parent": None,
+                "calls": 0,
+                "unit_status": None,
             }
             nodes.append(node)
             open_by_unit[unit] = node
@@ -142,6 +149,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 continue
             status = event.get("status")
             node["status"] = STATUS.get(status, "completed")
+            node["unit_status"] = status
             node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
             node["links"] = [link for link in event.get("links") or [] if isinstance(link, dict)]
             if status == "held":
@@ -152,7 +160,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     for node in nodes:
         by_unit_stage[(node["unit"], node["name"])].append(node)
     children: list[dict[str, Any]] = []
-    for record in call_records(run_dir):
+    for record in sorted(call_records(run_dir), key=lambda r: (r.get("started_at") or "", r.get("key") or "")):
         unit, stage, finished = record.get("unit"), record.get("stage"), record.get("finished_at") or ""
         candidates = by_unit_stage.get((unit, stage)) or []
         parent = next(
@@ -163,12 +171,14 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             continue
         trace_id = record.get("trace_id")
         episode = trace_lines.get(trace_id) if isinstance(trace_id, str) else None
-        index = sum(c["path"] == parent["path"] for c in children)
+        index = sum(c["parent"] == parent["id"] for c in children)
         children.append(
             {
                 **parent,
                 "id": f"{parent['id']}:{index}",
+                "parent": parent["id"],
                 "index": index,
+                "order": parent["order"] + (index + 1) / 1000,  # after its stage, in call order
                 "name": str(record.get("key") or record.get("kind")),
                 "kind": record.get("kind"),
                 "status": "completed",
@@ -176,6 +186,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "error": None,
                 "outcome": None,
                 "to": None,
+                "links": [],
                 "started_at": record.get("started_at"),
                 "finished_at": record.get("finished_at"),
                 "trace_id": trace_id,
@@ -183,6 +194,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "episode_id": episode[1] if episode else None,
             }
         )
+        parent["calls"] = parent.get("calls", 0) + 1
         if trace_id is not None:
             parent["trace_id"], parent["episode_line"], parent["episode_id"] = trace_id, *(episode or (None, None))
 
@@ -190,20 +202,11 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
         by_unit[node["unit"]].append(node)
-    for lane in by_unit.values():
-        for source, target in zip(lane, lane[1:]):
-            edges.append(
-                {
-                    "id": f"sequence:{source['id']}:{target['id']}",
-                    "kind": "sequence",
-                    "source": source["id"],
-                    "target": target["id"],
-                }
-            )
+    for unit, lane in by_unit.items():
         for i, source in enumerate(lane):
             if source["outcome"] is None:
                 continue
-            target = lane[i + 1] if i + 1 < len(lane) else None
+            target = lane[i + 1] if i + 1 < len(lane) and source.get("unit_status") == "ready" else None
             edges.append(
                 {
                     "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
@@ -213,6 +216,22 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "outcome": source["outcome"],
                     "to": source["to"],
                     "summary": source["reason"],
+                }
+            )
+        for steer in (st for st in steers if st["unit"] == unit):  # an operator moved this unit
+            before = [n for n in lane if (n.get("done_order") or n["order"]) < steer["order"]]
+            after = [n for n in lane if n["order"] > steer["order"]]
+            if not before:
+                continue
+            edges.append(
+                {
+                    "id": f"steer:{steer['sha']}",
+                    "kind": "route",
+                    "source": before[-1]["id"],
+                    "target": after[0]["id"] if after else None,
+                    "outcome": steer.get("action") or "steer",
+                    "to": after[0]["name"] if after else "operator",
+                    "summary": steer.get("note") or steer.get("action"),
                 }
             )
     for source in nodes:  # between lanes: a stage that created, released or woke another unit

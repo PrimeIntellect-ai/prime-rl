@@ -1756,6 +1756,9 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-node.live { border-color: var(--infra); animation: flow-pulse 1.2s steps(2) infinite; }
 .fg-node.stale { border-color: var(--infra); }
 .fg-node > span, .fg-node > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fg-node.call { opacity: 0.85; border-style: dashed; }
+.fg-toggle { display: block; margin-top: 2px; font-size: 10px; font-style: normal; color: var(--grey-6); cursor: pointer; }
+.fg-toggle:hover { text-decoration: underline; }
 .fg-node > span { color: var(--grey-6); }
 .fg-node > small { margin-top: 5px; color: var(--grey-4); font-size: 9px; }
 .fg-route {
