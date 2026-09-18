@@ -112,6 +112,84 @@ precision on both sides would not address the mechanism.
 no config-level fix survived measurement. The one worth an RL run is the indexer exclusion, and
 only on a long-context environment where it is not a no-op.
 
+## Per-step mismatch KL, in the format of the bf16 PR (#3543)
+
+Same model and topology as #3543: 4 trainer nodes + 1 inference node, 20 steps, `lr = 0`, full
+depth, router replay on. The bf16 columns reproduce #3543's own measurements (it reported max
+0.00040 on math with replay on, and 0.0016 mean / 0.0027 max on reverse-text), which makes these
+runs directly comparable to it.
+
+### math, `batch_size = 64`
+
+| step | bf16 | online FP8 | lag bf16 / FP8 |
+|---|---|---|---|
+| 1 | 0.00032 | 0.00667 | 0 / 0 |
+| 2 | 0.00037 | 0.00551 | 1 / 1 |
+| 3 | 0.00039 | 0.01388 | 2 / 2 |
+| 4 | 0.00032 | 0.00232 | 3 / 3 |
+| 5 | 0.00028 | 0.00795 | 2 / 2 |
+| 6 | 0.00028 | 0.00633 | 2 / 2 |
+| 7 | 0.00035 | 0.00357 | 3 / 2 |
+| 8 | 0.00032 | 0.00194 | 2 / 2 |
+| 9 | 0.00028 | 0.01246 | 2 / 2 |
+| 10 | 0.00038 | 0.00490 | 3 / 3 |
+| 11 | 0.00029 | 0.00449 | 3 / 3 |
+| 12 | 0.00040 | 0.00798 | 3 / 2 |
+| 13 | 0.00026 | 0.00333 | 2 / 3 |
+| 14 | 0.00033 | 0.00352 | 2 / 2 |
+| 15 | 0.00031 | 0.01098 | 3 / 2 |
+| 16 | 0.00046 | 0.01148 | 3 / 3 |
+| 17 | 0.00036 | 0.00889 | 4 / 3 |
+| 18 | 0.00032 | 0.00246 | 3 / 3 |
+| 19 | 0.00032 | 0.00214 | 2 / 2 |
+| 20 | 0.00034 | 0.00414 | 2 / 2 |
+
+All 40 entries under the 0.015 bar: max 0.00046 bf16, **0.01388 online FP8**. FP8 costs 19x the
+bf16 mismatch and leaves 8% headroom against the bar.
+
+### reverse-text, `batch_size = 32`
+
+| step | bf16 | online FP8 | lag bf16 / FP8 |
+|---|---|---|---|
+| 1 | 0.00061 | 0.03801 | 0 / 0 |
+| 2 | 0.00106 | 0.02151 | 1 / 1 |
+| 3 | 0.00114 | 0.02435 | 2 / 2 |
+| 4 | 0.00157 | 0.03105 | 3 / 3 |
+| 5 | 0.00180 | 0.02843 | 4 / 1 |
+| 6 | 0.00210 | 0.03454 | 5 / 2 |
+| 7 | 0.00072 | 0.01865 | 2 / 2 |
+| 8 | 0.00133 | 0.02574 | 2 / 2 |
+| 9 | 0.00140 | 0.02873 | 3 / 2 |
+| 10 | 0.00100 | 0.04190 | 4 / 2 |
+| 11 | 0.00112 | 0.03550 | 3 / 2 |
+| 12 | 0.00201 | 0.04578 | 4 / 2 |
+| 13 | 0.00154 | 0.03430 | 5 / 2 |
+| 14 | 0.00174 | 0.02528 | 4 / 2 |
+| 15 | 0.00132 | 0.03099 | 4 / 2 |
+| 16 | 0.00326 | 0.02057 | 5 / 2 |
+| 17 | 0.00180 | 0.03565 | 3 / 2 |
+| 18 | 0.00089 | 0.02995 | 3 / 2 |
+| 19 | 0.00141 | 0.02867 | 4 / 2 |
+| 20 | 0.00220 | 0.03390 | 4 / 2 |
+
+**All 20 FP8 steps are over the bar.**
+
+### summary
+
+| configuration | mismatch_kl | median | min | max | over 0.015 | is_masked |
+|---|---|---|---|---|---|---|
+| math, bf16 | 0.00033 | 0.00032 | 0.00026 | 0.00046 | 0 of 20 | 0.0000% |
+| math, online FP8 | 0.00625 | 0.00520 | 0.00194 | 0.01388 | 0 of 20 | 0.0120% |
+| reverse-text, bf16 | 0.00150 | 0.00140 | 0.00061 | 0.00326 | 0 of 20 | 0.0249% |
+| reverse-text, online FP8 | 0.03068 | 0.03047 | 0.01865 | 0.04578 | **20 of 20** | 1.9395% |
+
+Mismatch KL depends on off-policy lag, so the lag columns are included. Lag-matched at lag 2, the
+best-populated bucket, FP8 costs 21.2x on math (n=11) and 29.0x on reverse-text (n=16), and the
+3.2x gap between the environments is present in the bf16 runs too (0.00106 vs 0.00032), i.e. it is
+environment-intrinsic rather than an FP8 effect.
+
+Reward is unaffected: reverse-text 0.8644 FP8 against 0.8576 bf16, math 0.9875 FP8.
+
 ## The mechanism, which is not what the plan assumed
 
 The framing "which part of FP8 is lossy" understates what is happening. **DeepSeek V4 Flash's
