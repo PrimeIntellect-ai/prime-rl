@@ -59,17 +59,17 @@ The `rl` entrypoint submits an sbatch job whenever the config has a `[slurm]` ta
 
 ```bash
 # GLM-5.3 RL with llm-d + Mooncake (recommended)
-uv run rl @ examples/advanced/glm-5.2/swe-llmd.toml
+uv run rl @ examples/advanced/glm-5.3/swe-llmd.toml
 
 # GLM-5 base plane — compose your train source onto it
-uv run rl @ examples/advanced/glm-5.2/swe.toml @ my-train-source.toml
+uv run rl @ examples/advanced/glm-5.3/swe.toml @ my-train-source.toml
 ```
 
 The inference configs are standalone pre-flights: they serve the FP8 checkpoint through the same entrypoint the trainer uses (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster` included — never call `vllm serve` directly), and are a fast way to check that this cluster can serve the model at all before committing it to a run:
 
 ```bash
-uv run inference @ examples/advanced/glm-5.2/infer/pd.toml
-uv run inference @ examples/advanced/glm-5.2/infer/pd-llmd.toml
+uv run inference @ examples/advanced/glm-5.3/infer/pd.toml
+uv run inference @ examples/advanced/glm-5.3/infer/pd-llmd.toml
 ```
 
 ## Monitor with the dashboard
