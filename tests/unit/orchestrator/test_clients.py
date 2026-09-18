@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -83,6 +84,43 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_initialize_nccl_fails_closed_on_500():
+    admin_plane = AdminPlane(ClientConfig())
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(500, request=httpx.Request("POST", "http://worker/init_broadcaster"))
+    admin_plane.clients = [client]
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        asyncio.run(
+            admin_plane.initialize_nccl(
+                host="trainer",
+                port=29501,
+                timeout=1200,
+                inference_world_size=1,
+            )
+        )
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_initialize_nccl_still_skips_on_404():
+    admin_plane = AdminPlane(ClientConfig())
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(404, request=httpx.Request("POST", "http://worker/init_broadcaster"))
+    admin_plane.clients = [client]
+
+    asyncio.run(
+        admin_plane.initialize_nccl(
+            host="trainer",
+            port=29501,
+            timeout=1200,
+            inference_world_size=1,
+        )
+    )
+
+    client.post.assert_awaited_once()
     asyncio.run(admin_plane.aclose())
 
 
