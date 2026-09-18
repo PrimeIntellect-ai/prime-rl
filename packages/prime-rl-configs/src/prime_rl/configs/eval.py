@@ -21,6 +21,11 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
+    tasks_per_minute: int | None = Field(None, ge=1)
+    """Global rate limit on episode dispatch, in tasks per minute. Use it for
+    sandbox-backed environments to pace provisioning during autoscaling. None disables
+    rate limiting."""
+
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
         """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
