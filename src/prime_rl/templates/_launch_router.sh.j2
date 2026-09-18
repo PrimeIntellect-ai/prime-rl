@@ -74,7 +74,9 @@ LLMD_EOF
     local -a cmd=(vllm-router --policy "$policy" --host 0.0.0.0 --port "$port"
         --request-id-headers x-session-id
         --prometheus-port "$((port + 21000))"
-        --worker-startup-timeout-secs 4200 --log-level debug)
+        --worker-startup-timeout-secs 4200
+        --health-check-interval-secs 5 --health-success-threshold 1
+        --log-level warning)
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else
@@ -82,4 +84,36 @@ LLMD_EOF
     fi
     "${cmd[@]}" >> "$log" 2>&1 &
 {%- endif %}
+}
+
+# Do not let the router publish a partial backend pool. A full rollout wave is sized
+# against all configured engines, so starting on a subset overloads the first workers.
+wait_for_inference_workers() {
+    local timeout_seconds=4200
+    local started=$SECONDS
+    local ready total url health_url pid
+    local -a urls pids
+    read -ra urls <<< "$ADMIN_URLS"
+    total=$(wc -w <<< "$ADMIN_URLS")
+    while (( SECONDS - started < timeout_seconds )); do
+        pids=()
+        for url in "${urls[@]}"; do
+            health_url="${url%/v1}/health"
+            curl --noproxy "*" -fsS --connect-timeout 5 --max-time 10 "$health_url" >/dev/null 2>&1 &
+            pids+=("$!")
+        done
+        ready=0
+        for pid in "${pids[@]}"; do
+            if wait "$pid"; then
+                ready=$((ready + 1))
+            fi
+        done
+        echo "Inference worker readiness: $ready/$total"
+        if [ "$ready" -eq "$total" ]; then
+            return 0
+        fi
+        sleep 10
+    done
+    echo "Timed out waiting for all $total inference workers" >&2
+    return 1
 }

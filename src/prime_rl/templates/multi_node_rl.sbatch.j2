@@ -419,10 +419,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
-    # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
-    fi
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
     # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
@@ -455,12 +451,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
-{%- else -%}
-    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
-    fi
 
+    # Publish the client endpoint only after every backend is serving.
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        wait_for_inference_workers
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+    fi
+{%- else -%}
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
     # each pinned to its TP slice of GPUs; the router balances across the per-rank
     # endpoints. For MoE the ranks form one external-LB DP group (EP all2all spans
@@ -486,6 +483,12 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done
+
+    # Publish the client endpoint only after every backend is serving.
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        wait_for_inference_workers
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+    fi
 {%- endif %}
 
 else

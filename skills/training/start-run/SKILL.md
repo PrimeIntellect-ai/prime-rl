@@ -46,6 +46,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
+- Multi-node launches wait for every configured inference backend before publishing the global router. Keep this barrier when changing the launcher: a partial router pool can overload the first healthy workers during the initial rollout wave.
 - NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
