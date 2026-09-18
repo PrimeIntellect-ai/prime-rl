@@ -68,7 +68,8 @@ non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 "queue-scorer" = 3.0
 
 [inference.vllm]
-model = "zai-org/GLM-5.1"
+# The trainer uses GLM-5.3-BF16; serve the official block-FP8 release.
+model = "zai-org/GLM-5.3"
 dtype = "bfloat16"
 quantization = "fp8_per_block"
 max_model_len = 131072
@@ -87,7 +88,7 @@ partition = "all" # FILL IN: set to your cluster's partition
 dist_timeout_seconds = 1800
 
 [trainer.model]
-name = "zai-org/GLM-5.1"
+name = "zai-org/GLM-5.3-BF16"
 impl = "custom"
 attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
@@ -123,7 +124,7 @@ initial_inflight = 256
 max_inflight = 512
 
 [orchestrator.model]
-name = "zai-org/GLM-5.1"
+name = "zai-org/GLM-5.3"
 
 [orchestrator.renderer]
 name = "glm-5.1"

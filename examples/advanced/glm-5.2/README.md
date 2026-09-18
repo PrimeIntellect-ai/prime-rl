@@ -1,11 +1,11 @@
 # GLM-5 family at scale
 
-Large-scale RL and serving for the GLM-5 family — `zai-org/GLM-5`, `GLM-5.1`, and `GLM-5.2-FP8` — at 131k context: 16 trainer nodes on the custom MoE implementation (expert parallelism; the llm-d variant adds context parallelism) and P/D-disaggregated FP8 inference. The `-llmd` variants front the inference plane with the [**llm-d**](https://llm-d.ai) router (Endpoint Picker + Envoy): its `active-request-scorer` load-balances in flight — instead of reacting to delayed metrics like the default `vllm-router` — which, combined with prefix-cache affinity for grouped rollouts, keeps prefill and decode ranks evenly loaded under RL's bursty request pattern. They also offload KV to a Mooncake distributed CPU pool (1TB per node by default).
+Large-scale RL and serving for the GLM-5 family — including `zai-org/GLM-5.3-BF16` for training and its `GLM-5.3` block-FP8 serving release — at 131k context: 16 trainer nodes on the custom MoE implementation (expert parallelism; the llm-d variant adds context parallelism) and P/D-disaggregated FP8 inference. The `-llmd` variants front the inference plane with the [**llm-d**](https://llm-d.ai) router (Endpoint Picker + Envoy): its `active-request-scorer` load-balances in flight — instead of reacting to delayed metrics like the default `vllm-router` — which, combined with prefix-cache affinity for grouped rollouts, keeps prefill and decode ranks evenly loaded under RL's bursty request pattern. They also offload KV to a Mooncake distributed CPU pool (1TB per node by default).
 
 | Config | What it runs | Topology |
 |---|---|---|
 | [`swe.toml`](swe.toml) | GLM-5 RL plane: 16 train nodes, eval on `swebench-verified` every 20 steps, default vLLM router over 2 P/D replicas (4 prefill + 4 decode nodes each). Declares **no train source** — compose yours on top with an `[[orchestrator.train.source]]` overlay. | 16 train + 16 infer nodes |
-| [`swe-llmd.toml`](swe-llmd.toml) | Full-stack GLM-5.1 RL: trains on `r2e-gym` (`rlm` harness), FP8-quantized trainer (`deepgemm_fp8` MoE compute), llm-d router + Mooncake KV offload. | 16 train + 16 infer nodes |
+| [`swe-llmd.toml`](swe-llmd.toml) | Full-stack GLM-5.3 RL: trains on `r2e-gym` (`rlm` harness), FP8-quantized trainer (`deepgemm_fp8` MoE compute), llm-d router + Mooncake KV offload. | 16 train + 16 infer nodes |
 | [`infer/pd.toml`](infer/pd.toml) | Inference-only pre-flight: P/D-disaggregated `GLM-5-FP8`. | 6 infer nodes |
 | [`infer/pd-llmd.toml`](infer/pd-llmd.toml) | Inference-only pre-flight: `GLM-5.2-FP8` with llm-d + Mooncake. | 16 infer nodes |
 
@@ -57,7 +57,7 @@ uv sync --all-extras --all-packages
 The `rl` entrypoint submits an sbatch job whenever the config has a `[slurm]` table — there is no separate launcher. From the shared checkout:
 
 ```bash
-# GLM-5.1 RL with llm-d + Mooncake (recommended)
+# GLM-5.3 RL with llm-d + Mooncake (recommended)
 uv run rl @ examples/advanced/glm-5.2/swe-llmd.toml
 
 # GLM-5 base plane — compose your train source onto it
