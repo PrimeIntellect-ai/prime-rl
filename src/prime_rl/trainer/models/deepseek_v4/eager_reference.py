@@ -156,7 +156,7 @@ def eager_attention_forward(
         training=module.training,
     )
 
-    attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, conjugate=True)
+    attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, inverse_rotation=True)
     grouped = module.o_a_proj(attn_output.reshape(*input_shape, module.config.o_groups, -1)).flatten(2)
     return module.o_b_proj(grouped), None
 
