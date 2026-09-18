@@ -1,0 +1,51 @@
+# Search training with BrowseComp evaluation.
+
+[orchestrator.train.sampling]
+max_completion_tokens = 16384
+
+[[orchestrator.train.source]]
+name = "openseeker"
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-search"]
+env.taskset.id = "openseeker"
+
+[[orchestrator.train.source.env.taskset.task.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
+
+[[orchestrator.train.source]]
+name = "redsearcher"
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-search"]
+env.taskset.id = "redsearcher"
+
+[[orchestrator.train.source.env.taskset.task.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.source]]
+name = "browsecomp"
+num_examples = 500
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-search"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "browsecomp"
+env.taskset.task.judge.model = "Qwen/Qwen3-235B-A22B-Instruct-2507"

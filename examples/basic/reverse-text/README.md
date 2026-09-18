@@ -27,7 +27,7 @@ uv run inference --vllm.model Qwen/Qwen3-0.6B
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/reverse-text/eval.toml
+uv run eval @ configs/basic/reverse-text/eval.toml
 ```
 
 This is of course just a quick vibe check and no full-fledged evaluation, but we can see that the model struggles with this task. In this specific instance, we got an **average reward of ~0.05** across the 20x3 rollouts. Let's do some training!
@@ -42,7 +42,7 @@ To train on a single GPU, run
 
 ```bash
 # Run this in the other terminal
-uv run sft @ examples/basic/reverse-text/sft.toml \
+uv run sft @ configs/basic/reverse-text/sft.toml \
   --run.name sft \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
@@ -55,7 +55,7 @@ To train on multiple GPUs, run
 uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/basic/reverse-text/sft.toml \
+  src/prime_rl/trainer/sft/train.py @ configs/basic/reverse-text/sft.toml \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
 ```
@@ -72,7 +72,7 @@ For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 
 
 ```bash
 # Run this in the other terminal
-uv run rl @ examples/basic/reverse-text/rl.toml \
+uv run rl @ configs/basic/reverse-text/rl.toml \
   --model.name ... \
   --run.name rl \
   --monitors.wandb.project ... \
@@ -94,7 +94,7 @@ uv run inference --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/reverse-text/eval.toml -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
+uv run eval @ configs/basic/reverse-text/eval.toml -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 ```
 
 Way better! Now we get an **average reward of ~0.8**.
@@ -125,7 +125,7 @@ Exec into the trainer pod and run SFT:
 
 ```bash
 kubectl exec -it my-exp-trainer-0 -- bash
-uv run sft @ /app/examples/basic/reverse-text/sft.toml --output-dir /data/outputs --run.name sft
+uv run sft @ /app/configs/basic/reverse-text/sft.toml --output-dir /data/outputs --run.name sft
 # This will save DCP checkpoints to /data/outputs/sft/checkpoints/step_100
 ```
 
@@ -197,7 +197,7 @@ kubectl exec -it my-exp-inference-0 -- bash
 uv run inference --vllm.model /data/outputs/weights_hf/step_20
 
 # Back in trainer pod, run evaluation
-uv run eval @ examples/basic/reverse-text/eval.toml \
+uv run eval @ configs/basic/reverse-text/eval.toml \
   -m /data/outputs/weights_hf/step_20 \
   --client.base-url $INFERENCE_URL
 ```

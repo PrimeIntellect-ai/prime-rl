@@ -34,7 +34,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/wordle/rl.toml",
+        "configs/basic/wordle/rl.toml",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",

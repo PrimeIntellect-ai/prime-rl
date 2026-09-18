@@ -34,7 +34,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/alphabet-sort/rl.toml",
+        "configs/basic/alphabet-sort/rl.toml",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",

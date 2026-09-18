@@ -202,9 +202,7 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 Follow this guide to train large models on hard reasoning and agentic tasks.
 These guides are designed to be run from a Slurm cluster but can also be adapted to k8s deployments.
 
-1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
-2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**GLM-5**](examples/advanced/glm-5.3/): Large-scale `GLM-5`/`GLM-5.3` training with P/D disaggregation, the `llm-d` router, and FP8.
+See the [**Advanced recipes**](examples/advanced/README.md) for composable environment and model-topology profiles. Pair any environment with any model profile, then add cluster settings as overrides.
 
 ## Docs
 

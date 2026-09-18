@@ -1,0 +1,17 @@
+# ScaleSWE training with SWE-Bench Verified evaluation.
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["prime-rl-scaleswe"]
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["prime-rl-scaleswe"]
+env.agent.timeout.rollout = 3600

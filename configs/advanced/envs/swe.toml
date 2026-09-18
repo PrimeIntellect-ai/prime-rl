@@ -1,0 +1,16 @@
+# SWE training on r2e-gym with SWE-Bench Verified evaluation.
+
+[[orchestrator.train.source]]
+name = "swe"
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["prime-rl-swe"]
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "swe-bench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["prime-rl-swe"]

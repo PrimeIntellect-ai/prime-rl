@@ -1,0 +1,19 @@
+# Math training and AIME evaluation. This file owns the task and agent settings only.
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32768
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "aime2025"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"

@@ -11,7 +11,7 @@ Because our trainer is asynchronous, we perform only one gradient step per batch
 Schedule training locally on a node with 8 GPUs
 
 ```bash
-uv run rl @ examples/basic/hendrycks-sanity/rl.toml \
+uv run rl @ configs/basic/hendrycks-sanity/rl.toml \
   --monitors.wandb.project your-project \
   --monitors.wandb.name your-run
 ```

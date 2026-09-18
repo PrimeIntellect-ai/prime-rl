@@ -1,0 +1,55 @@
+# INTELLECT-3.1: four training nodes and twelve inference nodes.
+
+seq_len = 131072
+
+[log]
+level = "debug"
+
+[slurm]
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 12
+
+[ckpt]
+interval = 100
+
+[weight_broadcast]
+type = "nccl"
+
+[model]
+name = "PrimeIntellect/INTELLECT-3-Base"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+cp = 2
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+weight_decay = 0.01
+
+[orchestrator]
+batch_size = 2048
+
+[orchestrator.concurrency]
+initial_inflight = 4096
+max_inflight = 4096
+
+[orchestrator.renderer]
+name = "default"
+
+[inference.vllm]
+tensor_parallel_size = 8

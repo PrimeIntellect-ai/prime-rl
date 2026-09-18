@@ -1,0 +1,9 @@
+# General agent training with colocated tools on Modal.
+
+[[orchestrator.train.source]]
+name = "general-agent"
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 1
+env.taskset.task.tools.colocated = true
+env.agent.harness.id = "null"
+env.agent.runtime.type = "modal"
