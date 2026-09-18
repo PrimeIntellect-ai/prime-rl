@@ -72,8 +72,6 @@ max_inflight = 1000
 [orchestrator.algo]
 type = "ngu"
 continuation_probability = 0.8
-history_max_policy_age = 4
-seed = 42
 
 [orchestrator.renderer]
 name = "glm-4.5"

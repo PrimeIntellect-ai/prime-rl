@@ -259,11 +259,7 @@ class TrainSink:
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            cutoff = min_version
-            env = self.train_envs.get(episode_env_name(episode))
-            if env.config.algo.type == "ngu":
-                cutoff = max(cutoff, min_fresh_version(self.progress.step, env.config.algo.history_max_policy_age))
-            if policy is None or policy.start >= cutoff:
+            if policy is None or policy.start >= min_version:
                 continue
             cohort_id = self.cohort_by_trace.pop(trace_id, None)
             if cohort_id is not None:
@@ -343,9 +339,7 @@ class TrainSink:
                 reported_group, admitted=False, cancelled=cancellation is not None and cancellation.reason == "stale"
             )
             reported_group = []
-            cutoff = min_fresh_version(
-                self.progress.step, min(self.config.max_off_policy_steps, env.config.algo.history_max_policy_age)
-            )
+            cutoff = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
             ngu_cohort = self.train_source.ngu[env_name].finish(
                 group_id, group, complete=not failures and cancellation is None, min_version=cutoff
             )

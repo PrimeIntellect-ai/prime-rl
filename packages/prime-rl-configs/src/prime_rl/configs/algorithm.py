@@ -216,12 +216,6 @@ class NGUAlgoConfig(BaseAlgoConfig):
     continuation_probability: float = Field(0.875, ge=0, lt=1)
     """Probability of another independent group after an all-failure round."""
 
-    history_max_policy_age: int = Field(4, ge=0)
-    """Maximum inclusive policy age of retained payloads; reward counts never expire."""
-
-    max_history_tokens: int = Field(2_000_000, ge=1)
-    """Per-source graph-token budget for unsuccessful visit history; excludes pending metric windows and finalized cohorts."""
-
     seed: int = 42
     """Seed for this source's checkpointed continuation RNG."""
 

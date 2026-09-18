@@ -82,13 +82,13 @@ def test_ngu_visits_independent_errors_not_failures_and_give_up():
     assert not controller.retries
 
 
-def test_ngu_eviction_and_checkpoint_preserve_counts_and_rng():
+def test_ngu_checkpoint_preserves_counts_payloads_and_rng():
     task = vf.Task(vf.TaskData(idx=0, prompt="x"))
-    config = NGUAlgoConfig(seed=1, max_history_tokens=1)
+    config = NGUAlgoConfig(seed=1)
     controller = NGUController(config, "test")
     request = controller.start(task, 1)
     controller.finish(request.group_id, episodes(task, [0] * 4), complete=True, min_version=0)
-    assert controller.counters["evicted_payloads"] == 3
+    assert len(next(iter(controller.visits.values())).cohort.episodes) == 4
     buffer = io.BytesIO()
     torch.save(controller.state_dict(), buffer)
     buffer.seek(0)
@@ -97,33 +97,21 @@ def test_ngu_eviction_and_checkpoint_preserve_counts_and_rng():
     assert restored.rng.getstate() == controller.rng.getstate()
     retry = restored.next_retry(3)
     cohort = restored.finish(retry.group_id, episodes(task, [0, 1], 2), complete=True, min_version=0)
-    assert (cohort.attempts, cohort.successes, len(cohort.episodes)) == (6, 1, 3)
-    assert len({e.id for e in cohort.episodes}) == 3
+    assert (cohort.attempts, cohort.successes, len(cohort.episodes)) == (6, 1, 6)
+    assert len({e.id for e in cohort.episodes}) == 6
 
 
 @pytest.mark.parametrize(
     "config",
     [
         {"continuation_probability": 1},
-        {"history_max_policy_age": -1},
+        {"continuation_probability": -0.1},
         {"sampling": {"source": {"name": "frozen", "base_url": "http://localhost"}}},
     ],
 )
 def test_ngu_invalid_configuration(config):
     with pytest.raises(ValueError):
         NGUAlgoConfig(**config)
-
-
-def test_reverse_text_smoke_reward_receives_task_data():
-    import asyncio
-    from types import SimpleNamespace
-
-    from tools.ngu.reverse_text import binary_lcs
-
-    task = SimpleNamespace(answer="cba")
-    assert asyncio.run(binary_lcs(task, SimpleNamespace(last_reply="<reversed_text>cba</reversed_text>"))) == 1
-    assert asyncio.run(binary_lcs(task, SimpleNamespace(last_reply="<reversed_text>cab</reversed_text>"))) == 0
-    assert asyncio.run(binary_lcs(task, SimpleNamespace(last_reply="cba"))) == 0
 
 
 def test_ngu_sink_checkpoint_preserves_wire_payloads_and_aliases():

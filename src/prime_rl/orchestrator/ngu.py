@@ -97,7 +97,6 @@ class NGUController:
         self.retries.append(next_id)
         for active in self.visits.values():
             self._expire(active, min_version)
-        self._bound_history()
         self.counters["continued"] += 1
         return None
 
@@ -105,16 +104,6 @@ class NGUController:
         kept = [e for e in visit.cohort.episodes if train_work(e).policy.start >= min_version]
         self.counters["expired_payloads"] += len(visit.cohort.episodes) - len(kept)
         visit.cohort.episodes = kept
-
-    def _bound_history(self) -> None:
-        tokens = sum(history_tokens(e) for v in self.visits.values() for e in v.cohort.episodes)
-        while tokens > self.config.max_history_tokens:
-            oldest = min(
-                (v for v in self.visits.values() if v.cohort.episodes),
-                key=lambda v: train_work(v.cohort.episodes[0]).policy.start,
-            )
-            tokens -= history_tokens(oldest.cohort.episodes.pop(0))
-            self.counters["evicted_payloads"] += 1
 
     def buffered_episode_ids(self) -> set[str]:
         return {e.id for visit in self.visits.values() for e in visit.cohort.episodes}
