@@ -129,6 +129,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "outcome": None,
                 "to": None,
                 "live": [],
+                "links": [],
             }
             nodes.append(node)
             open_by_unit[unit] = node
@@ -140,6 +141,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             status = event.get("status")
             node["status"] = STATUS.get(status, "completed")
             node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
+            node["links"] = [link for link in event.get("links") or [] if isinstance(link, dict)]
             if status == "held":
                 node["error"] = event.get("reason")
 
@@ -208,6 +210,21 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "target": target["id"] if target else None,
                     "outcome": source["outcome"],
                     "to": source["to"],
+                    "summary": source["reason"],
+                }
+            )
+    for source in nodes:  # between lanes: a stage that created, released or woke another unit
+        for link in source["links"]:
+            lane = by_unit.get(link["unit"], [])
+            target = next((n for n in lane if (n["started_at"] or "") >= (source["finished_at"] or "")), None)
+            edges.append(
+                {
+                    "id": f"link:{source['id']}:{link['unit']}:{link['label']}",
+                    "kind": "route",
+                    "source": source["id"],
+                    "target": target["id"] if target else None,
+                    "outcome": link["label"],
+                    "to": target["name"] if target else link["unit"],
                     "summary": source["reason"],
                 }
             )

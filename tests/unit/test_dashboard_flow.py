@@ -32,6 +32,7 @@ def flow_root(tmp_path, held=False):
             "status": "waiting",
             "reason": "planned 1 tasks",
             "sha": "a",
+            "links": [{"unit": "t1", "label": "created"}],
         },
         {"type": "started", "at": at.format(2), "unit": "t1", "stage": "author"},
         {
@@ -107,7 +108,9 @@ def test_flow_projection_builds_lanes_routes_calls_and_ignores_a_torn_tail(tmp_p
         ("waiting", "plan", False),
         ("authored", "control", True),
         ("proceed", "control", False),
+        ("created", "author", True),  # the plan's link to the task it created: an edge between lanes
     ]
+    assert routes[-1]["source"].endswith("campaign/plan#0") and routes[-1]["target"].endswith("t1/author#0")
     assert routes[1]["summary"] == "wrote it"
     (call,) = [n for n in data["nodes"] if n["index"] is not None]
     assert call["trace_id"] == "trace" and call["episode_line"] == 0 and call["name"] == "control/abcd/v1"
@@ -125,7 +128,7 @@ def test_flow_projection_builds_lanes_routes_calls_and_ignores_a_torn_tail(tmp_p
             "traces": 1,
         }
     ]
-    assert data["groups"][0]["kind"] == "run" and data["stats"]["routes"] == 3 and data["stats"]["traces"] == 1
+    assert data["groups"][0]["kind"] == "run" and data["stats"]["routes"] == 4 and data["stats"]["traces"] == 1
     assert data["rows"][0]["status"] == "completed"
 
 
@@ -151,7 +154,7 @@ def test_flow_endpoints_etag_detail_and_run_state(tmp_path, monkeypatch):
     root = flow_root(tmp_path)
     monkeypatch.setattr(server, "get_run_dir", lambda run: root)
     first = server.get_flow("run")
-    assert first["stats"]["tasks"] == 1 and first["stats"]["routes"] == 3
+    assert first["stats"]["tasks"] == 1 and first["stats"]["routes"] == 4
     assert server.get_flow("run", etag=first["etag"]) == {"etag": first["etag"], "unchanged": True}
     detail = server.get_flow_trace("run", "trace")
     assert detail["decision"] == {"outcome": "proceed", "summary": "scored 1.0"} and detail["episode_id"] == "episode"
