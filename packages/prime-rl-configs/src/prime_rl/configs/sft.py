@@ -98,7 +98,7 @@ class SFTSourceConfig(BaseConfig):
     """Dataset split."""
 
     name: str | None = None
-    """Display name for this source in logs and progress metrics. Defaults to ``dataset`` plus ``/subset`` when a subset is set. Must be unique across the sources of one data config."""
+    """Display name for this source in logs and progress metrics. Defaults to ``dataset``, followed by ``/subset`` when a subset is set and ``/split`` when the split is not ``train``. Must be unique across the sources of one data config."""
 
     ratio: float = Field(1.0, gt=0)
     """Sampling weight for this source when interleaving several sources. Relative weights are normalized to probabilities across sources (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -110,7 +110,8 @@ class SFTSourceConfig(BaseConfig):
     def resolved_name(self) -> str:
         if self.name is not None:
             return self.name
-        return self.dataset if self.subset is None else f"{self.dataset}/{self.subset}"
+        parts = [self.dataset, self.subset, None if self.split == "train" else self.split]
+        return "/".join(part for part in parts if part is not None)
 
 
 class SFTDataConfig(BaseDataConfig):

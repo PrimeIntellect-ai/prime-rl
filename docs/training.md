@@ -271,7 +271,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<source>/ratio_{samples,tokens}` — when training on multiple sources, the realized mixing ratio per source name.
+- `progress/<source>/ratio_{samples,tokens}` — when training on multiple sources, the realized mixing ratio per source name (`name`, or `dataset` plus any non-default `/subset` and `/split`).
 
 **Stability and optimization:**
 
