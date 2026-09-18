@@ -1,6 +1,6 @@
 # NGU: SWE training comparison and difficulty profile
 
-Prepared on `feat/ngu`, merged with `origin/main` `776053131`.
+Prepared on `feat/ngu`, merged with `origin/main` `26c967c6e`.
 The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finished and job 737 was released; runtime artifacts are under `outputs/ngu-profile-20260917`.
 
 ## Training configurations
@@ -9,7 +9,7 @@ The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finishe
 - [`train-ngu.toml`](train-ngu.toml): NGU, K=16, continuation probability .875, inclusive payload history age 4, historical binary baseline and positive anchoring.
 - [`difficulty-eval.toml`](difficulty-eval.toml): optional overlay adding the four fixed training-difficulty subsets while preserving both held-out sources.
 
-Both arms start from `PrimeIntellect/GLM-4.5-Air-Scaleswe` with fresh optimizer state. They use two H200 trainer nodes and six independent eight-GPU inference replicas (64 GPUs total), TP8 + EP, 131072 context, router replay, CP4/ulysses, Muon LR 3e-6, and IPO with epsilon 0.3, advantage tau 1.0, and KL tau 0. Both log to W&B project `ngu-ablations`. No length penalty or sampling override. Adaptive concurrency is 256–1000. The model's numerical dtype defaults are unchanged. `max_steps=10000` is a guard, not an enforced GPU-hour budget; compare checkpoints at equal allocated H200-hours. Checkpoints save every 50 steps.
+Both arms start from `PrimeIntellect/GLM-4.5-Air-Scaleswe` with fresh optimizer state. They use two H200 trainer nodes and six independent eight-GPU inference replicas (64 GPUs total), TP8 + EP, 131072 context, router replay, CP4/ulysses, Muon LR 3e-6, and the default IPO loss with epsilon 0.3, advantage tau 1.0, and KL tau 0. Both log to W&B project `ngu-ablations`. No length penalty or sampling override. Adaptive concurrency is 256–1000. The model's numerical dtype defaults are unchanged. `max_steps=10000` is a guard, not an enforced GPU-hour budget; compare checkpoints at equal allocated H200-hours. Checkpoints save every 50 steps.
 
 Training uses **all 1,000** IDs in `tools/ngu/sample-1000.json`, including the three tasks with no valid profiling attempts. This is a single training source: bucket membership does not change task weights. NGU is intended to allocate extra rounds online from actual training outcomes, not from the profiling labels.
 

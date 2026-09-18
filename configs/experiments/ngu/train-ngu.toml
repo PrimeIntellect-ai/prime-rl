@@ -55,12 +55,6 @@ max_inflight_activations = 1
 type = "muon"
 lr = 3e-6
 
-[trainer.loss]
-type = "ipo"
-eps = 0.3
-adv_tau = 1.0
-kl_tau = 0.0
-
 [orchestrator]
 batch_size = 256
 group_size = 16
