@@ -225,7 +225,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 **Advanced** (32–2048 GPUs, SLURM):
 
 - [**Qwen3-30B-A3B**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-30b-a3b) — `Qwen3-30B-A3B` on math, SWE, and tool use.
-- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal.
+- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal; includes a variant that trains the 100B+ MoE on only two nodes.
 - [**Nemotron-3-Super**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced/nemotron-3-super) — `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
 - [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced/minimax-m2.5) — `MiniMax-M2.5` on agentic SWE.
 - [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
