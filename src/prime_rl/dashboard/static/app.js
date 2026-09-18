@@ -3798,8 +3798,28 @@ function messageText(message) {
   const content = message?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content))
-    return content.map((part) => (part.type === "text" ? part.text : `[${part.type}]`)).join("");
+    return content.map((part) => (part.type === "text" ? part.text : part.type === "image_url" ? "" : `[${part.type}]`)).join("");
   return content == null ? "" : JSON.stringify(content);
+}
+
+/* the images a multipart message carries (screenshots a browser harness returns) */
+function messageImages(message) {
+  const content = message?.content;
+  if (!Array.isArray(content)) return [];
+  return content
+    .map((part) => (part.type === "image_url" ? part.image_url?.url ?? part.image_url : null))
+    .filter((url) => typeof url === "string" && (url.startsWith("data:image/") || url.startsWith("https://")));
+}
+
+function imageCount(message) {
+  const n = messageImages(message).length;
+  return n ? `${n} image${n === 1 ? "" : "s"}` : "";
+}
+
+function imagesHtml(message) {
+  const urls = messageImages(message);
+  if (!urls.length) return "";
+  return `<div class="entry-images">${urls.map((url) => `<img src="${esc(url)}" loading="lazy" alt="image from the message" title="click to toggle full size">`).join("")}</div>`;
 }
 
 function reasoningText(content) {
@@ -4356,13 +4376,14 @@ function renderMessages(ep, trace, branches) {
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
-      `<span class="entry-preview">${preview(text, 180)}</span>` +
+      `<span class="entry-preview">${preview(text || imageCount(node.message), 180)}</span>` +
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
       nodeCalls.map(callChipHtml).join("") +
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
+      imagesHtml(node.message) +
       toolCalls.join("") +
       `</details>`;
     return messageHtml + (i === systemPosition ? toolsHtml : "");
@@ -4394,9 +4415,10 @@ function renderMessages(ep, trace, branches) {
       const text = messageText(message);
       return (
         `<details class="entry pending ${esc(role)}" open><summary><span class="entry-num">${String(path.length + k + 1).padStart(2, "0")}</span>` +
-        `<span class="entry-role">${esc(role)}</span><span class="entry-preview">${preview(text, 180)}</span>` +
+        `<span class="entry-role">${esc(role)}</span><span class="entry-preview">${preview(text || imageCount(message), 180)}</span>` +
         `<span class="chip">awaiting model</span><span class="entry-chev">›</span></summary>` +
         (text ? `<div class="entry-body">${esc(text)}</div>` : "") +
+        imagesHtml(message) +
         (message?.tool_calls || []).map(toolCallHtml).join("") +
         `</details>`
       );
@@ -6550,6 +6572,10 @@ $("#flow-modal").addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#flow-modal").hidden) closeFlowStage();
+});
+document.addEventListener("click", (event) => {
+  const img = event.target.closest(".entry-images img");
+  if (img) img.classList.toggle("full");
 });
 $("#flow-inspector").addEventListener("click", (event) => {
   const node = event.target.closest("[data-flow-node]");
