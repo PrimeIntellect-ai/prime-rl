@@ -22,6 +22,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_diag_stash_bf16_o_proj_weight()
+    monkey_patch_diag_ue8m0_weight_scales()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepseek_v4_attn_sink_loading()
     monkey_patch_diag_fake_quant_weights()
@@ -245,6 +246,43 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_diag_ue8m0_weight_scales():
+    """Measurement only, off unless ``PRIME_DIAG_UE8M0_WEIGHTS=1``: quantize weights with power-of-two block scales.
+
+    ``Fp8PerBlockOnlineLinearMethod`` and its MoE counterpart both call
+    ``per_block_cast_to_fp8(..., use_ue8m0=False)``, which picks the scale
+    ``amax / 448``. The published DeepSeek V4 bf16 checkpoint is a dequantized
+    FP8 release whose weights already lie exactly on the e4m3 grid with
+    power-of-two block scales, so that scale choice rotates the grid and injects
+    the full e4m3 rounding error on weights that would otherwise round-trip
+    exactly. Forcing ``use_ue8m0=True`` restores the original grid.
+
+    The scales stay fp32, so no kernel change is implied: a power of two is an
+    ordinary fp32 scale. This is distinct from ``VLLM_USE_DEEP_GEMM_E8M0=1``,
+    which re-quantizes an already-rounded weight and therefore double-rounds.
+    """
+    import os
+
+    if os.environ.get("PRIME_DIAG_UE8M0_WEIGHTS") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    logger = init_logger(_DIAG_LOGGER_NAME)
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_diag_forces_ue8m0", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        kwargs["use_ue8m0"] = True
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_diag_forces_ue8m0 = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_DIAG_UE8M0_WEIGHTS=1: quantizing weights with power-of-two block scales.")
 
 
 def monkey_patch_diag_stash_bf16_o_proj_weight():
