@@ -495,6 +495,23 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
+@pytest.mark.parametrize("transport", ["nccl", "nixl", "filesystem"])
+def test_eplb_requires_nccl_weight_updates(transport):
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "weight_broadcast": {"type": transport},
+        "inference": {"vllm": {"enable_eplb": True}},
+    }
+    if transport == "nccl":
+        config = RLConfig.model_validate(data)
+        assert config.inference.vllm.enable_eplb
+        assert config.trainer.weight_broadcast.type == "nccl"
+    else:
+        with pytest.raises(ValueError, match="enable_eplb requires NCCL weight updates"):
+            RLConfig.model_validate(data)
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
