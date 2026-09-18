@@ -130,11 +130,13 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "to": None,
                 "live": [],
                 "links": [],
+                "done_order": None,
             }
             nodes.append(node)
             open_by_unit[unit] = node
         elif kind in ("transition", "stopped") and (node := open_by_unit.pop(unit, None)) is not None:
             node["finished_at"] = event.get("at")
+            node["done_order"] = order
             if kind == "stopped":
                 node["status"] = "cancelled"
                 continue
@@ -216,7 +218,8 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     for source in nodes:  # between lanes: a stage that created, released or woke another unit
         for link in source["links"]:
             lane = by_unit.get(link["unit"], [])
-            target = next((n for n in lane if (n["started_at"] or "") >= (source["finished_at"] or "")), None)
+            after = source.get("done_order", source["order"])
+            target = next((n for n in lane if n["order"] > after), None)
             edges.append(
                 {
                     "id": f"link:{source['id']}:{link['unit']}:{link['label']}",
