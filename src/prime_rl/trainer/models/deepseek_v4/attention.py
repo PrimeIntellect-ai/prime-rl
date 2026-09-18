@@ -260,18 +260,11 @@ class PackedContext:
         *,
         rotary_emb: DeepseekV4RotaryEmbedding,
         seq_lens: Tensor,
-        dtype: torch.dtype,
         device: torch.device,
         cp_rank: int = 0,
         cp_world_size: int = 1,
     ) -> "PackedContext":
         """Derive every field from one `seq_lens`, ensuring mutual consistency.
-
-        `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
-        sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. `dtype` must be the dtype
-        attention runs at, since it types the RoPE tables. The sequence is as long as `seq_lens` says,
-        padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -300,9 +293,7 @@ class PackedContext:
         # Document-local by construction: a token's position is its distance from its own
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
-        position_embeddings = {
-            rope_type: rotary_emb(position_ids, rope_type, dtype=dtype) for rope_type in rotary_emb.layer_types
-        }
+        position_embeddings = {rope_type: rotary_emb(position_ids, rope_type) for rope_type in rotary_emb.layer_types}
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
@@ -487,9 +478,7 @@ class DeepseekV4Compressor(nn.Module):
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
-        cos, sin = self.rotary_emb(
-            entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type, dtype=compressed.dtype
-        )
+        cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
         return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
@@ -540,8 +529,8 @@ class DeepseekV4Indexer(nn.Module):
         n_entries = compressed_kv.shape[1]
 
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
-        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
+        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -643,7 +632,7 @@ class DeepseekV4Attention(nn.Module):
     1. Shared-KV multi-query attention. `kv_proj` emits a single `head_dim`-wide vector
        per token that serves as both key and value for every query head.
     2. Partial interleaved RoPE on the trailing `qk_rope_head_dim` channels of each head.
-       Because the value carries that rotation too, the conjugate rotation is applied to
+       Because the value carries that rotation too, the inverse rotation is applied to
        the attention output, which leaves each key's contribution a function of its
        relative distance to the query.
     3. A per-head learnable attention sink.
@@ -713,9 +702,8 @@ class DeepseekV4Attention(nn.Module):
         cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
-        # Normalizing before the transpose keeps the input contiguous for the quack kernel.
-        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape)).transpose(1, 2)  # (b, h, t, d)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin)
+        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape))  # (b, t, h, d)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
@@ -743,7 +731,7 @@ class DeepseekV4Attention(nn.Module):
             window_indices=packed.window_indices,
         )
         attn_output, _ = dsv4_sparse_attn(
-            q.transpose(1, 2).contiguous(),
+            q,
             inputs.kv_buf,
             inputs.indices,
             self.sinks,
@@ -751,8 +739,8 @@ class DeepseekV4Attention(nn.Module):
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
-        # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
+        # by the inverse angle at the query position cancels that out.
+        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, inverse_rotation=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
