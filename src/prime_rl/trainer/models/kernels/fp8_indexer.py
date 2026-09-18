@@ -168,8 +168,12 @@ def _triton_fp8_indexer_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
+@torch.compiler.disable
 def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
+
+    This function launches handwritten Triton kernels. Keep those launches out
+    of Dynamo/Inductor while allowing enclosing transformer blocks to compile.
 
     Args:
         q: [S_q, H, D] bf16 query vectors per head
