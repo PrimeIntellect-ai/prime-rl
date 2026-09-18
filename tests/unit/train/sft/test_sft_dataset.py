@@ -5,11 +5,13 @@ import torch
 from datasets import Dataset, interleave_datasets
 from renderers import create_renderer
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
+from renderers.deepseek_v4 import DeepSeekV4Renderer
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
+from prime_rl.utils.chat_template import deserialize_tool_calls
 
 _BOS_TOKEN_ID = 0
 _STOP_TOKEN_ID = 1
@@ -485,3 +487,46 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+def test_deserialize_tool_calls_accepts_trace_shapes():
+    """Verifiers traces store tool calls as flat JSON strings; both they and
+    the OAI dict shape must deserialize to the OAI form."""
+    from prime_rl.utils.chat_template import deserialize_tool_calls
+
+    flat_string = '{"id": "t1", "name": "ipython", "arguments": "{\\"code\\": \\"print(1)\\"}"}'
+    oai_dict = {"id": "t2", "type": "function", "function": {"name": "ipython", "arguments": '{"code": "print(2)"}'}}
+    [message] = deserialize_tool_calls([{"role": "assistant", "content": "", "tool_calls": [flat_string, oai_dict]}])
+
+    first, second = message["tool_calls"]
+    assert first["id"] == "t1"
+    assert first["function"] == {"name": "ipython", "arguments": {"code": "print(1)"}}
+    assert second["function"] == {"name": "ipython", "arguments": {"code": "print(2)"}}
+
+
+def test_flat_trace_tool_call_renders_real_name_and_arguments():
+    flat = {"id": "t1", "name": "ipython", "arguments": '{"code": "print(1)"}'}
+    [message] = deserialize_tool_calls([{"role": "assistant", "content": "", "tool_calls": [flat]}])
+
+    rendered = DeepSeekV4Renderer._render_tool_call(message["tool_calls"][0])
+
+    assert 'invoke name="ipython"' in rendered
+    assert 'parameter name="code"' in rendered
+    assert "print(1)" in rendered
+    assert 'name="None"' not in rendered
+
+
+def test_skip_invalid_samples_knob(raising_renderer):
+    """A raising sample crashes by default and is skipped (with the good
+    samples still yielded) when skip_invalid_samples is on."""
+    dataset = Dataset.from_list(
+        [{"messages": [{"role": "assistant", "content": content}]} for content in ("a0", "bad", "a1")]
+    )
+
+    crashing = SFTDataset(dataset, raising_renderer, shuffle=False, max_epochs=1)
+    with pytest.raises(ValueError, match="unrenderable sample"):
+        list(crashing)
+
+    skipping = SFTDataset(dataset, raising_renderer, shuffle=False, max_epochs=1, skip_invalid_samples=True)
+    samples = list(skipping)
+    assert len(samples) == 2
