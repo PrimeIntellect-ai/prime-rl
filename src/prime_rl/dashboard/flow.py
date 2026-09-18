@@ -75,12 +75,12 @@ def call_records(run_dir: Path) -> list[dict[str, Any]]:
     return [r for p in sorted((run_dir / "calls").glob("*/*.json")) if (r := _read(p)) is not None]
 
 
-def live_stages(run_dir: Path) -> set[tuple[str, str]]:
-    """(unit, stage) pairs with a seat in flight, from the live snapshot names `<unit>--<key>.json`."""
-    out = set()
-    for path in (run_dir / "live").glob("*.json"):
+def live_seats(run_dir: Path) -> dict[str, list[str]]:
+    """The seats in flight per unit, from the live snapshot names `<unit>--<key>.json`."""
+    out: dict[str, list[str]] = defaultdict(list)
+    for path in sorted((run_dir / "live").glob("*.json")):
         unit, _, key = path.stem.partition("--")
-        out.add((unit, key.split("__")[0]))
+        out[unit].append(key.replace("__", "/"))
     return out
 
 
@@ -128,6 +128,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "group": group_id(unit),
                 "outcome": None,
                 "to": None,
+                "live": [],
             }
             nodes.append(node)
             open_by_unit[unit] = node
@@ -216,14 +217,9 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             {"id": f"spread:{parent_id}:{child['id']}", "kind": "spread", "source": parent_id, "target": child["id"]}
         )
 
-    live = live_stages(run_dir)
-    for node in nodes:
-        if (
-            node["status"] == "running"
-            and (node["unit"], node["name"]) not in live
-            and open_by_unit.get(node["unit"]) is not node
-        ):
-            node["status"] = "cancelled"
+    live = live_seats(run_dir)
+    for unit, node in open_by_unit.items():  # a stage without its transition is running
+        node["live"] = live.get(unit, [])
 
     tasks = []
     for unit, state in states.items():
@@ -243,7 +239,8 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             }
         )
     all_nodes = sorted([*nodes, *children], key=lambda n: (n["order"], n["id"]))
-    finished = bool(tasks) and all(t["status"] == "terminal" for t in tasks)
+    campaign_done = states.get("campaign", {}).get("status") in ("waiting", "terminal")
+    finished = campaign_done and bool(tasks) and all(t["status"] == "terminal" for t in tasks) and not open_by_unit
     rows = [
         {
             "id": row,
@@ -271,5 +268,6 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             "routes": sum(e["kind"] == "route" for e in edges),
             "held": sum(t["status"] == "held" for t in tasks),
             "waiting": sum(t["status"] == "waiting" for t in tasks),
+            "live": sum(len(v) for v in live.values()),
         },
     }

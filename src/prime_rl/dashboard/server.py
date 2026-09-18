@@ -310,8 +310,10 @@ def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
             break
         except (KeyError, TypeError, ValueError):
             continue
-    tasks = [state for unit, state in unit_states(run_dir).items() if unit != "campaign"]
-    return started, bool(tasks) and all(state.get("status") == "terminal" for state in tasks)
+    states = unit_states(run_dir)
+    tasks = [state for unit, state in states.items() if unit != "campaign"]
+    campaign_done = states.get("campaign", {}).get("status") in ("waiting", "terminal")
+    return started, campaign_done and bool(tasks) and all(state.get("status") == "terminal" for state in tasks)
 
 
 def run_meta(run_dir: Path) -> dict:
