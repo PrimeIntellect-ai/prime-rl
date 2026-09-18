@@ -25,8 +25,6 @@ from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10
-
 
 def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None) -> int:
     """Token cost of one trainer-bound trace."""
@@ -315,9 +313,9 @@ class TrainSink:
         self._drop_stale(samples_by_trace)
         # A group's traces share one dispatch version, so the insertion sweep
         # voids all or none of them. A fully-voided group shipped nothing —
-        # advance the zero-output budget instead of resetting it, or a stalled
+        # advance the zero-output tally instead of resetting it, or a stalled
         # trainer plus a tight bound could void groups forever without ever
-        # tripping the abort.
+        # surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
             return
@@ -333,7 +331,7 @@ class TrainSink:
 
     def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
-        cancelled), so dropped groups advance the zero-output budget at the
+        cancelled), so dropped groups advance the zero-output tally at the
         same rate as fully-delivered ones."""
         if self.batch_size is not None:
             returned_traces = sum(len(episode.traces) for episode in group)
@@ -342,9 +340,12 @@ class TrainSink:
             survivor_tokens = sum(trace.num_total_tokens for trace in survivors)
             episode_tokens = sum(episode.num_total_tokens for episode in group)
             self.zero_output_units += survivor_tokens or episode_tokens or self.config.seq_len * n_owed
-        self._check_zero_output_budget()
+        self._warn_zero_output()
 
-    def _check_zero_output_budget(self) -> None:
+    def _warn_zero_output(self) -> None:
+        """Warn once per batch-equivalent of finalized units that shipped no
+        payload, so a run that produces no training signal stays visible in the
+        logs without aborting."""
         target = self.batch_size if self.batch_size is not None else self.token_batch_size
         assert target is not None
         windows = self.zero_output_units // target
@@ -353,14 +354,8 @@ class TrainSink:
         self.reported_zero_output_windows = windows
         get_logger().warning(
             f"No admitted train payload after {self.zero_output_units} finalized units "
-            f"(consecutive zero-output batch equivalents: "
-            f"{windows}/{MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS})"
+            f"({windows} zero-output batch equivalents)"
         )
-        if windows >= MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS:
-            raise RuntimeError(
-                f"{windows} consecutive zero-output batch equivalents — "
-                "check the curriculum admission policy, task difficulty, and staleness drops."
-            )
 
     def process_batch(self) -> TrainBatch:
         items = list(self.pending_batch.items())
