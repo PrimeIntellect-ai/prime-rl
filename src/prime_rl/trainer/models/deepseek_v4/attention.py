@@ -632,7 +632,7 @@ class DeepseekV4Attention(nn.Module):
     1. Shared-KV multi-query attention. `kv_proj` emits a single `head_dim`-wide vector
        per token that serves as both key and value for every query head.
     2. Partial interleaved RoPE on the trailing `qk_rope_head_dim` channels of each head.
-       Because the value carries that rotation too, the conjugate rotation is applied to
+       Because the value carries that rotation too, the inverse rotation is applied to
        the attention output, which leaves each key's contribution a function of its
        relative distance to the query.
     3. A per-head learnable attention sink.
@@ -739,8 +739,8 @@ class DeepseekV4Attention(nn.Module):
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
-        # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, conjugate=True)
+        # by the inverse angle at the query position cancels that out.
+        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, inverse_rotation=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
