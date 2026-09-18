@@ -568,13 +568,13 @@ class CheckpointConfig(BaseConfig):
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
-    eps: float = Field(0.1, ge=0)
+    eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
-    kl_tau: float = Field(1e-3, ge=0)
+    kl_tau: float = Field(0.0, ge=0)
     """Temperature for the KL term."""
 
 

@@ -209,9 +209,9 @@ The knobs under `[trainer.loss]` are:
 
 | Knob | Default | What it does |
 |---|---|---|
-| `eps` | 0.1 | Maximum absolute probability change before a token is masked. |
+| `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 to drop the policy-gradient term, leaving only the KL regularizer. |
-| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `kl_tau` | 0.0 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
