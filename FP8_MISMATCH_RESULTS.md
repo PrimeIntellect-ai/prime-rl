@@ -58,20 +58,35 @@ completely untouched bf16 kernel stack reproduces most of the effect; activation
 linear kernel, the MoE kernel and the `o_proj` path are all second order, and the two levers
 `FP8_MISMATCH_PLAN.md` hoped would separate the bundle both measure at zero effect.
 
-That points at a property of this checkpoint, verified directly: **every weight vLLM re-quantizes
-already sits exactly on the e4m3 grid** (100.00% of sampled elements carry only 4 significant
-mantissa bits, against 6.3% for `embed`/`head`, which vLLM leaves alone and which are genuine
-bf16). `PrimeIntellect/DeepSeek-V4-Flash-0731-bf16` is the published FP8 checkpoint dequantized
-into bf16 containers. vLLM's scale `amax / 448` is not a power of two, so it rotates the grid and
-injects rounding error on values that would otherwise round-trip bit-exactly.
+That interacts with a known property of the checkpoint: `PrimeIntellect/DeepSeek-V4-Flash-0731-bf16`
+is an upconversion of `deepseek-ai/DeepSeek-V4-Flash-0731` done to make training easier, so every
+weight vLLM re-quantizes already sits exactly on the e4m3 grid. Measured: 100.00% of sampled
+elements in quantized tensors carry only 4 significant mantissa bits, against 6.3% for
+`embed`/`head`, which vLLM leaves alone and which are genuine bf16. The source repo mixes FP8 and
+MXFP4 tensors, which does not matter here, since MXFP4 is e2m1 with power-of-two scales and e2m1
+carries fewer mantissa bits than e4m3, so both families land on the e4m3 grid.
+
+The consequence is that vLLM's scale `amax / 448` is not a power of two, so it rotates the grid and
+injects rounding error on values that would otherwise round-trip bit-exactly (confirmed: ue8m0
+round-trip error is exactly 0.0, `amax/448` is ~2.7% relative, on both attention and expert
+tensors).
 
 Forcing power-of-two weight scales is accordingly the best variant measured, halving math p90 and
 taking the masked-token count to zero. It is **not** the full collapse that exact round-tripping
-would predict (residual ~45% of p90 rather than ~4%), and I did not resolve why: either the error
-channels do not add linearly because the dominant one is discrete selection flips, or the patch is
-not reaching the routed-expert weights, which hold 97.9% of the quantized mass. Also note this is
-only free at `lr = 0.0`; once training moves the weights off the grid, power-of-two scales cost
-range rather than saving it.
+would predict (residual ~45% of p90 rather than ~4%), and the reason is now established rather than
+guessed: the ue8m0 round-trip is bit-exact (max abs error exactly 0.0) on routed-expert weights as
+well as linears, and all three call sites use the patched module-global with `use_ue8m0` passed by
+keyword, so the server really was holding bit-exact weights. The residual is activation
+quantization plus discrete-selection instability.
+
+**That falsifies reading the ablation table as additive shares.** Making the weights exact does not
+remove the share the weights-only variant appeared to carry. When the dominant mechanism is
+near-tied discrete selections, removing one perturbation source mostly relocates which ties fall
+which way. Read each row as "this variant's total distance from bf16", not as a contribution that
+sums.
+
+Note also that power-of-two scales are only free while weights sit on the grid; once training moves
+them off it, they cost range rather than saving it.
 
 ### 4. Recommendation
 
