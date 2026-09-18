@@ -57,7 +57,7 @@ lr = 3e-6
 
 [orchestrator]
 batch_size = 256
-group_size = 16
+group_size = 8
 max_off_policy_steps = 32
 preserve_groups = true
 max_zero_output_batches = 100

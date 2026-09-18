@@ -5,8 +5,8 @@ The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finishe
 
 ## Training configurations
 
-- [`train-static.toml`](train-static.toml): static GRPO, K=16, batch target 256. Validated with the native RL dry-run entrypoint.
-- [`train-ngu.toml`](train-ngu.toml): NGU, K=16, continuation probability .875, inclusive payload history age 4, historical binary baseline and positive anchoring.
+- [`train-static.toml`](train-static.toml): static GRPO, K=8 (32 complete groups), batch target 256. Validated with the native RL dry-run entrypoint.
+- [`train-ngu.toml`](train-ngu.toml): NGU, initial K=4, continuation probability .8, inclusive payload history age 4, historical binary baseline and positive anchoring.
 - [`difficulty-eval.toml`](difficulty-eval.toml): optional overlay adding the four fixed training-difficulty subsets while preserving both held-out sources.
 
 Both arms start from `PrimeIntellect/GLM-4.5-Air-Scaleswe` with fresh optimizer state. They use two H200 trainer nodes and six independent eight-GPU inference replicas (64 GPUs total), TP8 + EP, 131072 context, router replay, CP4/ulysses, Muon LR 3e-6, and the default IPO loss with epsilon 0.3, advantage tau 1.0, and KL tau 0. Both log to W&B project `ngu-ablations`. No length penalty or sampling override. Adaptive concurrency is 256–1000. The model's numerical dtype defaults are unchanged. `max_steps=10000` is a guard, not an enforced GPU-hour budget; compare checkpoints at equal allocated H200-hours. Checkpoints save every 50 steps.
@@ -33,7 +33,11 @@ uv run rl @ configs/experiments/ngu/train-static.toml --dry-run
 uv run rl @ configs/experiments/ngu/train-static.toml @ configs/experiments/ngu/difficulty-eval.toml --dry-run
 ```
 
-NGU's configuration matches the static arm except run labels and algorithm settings. Both enable whole-cohort batching (`preserve_groups=true`) and a 100-batch-equivalent no-output guard. NGU retries failed rounds with fresh episodes, keeps historical reward counts after payload expiry, and rescores anchored advantages after freshness filtering. See [algorithm semantics](../../../docs/algorithms.md#never-give-up-ngu) for memory limits and resume behavior. The small reverse-text integration run is documented in [the smoke report](../../../notes/ngu/smoke.md). The eight-node SWE training runs have not been launched.
+NGU's configuration matches the static arm except run labels, group size and algorithm settings. Both enable whole-cohort batching (`preserve_groups=true`) and a 100-batch-equivalent no-output guard. NGU retries failed rounds with fresh episodes, keeps historical reward counts after payload expiry, and rescores anchored advantages after freshness filtering. See [algorithm semantics](../../../docs/algorithms.md#never-give-up-ngu) for memory limits and resume behavior. The small reverse-text integration run is documented in [the smoke report](../../../notes/ngu/smoke.md). The eight-node SWE training runs have not been launched.
+
+NGU samples additional rounds of four completions after an all-zero round with probability .8; it does not double the round size. An always-unsolved visit has an expected 20 generated completions before probabilistic give-up (`4 / (1 - .8)`); successful visits stop earlier. The batch target is 256 trained traces, with whole-cohort overshoot possible. Static K=8 corresponds to 32 complete accepted groups per batch; active sampling and error filtering can change the number of generated groups. Compare equal H200-hours, not just equal update counts.
+
+The paper's small GSM8K experiment used K=4, p=.95. Its DeepScaler sweep used K=16 with p=.5/.75/.875; .875 had the highest reported average, with .75 close behind. Our K=4, p=.8 is a less persistent SWE setting, not a paper-selected optimum. We retain inclusive history age 4 and the 2,000,000-token unfinished-history budget per source. See [the paper](https://arxiv.org/html/2609.13443v1) and [our history semantics](../../../docs/algorithms.md#never-give-up-ngu).
 
 Track each held-out source's resolved rate, error rate and rollout length against allocated GPU-hours, alongside throughput, trainer idle time and trained/generated samples. The optional buckets are **training-set diagnostics**, not held-out evaluation. NGU logs retry rounds, first-success attempt totals, history eviction, give-up rates and accepted cohort sizes under `ngu/<source>/`; trace annotations expose the anchored advantages and history counts.
 

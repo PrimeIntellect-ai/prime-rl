@@ -57,7 +57,7 @@ lr = 3e-6
 
 [orchestrator]
 batch_size = 256
-group_size = 16
+group_size = 4
 max_off_policy_steps = 32
 preserve_groups = true
 max_zero_output_batches = 100
@@ -71,7 +71,7 @@ max_inflight = 1000
 
 [orchestrator.algo]
 type = "ngu"
-continuation_probability = 0.875
+continuation_probability = 0.8
 history_max_policy_age = 4
 seed = 42
 
