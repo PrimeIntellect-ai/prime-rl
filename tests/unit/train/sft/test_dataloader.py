@@ -5,7 +5,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig, SFTSourceConfig
+from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.world import reset_world
 
@@ -162,7 +162,6 @@ def test_dataloader_shards_across_ranks_and_workers(
         os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
 
         config = SFTDataConfig(
-            source=[SFTSourceConfig(dataset="fake")],
             batch_size=1,
             micro_batch_size=1,
             seq_len=7,
@@ -175,7 +174,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 [
                     {
                         "messages": [{"role": "assistant", "content": str(index) * 6}],
-                        "__source": "fake",
+                        "__split": "fake",
                     }
                     for index in range(num_examples)
                 ]

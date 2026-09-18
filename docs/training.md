@@ -152,19 +152,6 @@ Two accepted layouts:
 
 If both columns are present, `messages` takes precedence.
 
-**Sources.** Each `[[data.source]]` entry names one HF dataset (`dataset`, plus optional `subset` and `split`). Several sources are interleaved by their relative `ratio`; `data.stopping_strategy` decides when the mix is exhausted.
-
-```toml
-[[data.source]]
-dataset = "org/sft-mix"
-subset = "math"
-ratio = 2
-
-[[data.source]]
-dataset = "org/sft-mix"
-subset = "code"
-```
-
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
 
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
@@ -175,19 +162,7 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-A source can carry its own `renderer` block, which replaces the top-level `[renderer]` for that source's rows. A `reasoning_effort` column in the dataset sets the renderer's `reasoning_effort` field per row, on top of the source or global renderer. The column requires a typed renderer that has that field (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`); rows with a null value use the configured renderer unchanged. Together these give three ways to mix reasoning efforts in one run: one `[renderer]` for everything, one renderer per source, or one dataset column.
-
-```toml
-[renderer]
-name = "qwen3.8"
-reasoning_effort = "medium"
-
-[[data.source]]
-dataset = "org/sft-mix"
-subset = "hard"
-renderer.name = "qwen3.8"
-renderer.reasoning_effort = "xhigh"
-```
+A `reasoning_effort` column in the dataset sets the renderer's `reasoning_effort` field per row, on top of the `[renderer]` config. The column requires a typed renderer that has that field (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`); rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one.
 
 If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
 
@@ -254,7 +229,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
-| `data.source` | Datasets to train on: `dataset`, `subset`, `split`, `ratio`, and an optional per-source `renderer` |
+| `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
@@ -271,7 +246,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<source>/ratio_{samples,tokens}` — when training on multiple sources, the realized mixing ratio per source name (`name`, or `dataset` plus any non-default `/subset` and `/split`).
+- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 
 **Stability and optimization:**
 

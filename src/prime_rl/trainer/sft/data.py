@@ -220,25 +220,19 @@ def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> Rend
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A row's ``__source`` column selects the source's renderer config and a
-    ``reasoning_effort`` column overrides that config's field of the same name.
-    Renderer configs are frozen, so renderers are cached per config and rows
-    that resolve to the same config share one instance.
+    A ``reasoning_effort`` column overrides the configured renderer's field of
+    the same name per row. Renderer configs are frozen, so renderers are cached
+    per config and rows that resolve to the same config share one instance.
     """
 
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizer,
-        configs: dict[str, RendererConfig],
-        processor: Any | None = None,
-    ):
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
         self.tokenizer = tokenizer
-        self.configs = configs
+        self.config = config
         self.processor = processor
         self.renderers: dict[RendererConfig, Renderer] = {}
 
     def __call__(self, example: dict) -> Renderer:
-        config = self.configs[example["__source"]]
+        config = self.config
         reasoning_effort = example.get("reasoning_effort")
         if reasoning_effort is not None:
             config = with_reasoning_effort(config, reasoning_effort)
@@ -469,13 +463,14 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            source = example.get("__source")
+            subset_or_split = example.get("__subset") or example.get("__split")
             self.logger.debug(
-                f"Yield example {example.get('__index', '')} from {source} "
-                f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+                f"Yield example {example.get('__index', '')}"
+                + (f" from {subset_or_split} " if subset_or_split else " ")
+                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
             )
-            self.num_samples[source] += 1
-            self.num_tokens[source] += len(processed_example.get("input_ids", []))
+            self.num_samples[subset_or_split] += 1
+            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
             yield processed_example
 
 
@@ -622,30 +617,72 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
-    """Load and interleave the raw HF datasets of every source. This is the expensive I/O step."""
+def setup_and_interleave_datasets(
+    dataset_name: str,
+    subsets_and_splits: list[tuple[str | None, str]],
+    probabilities: list[float] | None,
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"],
+    seed: int = 0,
+) -> Dataset:
     logger = get_logger()
     datasets = []
-    for source in config.source:
-        logger.debug(f"Loading dataset {source.dataset} with subset={source.subset} and split={source.split}")
-        dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split))
+    for subset, split in subsets_and_splits:
+        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
+        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
-        dataset = dataset.add_column(
-            "__source", [source.resolved_name] * num_examples, new_fingerprint=str(uuid.uuid4())
-        )
+        dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
+        dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
         datasets.append(dataset)
-    if len(datasets) == 1:
-        return datasets[0]
-    total_ratio = sum(source.ratio for source in config.source)
-    probabilities = [source.ratio / total_ratio for source in config.source]
-    logger.debug(f"Interleaving datasets with {probabilities=} and stopping_strategy={config.stopping_strategy}")
-    return interleave_datasets(
-        datasets,
-        probabilities=probabilities,
-        stopping_strategy=config.stopping_strategy,
-        seed=config.seed,
-    )
+    if len(datasets) > 1:
+        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
+        dataset = interleave_datasets(
+            datasets,
+            probabilities=probabilities,
+            stopping_strategy=stopping_strategy,
+            seed=seed,
+        )
+    else:
+        dataset = datasets[0]
+
+    return dataset
+
+
+def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
+    logger = get_logger()
+    if config.subsets is None and config.splits is None:
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(None, "train")],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    elif config.subsets is not None and config.splits is None:
+        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(subset, "train") for subset in config.subsets],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    elif config.subsets is None and config.splits is not None:
+        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=[(None, split) for split in config.splits],
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
+    else:
+        assert config.subsets is not None and config.splits is not None
+        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
+        return setup_and_interleave_datasets(
+            dataset_name=config.name,
+            subsets_and_splits=list(zip(config.subsets, config.splits)),
+            probabilities=config.probabilities,
+            stopping_strategy=config.stopping_strategy,
+        )
 
 
 def setup_dataset(
@@ -673,11 +710,7 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(
-            tokenizer,
-            {source.resolved_name: source.renderer or renderer_config for source in config.source},
-            processor=processor,
-        )
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
         return SFTDataset(
             raw_dataset,
             renderers,
