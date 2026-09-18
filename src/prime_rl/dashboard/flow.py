@@ -4,7 +4,7 @@ A flow root holds units (`campaign/`, `tasks/<id>/`: git repositories whose `sta
 where each stands), `transitions.jsonl` (one line per stage start and per transition), `calls/`
 (one record per durable call, with the trace it made) and `live/` (a snapshot per seat in
 flight). Every stage run is a node in its unit's lane; a transition is a labeled edge to the
-stage the unit moved to; the calls a stage made are its children, each opening its trace.
+stage the unit moved to; the calls a stage made hang on its node, an agent's opening its trace.
 """
 
 from __future__ import annotations
@@ -84,6 +84,17 @@ def live_seats(run_dir: Path) -> dict[str, list[str]]:
     return out
 
 
+PAYLOAD_CAP = 65_536
+
+
+def _payload(value: Any) -> Any:
+    """A function's or command's result as the modal shows it; large ones cut to a preview."""
+    if value is None:
+        return None
+    text = orjson.dumps(value).decode()
+    return value if len(text) <= PAYLOAD_CAP else text[:PAYLOAD_CAP] + " …"
+
+
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
     """Fold transitions, unit states and call records into the run/task/step graph the UI draws."""
     events = read_complete_jsonl(run_dir / TRANSITIONS)
@@ -125,18 +136,13 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "attempts": None,
                 "started_at": event.get("at"),
                 "finished_at": None,
-                "trace_id": None,
-                "episode_line": None,
-                "episode_id": None,
                 "order": order,
                 "group": group_id(unit),
                 "outcome": None,
                 "to": None,
-                "live": [],
                 "links": [],
                 "done_order": None,
-                "parent": None,
-                "calls": 0,
+                "calls": [],
                 "unit_status": None,
             }
             nodes.append(node)
@@ -155,11 +161,11 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             if status == "held":
                 node["error"] = event.get("reason")
 
-    # The calls a stage made are its children; the last seat's trace is the stage's own (its decision).
+    # The calls a stage made hang on its node, in start order: an agent's trace, a function's
+    # or command's result. A seat still in flight (a live snapshot) is a running row.
     by_unit_stage: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
         by_unit_stage[(node["unit"], node["name"])].append(node)
-    children: list[dict[str, Any]] = []
     for record in sorted(call_records(run_dir), key=lambda r: (r.get("started_at") or "", r.get("key") or "")):
         unit, stage, finished = record.get("unit"), record.get("stage"), record.get("finished_at") or ""
         candidates = by_unit_stage.get((unit, stage)) or []
@@ -171,32 +177,35 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             continue
         trace_id = record.get("trace_id")
         episode = trace_lines.get(trace_id) if isinstance(trace_id, str) else None
-        index = sum(c["parent"] == parent["id"] for c in children)
-        children.append(
+        parent["calls"].append(
             {
-                **parent,
-                "id": f"{parent['id']}:{index}",
-                "parent": parent["id"],
-                "index": index,
-                "order": parent["order"] + (index + 1) / 1000,  # after its stage, in call order
-                "name": str(record.get("key") or record.get("kind")),
+                "key": str(record.get("key") or record.get("kind")),
                 "kind": record.get("kind"),
                 "status": "completed",
-                "reason": None,
-                "error": None,
-                "outcome": None,
-                "to": None,
-                "links": [],
                 "started_at": record.get("started_at"),
                 "finished_at": record.get("finished_at"),
                 "trace_id": trace_id,
                 "episode_line": episode[0] if episode else None,
                 "episode_id": episode[1] if episode else None,
+                "payload": _payload(record.get("payload")),
             }
         )
-        parent["calls"] = parent.get("calls", 0) + 1
-        if trace_id is not None:
-            parent["trace_id"], parent["episode_line"], parent["episode_id"] = trace_id, *(episode or (None, None))
+    live = live_seats(run_dir)
+    for unit, node in open_by_unit.items():  # a stage without its transition is running
+        for key in live.get(unit, []):
+            node["calls"].append(
+                {
+                    "key": key,
+                    "kind": "agent",
+                    "status": "running",
+                    "started_at": None,
+                    "finished_at": None,
+                    "trace_id": None,
+                    "episode_line": None,
+                    "episode_id": None,
+                    "payload": None,
+                }
+            )
 
     edges: list[dict[str, Any]] = []
     by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -250,16 +259,6 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "summary": source["reason"],
                 }
             )
-    for child in children:
-        parent_id = child["id"].rsplit(":", 1)[0]
-        edges.append(
-            {"id": f"spread:{parent_id}:{child['id']}", "kind": "spread", "source": parent_id, "target": child["id"]}
-        )
-
-    live = live_seats(run_dir)
-    for unit, node in open_by_unit.items():  # a stage without its transition is running
-        node["live"] = live.get(unit, [])
-
     tasks = []
     for unit, state in states.items():
         if unit == "campaign":
@@ -274,10 +273,10 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "status": state.get("status"),
                 "reason": state.get("reason"),
                 "nodes": len(lane),
-                "traces": sum(c["trace_id"] is not None for c in children if c["unit"] == unit),
+                "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
             }
         )
-    all_nodes = sorted([*nodes, *children], key=lambda n: (n["order"], n["id"]))
+    all_nodes = sorted(nodes, key=lambda n: (n["order"], n["id"]))
     campaign_done = states.get("campaign", {}).get("status") in ("waiting", "terminal")
     finished = campaign_done and bool(tasks) and all(t["status"] == "terminal" for t in tasks) and not open_by_unit
     rows = [
@@ -303,10 +302,10 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),
             "failed": sum(n["status"] == "failed" for n in nodes),
-            "traces": sum(c["trace_id"] is not None for c in children),
+            "traces": sum(c["trace_id"] is not None for n in nodes for c in n["calls"]),
             "routes": sum(e["kind"] == "route" for e in edges),
             "held": sum(t["status"] == "held" for t in tasks),
             "waiting": sum(t["status"] == "waiting" for t in tasks),
-            "live": sum(len(v) for v in live.values()),
+            "live": sum(c["status"] == "running" for n in nodes for c in n["calls"]),
         },
     }

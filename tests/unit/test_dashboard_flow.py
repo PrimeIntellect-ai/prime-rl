@@ -112,10 +112,12 @@ def test_flow_projection_builds_lanes_routes_calls_and_ignores_a_torn_tail(tmp_p
     ]
     assert routes[-1]["source"].endswith("campaign/plan#0") and routes[-1]["target"].endswith("t1/author#0")
     assert routes[1]["summary"] == "wrote it"
-    (call,) = [n for n in data["nodes"] if n["index"] is not None]
-    assert call["trace_id"] == "trace" and call["episode_line"] == 0 and call["name"] == "control/abcd/v1"
     control = stages[-1]
-    assert control["trace_id"] == "trace"  # the stage opens its decision trace
+    assert [n["index"] for n in data["nodes"]] == [None, None, None]  # stages only: calls hang on them
+    (call,) = control["calls"]
+    assert call["trace_id"] == "trace" and call["episode_line"] == 0 and call["key"] == "control/abcd/v1"
+    assert call["kind"] == "agent" and call["status"] == "completed" and call["payload"] is None
+    assert not any(e["kind"] == "spread" for e in data["edges"])
     assert data["tasks"] == [
         {
             "id": f"{root.name}/t1",

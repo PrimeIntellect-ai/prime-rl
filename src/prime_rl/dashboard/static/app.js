@@ -66,7 +66,7 @@ const state = {
     },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
-  flow: { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map(), expanded: new Set() },
+  flow: { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
   follow: prefs.follow ?? true,
 };
@@ -233,7 +233,7 @@ async function selectRun(name, deferTab = false) {
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
     key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
-  state.flow = { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map(), expanded: new Set() };
+  state.flow = { loaded: false, etag: null, data: null, task: "all", selectedEdge: null, detail: new Map() };
   state.report = {
     ...state.report,
     loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
@@ -456,8 +456,8 @@ function renderFlowInspector() {
   }
   const hasRoutes = state.flow.data?.stats.routes;
   $("#flow-inspector").innerHTML = hasRoutes
-    ? `<div class="empty"><span>select a route</span><small>click a labeled edge to see the agent decision</small></div>`
-    : `<div class="empty"><span>no transitions yet</span><small>a stage's edge shows its outcome and reason; agent nodes open their traces</small></div>`;
+    ? `<div class="empty"><span>select a transition</span><small>click a labeled edge for its reason, a stage for its calls</small></div>`
+    : `<div class="empty"><span>no transitions yet</span><small>click an edge for its reason, a stage for its calls</small></div>`;
 }
 
 function renderFlow() {
@@ -494,8 +494,7 @@ function flowGraphLayout(data, selected, viewportWidth) {
   const runGroup = task && data.groups.find((group) => group.kind === "run" && group.row === task.row);
   const groups = selected === "all" ? data.groups.map((group) => group.id) : [runGroup?.id, selected].filter(Boolean);
   const wanted = new Set(groups);
-  const expanded = state.flow.expanded || new Set();
-  const nodes = data.nodes.filter((node) => wanted.has(node.group) && (!node.parent || expanded.has(node.parent)));
+  const nodes = data.nodes.filter((node) => wanted.has(node.group));
   const positions = new Map();
   const lanes = [];
   const width = Math.max(520, viewportWidth || 900);
@@ -578,13 +577,11 @@ function renderFlowGraph() {
   const cards = layout.nodes.map((node) => {
     const pos = layout.positions.get(node.id);
     if (!pos) return "";
-    const suffix = node.index == null ? (node.occurrence ? ` · ${node.occurrence + 1}` : "") : ` · ${node.index + 1}`;
+    const suffix = node.occurrence ? ` · ${node.occurrence + 1}` : "";
     const duration = flowDuration(node);
-    const trace = node.trace_id ? " trace" : "";
-    const open = state.flow.expanded?.has(node.id);
-    const toggle = node.calls ? `<em class="fg-toggle" data-flow-toggle="${esc(node.id)}" title="${open ? "hide" : "show"} the calls this stage made">${open ? "▾" : "▸"} ${node.calls} call${node.calls === 1 ? "" : "s"}</em>` : "";
-    return `<button class="fg-node ${flowStatusClass(node.status)} kind-${esc(node.kind || "step")}${trace}${node.parent ? " call" : ""}" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
-      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.kind || "step")} · ${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}</small>${toggle}
+    const calls = node.calls?.length ? ` · ${node.calls.length} call${node.calls.length === 1 ? "" : "s"}` : "";
+    return `<button class="fg-node ${flowStatusClass(node.status)} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}${calls}</small>
     </button>`;
   }).join("");
   graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
@@ -597,68 +594,58 @@ function renderFlowGraph() {
     </svg>${routeLabels}${cards}</div>`;
 }
 
-async function loadFlowDetail(traceId) {
-  if (!traceId) return null;
-  const flow = state.flow;
-  const run = state.run;
-  if (!flow.detail.has(traceId)) {
-    const detail = await api(`/api/runs/${encodeURIComponent(run)}/flow/traces/${encodeURIComponent(traceId)}`);
-    if (state.flow !== flow || state.run !== run) return null;
-    flow.detail.set(traceId, detail);
-  }
-  return flow.detail.get(traceId);
-}
-
-function flowInspectorButton(node, label = "open trace") {
-  return node?.trace_id ? `<button class="btn flow-open-trace" data-flow-node="${esc(node.id)}">${esc(label)}</button>` : "";
-}
-
 async function selectFlowEdge(edgeId, redraw = true) {
   const flow = state.flow;
   flow.selectedEdge = edgeId;
   if (redraw) renderFlowGraph();
   const edge = flow.data.edges.find((item) => item.id === edgeId);
   const source = flowNodeMap().get(edge?.source);
-  $("#flow-inspector").innerHTML = `<div class="flow-inspector-head"><span class="t-label">route</span><b>${esc(edge?.outcome || "")}</b></div><div class="flow-inspector-loading">reading decision trace…</div>`;
-  let detail = null;
-  let detailError = null;
-  try {
-    detail = source?.trace_id ? await loadFlowDetail(source.trace_id) : null;
-  } catch (error) {
-    detailError = String(error);
-  }
-  if (state.flow !== flow || flow.selectedEdge !== edgeId) return;
-  const decision = detail?.decision;
-  const extra = decision ? Object.entries(decision).filter(([key]) => !["outcome", "summary"].includes(key)) : [];
   $("#flow-inspector").innerHTML = `
-    <div class="flow-inspector-head"><span class="t-label">route</span><b>${esc(edge?.outcome || "")}</b></div>
-    <div class="flow-route-pair"><span>${esc(source?.name || "step")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
-    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(detailError || decision?.summary || edge?.summary || "No reason was recorded for this transition.")}</p></div>
-    ${extra.length ? `<div class="flow-inspector-section"><span class="t-label">decision</span>${extra.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(typeof value === "string" ? value : JSON.stringify(value))}</b></div>`).join("")}</div>` : ""}
-    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>
-    ${flowInspectorButton(source, "open decision trace")}`;
+    <div class="flow-inspector-head"><span class="t-label">transition</span><b>${esc(edge?.outcome || "")}</b></div>
+    <div class="flow-route-pair"><span>${esc(source?.name || "stage")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
+    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(edge?.summary || "No reason was recorded for this transition.")}</p></div>
+    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>`;
 }
 
-function selectFlowNode(nodeId) {
+function fmtWhen(iso) {
+  const t = Date.parse(iso || "");
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(11, 19) : "";
+}
+
+function flowPayload(call) {
+  const value = call.payload;
+  if (value == null) return "";
+  if (call.kind === "command" && typeof value === "object") {
+    return `exit ${value.exit_code}\n\n${value.stdout || ""}${value.stderr ? `\n[stderr]\n${value.stderr}` : ""}`;
+  }
+  return typeof value === "string" ? value : JSON.stringify(value, null, 1);
+}
+
+function openFlowStage(nodeId) {
   const node = flowNodeMap().get(nodeId);
   if (!node) return;
-  if (node.trace_id) return openFlowTrace(node);
-  state.flow.selectedEdge = null;
-  renderFlowGraph();
-  if (node.kind === "spread") {
-    const attempts = state.flow.data.nodes.filter((item) => item.row === node.row && item.path === node.path && item.index != null).sort((a, b) => a.index - b.index);
-    $("#flow-inspector").innerHTML = `
-      <div class="flow-inspector-head"><span class="t-label">spread</span><b>${attempts.length} traces</b></div>
-      <div class="flow-inspector-section"><span class="t-label">attempts</span>
-        <div class="flow-attempts">${attempts.map((item) => `<button data-flow-node="${esc(item.id)}"><span>attempt ${item.index + 1}</span><small>${esc(item.status)}</small></button>`).join("")}</div>
+  state.flow.modal = node;
+  const calls = node.calls || [];
+  const facts = [
+    ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
+    ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
+  ].filter(([, value]) => value);
+  $("#fm-title").textContent = `${node.name}${node.occurrence ? ` · ${node.occurrence + 1}` : ""}`;
+  $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");
+  $("#fm-calls").innerHTML = calls.length
+    ? calls.map((call, i) => `
+      <div class="fm-call ${esc(call.kind)} ${esc(call.status)}" data-fm-call="${i}" title="${call.kind === "agent" ? "open the trace" : "show the result"}">
+        <span class="fm-kind">${esc(call.kind)}</span><code>${esc(call.key)}</code>
+        <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)}${call.trace_id ? " · trace" : ""}</small>
       </div>
-      <div class="flow-inspector-section"><span class="t-label">path</span><code>${esc(node.path)}</code></div>`;
-    return;
-  }
-  $("#flow-inspector").innerHTML = `
-    <div class="flow-inspector-head"><span class="t-label">step</span><b>${esc(node.name)}</b></div>
-    <div class="flow-inspector-section"><span class="t-label">state</span><p>${esc(node.status)}${flowDuration(node) ? ` · ${esc(flowDuration(node))}` : ""}</p></div>
-    <div class="flow-inspector-section"><span class="t-label">path</span><code>${esc(node.path)}</code></div>`;
+      ${call.kind !== "agent" ? `<pre class="fm-payload" hidden>${esc(flowPayload(call) || "(no result recorded)")}</pre>` : ""}`).join("")
+    : `<div class="empty"><span>no calls recorded</span><small>this stage made no durable calls</small></div>`;
+  $("#flow-modal").hidden = false;
+}
+
+function closeFlowStage() {
+  $("#flow-modal").hidden = true;
+  state.flow.modal = null;
 }
 
 async function openFlowTrace(node) {
@@ -6545,15 +6532,20 @@ $("#flow-tasks").addEventListener("click", (event) => {
 $("#flow-graph").addEventListener("click", (event) => {
   const edge = event.target.closest("[data-flow-edge]");
   if (edge) return selectFlowEdge(edge.dataset.flowEdge);
-  const toggle = event.target.closest("[data-flow-toggle]");
-  if (toggle) {
-    const id = toggle.dataset.flowToggle;
-    const expanded = state.flow.expanded;
-    expanded.has(id) ? expanded.delete(id) : expanded.add(id);
-    return renderFlowGraph();
-  }
   const node = event.target.closest("[data-flow-node]");
-  if (node) selectFlowNode(node.dataset.flowNode);
+  if (node) openFlowStage(node.dataset.flowNode);
+});
+$("#flow-modal").addEventListener("click", (event) => {
+  if (event.target.id === "flow-modal" || event.target.closest("[data-fm-close]")) return closeFlowStage();
+  const row = event.target.closest("[data-fm-call]");
+  if (!row) return;
+  const call = state.flow.modal?.calls[Number(row.dataset.fmCall)];
+  if (!call) return;
+  if (call.kind === "agent") return call.episode_line ? openFlowTrace(call) : toastMsg(call.status === "running" ? "still running" : "this call has no trace");
+  row.nextElementSibling?.toggleAttribute("hidden");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#flow-modal").hidden) closeFlowStage();
 });
 $("#flow-inspector").addEventListener("click", (event) => {
   const node = event.target.closest("[data-flow-node]");

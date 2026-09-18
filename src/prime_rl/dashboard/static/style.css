@@ -1756,9 +1756,20 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-node.live { border-color: var(--infra); animation: flow-pulse 1.2s steps(2) infinite; }
 .fg-node.stale { border-color: var(--infra); }
 .fg-node > span, .fg-node > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fg-node.call { opacity: 0.85; border-style: dashed; }
-.fg-toggle { display: block; margin-top: 2px; font-size: 10px; font-style: normal; color: var(--grey-6); cursor: pointer; }
-.fg-toggle:hover { text-decoration: underline; }
+#flow-modal { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.fm-panel { width: min(960px, 100%); max-height: 90vh; overflow: auto; background: var(--bg, #111); border: 1px solid var(--grey-3, #333); border-radius: 8px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.fm-head { display: flex; align-items: center; gap: 12px; }
+.fm-head b { flex: 1; font-size: 15px; }
+.fm-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 18px; }
+.fm-calls { display: flex; flex-direction: column; gap: 4px; }
+.fm-call { display: grid; grid-template-columns: 64px 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--grey-3, #333); border-radius: 6px; cursor: pointer; }
+.fm-call:hover { border-color: var(--grey-6); }
+.fm-call.agent { border-left: 2px solid var(--infra); }
+.fm-call.running { border-style: dashed; }
+.fm-call code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fm-kind { font-size: 11px; color: var(--grey-5); text-transform: uppercase; }
+.fm-call small { color: var(--grey-5); white-space: nowrap; }
+.fm-payload { margin: 0 0 6px; padding: 10px; max-height: 40vh; overflow: auto; font-size: 11px; white-space: pre-wrap; border: 1px solid var(--grey-3, #333); border-radius: 6px; }
 .fg-node > span { color: var(--grey-6); }
 .fg-node > small { margin-top: 5px; color: var(--grey-4); font-size: 9px; }
 .fg-route {
