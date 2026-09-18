@@ -16,6 +16,8 @@ full_offload = true
 lr = 0.0
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
 seq_len = 1024
+
+[[data.source]]
+dataset = "PrimeIntellect/Reverse-Text-SFT"

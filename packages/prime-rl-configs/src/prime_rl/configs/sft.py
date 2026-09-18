@@ -85,23 +85,42 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
+class SFTSourceConfig(BaseConfig):
+    """One HF dataset (subset, split) an SFT run trains on."""
+
+    dataset: str
+    """HF dataset name or local path."""
+
+    subset: str | None = None
+    """Dataset subset (HF ``name`` argument)."""
+
+    split: str = "train"
+    """Dataset split."""
+
+    name: str | None = None
+    """Display name for this source in logs and progress metrics. Defaults to ``dataset`` plus ``/subset`` when a subset is set. Must be unique across the sources of one data config."""
+
+    ratio: float = Field(1.0, gt=0)
+    """Sampling weight for this source when interleaving several sources. Relative weights are normalized to probabilities across sources (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
+
+    renderer: RendererConfig | None = None
+    """Renderer for this source. Inherits the top-level ``[renderer]`` when unset. A ``reasoning_effort`` column in the dataset overrides the renderer's ``reasoning_effort`` field per row on top of either."""
+
+    @property
+    def resolved_name(self) -> str:
+        if self.name is not None:
+            return self.name
+        return self.dataset if self.subset is None else f"{self.dataset}/{self.subset}"
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
-    """HF dataset name or path."""
-
-    subsets: list[str] | None = None
-    """Subsets to load from the HF dataset."""
-
-    splits: list[str] | None = None
-    """Splits to load from the HF dataset."""
-
-    probabilities: list[float] | None = None
-    """Sampling probabilities for each subset/split."""
+    source: list[SFTSourceConfig] = [SFTSourceConfig(dataset="PrimeIntellect/Reverse-Text-SFT")]
+    """Datasets to train on. Several sources are interleaved by ``ratio``."""
 
     stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
-    """Stopping strategy when interleaving multiple subsets/splits."""
+    """Stopping strategy when interleaving multiple sources."""
 
     shuffle: bool = True
     """Shuffle the dataset at the start of each epoch."""
@@ -114,23 +133,13 @@ class SFTDataConfig(BaseDataConfig):
     """Which message types contribute to the loss."""
 
     @model_validator(mode="after")
-    def validate_subsets_and_splits(self):
-        if self.subsets is not None or self.splits is not None:
-            if self.subsets is not None and self.splits is not None:
-                if len(self.subsets) != len(self.splits):
-                    raise ValueError(
-                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
-                    )
-            if self.subsets is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.subsets):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
-                    )
-            if self.splits is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.splits):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
-                    )
+    def validate_sources(self):
+        if not self.source:
+            raise ValueError("SFT data requires at least one [[data.source]]")
+        names = [source.resolved_name for source in self.source]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"Duplicate SFT source names: {duplicates}. Set a unique `name` on each source.")
         return self
 
 
@@ -491,25 +500,31 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):
-        """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
-            return self
+        """Require a typed renderer for every source that renders real samples."""
+        sources: list[SFTSourceConfig] = []
+        if self.data.type == "sft":
+            sources += self.data.source
+        if self.val is not None:
+            sources += self.val.data.source
 
         model_id = self.tokenizer.name or self.model.name
-        if isinstance(self.renderer, AutoRendererConfig):
-            if model_id in MODEL_RENDERER_MAP:
-                return self
-            reason = f"no typed renderer is registered for {model_id!r}"
-        elif isinstance(self.renderer, DefaultRendererConfig):
-            reason = "renderer.name='default' selects DefaultRenderer"
-        else:
-            return self
+        for source in sources:
+            renderer = source.renderer or self.renderer
+            if isinstance(renderer, AutoRendererConfig):
+                if model_id in MODEL_RENDERER_MAP:
+                    continue
+                reason = f"no typed renderer is registered for {model_id!r}"
+            elif isinstance(renderer, DefaultRendererConfig):
+                reason = "renderer.name='default' selects DefaultRenderer"
+            else:
+                continue
 
-        raise ValueError(
-            f"SFT requires a typed renderer with sampled-token and content attribution, but {reason}. "
-            "Implement and register the renderer in the renderers package, or explicitly select an existing "
-            "typed renderer only when its template is verified to match."
-        )
+            raise ValueError(
+                f"SFT source {source.resolved_name!r} requires a typed renderer with sampled-token and content "
+                f"attribution, but {reason}. Implement and register the renderer in the renderers package, or "
+                "explicitly select an existing typed renderer only when its template is verified to match."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_cp_seq_len(self):

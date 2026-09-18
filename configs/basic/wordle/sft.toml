@@ -11,10 +11,12 @@ num_train_gpus = 2
 name = "PrimeIntellect/Qwen3-1.7B"
 
 [data]
-name = "willcb/V3-wordle"
 seq_len = 1024
 batch_size = 64
 micro_batch_size = 1
+
+[[data.source]]
+dataset = "willcb/V3-wordle"
 
 [optim]
 lr = 1e-5

@@ -41,9 +41,11 @@ freq = 1
 max_inflight_activations = 5
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 seq_len = 2048
 batch_size = 32
+
+[[data.source]]
+dataset = "PrimeIntellect/Reverse-Text-SFT"
 
 [optim]
 lr = 1e-5

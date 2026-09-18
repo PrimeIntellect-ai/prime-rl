@@ -28,13 +28,15 @@ mode = "selective"
 
 [data]
 type = "sft"
-name = "your-org/your-multimodal-dataset"
 batch_size = 8
 micro_batch_size = 1       # required for VLM SFT
 seq_len = 16384
 
 [data.loss_mask]
 assistant = true # only assistant turns contribute to the loss; system/user/tool default to false
+
+[[data.source]]
+dataset = "your-org/your-multimodal-dataset"
 
 [optim]
 lr = 1e-5
