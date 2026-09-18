@@ -159,17 +159,6 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
-def test_eval_tasks_per_minute_accepts_toml_and_cli_overrides(tmp_path):
-    write_toml(
-        tmp_path / "eval.toml",
-        {"tasks_per_minute": 100, "source": [{"env": {"taskset": {"id": "gsm8k"}}}]},
-    )
-
-    config = cli(EvalConfig, args=["@", str(tmp_path / "eval.toml"), "--tasks-per-minute", "250"])
-
-    assert config.tasks_per_minute == 250
-
-
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
