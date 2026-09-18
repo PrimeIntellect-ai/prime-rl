@@ -90,3 +90,5 @@ The difficulty diagnosis is observational, not proof of a single cause. The abla
 - “Does not permanently alter the dataset” does not mean unchanged training distribution: NGU deliberately changes exposure and accepted-cohort composition.
 
 See [stage 1](stage-1.md) and [stage 2](stage-2.md) for the implementation and experiment proposals.
+
+Current frozen 1,000-task training configs and the disjoint 500-task held-out evaluation are in [the experiment directory](../../configs/experiments/ngu/README.md). Its training TOMLs supersede the preparation drafts in this notes directory. NGU runtime support is not implemented.

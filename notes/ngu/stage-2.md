@@ -2,6 +2,8 @@
 
 Use the established GLM Air SWE infrastructure recipe for exactly two large training runs. No calibration sweep, separate validation campaign, model scaling stage, or hyperparameter search.
 
+The current frozen-task recipe is [configs/experiments/ngu](../../configs/experiments/ngu/README.md): train on the profiled 1,000 tasks; evaluate on full SWE-Bench Verified plus 500 disjoint SWE-rebench tasks. Its TOMLs supersede the provisional dataset/config choices below.
+
 ## Shared setup
 
 Base recipe: `examples/advanced/glm-4.5-air/swe.toml` (the TOML is authoritative; its README describes an older topology).

@@ -1,21 +1,17 @@
-# Superseded preparation draft. Use configs/experiments/ngu/train-static.toml for the frozen 1k experiment.
-# Preparation draft: GLM Air Scaleswe checkpoint / SWE-rebench-V2 (provisional taskset) on 2 train + 4 inference H200 nodes.
-# Shared cohort-preserving batching and full seed plumbing still require stage 1.
-# Budget stop: 24 allocated hours; max_steps is a guard.
-# Set output_dir to the shared filesystem and slurm.partition to the H200 partition.
-
+# DRAFT: requires the unimplemented NGU scheduler and algorithm.
+# Intentionally rejected by the current schema; do not launch as static GRPO.
 max_steps = 10000
 seq_len = 131072
 output_dir = "outputs/ngu-swe"
 
 [run]
-name = "glm45air-swe-baseline"
+name = "glm45air-swe-ngu"
 
 [env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
+TRITON_CACHE_DIR = "/tmp/mika-ngu-train/triton"
 
 [slurm]
-job_name = "glm45air-swe-baseline"
+job_name = "glm45air-swe-ngu"
 partition = "all"
 
 [deployment]
@@ -27,7 +23,7 @@ num_infer_replicas = 4
 
 [monitors.wandb]
 project = "swe-ablations"
-name = "glm45air-swerebench-baseline"
+name = "glm45air-swerebench-ngu"
 
 [weight_broadcast]
 type = "nccl"
@@ -71,19 +67,31 @@ batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
 
+[orchestrator.env_vars]
+PYTHONPATH = "tools/ngu/tasksets"
+
+[orchestrator.concurrency]
+min_inflight = 256
+max_inflight = 1000
+
 [orchestrator.algo]
-type = "grpo"
+type = "ngu"
+continuation_probability = 0.875
+history_max_policy_age = 4
+seed = 42
 
 [orchestrator.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
 
 [[orchestrator.train.source]]
-name = "swerebench-v2"
-env.taskset.id = "swerebench-v2"
-env.taskset.dataset_name = "PrimeIntellect/SWE-rebench-V2-Filtered-Verified"
-env.taskset.split = "train"
+name = "swerebench-1k"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/sample-1000.json"
 env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
 
 [orchestrator.eval]
 interval = 20
@@ -95,18 +103,31 @@ skip_first_step = false
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-heldout-500"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/eval-500.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
 
 [inference]
 
 [inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+VLLM_CACHE_ROOT = "/tmp/mika-ngu-train/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/mika-ngu-train/flashinfer"
 
 [inference.vllm]
-seed = 42
 gpu_memory_utilization = 0.85
 max_model_len = 131072
 tensor_parallel_size = 8
 enable_expert_parallel = true
 enable_return_routed_experts = true
+enable_auto_tool_choice = true
+tool_call_parser = "glm45"
+reasoning_parser = "glm45"

@@ -1,0 +1,54 @@
+# Optional training-difficulty diagnostics; retains both held-out eval sources.
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-heldout-500"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/eval-500.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-1k-easy"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/easy.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-1k-medium"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/medium.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-1k-hard"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/hard.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+
+[[orchestrator.eval.source]]
+name = "swerebench-1k-extra-hard"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/extra-hard.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 7200
+

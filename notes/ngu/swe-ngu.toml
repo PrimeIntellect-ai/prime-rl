@@ -1,3 +1,4 @@
+# Superseded preparation draft. Use configs/experiments/ngu/train-ngu.toml for the frozen 1k experiment.
 # Preparation draft: GLM Air Scaleswe checkpoint / SWE-rebench-V2 (provisional taskset) on 2 train + 4 inference H200 nodes.
 # Shared cohort-preserving batching and full seed plumbing still require stage 1.
 # Budget stop: 24 allocated hours; max_steps is a guard.

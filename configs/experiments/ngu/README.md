@@ -1,7 +1,49 @@
-# NGU: SWE-rebench difficulty profile
+# NGU: SWE training comparison and difficulty profile
 
 Prepared on `feat/ngu`, based on latest fetched `origin/main` `a563a03d6`.
-The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling is running as SLURM job 737; runtime artifacts are under `outputs/ngu-profile-20260917`.
+The PRL eval CLI is present (merged by `c394c2e1b`, PR #3471). Profiling finished and job 737 was released; runtime artifacts are under `outputs/ngu-profile-20260917`.
+
+## Training configurations
+
+- [`train-static.toml`](train-static.toml): static GRPO, K=16, batch target 256. Validated with the native RL dry-run entrypoint.
+- [`train-ngu.toml`](train-ngu.toml): **non-runnable draft** for NGU, K=16, continuation probability .875, payload history age 4, positive anchoring planned. The algorithm and continuation scheduler are not implemented; the current schema intentionally rejects `type = "ngu"`. Do not replace it with GRPO and call that an NGU run.
+- [`difficulty-eval.toml`](difficulty-eval.toml): optional overlay adding the four fixed training-difficulty subsets while preserving both held-out sources.
+
+Both arms start from `PrimeIntellect/GLM-4.5-Air-Scaleswe` with fresh optimizer state. They use two H200 trainer nodes and four independent eight-GPU inference replicas (48 GPUs total), TP8 + EP, 131072 context, router replay, CP4/ulysses, Muon LR 1e-6, and the same IPO loss. No length penalty or sampling override. Adaptive concurrency is 256–1000. The model's numerical dtype defaults are unchanged. `max_steps=10000` is a guard, not an enforced GPU-hour budget; compare checkpoints at equal allocated H200-hours. Checkpoints save every 50 steps.
+
+Training uses **all 1,000** IDs in `tools/ngu/sample-1000.json`, including the three tasks with no valid profiling attempts. This is a single training source: bucket membership does not change task weights. NGU is intended to allocate extra rounds online from actual training outcomes, not from the profiling labels.
+
+Evaluation runs at step 0 and every 20 updates with one rollout per task:
+
+| Source | Tasks | Purpose |
+|---|---:|---|
+| `swebench-verified` | full taskset (500) | Benchmark evaluation |
+| `swerebench-heldout-500` | 500 | In-distribution held-out evaluation |
+
+The held-out manifest `tools/ngu/eval-500.json` uses the same pinned snapshot as training. Selection is `random.Random(43).sample(sorted(all_instance_ids - train_instance_ids), 500)`: 5,272 eligible tasks, 500 unique selected IDs, zero overlap with the training manifest. The manifest records revision, seed, eligible population and excluded manifest. This verifies instance-ID separation; it does not establish decontamination against the base checkpoint's earlier ScaleSWE training.
+
+Every source uses the bash harness, Prime sandboxes, a one-hour solve budget and a **two-hour scoring timeout**. Scoring failures remain errors. The manifest-backed SWE environment counts solve-budget exhaustion as a valid zero, as in profiling.
+
+Commands below prepare/launch training only when explicitly requested; no training has been submitted. From the repository root, export the taskset path for config resolution (the config also propagates it to the orchestrator and env servers):
+
+```bash
+export PYTHONPATH="$PWD/tools/ngu/tasksets${PYTHONPATH:+:$PYTHONPATH}"
+uv run rl @ configs/experiments/ngu/train-static.toml --dry-run
+# Optional diagnostics, also evaluated every 20 updates:
+uv run rl @ configs/experiments/ngu/train-static.toml @ configs/experiments/ngu/difficulty-eval.toml --dry-run
+```
+
+NGU's configuration matches the static arm except run labels and algorithm settings. Before it can launch, implement the continuation lifecycle, historical reward accounting, staleness filtering and anchored advantages described in [stage 1](../../../notes/ngu/stage-1.md), including a consistent cohort batching policy for the comparison. No placeholder runtime support was added merely to accept the draft.
+
+Track each held-out source's resolved rate, error rate and rollout length against allocated GPU-hours, alongside throughput, trainer idle time and trained/generated samples. The optional buckets are **training-set diagnostics**, not held-out evaluation. NGU additionally needs retry/first-success cost, history age/eviction, give-up rate and advantage-balance metrics when implemented.
+
+## Completed profile
+
+The profile produced 1,707 solves / 7,827 valid attempts (21.81% pooled); the mean per-task pass rate was 21.62% over 997 scorable tasks. There were 173 errors, including 13 graders stopped after two hours. No attempts were rerun to fill incomplete groups.
+
+Frozen manifests under `tools/ngu/` contain 168 easy, 93 medium, 72 hard and 664 extra-hard tasks. Three tasks without any valid attempts are excluded from the diagnostic subsets only. For partial groups, classification uses observed valid pass rate (≥75%, ≥37.5%, >0%, and 0%). Zero observed solves does not imply a true zero probability of success.
+
+All 8,000 episodes were uploaded to Prime Traces; all trace IDs and example retrieval were verified. Search by SDK context `run_name=ngu-swerebench-1k-glm45air-20260917` (the service did not index the native run ID). Full receipts, verification and retrieval instructions are in `outputs/ngu-profile-20260917/`.
 
 ## Measurement
 
@@ -73,7 +115,7 @@ uv run python tools/ngu_difficulty.py split \
 EVAL
 ```
 
-The inference job remains running after the eval step exits. Inspect the results, then release the allocation with `scancel "$NGU_JOB_ID"`. On interruption, rerun the eval step with `--resume` on the eval command before splitting. Do not run eval directly on the login node. Model access has not been smoke-tested on GPUs here.
+The inference job remains running after the eval step exits. Inspect the results, then release the allocation with `scancel "$NGU_JOB_ID"`. On interruption, rerun the eval step with `--resume` on the eval command before splitting. Do not run eval directly on the login node. The completed profile exercised this model on all four GPU replicas.
 
 Outputs under `$NGU_SHARED_OUTPUT`:
 
@@ -85,21 +127,9 @@ Outputs under `$NGU_SHARED_OUTPUT`:
 - `difficulty/results.json`: per-task solve counts, aggregate avg@8 and bucket sizes.
 - `difficulty/online-eval.toml`: training-time eval overlay with four separately named sources plus SWE-Bench Verified. Empty buckets retain manifests but are omitted from online eval and reported as size zero.
 
-The splitter deduplicates episode IDs across resumed trace archives and rejects inconsistent copies/task hashes. For this run, finish the current evaluation without rerunning failed attempts, then split with `--allow-partial`. Failed episodes are excluded from each task's denominator; a solve timeout is a valid zero. Buckets use observed pass rate: easy ≥75%, medium ≥37.5%, hard >0%, extra-hard 0%. Tasks with no valid outcomes remain unclassified.
+The splitter deduplicates episode IDs across resumed trace archives and rejects inconsistent copies/task hashes. This run was split with `--allow-partial` after it finished, without rerunning failed attempts. Failed episodes are excluded from each task's denominator; a solve timeout is a valid zero. Buckets use observed pass rate: easy ≥75%, medium ≥37.5%, hard >0%, extra-hard 0%. Tasks with no valid outcomes remain unclassified.
 
 `results.json` records valid counts and rates per task, the equally weighted task-mean pass rate, and the pooled valid-attempt pass rate. `avg_at_8` is null unless every task has eight valid outcomes. With no `--allow-partial`, the splitter requires exactly eight valid outcomes per task. Existing frozen split directories are never overwritten.
-
-## Observe curves during the two training runs
-
-Keep `tools/ngu/tasksets` on `PYTHONPATH` on every relevant process/node, and compose the generated overlay onto both training configs:
-
-```bash
-export PYTHONPATH="$PWD/tools/ngu/tasksets${PYTHONPATH:+:$PYTHONPATH}"
-uv run rl @ notes/ngu/swe-baseline.toml @ "$NGU_SHARED_OUTPUT/difficulty/online-eval.toml"
-uv run rl @ notes/ngu/swe-ngu.toml @ "$NGU_SHARED_OUTPUT/difficulty/online-eval.toml"
-```
-
-These are later training commands, not part of this profiling job; the NGU training algorithm still requires stage 1. The generated source array retains SWE-Bench Verified because config array composition replaces lists. Each difficulty source evaluates its full fixed subset every 20 steps with one rollout/task and the same one-hour solve budget. The source names produce separate curves. These sampled tasks are from the training distribution; their curves are learning diagnostics, not additional held-out generalization claims.
 
 ## Verification performed
 
@@ -109,4 +139,4 @@ These are later training commands, not part of this profiling job; the NGU train
 - All 1,000 unique task objects loaded from the real pinned Hub snapshot.
 - Isolated tests cover every bucket boundary, resume duplicate handling, incomplete/error rejection, disjoint/exhaustive splits, and preservation of the existing eval source.
 
-Preparation artifacts are ready for review; actual bucket membership and metrics do not exist until the GPU eval completes.
+Training configs and frozen manifests are ready for review. NGU runtime implementation remains outstanding.
