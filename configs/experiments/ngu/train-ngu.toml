@@ -59,15 +59,13 @@ lr = 3e-6
 batch_size = 384
 group_size = 4
 max_off_policy_steps = 64
-preserve_groups = true
-max_zero_output_batches = 100
 
 [orchestrator.env_vars]
 PYTHONPATH = "tools/ngu/tasksets"
 
 [orchestrator.concurrency]
 min_inflight = 256
-max_inflight = 1000
+max_inflight = 1536
 
 [orchestrator.algo]
 type = "ngu"
@@ -84,7 +82,7 @@ env.taskset.manifest = "tools/ngu/sample-1000.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
-env.agent.timeout.scoring = 7200
+env.agent.timeout.scoring = 3600
 
 [orchestrator.eval]
 interval = 20
@@ -98,7 +96,7 @@ env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
-env.agent.timeout.scoring = 7200
+env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
 name = "swerebench-heldout-500"
@@ -107,7 +105,7 @@ env.taskset.manifest = "tools/ngu/eval-500.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
-env.agent.timeout.scoring = 7200
+env.agent.timeout.scoring = 3600
 
 [inference]
 

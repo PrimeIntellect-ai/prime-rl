@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import verifiers.v1 as vf
 from swerebench_v2.taskset import SWERebenchV2Data, SWERebenchV2Task, repo_workdir
@@ -9,11 +10,19 @@ from swerebench_v2.taskset import SWERebenchV2Data, SWERebenchV2Task, repo_workd
 __all__ = ["NGUSWETaskset", "NGUSWEEnv"]
 
 
+class NGUSWEData(SWERebenchV2Data):
+    difficulty: Literal["easy", "medium", "hard", "extra-hard", "unclassified"] | None = None
+
+
+class NGUSWETask(SWERebenchV2Task, vf.Task[NGUSWEData]):
+    pass
+
+
 class NGUSWEConfig(vf.TasksetConfig):
     manifest: Path
 
 
-class NGUSWETaskset(vf.Taskset[SWERebenchV2Task, NGUSWEConfig]):
+class NGUSWETaskset(vf.Taskset[NGUSWETask, NGUSWEConfig]):
     def load(self):
         import pyarrow.parquet as pq
         from huggingface_hub import hf_hub_download
@@ -32,10 +41,11 @@ class NGUSWETaskset(vf.Taskset[SWERebenchV2Task, NGUSWEConfig]):
             raise ValueError(f"Missing manifest tasks: {sorted(selected - set(by_id))}")
         for task_id in ids:
             index, row = by_id[task_id]
-            yield SWERebenchV2Task(
-                SWERebenchV2Data(
+            yield NGUSWETask(
+                NGUSWEData(
                     idx=index,
                     name=task_id,
+                    difficulty=manifest.get("difficulty_by_task", {}).get(task_id, manifest.get("bucket")),
                     prompt=row["problem_statement"],
                     image=row["image_name"],
                     workdir=repo_workdir(row["repo"]),

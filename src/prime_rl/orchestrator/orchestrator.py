@@ -467,7 +467,7 @@ class Orchestrator:
                     self.progress,
                     self.train_source,
                     step=self.progress.step,
-                    train_sink=self.train_sink if self.config.preserve_groups else None,
+                    train_sink=self.train_sink if self.train_source.ngu else None,
                 )
             await self.stop()
             if clean_exit:
@@ -999,7 +999,7 @@ class Orchestrator:
         # Synchronous on purpose: snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
         self.ckpt_manager.save(
-            self.progress, self.train_source, step, train_sink=self.train_sink if self.config.preserve_groups else None
+            self.progress, self.train_source, step, train_sink=self.train_sink if self.train_source.ngu else None
         )
         return time.perf_counter() - t
 

@@ -7,7 +7,7 @@ Train `PrimeIntellect/GLM-4.5-Air-Scaleswe` on the frozen 1,000 SWE-rebench task
 | `train-static.toml` | K=8 (48 complete groups) | 384 |
 | `train-ngu.toml` | Start at K=4; add 4 after an all-failure round with probability .8 | 384 |
 
-Both use 2 trainer + 6 TP8/EP inference H200 nodes, Muon LR 3e-6, default IPO (.3 epsilon, zero KL), and W&B project `ngu-ablations`. Both use `max_off_policy_steps=64`. Whole-cohort batching can exceed the batch target; compare equal GPU-hours.
+Both use 2 trainer + 6 TP8/EP inference H200 nodes, Muon LR 3e-6, default IPO (.3 epsilon, zero KL), and W&B project `ngu-ablations`. Both use `max_off_policy_steps=64`. Both use standard fixed-size batching; compare equal GPU-hours.
 
 ```bash
 export PYTHONPATH="$PWD/tools/ngu/tasksets${PYTHONPATH:+:$PYTHONPATH}"

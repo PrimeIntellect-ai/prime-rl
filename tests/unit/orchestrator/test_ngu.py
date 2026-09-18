@@ -119,7 +119,6 @@ def test_ngu_sink_checkpoint_preserves_wire_payloads_and_aliases():
 
     from prime_rl.configs.orchestrator import OrchestratorConfig
     from prime_rl.orchestrator.metrics import TrainEpisodes
-    from prime_rl.orchestrator.ngu import NGUCohort
     from prime_rl.orchestrator.train_sink import TrainSink
     from prime_rl.orchestrator.types import Progress
 
@@ -141,7 +140,6 @@ def test_ngu_sink_checkpoint_preserves_wire_payloads_and_aliases():
     node.routed_experts = np.array([[[1, 2]]], dtype=np.uint8)
     original = sink()
     original.episode_by_trace[trace.id] = episode
-    original.ngu_cohorts["cohort"] = NGUCohort([episode], 8, 1)
     original.pending_episodes = TrainEpisodes([episode], sampled_trace_ids={trace.id})
     buffer = io.BytesIO()
     torch.save(original.state_dict(), buffer)
@@ -149,9 +147,48 @@ def test_ngu_sink_checkpoint_preserves_wire_payloads_and_aliases():
     restored = sink()
     restored.load_state_dict(torch.load(buffer, weights_only=False))
     recovered = restored.episode_by_trace[trace.id]
-    assert recovered is restored.ngu_cohorts["cohort"].episodes[0]
     assert recovered is restored.pending_episodes.episodes[0]
     restored_node = recovered.traces[0].nodes[0]
     assert restored_node.logprobs == node.logprobs
     assert restored_node.advantages == node.advantages
     np.testing.assert_array_equal(restored_node.routed_experts, node.routed_experts)
+
+
+def test_ngu_group_can_span_fixed_size_batches():
+    from prime_rl.configs.orchestrator import OrchestratorConfig
+    from prime_rl.orchestrator.metrics import TrainEpisodes
+    from prime_rl.orchestrator.train_sink import TrainSink
+    from prime_rl.orchestrator.types import Progress
+    from prime_rl.transports.batch import TrainingSample
+
+    group = episodes(vf.Task(vf.TaskData(idx=0, prompt="x")), [0, 0, 0, 0, 1])
+    advantages = anchored_advantages([0, 0, 0, 0, 1], 5, 1)
+    sink = TrainSink(
+        OrchestratorConfig(),
+        tokenizer=None,
+        train_envs=None,
+        progress=Progress(),
+        batch_size=4,
+        token_batch_size=None,
+    )
+    for episode, advantage in zip(group, advantages, strict=True):
+        trace = episode.traces[0]
+        sink.episode_by_trace[trace.id] = episode
+        sink.pending_batch[trace.id] = [
+            TrainingSample(
+                token_ids=[1],
+                mask=[True],
+                logprobs=[-0.1],
+                temperatures=[1.0],
+                advantages=[advantage],
+                env_name="test",
+                trace_id=trace.id,
+            )
+        ]
+    sink.pending_episodes = TrainEpisodes(group, sampled_trace_ids=set(sink.pending_batch))
+    first = sink.process_batch()
+    assert len(first.samples) == 4
+    assert len(sink.pending_batch) == 1
+    second = sink.process_batch()
+    assert [s.advantages[0] for s in first.samples + second.samples] == advantages
+    assert not sink.pending_batch

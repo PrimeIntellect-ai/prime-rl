@@ -16,11 +16,11 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
-from prime_rl.orchestrator.algo.ngu import NGUAlgorithm, anchored_advantages
-from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.ngu import NGUAlgorithm
+from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
-from prime_rl.orchestrator.ngu import NGUCohort, dump_episode
+from prime_rl.orchestrator.ngu import dump_episode
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
@@ -88,8 +88,6 @@ class TrainSink:
         self.token_batch_size = token_batch_size
         self.on_result = on_result
         self.train_source = train_source
-        self.cohort_by_trace: dict[str, str] = {}
-        self.ngu_cohorts: dict[str, NGUCohort] = {}
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -115,14 +113,9 @@ class TrainSink:
     def state_dict(self) -> dict:
         episodes = {e.id: e for e in self.pending_episodes.episodes}
         episodes.update((e.id, e) for e in self.episode_by_trace.values())
-        episodes.update((e.id, e) for cohort in self.ngu_cohorts.values() for e in cohort.episodes)
         return {
             "episodes": {key: dump_episode(e) for key, e in episodes.items()},
             "episode_by_trace": {key: e.id for key, e in self.episode_by_trace.items()},
-            "ngu_cohorts": {
-                key: {"episodes": [e.id for e in c.episodes], "attempts": c.attempts, "successes": c.successes}
-                for key, c in self.ngu_cohorts.items()
-            },
             "pending_episodes": {
                 "episodes": [e.id for e in self.pending_episodes.episodes],
                 "sampled_trace_ids": self.pending_episodes.sampled_trace_ids,
@@ -133,7 +126,6 @@ class TrainSink:
                 name: getattr(self, name)
                 for name in (
                     "pending_batch",
-                    "cohort_by_trace",
                     "pending_tokens",
                     "pending_failures",
                     "pending_cancelled_attempts",
@@ -147,10 +139,6 @@ class TrainSink:
     def load_state_dict(self, state: dict) -> None:
         episodes = {key: vf.WireEpisode.model_validate(e) for key, e in state["episodes"].items()}
         self.episode_by_trace = {key: episodes[eid] for key, eid in state["episode_by_trace"].items()}
-        self.ngu_cohorts = {
-            key: NGUCohort([episodes[eid] for eid in c["episodes"]], c["attempts"], c["successes"])
-            for key, c in state["ngu_cohorts"].items()
-        }
         pending = state["pending_episodes"]
         self.pending_episodes = TrainEpisodes(
             episodes=[episodes[eid] for eid in pending["episodes"]],
@@ -255,50 +243,20 @@ class TrainSink:
             trace_ids = list(self.pending_batch)
         min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
         dropped = 0
-        changed_cohorts: set[str] = set()
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
                 continue
-            cohort_id = self.cohort_by_trace.pop(trace_id, None)
-            if cohort_id is not None:
-                changed_cohorts.add(cohort_id)
             samples = self.pending_batch.pop(trace_id)
             if self.token_batch_size is not None:
                 self.pending_tokens -= payload_tokens(samples, self._trace(trace_id))
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
-        for cohort_id in changed_cohorts:
-            self._refresh_ngu_cohort(cohort_id)
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(f"Dropped {dropped} queued traces past their configured policy-age limit")
-
-    def _refresh_ngu_cohort(self, cohort_id: str) -> None:
-        cohort = self.ngu_cohorts.get(cohort_id)
-        if cohort is None:
-            return
-        ids = [tid for tid, gid in self.cohort_by_trace.items() if gid == cohort_id]
-        rewards = [self._trace(tid).reward for tid in ids]
-        advantages = anchored_advantages(rewards, cohort.attempts, cohort.successes)
-        if not any(advantages):
-            env_name = episode_env_name(cohort.episodes[0])
-            self.train_source.ngu[env_name].counters["unbalanced_queued_cohorts"] += 1
-            for tid in ids:
-                episode = self.episode_by_trace[tid]
-                if self.token_batch_size is not None:
-                    self.pending_tokens -= payload_tokens(self.pending_batch[tid], self._trace(tid))
-                del self.pending_batch[tid], self.episode_by_trace[tid], self.cohort_by_trace[tid]
-                self.pending_episodes.cancelled.add(episode.id)
-            del self.ngu_cohorts[cohort_id]
-            return
-        for tid, advantage in zip(ids, advantages, strict=True):
-            assign_advantages(self._trace(tid), advantage)
-            for sample in self.pending_batch[tid]:
-                sample.advantages = [advantage if mask else 0.0 for mask in sample.mask]
-        cohort.episodes = [self.episode_by_trace[tid] for tid in ids]
 
     async def process_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local algorithm work on one native episode."""
@@ -410,15 +368,12 @@ class TrainSink:
         if ngu_cohort is not None:
             if len(samples_by_trace) != len(survivors):
                 raise RuntimeError("NGU cohort lost trainable traces during sample compilation")
-            self.ngu_cohorts[group_id] = ngu_cohort
             counters = self.train_source.ngu[env_name].counters
             counters["accepted_cohorts"] += 1
             counters["accepted_payloads"] += len(samples_by_trace)
             counters["accepted_historical_attempts"] += ngu_cohort.attempts
         self.pending_episodes.admitted.update(episode.id for episode in group)
         self.pending_episodes.sampled_trace_ids.update(samples_by_trace)
-        if self.config.preserve_groups:
-            self.cohort_by_trace.update({tid: group_id for tid in samples_by_trace})
         self.pending_batch.update(samples_by_trace)
         for episode in group:
             for trace in episode.traces:
@@ -429,8 +384,7 @@ class TrainSink:
                 payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
             )
         self._drop_stale(samples_by_trace)
-        # A fully voided cohort advances the no-output guard, including when
-        # expiry removes the last negative needed to balance an NGU cohort.
+        # A fully stale group advances the no-output guard.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
             return
@@ -490,17 +444,8 @@ class TrainSink:
                     break
             selected = items[:cut]
 
-        if self.config.preserve_groups and selected:
-            last_cohort = self.cohort_by_trace[selected[-1][0]]
-            cut = len(selected)
-            while cut < len(items) and self.cohort_by_trace[items[cut][0]] == last_cohort:
-                cut += 1
-            selected = items[:cut]
         if self.token_batch_size is not None:
             self.pending_tokens -= sum(payload_tokens(samples, self._trace(tid)) for tid, samples in selected)
-        for tid, _ in selected:
-            cohort_id = self.cohort_by_trace.pop(tid, None)
-            self.ngu_cohorts.pop(cohort_id, None)
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
