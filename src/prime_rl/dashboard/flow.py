@@ -152,6 +152,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "done_order": None,
                 "calls": [],
                 "unit_status": None,
+                "report": None,
             }
             nodes.append(node)
             open_by_unit[unit] = node
@@ -165,6 +166,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             node["status"] = STATUS.get(status, "completed")
             node["unit_status"] = status
             node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
+            node["report"] = event.get("report")
             node["links"] = [link for link in event.get("links") or [] if isinstance(link, dict)]
             if status == "held":
                 node["error"] = event.get("reason")
@@ -233,6 +235,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "outcome": source["outcome"],
                     "to": source["to"],
                     "summary": source["reason"],
+                    "report": source.get("report"),
                 }
             )
         for steer in (st for st in steers if st["unit"] == unit):  # an operator moved this unit

@@ -604,7 +604,8 @@ async function selectFlowEdge(edgeId, redraw = true) {
     <div class="flow-inspector-head"><span class="t-label">transition</span><b>${esc(edge?.outcome || "")}</b></div>
     <div class="flow-route-pair"><span>${esc(source?.name || "stage")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
     <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(edge?.summary || "No reason was recorded for this transition.")}</p></div>
-    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>`;
+    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>
+    ${edge?.report ? `<button class="btn" data-flow-report="${esc(edge.report)}">open report</button>` : ""}`;
 }
 
 function fmtWhen(iso) {
@@ -6086,7 +6087,7 @@ function quoteMarkedHtml(text, marks) {
    promises live only for the current report render: duplicate references share
    work, while a changed report or rewritten trace never inherits stale evidence. */
 const CITATION_KEYS = new Set([
-  "run", "step", "kind", "subset", "episode", "trace", "branch",
+  "run", "step", "kind", "subset", "episode", "trace_id", "trace", "branch",
   "node", "field", "quote", "prefix", "suffix", "note",
 ]);
 
@@ -6097,33 +6098,51 @@ async function resolveCitation(c, cache) {
   if (unknown.length) return { matched: false, reason: `unknown fields: ${unknown.join(", ")}` };
   const run = c.run || state.run;
   if (typeof run !== "string" || !run) return { matched: false, reason: "citation needs a run" };
-  if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
-    return { matched: false, reason: "citation needs a valid step, kind, and subset" };
+  const byTrace = typeof c.trace_id === "string" && c.trace_id; // a flow run's trace, addressed by its id
+  if (!byTrace && (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset)))
+    return { matched: false, reason: "citation needs a valid step, kind, and subset, or a trace_id" };
   for (const key of ["trace", "node"])
     if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
   if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
     return { matched: false, reason: "branch must be an integer >= -1" };
   if (c.field != null && !["content", "reasoning"].includes(c.field))
     return { matched: false, reason: "field must be content or reasoning" };
-  if (typeof c.episode !== "string" || !c.episode) return { matched: false, reason: "citation needs an episode id" };
+  if (!byTrace && (typeof c.episode !== "string" || !c.episode)) return { matched: false, reason: "citation needs an episode id" };
   if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
   for (const key of ["prefix", "suffix"])
     if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
   const base = `/api/runs/${encodeURIComponent(run)}/episodes`;
-  const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
-  if (!cache.summaries.has(summaryKey))
-    cache.summaries.set(
-      summaryKey,
-      api(summaryKey).catch((err) => {
-        cache.summaries.delete(summaryKey);
-        throw err;
-      })
-    );
-  const list = await cache.summaries.get(summaryKey);
-  if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
-  if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
-  const line = list.episodes[0].line;
+  let line;
+  let traceIndex = c.trace ?? 0;
+  if (byTrace) {
+    const key = `/api/runs/${encodeURIComponent(run)}/flow/traces/${encodeURIComponent(c.trace_id)}`;
+    if (!cache.summaries.has(key))
+      cache.summaries.set(
+        key,
+        api(key).catch((err) => {
+          cache.summaries.delete(key);
+          throw err;
+        })
+      );
+    const found = await cache.summaries.get(key);
+    line = found.line;
+    traceIndex = found.trace;
+  } else {
+    const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
+    if (!cache.summaries.has(summaryKey))
+      cache.summaries.set(
+        summaryKey,
+        api(summaryKey).catch((err) => {
+          cache.summaries.delete(summaryKey);
+          throw err;
+        })
+      );
+    const list = await cache.summaries.get(summaryKey);
+    if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
+    if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
+    line = list.episodes[0].line;
+  }
   const epKey = `${base}/${line}`;
   if (!cache.episodes.has(epKey))
     cache.episodes.set(
@@ -6134,7 +6153,7 @@ async function resolveCitation(c, cache) {
       })
     );
   const ep = await cache.episodes.get(epKey);
-  const trace = (ep.traces || [])[c.trace ?? 0];
+  const trace = (ep.traces || [])[traceIndex];
   if (!trace) return { matched: false, reason: "trace not found", line };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
@@ -6578,6 +6597,8 @@ document.addEventListener("click", (event) => {
   if (img) img.classList.toggle("full");
 });
 $("#flow-inspector").addEventListener("click", (event) => {
+  const report = event.target.closest("[data-flow-report]");
+  if (report) return applyViewCommand({ run: state.run, tab: "report", report: report.dataset.flowReport });
   const node = event.target.closest("[data-flow-node]");
   if (node) selectFlowNode(node.dataset.flowNode);
 });
