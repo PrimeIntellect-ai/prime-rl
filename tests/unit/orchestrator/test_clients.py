@@ -1,5 +1,4 @@
 import asyncio
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,23 +113,31 @@ def test_setup_client_creates_renderer_client():
     assert client.headers["X-Test"] == "test"
 
 
-def test_env_timeout_reads_env_at_call_time():
-    os.environ["PRL_ADMIN_TIMEOUT_S"] = "1234"
+def test_env_timeout_reads_env_at_call_time(monkeypatch):
+    monkeypatch.setenv("PRL_ADMIN_TIMEOUT_S", "1234")
     assert env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S) == 1234.0
 
 
-def test_env_timeout_defaults_when_unset():
+def test_env_timeout_defaults_when_unset(monkeypatch):
+    monkeypatch.delenv("PRL_ADMIN_TIMEOUT_S", raising=False)
     assert env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S) == ADMIN_TIMEOUT_S
 
 
-def test_env_timeout_raises_on_non_numeric_value():
-    os.environ["PRL_ADMIN_TIMEOUT_S"] = "abc"
+def test_env_timeout_raises_on_non_numeric_value(monkeypatch):
+    monkeypatch.setenv("PRL_ADMIN_TIMEOUT_S", "abc")
     with pytest.raises(ValueError, match="PRL_ADMIN_TIMEOUT_S"):
         env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
 
 
-def test_env_timeout_raises_on_negative_value():
-    os.environ["PRL_ADMIN_TIMEOUT_S"] = "-1"
+def test_env_timeout_raises_on_negative_value(monkeypatch):
+    monkeypatch.setenv("PRL_ADMIN_TIMEOUT_S", "-1")
+    with pytest.raises(ValueError, match="PRL_ADMIN_TIMEOUT_S"):
+        env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "1e309"])
+def test_env_timeout_raises_on_non_finite_value(monkeypatch, raw):
+    monkeypatch.setenv("PRL_ADMIN_TIMEOUT_S", raw)
     with pytest.raises(ValueError, match="PRL_ADMIN_TIMEOUT_S"):
         env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
 

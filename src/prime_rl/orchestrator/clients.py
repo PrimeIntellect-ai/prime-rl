@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -395,6 +396,8 @@ def env_timeout(name: str, default: float) -> float:
         value = float(raw)
     except ValueError:
         raise ValueError(f"{name} must be a number of seconds, got {raw!r}") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number of seconds, got {raw!r}")
     if value < 0:
         raise ValueError(f"{name} must be non-negative, got {raw!r}")
     return value
