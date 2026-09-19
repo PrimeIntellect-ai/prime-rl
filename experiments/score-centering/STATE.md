@@ -115,3 +115,5 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Final audit selector now writes a complete eval.json preserving the training agent configuration and scheduled-eval sampling. Four attempts per task, pinned concurrency 128 for all models. The generated config passed uv run eval --dry-run against completed smoke5 logs.
 
 - At09:13 UTC, both actual pools have API4 and roughly500 inflight episodes. No router health warnings or unhealthy-worker failures observed. SC has123 completed training episodes and zero training errors; no optimizer update yet. Read-only snapshot helper: /tmp/score-centering-monitor.py; artifacts: results/monitor/snapshots.jsonl.
+
+- At09:26 UTC, IPO893 completed step1 (gradient0.4347, mismatch KL0.0063), SC891 completed step2 (gradient0.0832, KL0.0046); all finite. Weight refresh works with API4. SC step2 took3m39s, including3m03s waiting for rollouts and36s active work. No robustness separation established.

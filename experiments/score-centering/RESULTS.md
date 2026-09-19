@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 09:04 UTC: the corrected API4 pair is starting. No robustness conclusion yet.
+Status at 2026-09-19 09:26 UTC: IPO has one finite update and score centering has two. No robustness conclusion yet.
 
 ## Main comparison
 
@@ -18,6 +18,15 @@ Status at 2026-09-19 09:04 UTC: the corrected API4 pair is starting. No robustne
 The primary contrast changes importance weighting and masking as well as centering.
 It tests the published estimator against IPO. It does not isolate centering alone.
 See `PROTOCOL.md` for the estimator and fixed decision rules.
+
+## Early current-run observations
+
+IPO step1: gradient norm0.4347 and mismatch KL0.0063.
+Centered step2: gradient norm0.0832 and mismatch KL0.0046.
+All observed updates are finite; both inference pools accept refreshed weights.
+These different batches and steps cannot establish a robustness difference.
+Centered step2 took3m39s, including3m03s waiting for rollouts and36s active work.
+API4 has avoided the earlier unhealthy-worker request storm so far; isolated health-check misses remain.
 
 ## Validation and smoke evidence
 
