@@ -432,7 +432,10 @@ Sandbox label `glm45air-swe`. Run dir `/home/garrett/prl_output_dir/glm45air-swe
 - Unit test (5 passed), dry run, and the three-way resolved-config check all pass; resolved runtime is `prime`
   with label `glm45air-swe`, renderer `glm-4.5`.
 
-### Attempt 2 (SLURM job 915), submitted 15:25, 16 nodes, pending
+### Attempt 2 (SLURM job 915), submitted 15:25, started 16:07, 16 nodes
 
 Command: `uv run rl @ configs/advanced/glm-4.5-air/swe.toml`. Queued on `(Resources)`: 46 nodes allocated to
 others, 14 planned for this job, 1 idle. Starts when two more free up. Run-dir attempt 1 was the dry run.
+Nodes: `prime-nebius-puku-h200-gpu-[013-016,018,020,024,036,038,042,046,050,052,055,057-058]`. GLM weights are cold
+on every node (different model), so expect a longer first load than the warm DeepSeek resumes.
+Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_2/`.
