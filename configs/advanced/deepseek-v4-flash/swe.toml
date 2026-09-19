@@ -158,7 +158,11 @@ quantization = "fp8_per_block"
 quantization_config = { ignore = ["re:.*indexer.*"] }
 tensor_parallel_size = 8
 enable_expert_parallel = true
-gpu_memory_utilization = 0.85
+# 0.85 left ~7.5 GiB free on a 139.8 GiB card once vLLM's non-torch allocations (~15 GiB) are counted, and the
+# NCCL weight receive path allocates one 12.25 GiB staging buffer for the largest per-dtype chunk. The v0
+# broadcast squeaked through by flushing the allocator cache; the v1 update after step 1 OOMed on all 64
+# ranks. 0.75 frees ~14 GiB more and still leaves ~9x concurrency at 131k in the KV pool.
+gpu_memory_utilization = 0.75
 max_model_len = 131072
 # Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
 kv_cache_dtype = "fp8"
