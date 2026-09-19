@@ -187,6 +187,10 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   (invalid_argument): resolve command "/bin/bash": stat /bin/bash: ...` (one group; the task image has no bash).
   Same bucket as the `uv --script` failure: image-level, a few percent of episodes, left alone.
 - 06:02-06:14 steps 21-27 at 1-3 min each, Peak Mem 72-92 GiB, mismatch KL 0.020-0.025. Nothing new.
+- 06:18:54 orchestrator Step 30: `Max Off-Policy 26` against `max_off_policy_steps = 32`. Steps 17-30 range
+  6-26 with no trend and `stale=0` in every `Discarded` warning so far. Because trainer steps are ~2.5 min and
+  a long SWE rollout can run over an hour, the longest episodes sit close to the stale cutoff. Watch item: if
+  `stale=` becomes non-zero, the fix is a higher `max_off_policy_steps` (a `[orchestrator]` knob), not a guard.
 
 ## Open questions for Garrett
 
