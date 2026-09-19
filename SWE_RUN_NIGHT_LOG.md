@@ -544,6 +544,24 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   `step_260`. Steps 251-260 routine.
 - 21:46:13 step 280 checkpoint saved (`Step 280 | 3m 13s | Mismatch KL 0.0063`); `checkpoints/` holds `step_260`,
   `step_280`. Steps 261-280: reward 0.61-0.75 at the sampled steps, turns 35-39, one more single harness traceback.
+- 22:32:49 **step 300 checkpoint saved** (`Step 300 | 4m 23s | Mismatch KL 0.0065 | Peak Mem. 49.0 GiB`);
+  `checkpoints/` holds `step_280`, `step_300`. 6h 09m of job time from launch; the few-hundred-step goal is met.
+- 22:33 milestone summary through step 300, by 50-step window:
+
+  | steps | reward mean | turns mean | mismatch KL mean |
+  |---|---|---|---|
+  | 1-50 | 0.579 | 23.6 | 0.0053 |
+  | 51-100 | 0.703 | 30.8 | 0.0054 |
+  | 101-150 | 0.696 | 34.0 | 0.0054 |
+  | 151-200 | 0.733 | 34.5 | 0.0052 |
+  | 201-250 | 0.746 | 35.5 | 0.0052 |
+  | 251-300 | 0.711 | 38.9 | 0.0059 |
+
+  Mismatch KL is flat at 0.005-0.006 for 300 steps under the same FP8 serving recipe (bf16 dense MLP and shared
+  experts aside) where DeepSeek V4 Flash went 0.025 -> 0.12 and collapsed. Reward plateaued around 0.7-0.75
+  from step ~150; episodes are getting longer (39 turns) and step time has eased from ~60 s to ~105 s. Inference
+  p99 ~40 s, no runaway generations. 36,187 episodes finished; 208 off-policy cancellations, 131 trace failures
+  (nothing new since 18:05 beyond two singletons), 2 provisioning blips, no trainer or inference errors at all.
 
 ## Open questions for Garrett (GLM run)
 
