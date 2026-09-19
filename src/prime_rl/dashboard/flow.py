@@ -16,14 +16,11 @@ from verifiers.v1.flow.events import CallEvent, EventRecord, RunEvent, StageEven
 from verifiers.v1.flow.unit import UnitState
 
 TRANSITIONS = "transitions.jsonl"
-STATUS = {"ready": "completed", "terminal": "completed", "waiting": "completed", "held": "failed"}
-"""A transition's unit status as the node's status: a hold is the failure an operator sees."""
 
 
 def flow_etag(run_dir: Path) -> str:
     paths = [run_dir / "transitions.jsonl", run_dir / "traces.jsonl", run_dir / "drain"]
     paths.extend((run_dir / "calls").glob("*/*.json"))
-    paths.extend((run_dir / "live").glob("*.json"))
     for unit in sorted((run_dir / "units").glob("*")):
         paths.extend([unit / "state.json", unit / ".git/HEAD", unit / ".git/packed-refs"])
         paths.extend((unit / ".git/refs/heads").rglob("*"))
@@ -147,10 +144,10 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     def group_id(unit: str) -> str:
         return f"{row}/{unit}"
 
-    steers: list[dict[str, Any]] = []
+    steers: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for order, event in enumerate(events):
         if isinstance(event, SteerEvent):
-            steers.append({**event.model_dump(mode="json"), "order": order})
+            steers[event.unit].append({"at": event.at, "action": event.action.model_dump(exclude_none=True)})
             continue
         if not isinstance(event, StageEvent):
             continue
@@ -174,7 +171,6 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "outcome": None,
                 "to": None,
                 "links": [],
-                "done_order": None,
                 "calls": [],
                 "unit_status": None,
                 "report": None,
@@ -183,13 +179,11 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             executions[event.execution] = node
         elif kind in ("transition", "stopped", "cancelled") and (node := executions.get(event.execution)) is not None:
             node["finished_at"] = event.at
-            node["done_order"] = order
             if kind in ("stopped", "cancelled"):
-                node["status"] = "cancelled"
+                node["status"] = kind
                 continue
-            status = event.status
-            node["status"] = STATUS.get(status, "completed")
-            node["unit_status"] = status
+            node["status"] = "completed"
+            node["unit_status"] = event.status
             node["outcome"], node["to"], node["reason"] = event.outcome, event.to, event.reason
             node["report"] = event.report
             node["links"] = [link.model_dump() for link in event.links]
@@ -268,53 +262,22 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
         by_unit[node["unit"]].append(node)
-    for unit, lane in by_unit.items():
+    for lane in by_unit.values():
         for i, source in enumerate(lane):
             if source["outcome"] is None:
                 continue
-            target = lane[i + 1] if i + 1 < len(lane) and source.get("unit_status") == "ready" else None
+            target = lane[i + 1] if i + 1 < len(lane) else None
+            if source["unit_status"] != "ready" or (target and target["name"] != source["to"]):
+                target = None
             edges.append(
                 {
                     "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
-                    "kind": "route",
                     "source": source["id"],
                     "target": target["id"] if target else None,
                     "outcome": source["outcome"],
                     "to": source["to"],
                     "summary": source["reason"],
                     "report": source.get("report"),
-                }
-            )
-        for steer in (st for st in steers if st["unit"] == unit):  # an operator moved this unit
-            before = [n for n in lane if (n.get("done_order") or n["order"]) < steer["order"]]
-            after = [n for n in lane if n["order"] > steer["order"]]
-            if not before:
-                continue
-            edges.append(
-                {
-                    "id": f"steer:{steer['sha']}",
-                    "kind": "route",
-                    "source": before[-1]["id"],
-                    "target": after[0]["id"] if after else None,
-                    "outcome": "steer",
-                    "to": after[0]["name"] if after else "operator",
-                    "summary": steer["action"].get("note") or orjson.dumps(steer["action"]).decode(),
-                }
-            )
-    for source in nodes:  # between lanes: a stage that created, released or woke another unit
-        for link in source["links"]:
-            lane = by_unit.get(link["unit"], [])
-            after = source.get("done_order", source["order"])
-            target = next((n for n in lane if n["order"] > after), None)
-            edges.append(
-                {
-                    "id": f"link:{source['id']}:{link['unit']}:{link['label']}",
-                    "kind": "route",
-                    "source": source["id"],
-                    "target": target["id"] if target else None,
-                    "outcome": link["label"],
-                    "to": target["name"] if target else link["unit"],
-                    "summary": source["reason"],
                 }
             )
     units = []
@@ -326,6 +289,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "name": unit,
                 "stage": state.stage,
                 "status": state.status,
+                "steers": steers[unit],
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
             }
@@ -340,8 +304,8 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             "units": len(units),
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),
-            "failed": sum(n["status"] == "failed" for n in nodes),
+            "held": sum(s.status == "held" for s in states.values()),
             "traces": sum(c["trace_id"] is not None for n in nodes for c in n["calls"]),
-            "routes": sum(e["kind"] == "route" for e in edges),
+            "routes": len(edges),
         },
     }

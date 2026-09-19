@@ -444,21 +444,29 @@ function flowDuration(node) {
 }
 
 function flowStatusClass(status) {
-  if (status === "incomplete") return "stale";
+  if (["incomplete", "held", "waiting", "stopped"].includes(status)) return "stale";
   if (status === "failed" || status === "cancelled") return "bad";
   if (status === "running") return runStatus(currentStep()) === "running" ? "live" : "stale";
   return "done";
 }
 
 function renderFlowInspector() {
-  if (state.flow.selectedEdge) {
-    selectFlowEdge(state.flow.selectedEdge, false);
-    return;
-  }
-  const hasRoutes = state.flow.data?.stats.routes;
-  $("#flow-inspector").innerHTML = hasRoutes
-    ? `<div class="empty"><span>select a transition</span><small>click a labeled edge for its reason, a stage for its calls</small></div>`
-    : `<div class="empty"><span>no transitions yet</span><small>click an edge for its reason, a stage for its calls</small></div>`;
+  const flow = state.flow;
+  const data = flow.data;
+  if (!data) return;
+  const edge = data.edges.find((item) => item.id === flow.selectedEdge);
+  const source = flowNodeMap().get(edge?.source);
+  const units = data.units.filter((unit) => flow.task === "all" || unit.id === flow.task);
+  $("#flow-inspector").innerHTML = (edge ? `
+    <div class="flow-inspector-head"><span class="t-label">transition</span><b>${esc(edge.outcome)}</b></div>
+    <div class="flow-route-pair"><span>${esc(source.name)}</span><i>→</i><span>${esc(edge.to || "end")}</span></div>
+    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(edge.summary || "No reason was recorded for this transition.")}</p></div>
+    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source.path)}</code></div>
+    ${source.links.length ? `<div class="flow-inspector-section"><span class="t-label">affected units</span><p>${esc(source.links.map((link) => `${link.unit} (${link.label})`).join(", "))}</p></div>` : ""}
+    ${edge.report ? `<button class="btn" data-flow-report="${esc(edge.report)}">open report</button>` : ""}`
+    : emptyState("select a transition", "click an edge for its reason, a stage for its calls")) +
+    units.flatMap((unit) => unit.steers.map((steer) => `
+      <div class="flow-inspector-section"><span class="t-label">steering · ${esc(unit.name)} · ${esc(fmtWhen(steer.at))}</span><code>${esc(JSON.stringify(steer.action))}</code></div>`)).join("");
 }
 
 function renderFlow() {
@@ -475,7 +483,7 @@ function renderFlow() {
   const stat = (label, value) => `<div class="flow-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
   $("#flow-summary").innerHTML = [
     stat("units", data.stats.units), stat("steps", data.stats.steps), stat("active", data.stats.running),
-    stat("failed", data.stats.failed), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
+    stat("held", data.stats.held), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
   ].join("");
   $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : data.status} · ${data.stats.routes} routes`;
 
@@ -484,7 +492,7 @@ function renderFlow() {
       <span><b>all units</b><small>run trajectory</small></span><em>${data.units.length}</em>
     </button>` +
     data.units.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
-      <i class="${flowStatusClass(task.status === "held" ? "failed" : task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${esc(task.status || "")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
+      <i class="${flowStatusClass(task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${esc(task.status || "")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
     </button>`).join("");
   renderFlowGraph();
   renderFlowInspector();
@@ -541,7 +549,7 @@ function renderFlowGraph() {
   const layout = flowGraphLayout(data, state.flow.task, graph.clientWidth);
   const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
   const visible = new Set(nodeById.keys());
-  const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target ? edge.kind === "route" : visible.has(edge.target)));
+  const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target || visible.has(edge.target)));
   const edgeTarget = (edge) => {
     const target = edge.target && layout.positions.get(edge.target);
     if (target) return target;
@@ -556,17 +564,9 @@ function renderFlowGraph() {
   const edgeSvg = edges.map((edge) => {
     const a = layout.positions.get(edge.source), b = edgeTarget(edge);
     if (!a || !b) return "";
-    return `<path class="fg-edge ${edge.kind} ${edge.target ? "" : "pending"}" d="${flowEdgePath(a, b)}" marker-end="url(#fg-${edge.kind})"></path>`;
+    return `<path class="fg-edge route ${edge.target ? "" : "pending"}" d="${flowEdgePath(a, b)}" marker-end="url(#fg-route)"></path>`;
   }).join("");
-  const labeledRoutes = [];
-  const routeKeys = new Set();
-  for (const edge of edges.filter((edge) => edge.kind === "route")) {
-    const key = `${edge.source}:${edge.outcome}:${edge.to}`;
-    if (routeKeys.has(key)) continue;
-    routeKeys.add(key);
-    labeledRoutes.push(edge);
-  }
-  const routeLabels = labeledRoutes.map((edge) => {
+  const routeLabels = edges.map((edge) => {
     const a = layout.positions.get(edge.source), b = edgeTarget(edge);
     const sameRow = Math.abs(a.y - b.y) < 8;
     const left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + 80;
@@ -580,7 +580,7 @@ function renderFlowGraph() {
     const duration = flowDuration(node);
     const calls = node.calls?.length ? ` · ${node.calls.length} call${node.calls.length === 1 ? "" : "s"}` : "";
     return `<button class="fg-node ${flowStatusClass(node.status)} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
-      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${duration ? ` · ${esc(duration)}` : ""}${calls}</small>
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}${duration ? ` · ${esc(duration)}` : ""}${calls}</small>
     </button>`;
   }).join("");
   graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
@@ -591,18 +591,10 @@ function renderFlowGraph() {
     </svg>${routeLabels}${cards}</div>`;
 }
 
-async function selectFlowEdge(edgeId, redraw = true) {
-  const flow = state.flow;
-  flow.selectedEdge = edgeId;
-  if (redraw) renderFlowGraph();
-  const edge = flow.data.edges.find((item) => item.id === edgeId);
-  const source = flowNodeMap().get(edge?.source);
-  $("#flow-inspector").innerHTML = `
-    <div class="flow-inspector-head"><span class="t-label">transition</span><b>${esc(edge?.outcome || "")}</b></div>
-    <div class="flow-route-pair"><span>${esc(source?.name || "stage")}</span><i>→</i><span>${esc(edge?.to || "end")}</span></div>
-    <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(edge?.summary || "No reason was recorded for this transition.")}</p></div>
-    <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source?.path || "")}</code></div>
-    ${edge?.report ? `<button class="btn" data-flow-report="${esc(edge.report)}">open report</button>` : ""}`;
+function selectFlowEdge(edgeId) {
+  state.flow.selectedEdge = edgeId;
+  renderFlowGraph();
+  renderFlowInspector();
 }
 
 function fmtWhen(iso) {
@@ -624,6 +616,7 @@ function openFlowStage(nodeId) {
   const facts = [
     ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
     ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
+    ["unit after stage", node.unit_status], ["affected units", node.links.map((link) => `${link.unit} (${link.label})`).join(", ")],
   ].filter(([, value]) => value);
   $("#fm-title").textContent = `${node.name}${node.occurrence ? ` · ${node.occurrence + 1}` : ""}`;
   $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");
@@ -646,7 +639,7 @@ function closeFlowStage() {
 }
 
 async function openFlowTrace(node) {
-  if (node?.episode_line == null) return toastMsg("this step has no trace");
+  if (node?.episode_line == null) return toastMsg("trace not yet recorded");
   await applyViewCommand({ run: state.run, tab: "traces", episode: node.episode_id, line: node.episode_line, trace: 0 });
 }
 
@@ -5822,22 +5815,23 @@ async function refreshReport() {
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/reports`);
   if (state.report !== rep) return;
   rep.files = data.reports;
-  if (!rep.files.length) {
-    rep.file = null;
-    rep.text = null;
-    renderReportSelect();
-    $("#report-verify").textContent = "";
-    $("#report-status").textContent = "";
-    $("#report-body").innerHTML = emptyState("no reports yet", "markdown files in <run>/reports/ appear here");
-    return;
-  }
-  const wanted = rep.wanted && rep.files.find((f) => f.file === rep.wanted)?.file;
+  const target = rep.wanted || rep.file || rep.files[0]?.file || null;
   rep.wanted = null;
-  const target = wanted || (rep.file && rep.files.find((f) => f.file === rep.file)?.file) || rep.files[0].file;
   const entry = rep.files.find((f) => f.file === target);
-  const changed = target !== rep.file || entry.mtime !== rep.mtime;
+  const changed = target !== rep.file || entry?.mtime !== rep.mtime;
   rep.file = target;
   renderReportSelect();
+  if (!entry) {
+    rep.text = null;
+    rep.mtime = null;
+    rep.lookup = null;
+    $("#report-verify").textContent = "";
+    $("#report-status").textContent = "";
+    $("#report-body").innerHTML = target
+      ? emptyState("report unavailable", target)
+      : emptyState("no reports yet");
+    return;
+  }
   if (changed) await loadReport();
 }
 
@@ -5856,11 +5850,11 @@ function renderReportSelect() {
   const rep = state.report;
   const sel = $("#report-select");
   sel.disabled = !rep.files.length;
-  sel.innerHTML = rep.files.length
-    ? rep.files
-        .map((f) => `<option value="${esc(f.file)}" ${f.file === rep.file ? "selected" : ""}>${esc(f.title || f.file)}</option>`)
-        .join("")
-    : `<option>no reports</option>`;
+  sel.innerHTML =
+    (rep.file && !rep.files.some((f) => f.file === rep.file)
+      ? `<option value="${esc(rep.file)}" selected>${esc(rep.file)} (unavailable)</option>` : "") +
+    rep.files.map((f) => `<option value="${esc(f.file)}" ${f.file === rep.file ? "selected" : ""}>${esc(f.title || f.file)}</option>`).join("") ||
+    `<option>no reports</option>`;
   syncDressedSelects();
 }
 

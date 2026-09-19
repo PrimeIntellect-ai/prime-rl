@@ -24,6 +24,7 @@ from itertools import groupby
 from pathlib import Path
 
 import orjson
+from verifiers.v1.flow.events import StageEvent
 
 from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_events, run_status
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -547,10 +548,18 @@ def report_title(path: Path) -> str | None:
 
 @app.get("/api/runs/{run}/reports")
 def list_reports(run: str) -> dict:
-    """Markdown reports under <run>/reports/, newest first."""
-    reports_dir = get_run_dir(run) / "reports"
+    """Markdown reports, limited to recorded transitions for Flow runs."""
+    run_dir = get_run_dir(run)
+    reports_dir = run_dir / "reports"
+    published = (
+        {e.report for e in read_events(run_dir) if isinstance(e, StageEvent) and e.type == "transition" and e.report}
+        if is_flow_run(run_dir)
+        else None
+    )
     rows = []
     for path in reports_dir.glob("*.md") if reports_dir.is_dir() else []:
+        if published is not None and path.name not in published:
+            continue
         try:
             stat = path.stat()
         except OSError:
