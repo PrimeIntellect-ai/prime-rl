@@ -7,11 +7,13 @@
 
 max_steps = 10000000
 seq_len = 131072
-output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
-clean = true
 
 [run]
 name = "glm5"
+
+[slurm]
+job_name = "glm5"
+partition = "all" # FILL IN: set to your cluster's partition
 
 [log]
 level = "debug"
@@ -49,10 +51,6 @@ num_decode_replicas = 1
 "VLLM_DEEP_GEMM_WARMUP" = "skip"
 "UCX_RCACHE_MAX_UNRELEASED" = "1024"
 
-# gives the most KV cache while keeping decent throughput, KV cache increase comes in from lower deep-ep LL static buffers
-[inference.deployment.prefill_vllm_overrides]
-"enable_dbo" = true
-
 [inference.deployment.decode_vllm_overrides]
 "max_num_batched_tokens" = 96
 "max_num_seqs" = 96
@@ -74,9 +72,7 @@ enable_expert_parallel = true
 enable_eplb = false
 enable_ep_weight_filter = true
 safetensors_load_strategy = "prefetch"
-[slurm]
-job_name = "glm5"
-partition = "all" # FILL IN: set to your cluster's partition
+
 
 [trainer]
 dist_timeout_seconds = 1800
@@ -85,7 +81,7 @@ dist_timeout_seconds = 1800
 name = "zai-org/GLM-5.3-BF16"
 impl = "custom"
 attn = "flash_attention_2" # ignored with GLM5
-fused_lm_head_token_chunk_size = 1024
+fused_lm_head_token_chunk_size = 8192
 cp = 4 # context parallel for the 131K seq len
 ep = 8
 
@@ -111,11 +107,10 @@ weight_decay = 0.0
 [orchestrator]
 batch_size = 256
 group_size = 16
-max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
+max_off_policy_steps = 8
 
 [orchestrator.concurrency]
 initial_inflight = 256
-max_inflight = 512
 
 [orchestrator.model]
 name = "zai-org/GLM-5.3-BF16"
