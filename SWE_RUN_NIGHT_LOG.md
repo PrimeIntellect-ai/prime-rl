@@ -414,3 +414,25 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
   and the pool has no health check: a broken tunnel became a black hole for new sessions (least-loaded picks
   it) and cost ~70% of rollouts until a run restart. Worth a tunnel health probe in the pool, or a retry on 5xx
   in the harness's model client, or both. Also: the pool leaks frpc processes when it resizes (20 alive for 4).
+
+## GLM-4.5-Air comparison run (Garrett's request, 15:10)
+
+Same task and recipe with the model swapped: `configs/advanced/glm-4.5-air/swe.toml` at `3e448e362`, a copy of the
+DeepSeek config with only the model block changed (`zai-org/GLM-4.5-Air`, `attn = "flash_attention_3"`,
+`cp_style = "ulysses"`, `renderer.name = "glm-4.5"`, `enable_return_routed_experts = true`; the DeepSeek-only indexer
+exclusion and `block_size` dropped). Kept identical on purpose: 131k, batch 64 / group 8, AdamW 1e-6, length
+penalty, ckpt every 20 keep 2, online `fp8_per_block` serving with `kv_cache_dtype = "fp8"` and DeepGEMM,
+`gpu_memory_utilization = 0.75`, 8 trainer + 8 inference nodes, the 7200 s ready timeout. wandb: same project
+(`primeintellect/deepseek-v4-flash`) so the two runs sit side by side, name suffixed `-glm45air`, tag `glm-4.5-air`.
+Sandbox label `glm45air-swe`. Run dir `/home/garrett/prl_output_dir/glm45air-swe-131k`.
+
+- The checkpoint lives only in the shared `/home/huggingface/hub` (412 GB with a complete PrimeRL conversion
+  cache and `.prime-v1` marker, world-writable). Rather than switch `HF_HOME` and hit the lock-file problem,
+  symlinked that one model directory into `~/.cache/huggingface/hub/`.
+- Unit test (5 passed), dry run, and the three-way resolved-config check all pass; resolved runtime is `prime`
+  with label `glm45air-swe`, renderer `glm-4.5`.
+
+### Attempt 2 (SLURM job 915), submitted 15:25, 16 nodes, pending
+
+Command: `uv run rl @ configs/advanced/glm-4.5-air/swe.toml`. Queued on `(Resources)`: 46 nodes allocated to
+others, 14 planned for this job, 1 idle. Starts when two more free up. Run-dir attempt 1 was the dry run.
