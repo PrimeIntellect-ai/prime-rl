@@ -942,6 +942,60 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
+def test_kv_cache_replay_propagates_from_inference():
+    """A quantized inference KV cache must auto-enable the trainer-side replay."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "fp8"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "fp8"
+
+
+def test_kv_cache_replay_explicit_trainer_value_wins():
+    """An explicit trainer.model.kv_cache_dtype is never overridden by auto-setup."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {"model": {"kv_cache_dtype": "auto"}},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "fp8"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "auto"
+
+
+def test_kv_cache_replay_unsimulated_dtype_stays_auto():
+    """Inference dtypes the trainer cannot simulate (e.g. nvfp4) don't propagate."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {"vllm": {"kv_cache_dtype": "nvfp4"}},
+        }
+    )
+    assert config.trainer.model.kv_cache_dtype == "auto"
+
+
+def test_kv_cache_dtype_reaches_vllm_namespace():
+    """inference.vllm.kv_cache_dtype must land on the vLLM serve namespace, and unknown
+    values must be rejected at parse time (typed Literal, not blind pass-through)."""
+    config = InferenceConfig(vllm={"kv_cache_dtype": "fp8"})
+    assert config.vllm.kv_cache_dtype == "fp8"
+    namespace = config.to_namespace()
+    assert namespace.kv_cache_dtype == "fp8"
+
+    # Default stays vLLM's own default.
+    assert InferenceConfig().to_namespace().kv_cache_dtype == "auto"
+
+    with pytest.raises(ValidationError):
+        InferenceConfig(vllm={"kv_cache_dtype": "fp8_e9m10"})
+
+
 def test_combined_replay_uses_v2_runner(monkeypatch):
     from prime_rl.inference.server import setup_vllm_env
 

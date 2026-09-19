@@ -14,6 +14,37 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
+def test_on_policy_mask_zeroes_ratio():
+    """Exactly-on-policy tokens must get a ratio of exactly 1 (log ratio 0, no
+    mismatch contribution), stale tokens keep the engine-derived ratio, and the
+    engine_mismatch_kl diagnostic always reports the raw drift."""
+    from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
+
+    trainer = torch.tensor([0.1, -0.2, 0.3], dtype=torch.float32).cuda()
+    inference = torch.tensor([0.05, -0.25, 0.2], dtype=torch.float32).cuda()
+    mask = torch.tensor([True, True, False], dtype=torch.bool).cuda()
+
+    trainer_grad = trainer.detach().clone().requires_grad_(True)
+    log_ratio, ratio, mismatch, engine_mismatch = compute_importance_ratio_and_mismatch_kl(
+        trainer_grad, inference, mask
+    )
+    assert torch.equal(log_ratio[:2].detach(), torch.zeros(2).cuda())
+    assert torch.equal(ratio[:2].detach(), torch.ones(2).cuda())
+    assert torch.equal(mismatch[:2].detach(), torch.zeros(2).cuda())
+    # The gradient must survive on masked tokens (REINFORCE-style: d(trainer)/d(theta)).
+    log_ratio.sum().backward()
+    assert torch.equal(trainer_grad.grad, torch.ones(3).cuda())
+    # The stale token keeps its engine-derived ratio.
+    assert torch.isclose(log_ratio[2], trainer[2] - inference[2])
+    # The engine diagnostic is the raw drift everywhere, mask included.
+    raw = trainer - inference
+    assert torch.allclose(engine_mismatch, torch.exp(raw) - raw - 1)
+
+    # Without a mask, nothing changes.
+    log_ratio2, _, mismatch2, _ = compute_importance_ratio_and_mismatch_kl(trainer, inference)
+    assert torch.allclose(log_ratio2, raw)
+
+
 def test_grpo_loss():
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]

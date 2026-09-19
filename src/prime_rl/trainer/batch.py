@@ -495,6 +495,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        sampling_versions=[
+            training_example.sampling_version if training_example.sampling_version is not None else -1
+        ],
     )
 
 
@@ -600,6 +603,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
     trace_ids: list[str] = []
+    sampling_versions: list[int] = []
     branch_indices: list[int] = []
 
     for sample in bin_content.samples:
@@ -644,6 +648,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sampling_mask.counts += sample_mask.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
+        sampling_versions.extend(sample.sampling_versions or [-1] * len(sample.sequence_lengths))
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -668,6 +673,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         ref_kl_weights=streams["ref_kl_weights"],
         seq_lens=seq_lens,
         trace_ids=trace_ids,
+        sampling_versions=sampling_versions,
         branch_indices=branch_indices,
     )
 
@@ -823,7 +829,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
     num_sequences = len(micro_batch.sequence_lengths)
-    for name in ("trace_ids", "branch_indices"):
+    for name in ("trace_ids", "branch_indices", "sampling_versions"):
         values = getattr(micro_batch, name)
         assert values is None or len(values) == num_sequences, (
             f"{name} misaligned after packing: {len(values)} != {num_sequences} sequences"
@@ -859,6 +865,7 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None
+    dummy.sampling_versions = None
     return dummy
 
 

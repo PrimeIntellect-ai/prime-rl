@@ -277,10 +277,13 @@ class TrainSink:
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
-        for trace in survivors:
+        for episode, trace in iter_trainable_traces(group):
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            work = train_work(episode)
+            sampling_version = work.policy.start if work.policy is not None else None
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
+                sample.sampling_version = sampling_version
                 if env.requires_sampling_masks and sample.sampling_mask is None:
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.

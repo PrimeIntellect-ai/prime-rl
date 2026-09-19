@@ -1,0 +1,87 @@
+# Qwen3-30B-A3B GRPO on the i3_math taskset (null harness, prime sandbox runtime —
+# i3_math tasks carry an empty network allow-list, so rollouts need a network-policy
+# runtime, not the local subprocess one) with an FP8 KV cache on inference, on
+# 4 nodes: 2 trainer + 2 inference nodes.
+#
+# kv_cache_dtype = "fp8" stores K/V projections in 8 bits, halving KV memory per token:
+# Qwen3-30B-A3B allocates 48 layers x 4 KV heads x 128 head_dim, i.e. ~48 KiB/token in
+# FP8 vs ~96 KiB/token in bf16 — the engine doubles its token budget at the same
+# gpu_memory_utilization. The orchestrator derives rollout concurrency from the engines'
+# live kv_cache_size_tokens metric, so the larger budget is picked up automatically.
+# The trainer needs no matching knob: it recomputes logprobs with full forward passes
+# (no KV cache), and the GRPO importance ratios absorb the small inference-side drift
+# from the quantized cache.
+
+max_steps = 1000
+seq_len = 32768
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[monitors.file]
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 2
+
+[slurm]
+job_name = "math-qwen30b-fp8kv"
+partition = "all"
+time = "24:00:00"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the runtime label below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "qwen30b-fp8kv" -y || true'
+
+[ckpt]
+interval = 100
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 512
+max_off_policy_steps = 8
+
+[orchestrator.concurrency]
+initial_inflight = 1024
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32768
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["qwen30b-fp8kv"]
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "aime2025"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["qwen30b-fp8kv"]
+
+[inference.vllm]
+tensor_parallel_size = 8
+kv_cache_dtype = "fp8"

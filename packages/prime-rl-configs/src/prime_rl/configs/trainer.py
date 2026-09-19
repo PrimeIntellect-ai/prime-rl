@@ -146,6 +146,12 @@ class DebugModelConfig(BaseConfig):
 
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
+# KV-cache storage dtypes the trainer can replay in its attention forward, matching
+# the inference-side ``kv_cache_dtype`` choices it can simulate (unit-scale 8-bit).
+# ``fp8_kernel`` replays through the engine's own fp8 flash-attn kernel (exact forward
+# numerics) instead of a value-level round-trip.
+SimulatedKVCacheDType: TypeAlias = Literal["auto", "fp8", "fp8_kernel", "fp8_e4m3", "fp8_e5m2"]
+
 _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
     "router",
@@ -329,6 +335,18 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
+    kv_cache_dtype: SimulatedKVCacheDType = "auto"
+    """Inference KV-cache storage dtype to replay in the trainer's attention forward.
+    When inference serves rollouts with a quantized KV cache (``inference.vllm.kv_cache_dtype``),
+    the trainer's full-precision forward disagrees with the engine's sampling distribution
+    on exactly the tokens the importance ratios compare. ``fp8`` replays by quantizing
+    K (post-RoPE) and V through the same 8-bit round-trip (value replay); ``fp8_kernel``
+    goes further and runs the engine's own fp8 flash-attn kernel (fp8 tensor-core matmuls
+    and the in-kernel e4m3 attention-probability quantization), matching the engine's
+    forward numerics exactly at the cost of a bf16 re-forward in backward. Auto-set from the inference side by the
+    rl entrypoint; ``"auto"`` disables the replay. Only the standard GQA/FlashAttention
+    path is replayed — MLA and linear-attention layers keep their native numerics."""
+
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
@@ -372,6 +390,22 @@ class ModelConfig(BaseModelConfig):
             raise ValueError(
                 "Context parallelism requires model.impl='custom' or 'auto' "
                 "(resolved to a custom PrimeRL implementation)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def fp8_kernel_requires_no_activation_checkpointing(self):
+        """The fp8-kernel replay runs the engine's fp8 flash-attn op, which declares
+        mutating tensor args in its schema. Activation checkpointing's recompute
+        path cannot trace that op (a pybind type error), so the kernel mode requires
+        AC off. The value-level fp8 replay works fine under AC — use that instead.
+        """
+        if self.kv_cache_dtype == "fp8_kernel" and (self.ac is not None or self.ac_offloading is not None):
+            raise ValueError(
+                "model.kv_cache_dtype = 'fp8_kernel' is not supported with activation "
+                "checkpointing (the engine's fp8 flash-attn op cannot run in the AC "
+                "recompute path). Set model.ac and model.ac_offloading to None, or use "
+                "the value-level replay (kv_cache_dtype = 'fp8'), which works under AC."
             )
         return self
 
@@ -707,6 +741,16 @@ class TrainerConfig(BaseConfig):
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    exact_on_policy_ratio: bool = False
+    """Set the importance ratio of exactly on-policy sequences to 1 in the loss.
+
+    Sequences sampled under the weights currently training have a true ratio of 1 by
+    construction, so the engine's returned logprobs contribute nothing but numerics
+    noise there (e.g. fp8-KV drift — see ``model.kv_cache_dtype``). With this on, the
+    ratio for those sequences is exactly 1, the logged ``Mismatch KL`` reflects what
+    the loss actually uses, and the raw engine drift is logged separately as
+    ``Engine KL``. Genuinely stale sequences keep their engine-derived ratio."""
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""

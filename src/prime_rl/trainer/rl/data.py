@@ -33,6 +33,9 @@ class TensorMicroBatch(TypedDict):
     # Per-sequence branch identity, parallel to sequence_lengths; None on
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
     trace_ids: list[str] | None
+    # Per-sequence sampling policy versions, parallel to sequence_lengths;
+    # None when unknown (fake data or older orchestrator).
+    sampling_versions: list[int] | None
     branch_indices: list[int] | None
 
     # Batch level
@@ -245,6 +248,7 @@ class DataLoader:
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
+            sampling_versions=micro_batch.sampling_versions,
             branch_indices=micro_batch.branch_indices,
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),

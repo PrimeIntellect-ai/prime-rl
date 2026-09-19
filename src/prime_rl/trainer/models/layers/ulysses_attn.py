@@ -189,6 +189,21 @@ def substitute_ulysses_attn(
         flash_attn_version = 2
 
     def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
+        from prime_rl.trainer.models.layers.attn import simulate_kv_cache_dtype
+
+        kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
+        if kv_cache_dtype == "fp8_kernel":
+            # The fp8 kernel replay is not wired into the Ulysses path; quantization
+            # is elementwise, so the value-level replay on local shards is the
+            # correct (if less exact) substitute.
+            kv_cache_dtype = "fp8"
+        if kv_cache_dtype is not None:
+            # Replay the inference KV cache storage dtype under context
+            # parallelism too: quantization is elementwise, so replaying on the
+            # local K/V shards matches the unsharded sequence's replay.
+            k = simulate_kv_cache_dtype(k, kv_cache_dtype)
+            v = simulate_kv_cache_dtype(v, kv_cache_dtype)
+
         # cu_seqlens / max_seqlen passed in are for the *local* sharded sequence;
         # ulysses needs the *full* ones (each rank holds the full seq after a2a).
         cu_seqlens_full = ULYSSES_PARAMS["cu_seqlens"]
