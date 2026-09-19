@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 07:12 UTC: the replacement main pair is starting. No robustness conclusion yet.
+Status at 2026-09-19 07:27 UTC: the user cancelled both runs to give another run priority. No robustness conclusion yet.
 
 ## Main comparison
 
@@ -52,6 +52,15 @@ The trainers spent most wall time waiting for rollouts; sampled KV utilization w
 At the user's request, both jobs stopped and the replacement pair starts from the same base weights.
 The old logs and metrics remain separate under `results/initial-4node-attempt`.
 These early updates do not establish a robustness difference.
+
+## Cancelled 1+1 attempt
+
+Jobs868/867 reached roughly 512 inflight episodes with a 2048 cap.
+Both encountered repeated router health-check failures before any optimizer update.
+Both orchestrators completed forced cleanup before their allocations were cancelled.
+A matched restart with four API workers per engine passed config validation.
+The user cancelled the experiment before those replacement launchers submitted jobs.
+The API-worker change has not been validated under rollout load.
 
 ## Pending
 

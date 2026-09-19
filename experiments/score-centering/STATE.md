@@ -6,6 +6,9 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- USER STOP at 2026-09-19 07:27 UTC: cancel both runs because another run has priority. Do not launch or resume training until the user requests it.
+- Jobs867/868 were already cancelled. Terminated both pending API4 launchers before SLURM submission; verified no experiment allocations remain. Preserve configs and all logs.
+
 - At 07:24 UTC, interrupted both 1+1 orchestrators after repeated router unhealthy-worker errors; neither completed an optimizer update. Both reported forced cleanup complete. Cancelled allocations867/868 after episode cleanup.
 - Preparing the identical 1+1 pair with api_server_count=4 per engine; fresh names `ipo-1plus1-api4-seed42` and `sc-1plus1-api4-seed42`. Initial inflight512 and max2048 stay fixed.
 
@@ -67,7 +70,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Monitor IPO868 and SC867, the replacement 1+1 pair through 400 updates. Main configs use FP8 KV and uniform task sampling.
+1. Wait for an explicit user request to resume. Do not allocate experiment nodes while another run has priority.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. TB2 initial success is sparse (IPO1/51, SC5/43 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
