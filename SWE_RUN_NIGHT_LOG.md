@@ -246,10 +246,12 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   one-offs). No further broadcast stalls after step 81. Cluster is otherwise full (1 idle node).
 - 09:56:56 **burst of 29 `HarnessError: harness 'bash' exited 1`** within one second, all with the same stderr
   tail (a long list of numeric coordinate pairs, evidently tool output from one task that leaked into a shared
-  log). Identical text across 29 traces in mid-rollout (turns 11-97) means one shared harness worker process
-  died and took every rollout it hosted with it. Confined to that second; no inference errors, sandbox API
-  responsive (512 live sandboxes, ~2 s list). The orchestrator kept collecting (`Train batch 21/64`). New
-  failure class, watching for recurrence; a repeat pattern would point at the harness runner rather than tasks.
+  log). Identical text across 29 traces in mid-rollout (turns 11-97) spanning ~25 different tasks. Confined to that
+  second; no inference errors, sandbox API responsive (512 live sandboxes, ~2 s list). The orchestrator kept
+  collecting (`Train batch 21/64`). **Correction (18:05, seen again in the GLM run with byte-identical stderr
+  across dozens of tasks)**: the text is not task or model output and not one worker's crash; it is a shared
+  failure path in the harness tooling that flakes for ~30 sandboxes at once, about once per run. Task- and
+  model-independent, self-clearing.
 - 10:13:28 step 140 checkpoint saved (`Step 140 | 5m 47s`); `checkpoints/` holds `step_120` and `step_140`.
   No repeat of the 09:56 harness burst. Steps 131-140 routine.
 - 10:30 hourly summary through step 150: 6h 22m job time, ~2 min/step, reward 0.53-0.98 (last 10 mean ~0.82),
@@ -497,6 +499,12 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   works here too. Steps 41-60: reward 0.34-0.89, turns 21-45, KL 0.0045-0.0061, `Max Off-Policy` up to 23.
 - 17:53:41 step 80 checkpoint saved (`Step 80 | 2m 27s`); `checkpoints/` holds `step_60`, `step_80`. Steps 61-80
   routine: reward 0.5-0.8, KL 0.005-0.006, Peak Mem 34-49 GiB.
+- 18:05:12 the coordinate-list `harness 'bash' exited 1` burst again: 31 traces across ~25 tasks in two seconds,
+  same stderr as the DeepSeek run's 09:56 burst (corrected there). Self-cleared.
+- 18:06 hourly summary through step 92 (1h 42m of job time): ~1 min/step, reward 0.52-0.81 over steps 81-92,
+  turns 27-38, mismatch KL 0.0044-0.0061, Peak Mem 34-49 GiB. 12,117 episodes finished; 55 off-policy
+  cancellations, 122 trace failures (88 `uv --script`, 31 the burst, 2 OOM-137, 1 sandbox 503). Checkpoints
+  `step_60`, `step_80`. At this pace step 200 lands around 20:00 and step 300 around 21:45.
 
 ## Open questions for Garrett (GLM run)
 
