@@ -238,6 +238,8 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   mean ~0.87), mismatch KL 0.020-0.034, grad norm 0.03-0.09, Peak Mem 72-92 GiB. 10,577 episodes finished.
   Failure tally: 88 `uv --script` image failures, 95 off-policy cancellations, 5 assorted sandbox one-offs.
   One broadcast stall (3.5 min at step 81), none since.
+- 09:33:14 step 120 checkpoint saved (`Step 120 | 5m 41s`); `checkpoints/` holds `step_100` and `step_120`.
+  Steps 101-120 uneventful: ~2 min/step, mismatch KL 0.021-0.027, Peak Mem 72-92 GiB.
 
 ## Open questions for Garrett
 
