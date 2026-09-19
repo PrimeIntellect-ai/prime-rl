@@ -257,6 +257,15 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   off-policy cancellations, 129 trace failures (of which 29 were the single 09:56 harness burst; no repeat).
 - 10:52:24 step 160 checkpoint saved (`Step 160 | 6m 10s`); `checkpoints/` holds `step_140` and `step_160`.
   Steps 151-160 routine.
+- 11:18 hourly summary through step 172: 7h 09m job time, ~2 min/step, reward 0.72-0.92 (last 10 mean ~0.85),
+  entropy 0.29-0.50, grad norm 0.01-0.10, Peak Mem 72-92 GiB. 18,354 episodes finished; 198 cancellations, 131
+  trace failures, no further harness bursts. `checkpoints/` holds `step_140`, `step_160`.
+  - **Mismatch KL is drifting up.** Per step: 142-150 in 0.025-0.034, 151-160 in 0.027-0.040, 161-172 in
+    0.033-0.054 (peak 0.054 at step 167). Steps 1-100 sat in 0.020-0.034. Reward and entropy are flat, so this
+    is not a divergence, but it is a monotone-ish trend over ~70 steps. Plausible cause: the trainer's bf16
+    weights drift from the checkpoint that the FP8 quantization was calibrated against on every update, so
+    the online per-block FP8 re-quantization of the broadcast weights disagrees more as the policy moves.
+    No action taken (FP8 on/off is Garrett's call); see open questions.
 
 ## Open questions for Garrett
 
@@ -282,3 +291,6 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   acknowledging the trainer's broadcast (3.5 min at step 81 with ~300 live sandboxes). The trainer idles for
   that whole time. Worth a look at whether the stale-drain barrier needs the full scheduling pass, or whether
   `fill_inflight` should yield more often; `weight_broadcast.timeout = 3600` is the only guard today.
+- Mismatch KL trend: 0.020-0.034 for the first 100 steps, 0.033-0.054 for steps 161-172, with reward and entropy
+  flat. If it keeps climbing it is the strongest argument yet for revisiting FP8 serving (or adding an IPO-style
+  trust-region mask if one is not already on). Worth plotting `mismatch_kl/all/mean` over the full run in wandb.
