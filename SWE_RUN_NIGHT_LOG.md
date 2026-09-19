@@ -468,6 +468,22 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
 - 16:29:56 KV pool: `GPU KV cache size: 7,923,472 tokens, Maximum concurrency for 131,072 tokens per request: 60.45x`
   (6.4x the DeepSeek pool; GLM-4.5-Air is ~1/3 the parameters and has 8 KV heads).
 - 16:34:30 `Policy inference pool ready after 8m 0s`; v0 `POST /update_weights 200 OK` shortly after.
+- 16:37:01 `No admitted train payload after 64 finalized units (consecutive zero-output batch equivalents: 1/10)`
+  two minutes into rollouts, and 560 of the first 574 episodes finished with reward 0 after 1-3 turns
+  (`stop=agent_completed`). **Cause: GLM-4.5-Air calls tools the harness does not offer.** The harness exposes
+  exactly `bash` and `edit`; decoding the sampled tokens of a one-turn episode shows a well-formed
+  `<tool_call>read\n<arg_key>path</arg_key><arg_value>reconcile/github_org.py</arg_value></tool_call><|observation|>`.
+  `parse_glm` (`deps/renderers/renderers/parsing.py`) validates names against the offered tools and silently
+  drops unknown ones, mirroring vLLM's GLM parser, so the assistant message arrives with no tool call, the
+  harness treats it as a final answer, and the episode ends. Not a quantization problem: the prose is coherent
+  and the tool-call syntax is exact; the model is reaching for a Claude-Code-style `read`. DeepSeek V4 never
+  did this. The guard counter reset once batch 1 shipped.
+  - RL is already correcting it, so I left it alone: turns per episode 3.8 / 9.1 / 14.5 and reward 0.33 / 0.42
+    / 0.27 over orchestrator steps 1-3, with 56-78% of episodes dropped as no_signal (all-zero groups).
+- 16:38:44 **trainer Step 1** `4m 13s | Loss -0.0064 | Entropy 0.1826 | Mismatch KL 0.0044 | Grad. Norm 0.4696 |
+  Peak Mem. 43.8 GiB`; steps 2-3 at 20-46 s, Peak Mem 33.6 GiB. Mismatch KL is ~6x lower than DeepSeek's
+  0.025 at step 1 under the same FP8 serving (bf16 dense MLP and shared experts aside). Steps are trainer-cheap
+  and rollout-bound as expected for a 106B model on 8 nodes.
 
 ## Open questions for Garrett (GLM run)
 
@@ -476,3 +492,7 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   and attention are FP8 as in the DeepSeek run. If you want the shared experts in FP8 too, the option is TP=1
   with more replicas per node (1408 tiles at TP=1, 10944 never does), which changes the serving topology.
 - wandb project is `deepseek-v4-flash` for side-by-side comparison; rename if you want a model-neutral project.
+- GLM-4.5-Air's first action on the bash harness is usually a hallucinated `read`/`write`-style tool call, which
+  the renderer drops (unknown tool), so ~70% of early episodes end after one turn with reward 0. RL is fixing it
+  within a few steps, but a system-prompt note or exposing a `read` tool would make the comparison with
+  DeepSeek fairer at step 0. Left unchanged since it alters the task.
