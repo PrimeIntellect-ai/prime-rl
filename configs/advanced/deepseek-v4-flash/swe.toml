@@ -1,0 +1,140 @@
+# DeepSeek V4 Flash on the `scaleswe` SWE taskset at 131k context, bash harness on a prime sandbox
+# runtime. First DeepSeek V4 training recipe in the repo: every other config for this model runs at
+# seq_len 2048-4096 with lr = 0 for mismatch measurement only. Structure follows
+# examples/advanced/glm-4.5-air/swe.toml; topology follows configs/advanced/minimax-m2.5/swe.toml.
+#
+# This is the bring-up run: no eval source, a small batch, and a low LR. Add the
+# swebench-verified eval block once the 131k path is proven.
+
+max_steps = 1000
+seq_len = 131072
+
+[run]
+# Explicit: without it the run name gets a random suffix and a relaunch with [resume] silently
+# starts over in a new directory.
+name = "dsv4-swe-131k"
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+DG_JIT_CACHE_DIR = "/tmp/.dg-jit-cache"
+
+[slurm]
+job_name = "dsv4-swe"
+partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+num_infer_nodes = 1
+num_infer_replicas = 8
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+name = "dsv4-swe-131k"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+[ckpt]
+interval = 20
+keep_last = 2
+
+[resume]
+
+[trainer]
+dist_timeout_seconds = 14400
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+ep = 8
+# Ring is the default and the only supported style: DeepSeek V4 declares ring-only CP support and
+# dispatches unconditionally to the TileLang sparse-attention kernel, so cp_style = "ulysses" is a
+# startup ValueError despite what docs/scaling.md recommends.
+cp = 4
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.compile]
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.01
+
+[orchestrator]
+batch_size = 64
+group_size = 8
+max_off_policy_steps = 32
+
+[orchestrator.ckpt]
+wait_for_weights_timeout = 3600
+
+[orchestrator.concurrency]
+max_inflight = 512
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+# Explicit because MODEL_RENDERER_MAP keys on the DeepSeek repo id, not our bf16 re-export, so
+# name = "auto" fails validation. The deepseek-v4 renderer defaults enable_thinking to False.
+name = "deepseek-v4"
+enable_thinking = true
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["dsv4-swe"]
+
+[inference]
+# Mandatory with online FP8: DeepSeek V4's o_proj reads wo_a.weight directly and hands it to
+# DeepGEMM's grouped fp8_einsum, which needs the 3D layout only DeepGemmFp8BlockScaledMMKernel
+# builds, and that kernel is skipped unless VLLM_USE_DEEP_GEMM is on.
+use_deep_gemm = true
+
+[inference.env_vars]
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+# The Lightning Indexer's top-512 key selection is recomputed independently by the trainer and is
+# not replayed, unlike routed experts. Quantizing indexer.wq_b flips that selection: measured
+# bitwise-identical below 2048 tokens, where a short-context shortcut selects all candidates, then
+# 0.3% of tokens moving probability by more than 0.3 above it. At 131k the whole sequence is in the
+# live regime, so the indexer stays bf16.
+quantization_config = { ignore = ["re:.*indexer.*"] }
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
