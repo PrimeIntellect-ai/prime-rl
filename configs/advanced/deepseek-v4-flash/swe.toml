@@ -48,8 +48,10 @@ num_infer_replicas = 8
 name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [monitors.wandb]
+entity = "primeintellect"
 project = "deepseek-v4-flash"
-name = "dsv4-swe-131k"
+name = "swe-scaleswe-131k-fp8-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp8", "adamw", "bring-up"]
 
 [weight_broadcast]
 type = "nccl"
