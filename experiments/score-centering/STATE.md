@@ -154,3 +154,6 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Mismatch tail plots now include per-token maximum and standard deviation. Maximum through step 50: IPO 189.65, centered 202.13. Mean mismatch remains about 0.0043. IPO gradient peaks at 39, 43, and 45 subsided on the following update.
 
 - Prepared `audit-inference.json` for the final frozen-checkpoint audit. Dry run passed: one node, two TP4 engines, API4 per engine, same weight and KV quantization. No audit allocation submitted.
+
+- At 13:28 UTC, SLURM estimates job911 start at16:48UTC (not guaranteed). Node031 is drained for a missing NVIDIA driver; only three nodes are schedulable and idle. Do not modify unrelated node state or jobs.
+- Persistent monitor is running: PID 2120920, `/tmp/score-centering-watch-pair.py`, every60seconds. It checks job911, records training metrics/errors once running, appends per-run STATUS.md, and exits when the job terminates. Logs: `results/monitor/pair-watch.log`, `pair-watch.jsonl`; PID file:`pair-watch.pid`. This records status locally; it does not send chat notifications or replace the final scientific audit.
