@@ -512,6 +512,11 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   the API listed 509 sandboxes in 4.5 s. Leaked sandboxes fall back on the 3600 s idle timeout.
 - 18:38:36 step 120 checkpoint saved (`Step 120 | 3m 29s`); `checkpoints/` holds `step_100`, `step_120`.
   Steps 101-120: reward 0.66-0.88, turns 21-39, KL 0.0056-0.0062.
+- 19:00:36 step 140 checkpoint saved (`Step 140 | 3m 33s`); `checkpoints/` holds `step_120`, `step_140`.
+- 19:01 hourly summary through step 140 (2h 37m of job time): ~1 min/step, reward 0.47-0.89 over steps 121-140,
+  turns 21-39, mismatch KL 0.0046-0.0062, Peak Mem 34-49 GiB, inference p99 request latency ~40 s (no runaway
+  generations). 18,256 episodes finished; 98 off-policy cancellations, 128 trace failures (88 `uv --script`,
+  31 the coordinate-list burst, 4 OOM-137, 5 assorted sandbox one-offs), 44 sandbox cleanup 500s (cleanup only).
 
 ## Open questions for Garrett (GLM run)
 
