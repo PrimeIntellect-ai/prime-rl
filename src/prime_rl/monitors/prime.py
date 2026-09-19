@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 import prime_runs as pr
-from prime_cli.core.config import Config as PrimeConfig
+from verifiers.v1.utils.prime import load_prime_config
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -150,7 +150,7 @@ class PrimeEvalMonitor(Monitor):
         self.mode = os.getenv(pr.MODE_ENV) or "online"
         # A configured monitor must work: the SDK looks the key up when an epoch opens,
         # which is too late to find out there is none.
-        if self.mode == "online" and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
+        if self.mode == "online" and not (os.getenv("PRIME_API_KEY") or load_prime_config().get("api_key")):
             raise RuntimeError("API key not found - set PRIME_API_KEY or run `prime login`")
         self.model: str = config.model if config is not None else "unknown"
         self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
