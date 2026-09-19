@@ -78,9 +78,20 @@ def main():
     reports = []
     for (run, env, step), episodes in groups.items():
         tasks = defaultdict(list)
+        lower = defaultdict(list)
+        upper = defaultdict(list)
         for row in episodes:
             if row["ok"] and isinstance(row["reward"], (int, float)) and math.isfinite(row["reward"]):
                 tasks[row["task"]].append(row["reward"])
+                lower[row["task"]].append(row["reward"])
+                upper[row["task"]].append(row["reward"])
+            else:
+                lower[row["task"]].append(0.0)
+                upper[row["task"]].append(1.0)
+        bounds = {
+            name: sum(sum(values) / len(values) for values in by_task.values()) / len(by_task)
+            for name, by_task in (("lower", lower), ("upper", upper))
+        }
         means = [sum(rewards) / len(rewards) for rewards in tasks.values()]
         reports.append(
             {
@@ -92,7 +103,8 @@ def main():
                 "scored_tasks": len(means),
                 "valid_task_reward_mean": sum(means) / len(means) if means else None,
                 "interval": task_interval(means),
-                "note": "Failed episodes are excluded from reward estimates. Inspect failure rates before comparison.",
+                "all_task_reward_bounds": bounds,
+                "note": "Valid-task estimates exclude failed episodes. Bounds assign missing rewards 0 or 1; these are not confidence intervals.",
             }
         )
     (args.output / "eval-summary.json").write_text(json.dumps(reports, indent=2) + "\n")

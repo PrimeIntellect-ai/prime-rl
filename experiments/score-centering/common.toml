@@ -119,7 +119,7 @@ max_model_len = 32768
 max_num_seqs = 128
 max_num_batched_tokens = 8192
 max_logprobs = 129
-kv_cache_dtype = "int4_per_token_head"
+kv_cache_dtype = "fp8_per_token_head"
 seed = 42
 
 [inference.vllm.attention_config]

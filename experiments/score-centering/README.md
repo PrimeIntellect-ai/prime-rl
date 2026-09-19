@@ -9,7 +9,7 @@ Read `STATE.md` for live job IDs and recovery steps.
 - `ipo-centered.toml`: optional weighted IPO-centering ablation.
 - `eval-preflight.toml`: bounded Prime VM checks on Terminal Lego and Terminal Bench 2.
 - `smoke.toml`: three updates with a smaller batch and evaluation sample.
-- `kv-fp8.toml`: matched FP8-cache diagnostic for pre-update INT4 serving NaNs.
+- `kv-fp8.toml`: archived FP8-cache diagnostic override; the main config now uses the same cache precision.
 - `smoke-fast.toml`: save only at the final smoke step after intermediate saves are verified.
 - `verify_math.py`: gradient checks and comparison with the official formula.
 - `verify_transport.py`: sampler-head transport and packing checks.
@@ -50,5 +50,5 @@ Export trace-level results for task uncertainty and failure classification:
 uv run python experiments/score-centering/eval_results.py outputs/score-centering/ipo-seed42 outputs/score-centering/sc-seed42 --output experiments/score-centering/results/main
 ```
 
-Reward estimates exclude failed episodes. Report error rates alongside them.
+Valid-task reward estimates exclude failed episodes. Report error rates and missing-reward bounds alongside them.
 

@@ -57,7 +57,13 @@ Async completion and admission can still change which draws enter each optimizer
 Use 32K context, batch 128, group 8, AdamW at 1e-6, and at most four stale steps.
 Use temperature 1 with no top-p, top-k, or min-p truncation.
 Disable router replay in both arms.
-Quantize inference experts to INT8 and dense layers to FP8. Use INT4 KV cache.
+Quantize inference experts to INT8 and dense layers to FP8. Use FP8 KV cache.
+The INT4-cache smoke pair produced occasional NaN serving responses before updates.
+Both trainers remained finite, so those errors do not demonstrate optimizer instability.
+A matched FP8-cache diagnostic removed the observed NaN responses and reduced mismatch KL
+from roughly 0.3–2.1 to 0.004–0.007 on initial smoke batches.
+Choose FP8 cache before the main comparison to avoid that serving failure.
+This tests a smaller measured mismatch; stable training cannot rule out benefits at stronger mismatch.
 Confirm quantization and successful weight refresh in runtime logs before analysis.
 
 ## Stages
