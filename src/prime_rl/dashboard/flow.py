@@ -47,10 +47,7 @@ def read_complete_jsonl(path: Path) -> list[dict[str, Any]]:
         for raw in file:
             if not raw.endswith(b"\n"):
                 break
-            try:
-                row = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                break
+            row = orjson.loads(raw)
             if isinstance(row, dict):
                 rows.append(row)
     return rows
@@ -117,7 +114,7 @@ PAYLOAD_CAP = 65_536
 
 
 def _payload(value: Any) -> Any:
-    """A function's or command's result as the modal shows it; large ones cut to a preview."""
+    """A host call's result as the modal shows it; large ones cut to a preview."""
     if value is None:
         return None
     text = orjson.dumps(value).decode()
@@ -152,19 +149,12 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             node = {
                 "id": f"{row}:{event['execution']}",
                 "execution": event["execution"],
-                "row": row,
                 "unit": unit,
                 "path": f"{unit}/{stage}#{n}",
-                "scope": [unit],
                 "name": stage,
                 "occurrence": n,
-                "index": None,
-                "kind": "stage",
                 "status": "incomplete",
-                "attached": False,
                 "reason": None,
-                "error": None,
-                "attempts": None,
                 "started_at": event.get("at"),
                 "finished_at": None,
                 "order": order,
@@ -193,27 +183,23 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
             node["report"] = event.get("report")
             node["links"] = [link for link in event.get("links") or [] if isinstance(link, dict)]
-            if status == "held":
-                node["error"] = event.get("reason")
 
-    # Invocation and attempt IDs, never timestamps, determine attachment to a stage.
+    # Invocation IDs, never timestamps, determine attachment to a stage.
     records = {r["call"]: r for r in call_records(run_dir)}
-    calls: dict[tuple[str, int], dict[str, Any]] = {}
+    calls: dict[str, dict[str, Any]] = {}
     for event in events:
         if event.get("type") not in ("call", "rollout"):
             continue
         parent = executions.get(event["execution"])
         if parent is None:
             continue
-        identity = (event["call"], event["attempt"])
+        identity = event["call"]
         if identity not in calls:
             call = calls[identity] = {
                 "id": event["call"],
                 "execution": event["execution"],
                 "key": event.get("key") or event["kind"],
                 "kind": event["kind"],
-                "attempt": event["attempt"],
-                "parent": event.get("parent"),
                 "status": "incomplete",
                 "started_at": event["at"],
                 "finished_at": None,
@@ -323,42 +309,24 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             {
                 "id": group_id(unit),
                 "name": unit,
-                "row": row,
                 "stage": state.get("stage"),
                 "status": state.get("status"),
-                "reason": state.get("reason"),
-                "data": state["data"],
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
             }
         )
     all_nodes = sorted(nodes, key=lambda n: (n["order"], n["id"]))
-    finished = execution_status in ("quiescent", "draining")
-    rows = [
-        {
-            "id": row,
-            "status": execution_status,
-            "started_at": events[0]["at"] if events else None,
-            "finished_at": events[-1]["at"] if finished and events else None,
-        }
-    ]
-    groups = [{"id": u["id"], "name": u["name"], "row": row, "kind": "unit"} for u in units]
     return {
-        "rows": rows,
-        "groups": groups,
+        "status": execution_status,
         "units": units,
         "nodes": all_nodes,
         "edges": edges,
         "stats": {
-            "rows": 1,
             "units": len(units),
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),
             "failed": sum(n["status"] == "failed" for n in nodes),
             "traces": sum(c["trace_id"] is not None for n in nodes for c in n["calls"]),
             "routes": sum(e["kind"] == "route" for e in edges),
-            "held": sum(t["status"] == "held" for t in units),
-            "waiting": sum(t["status"] == "waiting" for t in units),
-            "live": sum(c["status"] == "running" for n in nodes for c in n["calls"]),
         },
     }

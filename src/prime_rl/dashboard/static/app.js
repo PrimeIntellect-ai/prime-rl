@@ -446,7 +446,7 @@ function flowDuration(node) {
 function flowStatusClass(status) {
   if (status === "incomplete") return "stale";
   if (status === "failed" || status === "cancelled") return "bad";
-  if (status === "running" || status === "retrying") return runStatus(currentStep()) === "running" ? "live" : "stale";
+  if (status === "running") return runStatus(currentStep()) === "running" ? "live" : "stale";
   return "done";
 }
 
@@ -477,7 +477,7 @@ function renderFlow() {
     stat("units", data.stats.units), stat("steps", data.stats.steps), stat("active", data.stats.running),
     stat("failed", data.stats.failed), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
   ].join("");
-  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : data.rows[0].status} · ${data.stats.routes} routes`;
+  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : data.status} · ${data.stats.routes} routes`;
 
   $("#flow-tasks").innerHTML =
     `<button class="flow-task ${flow.task === "all" ? "active" : ""}" data-flow-task="all">
@@ -491,7 +491,7 @@ function renderFlow() {
 }
 
 function flowGraphLayout(data, selected, viewportWidth) {
-  const groups = selected === "all" ? data.groups.map((group) => group.id) : [selected];
+  const groups = selected === "all" ? data.units.map((group) => group.id) : [selected];
   const wanted = new Set(groups);
   const nodes = data.nodes.filter((node) => wanted.has(node.group));
   const positions = new Map();
@@ -548,10 +548,10 @@ function renderFlowGraph() {
     const source = layout.positions.get(edge.source);
     return source.x + 326 < layout.width ? { x: source.x + 184, y: source.y } : { x: source.x, y: source.y + 78 };
   };
-  const groupById = new Map(data.groups.map((group) => [group.id, group]));
+  const groupById = new Map(data.units.map((group) => [group.id, group]));
   const lanes = layout.lanes.map((lane) => {
     const group = groupById.get(lane.group);
-    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.kind === "run" ? `run · ${group.name}` : group?.name || lane.group)}</span></div>`;
+    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.name || lane.group)}</span></div>`;
   }).join("");
   const edgeSvg = edges.map((edge) => {
     const a = layout.positions.get(edge.source), b = edgeTarget(edge);
@@ -586,8 +586,6 @@ function renderFlowGraph() {
   graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
     <svg class="fg-svg" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}">
       <defs>
-        <marker id="fg-sequence" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
-        <marker id="fg-spread" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
         <marker id="fg-route" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z"></path></marker>
       </defs>${edgeSvg}
     </svg>${routeLabels}${cards}</div>`;
@@ -615,9 +613,6 @@ function fmtWhen(iso) {
 function flowPayload(call) {
   const value = call.payload;
   if (value == null) return "";
-  if (call.kind === "command" && typeof value === "object") {
-    return `exit ${value.exit_code}\n\n${value.stdout || ""}${value.stderr ? `\n[stderr]\n${value.stderr}` : ""}`;
-  }
   return typeof value === "string" ? value : JSON.stringify(value, null, 1);
 }
 
@@ -636,7 +631,7 @@ function openFlowStage(nodeId) {
     ? calls.map((call, i) => `
       <div class="fm-call ${esc(call.kind)} ${esc(call.status)}" data-fm-call="${i}" title="${call.kind === "agent" ? "open the trace" : "show the result"}">
         <span class="fm-kind">${esc(call.kind)}</span><code>${esc(call.key)}</code>
-        <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)} ${call.source_call ? "cached result" : `attempt ${call.attempt}`}${call.trace_id ? " · trace" : ""}</small>
+        <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)} ${call.source_call ? " · cached result" : ""}${call.trace_id ? " · trace" : ""}</small>
         ${call.error ? `<small>${esc(call.error)}</small>` : ""}
         ${(call.rollouts || []).length > 1 ? call.rollouts.map((r, j) => `<button class="btn" data-fm-rollout="${j}">rollout ${r.rollout}: ${esc(r.status)}</button>`).join("") : ""}
       </div>

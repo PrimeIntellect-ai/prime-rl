@@ -1740,12 +1740,8 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-lane > span { position: absolute; left: 10px; top: 10px; color: var(--grey-4); font-size: 10px; letter-spacing: var(--track-caps); text-transform: uppercase; }
 .fg-svg { position: absolute; inset: 0; z-index: 1; overflow: visible; pointer-events: none; }
 .fg-edge { fill: none; stroke: var(--grey-4); stroke-width: 1; opacity: 0.42; }
-.fg-edge.sequence { stroke-dasharray: 2 5; }
-.fg-edge.spread { stroke: var(--chart-2); opacity: 0.7; }
 .fg-edge.route { stroke: var(--accent); stroke-width: 1.8; opacity: 0.9; }
 .fg-edge.pending { stroke-dasharray: 4 4; opacity: 0.6; }
-#fg-sequence path { fill: var(--grey-4); }
-#fg-spread path { fill: var(--chart-2); }
 #fg-route path { fill: var(--accent); }
 .fg-node {
   position: absolute; z-index: 3; width: 142px; height: 54px; padding: 8px 9px;

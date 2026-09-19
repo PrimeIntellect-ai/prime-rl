@@ -22,51 +22,20 @@ def root(tmp_path):
     events = [
         {"type": "run_started"},
         {"type": "started", "execution": "first"},
-        {"type": "call", "execution": "first", "call": "producer", "attempt": 1, "status": "started"},
-        {
-            "type": "rollout",
-            "execution": "first",
-            "call": "producer",
-            "attempt": 1,
-            "rollout": 1,
-            "trace_id": "failed",
-            "status": "started",
-        },
-        {
-            "type": "rollout",
-            "execution": "first",
-            "call": "producer",
-            "attempt": 1,
-            "rollout": 1,
-            "trace_id": "failed",
-            "status": "failed",
-        },
-        {
-            "type": "rollout",
-            "execution": "first",
-            "call": "producer",
-            "attempt": 1,
-            "rollout": 2,
-            "trace_id": "trace",
-            "status": "started",
-        },
-        {
-            "type": "rollout",
-            "execution": "first",
-            "call": "producer",
-            "attempt": 1,
-            "rollout": 2,
-            "trace_id": "trace",
-            "status": "succeeded",
-        },
-        {
-            "type": "call",
-            "execution": "first",
-            "call": "producer",
-            "attempt": 1,
-            "status": "succeeded",
-            "trace_id": "trace",
-        },
+        {"type": "call", "execution": "first", "call": "producer", "status": "started"},
+        *[
+            {
+                "type": "rollout",
+                "execution": "first",
+                "call": "producer",
+                "rollout": n,
+                "trace_id": trace,
+                "status": status,
+            }
+            for n, trace, outcome in [(1, "failed", "failed"), (2, "trace", "succeeded")]
+            for status in ("started", outcome)
+        ],
+        {"type": "call", "execution": "first", "call": "producer", "status": "succeeded", "trace_id": "trace"},
         {
             "type": "transition",
             "execution": "first",
@@ -81,31 +50,16 @@ def root(tmp_path):
             "type": "call",
             "execution": "second",
             "call": "attachment",
-            "attempt": 0,
             "status": "attached",
             "trace_id": "trace",
             "source_call": "producer",
             "source_execution": "first",
         },
-        {
-            "type": "call",
-            "execution": "second",
-            "call": "unkeyed",
-            "attempt": 1,
-            "key": None,
-            "kind": "fn",
-            "status": "started",
-        },
-        {
-            "type": "call",
-            "execution": "second",
-            "call": "unkeyed",
-            "attempt": 1,
-            "key": None,
-            "kind": "fn",
-            "status": "cancelled",
-        },
-        {"type": "call", "execution": "second", "call": "lost", "attempt": 1, "status": "started"},
+        *[
+            {"type": "call", "execution": "second", "call": "unkeyed", "key": None, "kind": "fn", "status": status}
+            for status in ("started", "cancelled")
+        ],
+        {"type": "call", "execution": "second", "call": "lost", "status": "started"},
     ]
     # Identical timestamps deliberately cannot identify any stage or retry.
     defaults = {"unit": "t", "stage": "evaluate", "at": "2026-01-01T00:00:00", "key": "solve", "kind": "agent"}
@@ -122,9 +76,9 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert unit_states(run)["t"]["status"] == "held"
     result = project_flow(run, {"trace": (0, "episode"), "failed": (1, "failed-episode")})
     assert {u["name"] for u in result["units"]} == {"coordinator", "t"}
-    assert result["rows"][0]["status"] == "incomplete"
+    assert result["status"] == "incomplete"
     first, second = result["nodes"]
-    assert first["error"] == "provider error" and second["status"] == "incomplete"
+    assert first["reason"] == "provider error" and second["status"] == "incomplete"
     (producer,) = first["calls"]
     assert producer["id"] == "producer" and producer["episode_line"] == 0
     assert [r["status"] for r in producer["rollouts"]] == ["failed", "succeeded"]
@@ -134,7 +88,7 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert any(edge["summary"] == "retry" for edge in result["edges"])
     with (run / "transitions.jsonl").open("a") as file:
         file.write(json.dumps({"type": "run_finished", "reason": "quiescent", "at": "2026-01-01T00:00:00"}) + "\n")
-    assert project_flow(run)["rows"][0]["status"] == "quiescent"
+    assert project_flow(run)["status"] == "quiescent"
 
 
 def test_fingerprint_tracks_workflow_calls_and_live_changes(tmp_path):
