@@ -183,10 +183,35 @@ bf16 mismatch and leaves 8% headroom against the bar.
 | reverse-text, bf16 | 0.00150 | 0.00140 | 0.00061 | 0.00326 | 0 of 20 | 0.0249% |
 | reverse-text, online FP8 | 0.03068 | 0.03047 | 0.01865 | 0.04578 | **20 of 20** | 1.9395% |
 
-Mismatch KL depends on off-policy lag, so the lag columns are included. Lag-matched at lag 2, the
-best-populated bucket, FP8 costs 21.2x on math (n=11) and 29.0x on reverse-text (n=16), and the
-3.2x gap between the environments is present in the bf16 runs too (0.00106 vs 0.00032), i.e. it is
-environment-intrinsic rather than an FP8 effect.
+Lag columns are included, but **lag-matching turns out not to matter here and should not be
+leaned on.** All four runs are `lr = 0.0, weight_decay = 0.0`, so the served weights never change
+and off-policy lag has no causal path to mismatch KL: version `v` and `v+k` are the same tensors.
+Empirically only one run of four shows any lag dependence:
+
+| run | corr(lag, KL) | slope |
+|---|---|---|
+| reverse-text bf16 | +0.691 | 3.15e-04 |
+| reverse-text FP8 | -0.037 | -4.41e-04 |
+| math bf16 | +0.235 | 1.30e-05 |
+| math FP8 | -0.111 | -5.34e-04 |
+
+`FP8_MISMATCH_PLAN.md`'s `7e-4 + 3.4e-4 * lag` law was derived from the first row alone (refit here:
+intercept 4.8e-4, slope 3.2e-4, so it reproduces) and does not generalise: math-bf16's slope is 24x
+smaller and both FP8 runs are flat to slightly negative.
+
+The ratios are the same order either way: unmatched, FP8 costs 20.5x on reverse-text and 18.9x on
+math; matched at lag 2, 29.0x and 21.8x. The unmatched pair agree with each other more closely, and
+the reverse-text lag-2 bucket has only n=3 on the bf16 side, so matching plausibly adds sampling
+noise rather than removing bias. Read the penalty as **15-25x on both environments**.
+
+The +0.691 is unexplained. Lag does proxy queue depth in every run (`corr(lag, in_flight)` from
++0.31 to +0.60), and queue depth demonstrably shifts logprobs on this model (F9, F15), so a
+non-weight path exists. But math-bf16 has a stronger lag/in-flight coupling (+0.595) and almost no
+lag/KL correlation, so that mechanism does not explain why only this run fires. Left as a loose end;
+no conclusion here depends on it.
+
+The 3.2x gap between the environments is present in the bf16 runs too (0.00106 vs 0.00032), i.e. it
+is environment-intrinsic rather than an FP8 effect.
 
 Reward is unaffected: reverse-text 0.8644 FP8 against 0.8576 bf16, math 0.9875 FP8.
 
