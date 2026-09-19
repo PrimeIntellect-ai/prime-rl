@@ -53,7 +53,8 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - All outage-era experiment jobs were stopped before the recovery preflight.
 - User prefers the existing dashboard on port 7789. The output root is registered; both main runs were verified through /api/runs. An earlier isolated dashboard also remains on port 7790 (PID in dashboard.pid).
 - W&B project: https://wandb.ai/primeintellect/score-centering-terminal
-- IPO W&B: f2e85d1b20984a64bf6f476ea051bd04; SC W&B: a47c84d8a8bd425f976db52e7939c98b.
+- Current IPO W&B: 5f64dcfa10274df294c0e73841c20fea; SC W&B: 442b9b054a1440b984fbb8fe1e98e4ce.
+- Superseded IPO W&B: f2e85d1b20984a64bf6f476ea051bd04; SC W&B: a47c84d8a8bd425f976db52e7939c98b.
 - Smoke2 validated all 12 endpoints and INT8 expert kernels / INT4 KV cache.
 - Live request returned valid top128 IDs and probabilities for all eight generated tokens.
 - No updates occurred in any preflight attempt. Jobs 804/805 are stopped.
@@ -88,3 +89,6 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 - Final audit export: checkpoints are DCP-only. After the training allocations finish, use GPU allocations for `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py <step_dir>`. Serve exported weights with the same online INT8/FP8 quantization and FP8 KV. Never allocate export/eval nodes on top of the current eight training nodes.
 - `select_holdout.py` was checked on completed smoke5 logs: 13825 source tasks, 72 excluded, 128 selected. That artifact is only a selector check, not the final audit set.
+
+- All 384 active VM sandboxes from the cancelled 4-node pair were deleted using exact old-run labels. Cleanup completed with zero errors; inventories are in results/initial-4node-attempt.
+- Final audit selector now writes a complete eval.json preserving the training agent configuration and scheduled-eval sampling. Four attempts per task, pinned concurrency 128 for all models. The generated config passed uv run eval --dry-run against completed smoke5 logs.

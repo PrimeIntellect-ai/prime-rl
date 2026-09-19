@@ -68,3 +68,10 @@ uv run python experiments/score-centering/select_holdout.py outputs/score-center
 The selector records the full dataset order and excludes every task in either dispatch log.
 Do not use a manifest generated while either run is still dispatching tasks.
 Evaluate the initial model and both final checkpoints on the selected tasks before interpreting capability retention.
+
+The selector also writes `eval.json` with the recorded agent budgets, sampling settings, and four attempts per task.
+It pins audit concurrency at 128 for all three models.
+Start the base model and each exported final model with the recorded inference quantization.
+Run `uv run eval @ <heldout>/eval.json --model <served-model-id> --client.base-url <endpoint>/v1 --run.name <audit-name>`.
+Use the exact model identifier returned by that endpoint's `/v1/models`.
+The default endpoint in the generated config is only a local placeholder.

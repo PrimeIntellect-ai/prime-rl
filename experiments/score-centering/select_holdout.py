@@ -33,6 +33,9 @@ def main():
         raise ValueError("No valid tasks in the pinned dataset")
     seen = set()
     run_records = []
+    reference_env = None
+    reference_sampling = None
+    reference_model = None
     for run in args.runs:
         logs = sorted((run / "logs").glob("attempt_*/envs/train/terminal-lego.log"))
         if not logs:
@@ -48,6 +51,13 @@ def main():
             sources = [source for source in config["train"]["source"] if source["name"] == "terminal-lego"]
             if len(sources) != 1 or sources[0]["env"]["taskset"].get("tasks") is not None:
                 raise ValueError(f"Task indices require the complete Lego source: {path}")
+            env = sources[0]["env"]
+            sampling = config["eval"]["sampling"]
+            model = config["model"]["name"]
+            if reference_env is None:
+                reference_env, reference_sampling, reference_model = env, sampling, model
+            elif (env, sampling, model) != (reference_env, reference_sampling, reference_model):
+                raise ValueError(f"Audit requires matching task, agent, sampling, and base model configs: {path}")
             config_records.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         if not config_records:
             raise ValueError(f"Missing resolved configs: {run}")
@@ -75,6 +85,18 @@ def main():
         '[[source]]\nname = "terminal-lego-unseen"\nenv.taskset.id = "terminal-lego"\n'
         f"env.taskset.tasks = {json.dumps(selected)}\n"
     )
+    reference_env["taskset"]["tasks"] = selected
+    evaluation = {
+        "model": reference_model,
+        "output_dir": "outputs/score-centering",
+        "num_examples": len(selected),
+        "group_size": 4,
+        "client": {"base_url": "http://localhost:8000/v1", "api_key_var": "VLLM_API_KEY"},
+        "concurrency": {"min_inflight": 128, "max_inflight": 128},
+        "sampling": reference_sampling,
+        "source": [{"name": "terminal-lego-unseen", "env": reference_env}],
+    }
+    (args.output / "eval.json").write_text(json.dumps(evaluation, indent=2) + "\n")
     print(
         json.dumps(
             {"source_tasks": len(tasks), "excluded": len(seen), "eligible": len(eligible), "selected": len(selected)}

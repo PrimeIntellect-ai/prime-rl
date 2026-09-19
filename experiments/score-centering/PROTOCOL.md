@@ -117,6 +117,7 @@ If fewer than 64 tasks remain, report that this audit lacks the planned sample s
 
 Evaluate the initial model and both final checkpoints on the same selected tasks, four attempts per task.
 Use the same quantization, context, agent budgets, and sampling settings as the main pair.
+Pin standalone audit concurrency to 128 for each model.
 Use task-level paired uncertainty and report errors plus missing-reward bounds.
 Do not select tasks or checkpoints using evaluation scores.
 This is a supplemental audit selected by training exposure, not an original random holdout split.
