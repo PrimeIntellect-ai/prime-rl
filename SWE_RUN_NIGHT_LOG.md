@@ -266,6 +266,30 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
     weights drift from the checkpoint that the FP8 quantization was calibrated against on every update, so
     the online per-block FP8 re-quantization of the broadcast weights disagrees more as the policy moves.
     No action taken (FP8 on/off is Garrett's call); see open questions.
+- 11:19:16 one `HarnessError: harness setup: IndexError: list index out of range` (single trace, new class).
+- 11:38:03 step 180 checkpoint saved (`Step 180 | 6m 2s`), but **`Mismatch KL 0.0780`**, the run's highest, and
+  the drift is accelerating. From `monitors/file/metrics.jsonl`:
+
+  | step | mismatch_kl mean | is_masked mean | off_policy mean | entropy | grad norm | reward |
+  |---|---|---|---|---|---|---|
+  | 1 | 0.025 | 0.0003 | - | 0.37 | 0.056 | 0.63 |
+  | 100 | 0.025 | 0.0009 | 7.1 | 0.46 | 0.055 | 0.95 |
+  | 160 | 0.029 | 0.0053 | 9.5 | 0.45 | 0.050 | 0.83 |
+  | 170 | 0.042 | 0.0066 | 5.8 | 0.36 | 0.037 | 0.89 |
+  | 178 | 0.052 | 0.0115 | - | 0.39 | 0.044 | - |
+  | 180 | 0.078 | 0.0188 | 4.9 | 0.42 | 0.071 | 0.92 |
+
+  Reading: the trust-region masked fraction is up 60x, mean KL 3x, while staleness, entropy, grad norm and
+  reward are flat. Flat staleness rules out off-policy lag as the driver; a growing trainer-vs-inference
+  logprob gap with a slowly moving policy points at the FP8 serving path (online per-block re-quantization of
+  the broadcast weights, indexer kept bf16) disagreeing more with the bf16 trainer as weights leave the
+  original checkpoint. Not yet harming training (loss ~0, reward stable), and the IPO mask is absorbing it, but
+  at this slope the masked fraction is a few percent within another 50 steps.
+  **Not acting**: turning FP8 off is on the handoff's do-not-decide-alone list, and a bf16 relaunch also needs
+  the KV-pool question answered (bf16 was measured at 0.74x concurrency per replica before `kv_cache_dtype =
+  "fp8"`; with FP8 KV it is likely fine). The run stays up. If Garrett wants the switch, the recipe is: `scancel`,
+  drop `quantization`, `quantization_config` and `use_deep_gemm` in `[inference]` and `[inference.vllm]`, keep
+  `kv_cache_dtype = "fp8"`, relaunch with bare `[resume]` from `step_180`, and confirm the KV pool clears 131k.
 
 ## Open questions for Garrett
 
@@ -291,6 +315,6 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   acknowledging the trainer's broadcast (3.5 min at step 81 with ~300 live sandboxes). The trainer idles for
   that whole time. Worth a look at whether the stale-drain barrier needs the full scheduling pass, or whether
   `fill_inflight` should yield more often; `weight_broadcast.timeout = 3600` is the only guard today.
-- Mismatch KL trend: 0.020-0.034 for the first 100 steps, 0.033-0.054 for steps 161-172, with reward and entropy
-  flat. If it keeps climbing it is the strongest argument yet for revisiting FP8 serving (or adding an IPO-style
-  trust-region mask if one is not already on). Worth plotting `mismatch_kl/all/mean` over the full run in wandb.
+- **Mismatch KL is climbing: 0.025 (steps 1-100) to 0.078 at step 180, masked-token fraction 0.03% to 1.9%**,
+  with staleness, entropy, grad norm and reward flat. See the 11:38 entry for the table and the bf16-relaunch
+  recipe. This is the strongest data point so far on the FP8 serving decision and I left it for you.
