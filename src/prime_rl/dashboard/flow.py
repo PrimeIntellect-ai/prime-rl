@@ -200,16 +200,17 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     for event in events:
         if not isinstance(event, CallEvent):
             continue
-        parent = executions.get(event.execution)
+        invocation = event.invocation
+        parent = executions.get(invocation.execution)
         if parent is None:
             continue
-        identity = event.call
+        identity = invocation.call
         if identity not in calls:
             call = calls[identity] = {
-                "id": event.call,
-                "execution": event.execution,
-                "key": event.key or event.kind,
-                "kind": event.kind,
+                "id": invocation.call,
+                "execution": invocation.execution,
+                "key": invocation.key or invocation.kind,
+                "kind": invocation.kind,
                 "status": "incomplete",
                 "started_at": event.at,
                 "finished_at": None,
@@ -248,7 +249,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 source_call=event.source_call,
                 source_execution=event.source_execution,
             )
-            record = records.get(event.source_call or event.call)
+            record = records.get(event.source_call or invocation.call)
             if record:
                 call["payload"] = _payload(record.payload)
     last_launch = max((i for i, e in enumerate(events) if e.type == "run_started"), default=-1)

@@ -63,7 +63,14 @@ def root(tmp_path):
     ]
     # Identical timestamps deliberately cannot identify any stage or retry.
     defaults = {"unit": "t", "stage": "evaluate", "at": "2026-01-01T00:00:00", "key": "solve", "kind": "agent"}
-    (tmp_path / "transitions.jsonl").write_text("".join(json.dumps({**defaults, **e}) + "\n" for e in events))
+    rows = []
+    for event in events:
+        row = {**defaults, **event}
+        if row["type"] in ("call", "rollout"):
+            row["invocation"] = {k: row.pop(k) for k in ("unit", "stage", "execution", "call", "key", "kind")}
+            row["invocation"]["cache"] = None
+        rows.append(json.dumps(row) + "\n")
+    (tmp_path / "transitions.jsonl").write_text("".join(rows))
     calls = tmp_path / "calls/t"
     calls.mkdir(parents=True)
     (calls / "result.json").write_text(
