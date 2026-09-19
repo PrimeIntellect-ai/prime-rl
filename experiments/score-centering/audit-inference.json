@@ -1,0 +1,89 @@
+{
+  "server": {
+    "host": null,
+    "port": 8000,
+    "liveness_timeout_seconds": 30.0
+  },
+  "router": {
+    "type": "vllm-router"
+  },
+  "backend_port": 8100,
+  "vllm": {
+    "model": "/home/mika/.cache/huggingface/hub/models--Qwen--Qwen3-30B-A3B-Instruct-2507/snapshots/0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe",
+    "dtype": "auto",
+    "max_model_len": 32768,
+    "enforce_eager": false,
+    "trust_remote_code": false,
+    "chat_template": null,
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "rope_scaling": null,
+    "tensor_parallel_size": 4,
+    "data_parallel_size": 2,
+    "data_parallel_size_local": 2,
+    "data_parallel_rpc_port": 13345,
+    "api_server_count": 4,
+    "seed": 42,
+    "gpu_memory_utilization": 0.9,
+    "enable_prefix_caching": null,
+    "quantization": "fp8_per_block",
+    "enable_lora": false,
+    "max_loras": 1,
+    "max_lora_rank": null,
+    "lora_target_modules": null,
+    "enable_expert_parallel": false,
+    "all2all_backend": "allgather_reducescatter",
+    "enable_eplb": false,
+    "enable_ep_weight_filter": true,
+    "enable_dbo": false,
+    "enable_return_routed_experts": false,
+    "enable_auto_tool_choice": true,
+    "max_num_seqs": 128,
+    "max_num_batched_tokens": 8192,
+    "max_logprobs": 129,
+    "kv_cache_dtype": "fp8_per_token_head",
+    "attention_config": {
+      "backend": "TRITON_ATTN"
+    },
+    "quantization_config": {
+      "linear": "fp8_per_tensor",
+      "moe": "int8_per_channel_weight_only"
+    }
+  },
+  "log": {
+    "level": "info",
+    "vf_level": "info",
+    "json_logging": false,
+    "log_data": false,
+    "interval": 10.0
+  },
+  "env_vars": {
+    "UV_NO_SYNC": "1",
+    "PRL_SCORE_TOPK": "128",
+    "PRL_INFERENCE_API_SERVER_COUNT": "4",
+    "TRITON_CACHE_DIR": "/tmp/score-centering-triton",
+    "OMP_NUM_THREADS": "8",
+    "VLLM_CACHE_ROOT": "/tmp/score-centering-vllm",
+    "FLASHINFER_WORKSPACE_BASE": "/tmp/score-centering-flashinfer"
+  },
+  "use_deep_gemm": false,
+  "weight_broadcast": {
+    "type": "filesystem"
+  },
+  "kv_cache_offload": null,
+  "use_pd_kv_transfer": false,
+  "enable_return_sampling_mask": false,
+  "enable_fp32_lm_head": true,
+  "enable_fp32_router_logits": true,
+  "deployment": {
+    "type": "multi_node",
+    "num_nodes": 1,
+    "gpus_per_node": 8
+  },
+  "slurm": {
+    "partition": "all",
+    "time": "04:00:00",
+    "job_name": "sc-final-audit"
+  },
+  "output_dir": "outputs/score-centering/audit-serving"
+}

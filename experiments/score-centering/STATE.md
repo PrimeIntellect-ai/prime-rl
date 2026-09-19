@@ -6,14 +6,15 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current state
 
-- Preparing one four-node allocation for both step-50 continuations. Separate jobs908/909 were stopped before rollout collection because only one node pair was available.
+- Job911 (`score-centering-pair`) is queued for four nodes as of13:17UTC. SLURM reports Resources and no start estimate.
+- Separate jobs908/909 were stopped before rollout collection because only one node pair was available. Both dispatched zero episodes.
 - IPO: `ipo-1plus1-api4-seed42-resume50-r2`; centered: `sc-1plus1-api4-seed42-resume50-r2`.
 - Each requests one trainer plus one inference node. Preserve API4 per engine and initial512/max2048 inflight.
 - Both resume external trainer and orchestrator state from each parent's `preserved-checkpoints/step_50`.
 - Runtime restoration remains to be verified. Next optimizer update must be51; startup policy broadcast must be50.
 - The step-50 online eval repeats in the new directories. Max updates stays400.
 - Paired launcher: `resume-pair.sbatch`. Both generated launchers run concurrently on disjoint two-node subsets. Stub checks verified cleanup and startup node scopes.
-- Analysis source:849715d94; latest main merged before the experiment:a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
+- Paired launch source:2d12a5209; analysis source:849715d94; latest main merged before the experiment:a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
 - Recovery eval `gateway-recovery-20260919-1301` completed all4 VM episodes with no errors. Lego1/2solved; TB2 1/2solved.
 - Two fresh tunnel checks passed12/12 public requests each after the earlier intermittent failures.
 - Old jobs891/893 were stopped after shared502 gateway failures beginning12:40UTC. Both allocations released; exact-label VM inventories empty.
@@ -151,3 +152,5 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - At 12:40 UTC, the matched 50-update export passed. Both arms remain finite. Training success windows (1–25, 26–50): IPO 58.5%, 55.6%; centered 59.1%, 59.5%. No predefined collapse.
 - Both step-50 checkpoint manifests pass all 11,475 shard-extent checks. Each trainer checkpoint is 341.24 GiB. Orchestrator progress exists. No full restore performed.
 - Mismatch tail plots now include per-token maximum and standard deviation. Maximum through step 50: IPO 189.65, centered 202.13. Mean mismatch remains about 0.0043. IPO gradient peaks at 39, 43, and 45 subsided on the following update.
+
+- Prepared `audit-inference.json` for the final frozen-checkpoint audit. Dry run passed: one node, two TP4 engines, API4 per engine, same weight and KV quantization. No audit allocation submitted.

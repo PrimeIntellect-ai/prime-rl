@@ -166,7 +166,12 @@ The API-worker change was unvalidated at that cancellation. The current pair has
 
 ## Pending
 
+Job911 is queued for a single four-node allocation so both continuations start together.
+No start estimate is available. Both continuation directories appear in the dashboard on port7789.
 Collect the main learning curves and held-out results at matched updates and token budgets.
+`audit-inference.json` passed a dry run for one-node frozen serving with two TP4 engines and API4 per engine.
+Override `vllm.model` with each exported checkpoint for the final audit; retain the pinned base for the base-model audit.
+No audit allocation has been submitted. Actual checkpoint export and frozen serving remain unvalidated.
 Inspect trace failures before classifying instability.
 If a separation appears, repeat with a second seed and a matched BF16 control.
 Report a negative or inconclusive result if the requested separation does not occur.
