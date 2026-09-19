@@ -116,6 +116,11 @@ num_turns_weight = 0.1
 # name = "auto" fails validation. The deepseek-v4 renderer defaults enable_thinking to False.
 name = "deepseek-v4"
 enable_thinking = true
+# drop_thinking defaults to true, which implies thinking_retention = "tool_cycle" and conflicts
+# with "all". The orchestrator re-validates its resolved JSON in a subprocess, where every default
+# counts as explicitly set, so the conflict fires at launch even though the dry run passes. With
+# tools present the encoder preserves all reasoning regardless; false just makes the pair agree.
+drop_thinking = false
 thinking_retention = "all"
 
 [[orchestrator.train.source]]
