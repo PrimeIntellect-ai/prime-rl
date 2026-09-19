@@ -42,7 +42,7 @@ Warm steps have taken roughly 1.5–6 minutes; most time is spent waiting for ro
 Across updates 2–9, rollout waits account for 77% of IPO time and 82% of centered time.
 API4 has avoided the earlier unhealthy-worker request storm so far. Intermittent health-check misses remain.
 Ten-minute training error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline.
-The step-25 scheduled TB2 evaluations are running. Do not interpret partial completion scores.
+The step-25 scheduled TB2 evaluations finished at about 11:09 UTC.
 
 Initial TB2 evaluation solved 2/64 IPO tasks and 1/64 centered tasks.
 IPO had 24 failed episodes; centered had 16. These sparse scores have substantial missingness.
@@ -50,6 +50,23 @@ Five IPO episodes and six centered episodes spanned at least one live policy ref
 These online results are not frozen-checkpoint measurements.
 See `results/main-api4-initial-eval` for scores, errors, policy spans, and missing-reward bounds.
 The fixed-checkpoint Lego audit remains required before interpreting capability retention.
+
+The step-25 evaluation used the same 64 tasks as the initial evaluation.
+
+| Arm | Solved | Scored | Failed episodes | Episodes spanning a policy refresh |
+| --- | ---: | ---: | ---: | ---: |
+| IPO | 3/64 | 42 | 22 | 51 |
+| Centered | 2/64 | 44 | 20 | 46 |
+
+Among scored tasks, IPO success is 7.1% (Wilson 95%: 2.5–19.0%).
+Centered success is 4.5% (Wilson 95%: 1.3–15.1%).
+Assigning missing rewards either zero or one gives all-task bounds of 4.7–39.1% for IPO and 3.1–34.4% for centered.
+These bounds are not confidence intervals. The sparse scores and missingness do not establish an advantage.
+IPO errors comprise 13 provider errors and 9 harness errors; centered has 15 and 5.
+Most provider errors concern malformed tool-call JSON. Inspected harness errors include rollout timeouts.
+Recorded policy spans cover versions 25–28 for IPO and 25–29 for centered.
+These evaluations measure the live training pools, not frozen step-25 checkpoints.
+Task-level exports and uncertainty are in `results/main-api4-eval25`.
 
 ## Validation and smoke evidence
 

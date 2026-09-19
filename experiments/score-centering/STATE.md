@@ -18,7 +18,7 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 - Latest main is a1822f7a0, fetched again before this restart and already merged.
 - At 10:56 UTC: both arms passed twenty-five finite updates. No numerical separation observed. Matched curves and metrics are in results/main-api4-step25.
 - Both pools have avoided unhealthy-worker request failures. Isolated health-check misses remain.
-- Training error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline. Step25 TB2 evaluations are running.
+- Training error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline. Step25 TB2 evaluations are complete: IPO3/64 solved,22 errors; centered2/64 solved,20 errors. Exports: results/main-api4-eval25.
 - Initial TB2: IPO 2 solved, 24 errors; SC 1 solved, 16 errors (64 tasks each). Online episodes can span policy refreshes.
 - Monitor helper: `/tmp/score-centering-monitor.py`; snapshots: `results/monitor/snapshots.jsonl`.
 - Current IPO W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/f7acea587c9a4bd5aeb33be0d270fd65
@@ -106,7 +106,7 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 
 ## Next
 
-1. Continue close monitoring of jobs893/891. Both actual API4 pools passed twenty-five finite updates. Verify completion of the step25 TB2 evaluations; continue toward 400.
+1. Continue close monitoring of jobs893/891. Both actual API4 pools passed twenty-five finite updates. The step25 TB2 evaluations are complete. Continue toward 400 and inspect the next scheduled evaluation at step50.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. Current TB2 initial success is sparse (IPO2/40, SC1/48 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
@@ -141,3 +141,5 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 
 - Both step25 checkpoints saved. Each DCP metadata file is readable, and all 11,475 referenced chunks fit the shard files. Each trainer checkpoint is 341.24 GiB. Orchestrator progress exists. No full restore performed. Verification artifact: results/monitor/checkpoints-step25.json.
 - analyze.py accepts --max-step to cap both curves at a matched optimizer update. Real export with --max-step 25 passed; results/main-api4-step25 contains no nonfinite metrics or numerical log warnings.
+
+- Step25 evaluation repeated the same64 tasks. IPO scored42 and solved3; centered scored44 and solved2. Policy-refresh spans:51 IPO and46 centered episodes. No robustness separation. Most provider errors concern malformed tool-call JSON. Final fixed-checkpoint Lego audit remains required.
