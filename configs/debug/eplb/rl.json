@@ -1,0 +1,127 @@
+{
+  "max_steps": 6,
+  "seq_len": 2048,
+  "output_dir": "outputs/eplb-math",
+  "model": {
+    "name": "Qwen/Qwen3.5-35B-A3B"
+  },
+  "weight_broadcast": {
+    "type": "nccl",
+    "timeout": 1200
+  },
+  "deployment": {
+    "type": "multi_node",
+    "num_train_nodes": 1,
+    "num_infer_nodes": 1,
+    "gpus_per_node": 8
+  },
+  "slurm": {
+    "time": "01:00:00",
+    "job_name": "eplb-math",
+    "cleanup_grace_period": 0
+  },
+  "log": {
+    "level": "info"
+  },
+  "monitors": {
+    "file": {}
+  },
+  "trainer": {
+    "model": {
+      "impl": "custom",
+      "attn": "flash_attention_2",
+      "ep": 8,
+      "ac": {
+        "freq": 1
+      }
+    },
+    "optim": {
+      "lr": 0.0
+    }
+  },
+  "orchestrator": {
+    "batch_size": 32,
+    "group_size": 4,
+    "max_off_policy_steps": 1,
+    "concurrency": {
+      "initial_inflight": 32,
+      "max_inflight": 32
+    },
+    "train": {
+      "sampling": {
+        "max_completion_tokens": 1024,
+        "extra_body": {
+          "chat_template_kwargs": {
+            "enable_thinking": false
+          }
+        }
+      },
+      "source": [
+        {
+          "name": "math",
+          "env": {
+            "taskset": {
+              "id": "math-env",
+              "task": {
+                "judge": null
+              }
+            },
+            "agent": {
+              "harness": {
+                "id": "null"
+              },
+              "runtime": {
+                "type": "prime"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "algo": {
+      "type": "debug"
+    }
+  },
+  "inference": {
+    "vllm": {
+      "max_model_len": 2048,
+      "max_num_batched_tokens": 2048,
+      "safetensors_load_strategy": "prefetch",
+      "dtype": "bfloat16",
+      "quantization": "fp8_per_block",
+      "tensor_parallel_size": 8,
+      "enable_expert_parallel": true,
+      "enable_eplb": true,
+      "enforce_eager": true,
+      "gpu_memory_utilization": 0.6,
+      "max_num_seqs": 32,
+      "eplb_config": {
+        "communicator": "nixl",
+        "use_async": true,
+        "window_size": 16,
+        "step_interval": 16,
+        "num_redundant_experts": 8,
+        "log_balancedness": true,
+        "log_balancedness_interval": 16
+      },
+      "limit_mm_per_prompt": {
+        "image": 0,
+        "video": 0
+      },
+      "quantization_config": {
+        "ignore": [
+          "lm_head",
+          "re:.*linear_attn.in_proj_(a|b|ba)$",
+          "re:.*mlp.shared_expert.*"
+        ]
+      },
+      "kernel_config": {
+        "moe_backend": "triton"
+      }
+    },
+    "router": {
+      "type": "vllm-router",
+      "policy": "sticky_least_loaded"
+    }
+  }
+}
