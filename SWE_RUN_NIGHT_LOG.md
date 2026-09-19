@@ -505,6 +505,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   turns 27-38, mismatch KL 0.0044-0.0061, Peak Mem 34-49 GiB. 12,117 episodes finished; 55 off-policy
   cancellations, 122 trace failures (88 `uv --script`, 31 the burst, 2 OOM-137, 1 sandbox 503). Checkpoints
   `step_60`, `step_80`. At this pace step 200 lands around 20:00 and step 300 around 21:45.
+- 18:15:41 **step 100 checkpoint saved** (`Step 100 | 2m 13s`, `Mismatch KL 0.0060 | Peak Mem. 49.0 GiB`);
+  `checkpoints/` holds `step_80`, `step_100`. 1h 50m from launch to step 100 versus ~4h 40m for DeepSeek.
 
 ## Open questions for Garrett (GLM run)
 
