@@ -348,6 +348,38 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
 - 13:19:40 orchestrator Step 221 `Reward 0.9844 | Error 0.0% | Cancelled 0.0%` and 13:22:02 trainer Step 221
   (`8m 16s`, includes refilling the rollout pipeline; `Mismatch KL 0.0589`). v221 update 200 OK. Interception pool
   back at 4 servers with fresh tunnels; zero harness failures in the first post-resume batch. Steady state again.
+- 13:46-14:15 steps 222-239 at ~2-3 min each, reward 0.64-1.00, but **mismatch KL kept climbing: 0.059 (221),
+  0.075 (231-235), 0.078 (236), 0.106 (237), 0.090 (238), 0.119 (239)**, with grad-norm spikes 0.34 (223), 0.16
+  (227, 231), 0.22 (235), 0.28 (236), 0.19 (239) and the masked-token fraction 1.8% -> 3.4%. Entropy 0.24-0.43.
+- 14:15 onward, **rollout throughput collapsed and the trainer starved**. Trainer's last step is 239 (14:15:20);
+  orchestrator batch 240 crawled 8 -> 48 of 64 over 22 minutes. Diagnosis, in order of what I ruled out:
+  - Not inference or router health: all 8 engines serving (~45-49 running, 0 waiting, 0 preemptions,
+    ~1700 generated tok/s each), zero engine errors, router fine. Not the tunnel: only 2 x 504 all hour.
+  - Not the concurrency controller as such: it restarted its inflight cap at 75 on resume and had ramped to
+    416 (below attempt 7's 512), so the dispatcher sat at its permit ceiling; that explains dispatch pacing,
+    not the collapse.
+  - Not signal starvation: raw pass rate 64% (323 pass / 179 fail in 20 min), curriculum admits everything.
+  - **Cause: runaway generations.** Inference `e2e_request_latency p99` went from 40-150 s to 870-1720 s at
+    ~14:15. On one engine, 45 s of metrics showed 5 completions against 79k generated tokens (~16k tokens per
+    completing request) at ~35 tok/s per request. One of 7 sampled live traces had a **65,716-token single
+    turn**; another's reasoning tail reads "current hidden hidden interdependenciesholidays" (token salad).
+    A minority of such turns (30-60 min each) hog engine slots, so normal turns slow to a crawl, completions
+    fall from ~30/min to ~5/min, and the harness's OpenAI client starts raising `openai.APITimeoutError:
+    Request timed out` (8 by 14:36, rising to 8-9 failures/min). Router traffic fell 10x (5000 -> 500
+    lines/min). Completed episodes through step 239 still look normal (mean 4-13k output tokens, one at
+    126k at step 238), so the damage is in-flight, not yet in the metrics.
+  - Timing matches the trainer metrics: the KL/grad-norm spikes at 237-239 are the policy moving fast right
+    before generation quality broke. Whether FP8 serving drift caused it or just amplified it, I cannot tell
+    from here. The config has `num_output_tokens_weight = 0.0`, so nothing in the reward opposes long outputs.
+- 14:37:27 **stopped the run (`scancel 907`)**, job gone 14:39:17. Reasoning: the job was alive but not
+  producing training steps (22 min without one and slowing), every path forward is a recipe change (bf16
+  serving, an output-length cap or penalty, lower lr, resume point), which the handoff reserves for Garrett,
+  and the alternative was 16 nodes generating timeouts until the zero-output guard fired and held them for
+  another hour of grace. `checkpoints/` is exactly `step_200` and `step_220`, both halves, 64 shards each; no
+  stray orchestrator-only checkpoint was written. Deleted the 425 leftover sandboxes. No jobs of mine remain.
+- **Resume recipe** (whatever Garrett changes): the bare `[resume]` picks `step_220` (KL 0.057, pre-collapse);
+  `--resume.step 200` (KL 0.048) is the safer point if the drift is judged to have started earlier. Same node
+  set gives a ~13 min boot. Run the three-way resolved-config check first.
 
 ## Open questions for Garrett
 
@@ -373,10 +405,11 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
   acknowledging the trainer's broadcast (3.5 min at step 81 with ~300 live sandboxes). The trainer idles for
   that whole time. Worth a look at whether the stale-drain barrier needs the full scheduling pass, or whether
   `fill_inflight` should yield more often; `weight_broadcast.timeout = 3600` is the only guard today.
-- **Mismatch KL roughly doubled over the run**: 0.025 for steps 1-100, a transient bump to 0.100 at step 182
-  (masked fraction 2.9%), then a plateau at 0.045-0.05 (masked 0.7-1.0%) through step 200. Staleness, entropy,
-  grad norm and reward all flat throughout. See the 11:38 entry for the table and a bf16-relaunch recipe. This
-  is the main data point on the FP8 serving decision and I left it for you.
+- **The run collapsed at step ~237-240 and I stopped it at 14:37.** Mismatch KL went 0.025 (steps 1-100) ->
+  0.045-0.05 (150-200) -> 0.06-0.08 (221-236) -> 0.10-0.12 (237-239), then generations ran away (65k-token
+  turns), inference clogged, and the trainer starved. Full diagnosis in the 14:15 entry. Decisions that are
+  yours: bf16 serving (recipe in the 11:38 entry), an output-length cap or non-zero `num_output_tokens_weight`,
+  a lower lr, and whether to resume from `step_220` or `step_200`.
 - The sandbox-to-inference tunnel (`prime_tunnel` / frps) is a single point of failure per interception server,
   and the pool has no health check: a broken tunnel became a black hole for new sessions (least-loaded picks
   it) and cost ~70% of rollouts until a run restart. Worth a tunnel health probe in the pool, or a retry on 5xx
