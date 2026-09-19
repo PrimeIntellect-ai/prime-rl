@@ -154,3 +154,14 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - 04:44:23 v0 broadcast: `Receiving state dict 44/44`, `POST /update_weights 200 OK`, and **zero**
   `memory allocation failed` allocator warnings across all 64 ranks (attempt 5 had one per rank). Orchestrator
   loop started 04:44:24. Next: orchestrator step 1 ~05:00, trainer step 1 + v1 update ~05:05.
+- 04:57:44 orchestrator Step 1: `13m 16s | Reward 0.7812 | Trainable 64/64 | Turns 31.1 | Error 0.0% | Truncation 0.0%`.
+- 05:02:21 **trainer Step 1, the run is alive end to end**:
+  `18m 23s | Loss -0.0003 | Entropy 0.3717 | Mismatch KL 0.0249 | Grad. Norm 0.0560 | LR 1.00e-06 | Throughput 8712
+  tokens/s | MFU 5.4% | Peak Mem. 89.6 GiB | Max Vio 6.0787 | Routing Conf. 0.0992`.
+  - **Gate 2 cleared**: 89.6 GiB peak on a 139.8 GiB card at 8 trainer nodes, cp = 4, 64 x 131k batch. The
+    handoff expected ~66 GiB weight-shaped state + ~24 GiB broadcast transient + ~11 GiB activations, so this is
+    right on the arithmetic. ~50 GiB of headroom; the memory ladder was not needed.
+  - v1 `POST /update_weights`: 200 OK on all 8 replicas, zero OOM or allocator warnings. The 0.75 fix holds.
+  - Step 1 wall time includes the first-call TileLang / torch.compile warmup, so 18 min is an upper bound.
+  - Mismatch KL 0.0249 is in line with the FP8 measurement in `FP8_MISMATCH_RESULTS.md` (0.0307 at lr = 0),
+    i.e. above the 0.015 bar that document discusses. Expected consequence of the FP8 decision, not a bug.
