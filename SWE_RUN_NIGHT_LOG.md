@@ -250,6 +250,8 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   died and took every rollout it hosted with it. Confined to that second; no inference errors, sandbox API
   responsive (512 live sandboxes, ~2 s list). The orchestrator kept collecting (`Train batch 21/64`). New
   failure class, watching for recurrence; a repeat pattern would point at the harness runner rather than tasks.
+- 10:13:28 step 140 checkpoint saved (`Step 140 | 5m 47s`); `checkpoints/` holds `step_120` and `step_140`.
+  No repeat of the 09:56 harness burst. Steps 131-140 routine.
 
 ## Open questions for Garrett
 
