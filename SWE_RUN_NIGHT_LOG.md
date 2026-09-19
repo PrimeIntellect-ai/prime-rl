@@ -140,3 +140,17 @@ Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe.toml`. Config at `f
 Nodes: `prime-nebius-puku-h200-gpu-[005-006,013,015-016,018,020,024,027,033,036,038,042,046,052,055]`.
 Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_7/`. Expect inference ready ~04:45, first
 trainer step ~05:05, and the v1 update right after is the moment of truth.
+
+#### Attempt 7 progress
+
+- 04:09 batch log: `Processed 127 sandbox(es)` / `Successfully deleted 127 sandbox(es)`. The reaper works now
+  that the CLI is installed and the user id is configured; attempt 5's leftovers are gone.
+- 04:13:29 replica 0 `Loading weights took 26.72 seconds` (vs 859-1111 s in attempts 3 and 5). Node reuse
+  across attempts: the 1.1 TB checkpoint is still in that node's page cache. Boot time is dominated by the
+  cold NFS read, so re-landing on warm nodes matters a lot for relaunch cost.
+- 04:24:32 KV pool at 0.75: `GPU KV cache size: 1,240,483 tokens, Maximum concurrency for 131,072 tokens per
+  request: 9.46x` (was 11.55x at 0.85). Orchestrator inflight cap will be ~75 instead of 92.
+- 04:43:57 `Policy inference pool ready after 32m 47s` (3 warm nodes, 5 cold at 1058-1119 s load).
+- 04:44:23 v0 broadcast: `Receiving state dict 44/44`, `POST /update_weights 200 OK`, and **zero**
+  `memory allocation failed` allocator warnings across all 64 ranks (attempt 5 had one per rank). Orchestrator
+  loop started 04:44:24. Next: orchestrator step 1 ~05:00, trainer step 1 + v1 update ~05:05.
