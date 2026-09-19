@@ -488,6 +488,11 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   hurdle is gone within 20 steps. Trainer steps 20-60 s, mismatch KL 0.004-0.006, Peak Mem 34-49 GiB.
 - 16:53:52 **first checkpoint, step 20**: `Step 20 | 2m 7s`, ~75 s of write, trainer half 1.2T (vs 3.2 TB for
   DeepSeek); both halves present.
+- 17:13 hourly summary through step 40 (50 min of job time): steps 20-90 s each (~1 min average, 3x faster
+  than DeepSeek), reward 0.23-0.33 for steps 1-8 then 0.5-0.89 from step 16 on, turns 4 -> 25-35, mismatch KL
+  flat at 0.0043-0.0070, grad norm 0.09-0.47, Peak Mem 34-49 GiB. 6,130 episodes finished; 14 off-policy
+  cancellations, 41 trace failures (40 `uv --script`, 1 sandbox 503). No-signal discards 55-62% per batch.
+  Checkpoints `step_20`, `step_40` (1.2 TB each). Nothing new to escalate.
 
 ## Open questions for Garrett (GLM run)
 
