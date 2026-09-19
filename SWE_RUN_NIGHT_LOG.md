@@ -172,6 +172,12 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   the policy. Steady state is ~5 min per step, set by the 64-episode rollout collection. Mean episode length is
   10-27k tokens (`num_total_tokens/mean`), so 131k is a ceiling, not the typical case. At this pace step 20
   (first checkpoint) lands around 06:35.
+- 05:17-05:46 trainer steps 5-15 at 2.5-4 min each, Peak Mem 72-93 GiB, mismatch KL 0.023-0.032, grad norm
+  0.005-0.09. Every step carries the `Trainer waited ... add more inference nodes` warning; rollout-bound as
+  measured above, and 16 nodes is the cap, so left alone.
+- 05:48:23 orchestrator: `Discarded 72/136 episodes (52.9%): stale=0, errored=0, no_signal=72`. Groups whose 8
+  rewards are identical (mostly all-pass, given mean reward 0.78-0.94) have zero advantage and are dropped.
+  A throughput cost, not a failure; the batch still reached 64 effective episodes. See open questions.
 
 ## Open questions for Garrett
 
@@ -186,3 +192,7 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - `wait_for_ready_timeout = 7200` and `gpu_memory_utilization = 0.75` are now in the config. The second costs
   ~18% of the KV pool (11.55x to 9.46x concurrency per replica). An alternative that keeps 0.85 would be
   sub-chunking the NCCL receive buffer in `inference/vllm/worker/nccl.py`; I did not make that code change.
+- Roughly half of all episodes are `no_signal` (whole group same reward) because scaleswe pass rates are high
+  for this model (`train/agg/effective/agent/reward/mean` 0.78-0.94). That halves effective rollout throughput
+  on an already rollout-bound run. Options for later: a curriculum/difficulty filter on the source, a larger
+  `group_size`, or a harder taskset mix. Not a bring-up concern.
