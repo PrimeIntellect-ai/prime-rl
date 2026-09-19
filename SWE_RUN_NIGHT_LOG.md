@@ -562,6 +562,9 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   from step ~150; episodes are getting longer (39 turns) and step time has eased from ~60 s to ~105 s. Inference
   p99 ~40 s, no runaway generations. 36,187 episodes finished; 208 off-policy cancellations, 131 trace failures
   (nothing new since 18:05 beyond two singletons), 2 provisioning blips, no trainer or inference errors at all.
+- 22:40:43 third provisioning blip (`Connect RPC failed (unavailable)`), single trace.
+- 23:10:17 step 320 checkpoint saved (`Step 320 | 3m 51s | Mismatch KL 0.0062`); `checkpoints/` holds `step_300`,
+  `step_320`. Steps 301-320: reward 0.48-0.84, turns 30-61, ~2 min/step.
 
 ## Open questions for Garrett (GLM run)
 
