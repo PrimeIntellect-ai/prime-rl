@@ -25,7 +25,7 @@ from pathlib import Path
 
 import orjson
 
-from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_complete_jsonl, run_status
+from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_events, run_status
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -302,14 +302,8 @@ def eval_total_episodes(config: dict) -> int | None:
 
 def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
     """When execution started and whether the scheduler reported a settled stop."""
-    events = read_complete_jsonl(run_dir / "transitions.jsonl")
-    started = None
-    for event in events:
-        try:
-            started = datetime.fromisoformat(event["at"]).timestamp()
-            break
-        except (KeyError, TypeError, ValueError):
-            continue
+    events = read_events(run_dir)
+    started = datetime.fromisoformat(events[0].at).timestamp() if events else None
     return started, run_status(run_dir, events) in ("quiescent", "draining")
 
 

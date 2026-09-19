@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+from verifiers.v1.flow.calls import Record
+from verifiers.v1.flow.events import CallEvent, EventRecord, RunEvent, StageEvent, SteerEvent, event_adapter
+from verifiers.v1.flow.unit import UnitState
 
 TRANSITIONS = "transitions.jsonl"
 STATUS = {"ready": "completed", "terminal": "completed", "waiting": "completed", "held": "failed"}
@@ -70,7 +73,7 @@ def _read(path: Path) -> dict[str, Any] | None:
     return _json_file(str(path), stat.st_size, stat.st_mtime_ns)
 
 
-def unit_states(run_dir: Path) -> dict[str, dict[str, Any]]:
+def unit_states(run_dir: Path) -> dict[str, UnitState[Any]]:
     """Committed unit state, matching what the scheduler reads."""
     states = {}
     for unit in sorted((run_dir / "units").glob("*")):
@@ -82,12 +85,18 @@ def unit_states(run_dir: Path) -> dict[str, dict[str, Any]]:
             check=False,
         )
         if result.returncode == 0:
-            states[unit.name] = orjson.loads(result.stdout)
+            states[unit.name] = UnitState[Any].model_validate_json(result.stdout)
     return states
 
 
-def call_records(run_dir: Path) -> list[dict[str, Any]]:
-    return [r for p in sorted((run_dir / "calls").glob("*/*.json")) if (r := _read(p)) is not None]
+def call_records(run_dir: Path) -> list[Record]:
+    return [
+        Record.model_validate(r) for p in sorted((run_dir / "calls").glob("*/*.json")) if (r := _read(p)) is not None
+    ]
+
+
+def read_events(run_dir: Path) -> list[EventRecord]:
+    return [event_adapter.validate_python(row) for row in read_complete_jsonl(run_dir / TRANSITIONS)]
 
 
 def _running(run_dir: Path) -> bool:
@@ -101,12 +110,15 @@ def _running(run_dir: Path) -> bool:
     return False
 
 
-def run_status(run_dir: Path, events: list[dict[str, Any]]) -> str:
-    boundary = next((e for e in reversed(events) if e["type"] in ("run_started", "run_finished")), None)
+def run_status(run_dir: Path, events: list[EventRecord]) -> str:
+    boundary = next(
+        (e for e in reversed(events) if isinstance(e, RunEvent) and e.type in ("run_started", "run_finished")), None
+    )
     if boundary is None:
         return "pending"
-    if boundary["type"] == "run_finished":
-        return boundary["reason"]
+    if boundary.type == "run_finished":
+        assert boundary.reason is not None
+        return boundary.reason
     return "running" if _running(run_dir) else "incomplete"
 
 
@@ -123,7 +135,7 @@ def _payload(value: Any) -> Any:
 
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
     """Fold transitions, unit states and call records into the run/task/step graph the UI draws."""
-    events = read_complete_jsonl(run_dir / TRANSITIONS)
+    events = read_events(run_dir)
     trace_lines = trace_lines or {}
     row = run_dir.name
     states = unit_states(run_dir)
@@ -137,25 +149,25 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
 
     steers: list[dict[str, Any]] = []
     for order, event in enumerate(events):
-        kind, unit, stage = event.get("type"), event.get("unit"), event.get("stage")
-        if kind == "steer" and isinstance(unit, str):
-            steers.append({**event, "order": order})
+        if isinstance(event, SteerEvent):
+            steers.append({**event.model_dump(mode="json"), "order": order})
             continue
-        if not isinstance(unit, str) or not isinstance(stage, str):
+        if not isinstance(event, StageEvent):
             continue
+        kind, unit, stage = event.type, event.unit, event.stage
         if kind == "started":
             n = occurrences[(unit, stage)]
             occurrences[(unit, stage)] += 1
             node = {
-                "id": f"{row}:{event['execution']}",
-                "execution": event["execution"],
+                "id": f"{row}:{event.execution}",
+                "execution": event.execution,
                 "unit": unit,
                 "path": f"{unit}/{stage}#{n}",
                 "name": stage,
                 "occurrence": n,
                 "status": "incomplete",
                 "reason": None,
-                "started_at": event.get("at"),
+                "started_at": event.at,
                 "finished_at": None,
                 "order": order,
                 "group": group_id(unit),
@@ -168,40 +180,38 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "report": None,
             }
             nodes.append(node)
-            executions[event["execution"]] = node
-        elif (
-            kind in ("transition", "stopped", "cancelled") and (node := executions.get(event["execution"])) is not None
-        ):
-            node["finished_at"] = event.get("at")
+            executions[event.execution] = node
+        elif kind in ("transition", "stopped", "cancelled") and (node := executions.get(event.execution)) is not None:
+            node["finished_at"] = event.at
             node["done_order"] = order
             if kind in ("stopped", "cancelled"):
                 node["status"] = "cancelled"
                 continue
-            status = event.get("status")
+            status = event.status
             node["status"] = STATUS.get(status, "completed")
             node["unit_status"] = status
-            node["outcome"], node["to"], node["reason"] = event.get("outcome"), event.get("to"), event.get("reason")
-            node["report"] = event.get("report")
-            node["links"] = [link for link in event.get("links") or [] if isinstance(link, dict)]
+            node["outcome"], node["to"], node["reason"] = event.outcome, event.to, event.reason
+            node["report"] = event.report
+            node["links"] = [link.model_dump() for link in event.links]
 
     # Invocation IDs, never timestamps, determine attachment to a stage.
-    records = {r["call"]: r for r in call_records(run_dir)}
+    records = {r.call: r for r in call_records(run_dir)}
     calls: dict[str, dict[str, Any]] = {}
     for event in events:
-        if event.get("type") not in ("call", "rollout"):
+        if not isinstance(event, CallEvent):
             continue
-        parent = executions.get(event["execution"])
+        parent = executions.get(event.execution)
         if parent is None:
             continue
-        identity = event["call"]
+        identity = event.call
         if identity not in calls:
             call = calls[identity] = {
-                "id": event["call"],
-                "execution": event["execution"],
-                "key": event.get("key") or event["kind"],
-                "kind": event["kind"],
+                "id": event.call,
+                "execution": event.execution,
+                "key": event.key or event.kind,
+                "kind": event.kind,
                 "status": "incomplete",
-                "started_at": event["at"],
+                "started_at": event.at,
                 "finished_at": None,
                 "trace_id": None,
                 "payload": None,
@@ -209,35 +219,39 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             }
             parent["calls"].append(call)
         call = calls[identity]
-        if event["type"] == "rollout":
+        if event.type == "rollout":
             rollouts = call["rollouts"]
-            if event["status"] == "started":
+            if event.status == "started":
                 rollouts.append(
                     {
-                        "trace_id": event["trace_id"],
+                        "trace_id": event.trace_id,
                         "status": "incomplete",
-                        "rollout": event["rollout"],
-                        "started_at": event["at"],
+                        "rollout": event.rollout,
+                        "started_at": event.at,
                     }
                 )
             else:
-                rollout = next(r for r in rollouts if r["rollout"] == event["rollout"])
-                rollout.update(status=event["status"], finished_at=event["at"], error=event.get("error"))
-            call["trace_id"] = event["trace_id"]
+                rollout = next(r for r in rollouts if r["rollout"] == event.rollout)
+                rollout.update(
+                    status=event.status,
+                    finished_at=event.at,
+                    error=f"{event.error.type}: {event.error.message}" if event.error else None,
+                )
+            call["trace_id"] = event.trace_id
             continue
-        if event["status"] != "started":
+        if event.status != "started":
             call.update(
-                status=event["status"],
-                finished_at=event["at"],
-                trace_id=event.get("trace_id") or call["trace_id"],
-                error=event.get("error"),
-                source_call=event.get("source_call"),
-                source_execution=event.get("source_execution"),
+                status=event.status,
+                finished_at=event.at,
+                trace_id=event.trace_id or call["trace_id"],
+                error=f"{event.error.type}: {event.error.message}" if event.error else None,
+                source_call=event.source_call,
+                source_execution=event.source_execution,
             )
-            record = records.get(event.get("source_call") or event["call"])
+            record = records.get(event.source_call or event.call)
             if record:
-                call["payload"] = _payload(record.get("payload"))
-    last_launch = max((i for i, e in enumerate(events) if e["type"] == "run_started"), default=-1)
+                call["payload"] = _payload(record.payload)
+    last_launch = max((i for i, e in enumerate(events) if e.type == "run_started"), default=-1)
     for node in nodes:
         if node["status"] == "incomplete" and execution_status == "running" and node["order"] > last_launch:
             node["status"] = "running"
@@ -309,8 +323,8 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             {
                 "id": group_id(unit),
                 "name": unit,
-                "stage": state.get("stage"),
-                "status": state.get("status"),
+                "stage": state.stage,
+                "status": state.status,
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
             }

@@ -66,14 +66,16 @@ def root(tmp_path):
     (tmp_path / "transitions.jsonl").write_text("".join(json.dumps({**defaults, **e}) + "\n" for e in events))
     calls = tmp_path / "calls/t"
     calls.mkdir(parents=True)
-    (calls / "result.json").write_text(json.dumps({"call": "producer", "execution": "first", "trace_id": "trace"}))
+    (calls / "result.json").write_text(
+        json.dumps({"key": "solve", "call": "producer", "execution": "first", "trace_id": "trace"})
+    )
     return tmp_path
 
 
 def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_path):
     run = root(tmp_path)
     (run / "units/t/state.json").write_text("incomplete operator edit")
-    assert unit_states(run)["t"]["status"] == "held"
+    assert unit_states(run)["t"].status == "held"
     result = project_flow(run, {"trace": (0, "episode"), "failed": (1, "failed-episode")})
     assert {u["name"] for u in result["units"]} == {"coordinator", "t"}
     assert result["status"] == "incomplete"
