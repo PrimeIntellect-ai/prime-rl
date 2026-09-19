@@ -14,6 +14,8 @@ Treat baseline collapse as a hypothesis, not a required outcome.
 - Model: `Qwen/Qwen3-30B-A3B-Instruct-2507`, revision recorded in `model.json`.
 - Training taskset: Terminal Lego (`PrimeIntellect/Terminal-Lego-15k`), with checkout revision archived before launch.
 - Held-out evaluation: Terminal Bench 2, 64 tasks at step 0 and every 25 steps.
+- Online evaluation uses the live inference pool; episodes may span weight refreshes.
+  Export each episode's recorded policy span. Use the fixed-checkpoint audit for frozen-policy comparisons.
 
 ## Method
 

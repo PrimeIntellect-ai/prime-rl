@@ -30,6 +30,8 @@ def read_episodes(run):
                     "run": run.name,
                     "env": summary["env"],
                     "step": work.get("step"),
+                    "policy_start": (work.get("policy") or {}).get("start"),
+                    "policy_end": (work.get("policy") or {}).get("end"),
                     "task": (episode.get("task") or {}).get("key"),
                     "episode": episode["id"],
                     "ok": bool(episode.get("ok")),
@@ -100,6 +102,12 @@ def main():
                 "step": step,
                 "episodes": len(episodes),
                 "failed_episodes": sum(not row["ok"] for row in episodes),
+                "episodes_spanning_policy_refresh": sum(
+                    row["policy_start"] is not None
+                    and row["policy_end"] is not None
+                    and row["policy_start"] != row["policy_end"]
+                    for row in episodes
+                ),
                 "scored_tasks": len(means),
                 "valid_task_reward_mean": sum(means) / len(means) if means else None,
                 "interval": task_interval(means),

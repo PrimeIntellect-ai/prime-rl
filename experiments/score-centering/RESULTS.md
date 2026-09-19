@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 09:26 UTC: IPO has one finite update and score centering has two. No robustness conclusion yet.
+Status at 2026-09-19 09:35 UTC: both arms have four finite updates. No robustness conclusion yet.
 
 ## Main comparison
 
@@ -21,12 +21,20 @@ See `PROTOCOL.md` for the estimator and fixed decision rules.
 
 ## Early current-run observations
 
-IPO step1: gradient norm0.4347 and mismatch KL0.0063.
-Centered step2: gradient norm0.0832 and mismatch KL0.0046.
-All observed updates are finite; both inference pools accept refreshed weights.
-These different batches and steps cannot establish a robustness difference.
-Centered step2 took3m39s, including3m03s waiting for rollouts and36s active work.
-API4 has avoided the earlier unhealthy-worker request storm so far; isolated health-check misses remain.
+At 09:35 UTC, both arms completed four finite optimizer updates.
+IPO step 4: gradient norm 0.1045, mismatch KL 0.0051.
+Centered step 4: gradient norm 0.0814, mismatch KL 0.0048.
+Both inference pools accept refreshed weights. No stability separation is established.
+Warm steps currently take roughly 1.5–4.5 minutes; most time is spent waiting for rollouts.
+API4 has avoided the earlier unhealthy-worker request storm so far. Intermittent health-check misses remain.
+Training errors are approximately 8% in each arm, mainly from the 900-second rollout deadline.
+
+Initial TB2 evaluation solved 2/64 IPO tasks and 1/64 centered tasks.
+IPO had 24 failed episodes; centered had 16. These sparse scores have substantial missingness.
+Five IPO episodes and six centered episodes spanned at least one live policy refresh.
+These online results are not frozen-checkpoint measurements.
+See `results/main-api4-initial-eval` for scores, errors, policy spans, and missing-reward bounds.
+The fixed-checkpoint Lego audit remains required before interpreting capability retention.
 
 ## Validation and smoke evidence
 

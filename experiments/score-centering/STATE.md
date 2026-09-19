@@ -6,6 +6,27 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+User resumed at 08:55 UTC and requested close monitoring. The earlier stop is revoked.
+
+- IPO: job 893, `ipo-1plus1-api4-seed42-r3`; inference node014, trainer node050.
+- Centered: job 891, `sc-1plus1-api4-seed42-r2`; inference node057, trainer node058.
+- Each arm uses one trainer and one inference node. Total experiment allocation: four nodes.
+- Both start from the pinned base weights. No checkpoint resume.
+- Adaptive concurrency starts at 512 and caps at 2048 per arm.
+- Runtime verifies four API processes per engine through the experimental per-rank override.
+- SC launch source: 9a282107e. IPO source: 8e2282999, adding UV_NO_SYNC and records only.
+- Latest main is a1822f7a0, fetched again before this restart and already merged.
+- At 09:35 UTC: both arms completed four finite updates. No numerical separation observed.
+- Both pools have avoided unhealthy-worker request failures. Isolated health-check misses remain.
+- Training errors are approximately 8% in each arm, mostly from 900-second rollout deadlines.
+- Initial TB2: IPO 2 solved, 24 errors; SC 1 solved, 16 errors (64 tasks each). Online episodes can span policy refreshes.
+- Monitor helper: `/tmp/score-centering-monitor.py`; snapshots: `results/monitor/snapshots.jsonl`.
+- Current IPO W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/f7acea587c9a4bd5aeb33be0d270fd65
+- Current SC W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/a5741426ea7d458783ceace65a5b1509
+- Both runs appear in the shared dashboard on port 7789. Do not stop that dashboard.
+
+### Restart history
+
 - Current active pair: IPO893 (`ipo-1plus1-api4-seed42-r3`, launched09:08:21 UTC, nodes014/050) and SC891 (`sc-1plus1-api4-seed42-r2`, launched09:04:46 UTC, nodes057/058). Source differs only in dependency-sync control and experiment records; scientific settings match. User requested close monitoring at09:08 UTC.
 
 - SC891 runtime confirms four API processes per engine. IPO892 inference failed in uv metadata resolution (GitHub wheel HTTP500) before model loading. Cancelled IPO892; relaunch IPO from scratch with UV_NO_SYNC=1 to use the installed environment. SC891 continues. This changes dependency resolution only, not the installed model/training stack.
