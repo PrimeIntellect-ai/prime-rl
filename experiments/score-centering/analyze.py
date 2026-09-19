@@ -81,7 +81,7 @@ def main():
     if args.max_step is not None:
         runs = {name: {step: row for step, row in rows.items() if step <= args.max_step} for name, rows in runs.items()}
     pattern = re.compile(
-        r"^budget/|^trainer/time/|^orchestrator/time/|reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/mean$|"
+        r"^budget/|^trainer/time/|^orchestrator/time/|reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/(?:mean|std|max)$|"
         r"optim/grad_norm$|is_masked/mean$|score_centering/.*/mean$|"
         r"num_output_tokens/mean$|truncat.*mean$|off_policy.*mean$|has_error/mean$|loss/(?:.*/)?mean$"
     )
@@ -134,7 +134,8 @@ def main():
         "train/agg/all/agent/reward/mean": "Training success (all arrivals)",
         "eval/terminal-bench-2/all/agent/avg@1": "Terminal Bench 2 success (inspect failures separately)",
         "optim/grad_norm": "Gradient norm",
-        "mismatch_kl/all/mean": "Trainer–sampler mismatch KL",
+        "mismatch_kl/all/mean": "Trainer–sampler mismatch KL (mean)",
+        "mismatch_kl/all/max": "Trainer–sampler mismatch KL (maximum token)",
         "entropy/all/mean": "Token entropy",
     }
     fig, axes = plt.subplots(len(overview), 2, figsize=(14, 3 * len(overview)), squeeze=False)

@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 10:56 UTC: both arms passed twenty-five finite updates and saved checkpoints. No robustness separation observed.
+Status at 2026-09-19 12:40 UTC: both arms passed fifty finite updates and saved checkpoints. No collapse observed.
 
 ## Main comparison
 
@@ -21,28 +21,40 @@ See `PROTOCOL.md` for the estimator and fixed decision rules.
 
 ## Early current-run observations
 
-At 10:56 UTC, both arms passed twenty-five finite optimizer updates.
-IPO step 25: gradient norm 0.1005, mismatch KL 0.0044.
-Centered step 25: gradient norm 0.0874, mismatch KL 0.0047.
-Across updates 1–25, mean mismatch KL is 0.00430 in both arms.
-Received training output tokens at update 25: IPO 21.03 million; centered 22.34 million.
-These token budgets include completed training rollouts, including unused arrivals.
-The exported metrics and logs contain no detected nonfinite values or numerical warnings.
-Matched curves stop both arms at update 25 and are in `results/main-api4-step25`.
-The earlier snapshot remains in `results/main-api4-step10`.
+Both arms completed fifty finite updates and continued training.
+No nonfinite metrics or numerical warnings were detected in the exported metrics and logs.
+Matched curves stop both arms at update 50, including mean and tail mismatch diagnostics.
+See `results/main-api4-step50`; earlier snapshots remain under `main-api4-step10` and `main-api4-step25`.
 
-Both step-25 checkpoints contain readable DCP metadata and orchestrator progress.
+| Measure | IPO | Centered |
+| --- | ---: | ---: |
+| Mean training success, updates 1–25 | 58.5% | 59.1% |
+| Mean training success, updates 26–50 | 55.6% | 59.5% |
+| Mean gradient norm, updates 26–50 | 0.119 | 0.073 |
+| Largest gradient norm, updates 1–50 | 0.530 | 0.272 |
+| Mean mismatch KL, updates 26–50 | 0.00435 | 0.00426 |
+| Largest per-token mismatch KL estimate | 189.65 | 202.13 |
+| Received training output tokens at update 50 | 42.78 million | 44.79 million |
+
+Training success is the mean of the logged per-step arrival metrics.
+Async completion and errors change the task mix. These figures are not a paired held-out estimate.
+The token budgets include completed training rollouts, including unused arrivals.
+Both arms encounter large rare-token mismatch despite low means.
+IPO gradient peaks at updates 39, 43, and 45 subsided on the following updates.
+Centered has smaller gradient peaks and a flatter reward window so far.
+Neither arm meets the predefined numerical-instability or reward-collapse criterion.
+These are exploratory observations from one seed, not evidence of the requested robustness separation.
+
+Both step-50 checkpoints contain readable DCP metadata and orchestrator progress.
 Each trainer checkpoint occupies 341.24 GiB. All 11,475 storage references fit their shard files.
 This validates metadata and file extents; no full restore was performed.
-The save took about 2.5 minutes per arm. Training continued after each save.
-Checkpoint checks are in `results/monitor/checkpoints-step25.json`.
+Training continued after each save. Checks are in `results/monitor/checkpoints-step50.json`.
+The same checks passed for step 25.
 
-Both inference pools accept refreshed weights. No stability separation is established.
-Warm steps have taken roughly 1.5–6 minutes; most time is spent waiting for rollouts.
-Across updates 2–9, rollout waits account for 77% of IPO time and 82% of centered time.
-API4 has avoided the earlier unhealthy-worker request storm so far. Intermittent health-check misses remain.
-Ten-minute training error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline.
-The step-25 scheduled TB2 evaluations finished at about 11:09 UTC.
+Both inference pools accept refreshed weights. API4 has avoided the earlier unavailable-worker storm so far.
+Intermittent health-check misses remain. Most trainer time is spent waiting for rollouts.
+Ten-minute error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline.
+The step-50 scheduled TB2 evaluations are running. Wait for all tasks before comparing scores.
 
 Initial TB2 evaluation solved 2/64 IPO tasks and 1/64 centered tasks.
 IPO had 24 failed episodes; centered had 16. These sparse scores have substantial missingness.
@@ -109,7 +121,7 @@ Both encountered repeated router health-check failures before any optimizer upda
 Both orchestrators completed forced cleanup before their allocations were cancelled.
 A matched restart with four API workers per engine passed config validation.
 The user cancelled the experiment before those replacement launchers submitted jobs.
-The API-worker change was unvalidated at that cancellation. The current pair has now completed twenty-five updates under load.
+The API-worker change was unvalidated at that cancellation. The current pair has now completed fifty updates under load.
 
 ## Pending
 
