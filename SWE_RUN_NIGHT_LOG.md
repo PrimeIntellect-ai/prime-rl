@@ -507,6 +507,11 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   `step_60`, `step_80`. At this pace step 200 lands around 20:00 and step 300 around 21:45.
 - 18:15:41 **step 100 checkpoint saved** (`Step 100 | 2m 13s`, `Mismatch KL 0.0060 | Peak Mem. 49.0 GiB`);
   `checkpoints/` holds `step_80`, `step_100`. 1h 50m from launch to step 100 versus ~4h 40m for DeepSeek.
+- 18:20-18:22 five `prime: failed to delete sandbox ...: HTTP 500: Failed to dispatch sandbox cleanup request`
+  warnings from the env server. Cleanup-only: provisioning had zero failures, sandboxes came up at 50-150/min,
+  the API listed 509 sandboxes in 4.5 s. Leaked sandboxes fall back on the 3600 s idle timeout.
+- 18:38:36 step 120 checkpoint saved (`Step 120 | 3m 29s`); `checkpoints/` holds `step_100`, `step_120`.
+  Steps 101-120: reward 0.66-0.88, turns 21-39, KL 0.0056-0.0062.
 
 ## Open questions for Garrett (GLM run)
 
