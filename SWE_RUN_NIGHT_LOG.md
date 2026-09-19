@@ -90,3 +90,53 @@ Expect the inference fleet to be ready around 03:40.
 - 03:24 replica 0 `Loading weights took 874 s`; 03:34 KV pool again 1,513,358 tokens / 11.55x.
 - 03:43:45 **`Policy inference pool ready after 36m 24s`** (the 1800 s default would have failed again by a
   wide margin). Trainer: `Broadcasting startup policy weights (v0) to inference engines`.
+- 03:43:56 during the v0 broadcast every inference rank logged
+  `CUDACachingAllocator ... memory allocation failed with OOM ... trying to allocate 13191086080 bytes (free: ~3.3 GB,
+  total: 150 GB)`. This is the allocator's warn-then-flush-cache-and-retry path, not a crash: all ranks then
+  logged `Receiving state dict 44/44`, `POST /update_weights 200 OK`, `UNPAUSED`. So the broadcast receive
+  buffer (~12.3 GiB) only fits after vLLM's cache is dropped, i.e. `gpu_memory_utilization = 0.85` leaves ~3 GB
+  of true headroom on a 150 GB card. **Hazard**: if a later `update_weights` OOMs for real, drop
+  `gpu_memory_utilization` to 0.80 (KV pool has 11.55x concurrency to spare). Not changing it pre-emptively.
+- 03:43:45 orchestrator: `Derived initial max inflight 92 - 12.1M KV cache tokens / 131.1K tokens per episode`,
+  so the configured `max_inflight = 512` is capped at 92 by the KV pool. 03:44:14 `Starting orchestrator loop`.
+- 03:44:14 inference: 2x per rank `DeepseekV4ScalingRotaryEmbedding: Failed to load weights`. Benign. It comes
+  from vLLM's reload path (`model_loader/reload/layerwise.py:268`): the broadcast state dict has no entries for
+  the rotary layer's precomputed tables, so the loader restores the layer's own tensors, which are derived from
+  config and identical. It did not appear at initial load. Expect it on every weight update.
+- 03:44:18 first sandboxes up (`aweaiteam/scaleswe:*` images), 63 running by 03:45. The `scaleswe` + prime
+  sandbox path works with this model and renderer, at least through provisioning.
+- 04:00:13 **orchestrator Step 1**: `15m 56s | Reward 0.6250 | Trainable 64/64 (100.0%) | Turns 25.6 | Branches 1.1
+  | Max Off-Policy 0 | Error 0.0% | Cancelled 0.0% | Truncation 0.0%`. The whole scaleswe + prime sandbox +
+  deepseek-v4 renderer path works end to end. Batch shipped to the trainer; waiting on trainer step 1 (Gate 2).
+- 04:03:50 first rollout failures: all 8 traces of one group (task 41) died with
+  `HarnessError: harness setup: RuntimeError: failed to prepare uv script: error: unexpected argument '--script' found`.
+  The `uv` baked into that task's sandbox image predates `uv run --script`, so the bash harness cannot set up.
+  Per-image, not systemic: 8 of the first 225 finished rollouts, the other 217 `stop=agent_completed`. The group
+  yields no signal and is dropped; left alone. Worth a taskset-level fix (pin/upgrade uv in the harness setup)
+  but not tonight.
+- 04:04:34 **Attempt 5 died**: the v1 weight update after trainer step 1 OOMed on all 64 inference ranks:
+  `torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 12.25 GiB. GPU 3 has a total capacity of
+  139.80 GiB of which 7.56 GiB is free. Including non-PyTorch memory, this process has 132.23 GiB memory in use.
+  Of the allocated memory 116.95 GiB is allocated by PyTorch` at `src/prime_rl/inference/vllm/worker/nccl.py:44`
+  (`receive_state_dict`, the per-dtype staging buffer). `POST /update_weights` returned 500, the engine cores
+  raised `RuntimeError: Worker failed`, and the trainer hung inside its NCCL send with no step line. Cancelled
+  04:06:20. Log: `logs/attempt_5/inference/node_*.log`.
+  - Arithmetic: 139.8 GiB card, `gpu_memory_utilization = 0.85` gives vLLM ~118.8 GiB, non-torch allocations
+    (NCCL, graphs) ~15.3 GiB, so ~7.5 GiB was free and the receive buffer needs 12.25 GiB. The v0 broadcast
+    at 03:43 only survived because the allocator could still flush ~10 GiB of cached blocks.
+  - The sender (`src/prime_rl/transports/weights/nccl.py:broadcast_state_dict`) streams one decoder layer at a
+    time, grouped by dtype; 12.25 GiB is one layer's bf16 expert weights, so the buffer size is inherent to
+    the transport and not configurable. Fix chosen: `gpu_memory_utilization = 0.75` (~19 GiB free). Rejected:
+    0.80 (leaves ~14 GiB, too thin against a 12.25 GiB buffer plus fragmentation) and patching the receiver to
+    sub-chunk (code change in a hot path, not for tonight).
+  - **Gate 2 mostly cleared**: the trainer finished forward, backward and the optimizer step on a 64x131k batch
+    at 8 nodes without OOM (step took ~4 min from batch arrival at 04:00 to the broadcast at 04:04). The
+    `Peak Mem.` number itself was never printed because the step log follows the broadcast.
+
+### Attempt 7 (SLURM job 837), submitted 04:08, 16 nodes
+
+Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe.toml`. Config at `f7ceea189`
+(`gpu_memory_utilization = 0.75`). Run-dir attempt 6 was the dry run.
+Nodes: `prime-nebius-puku-h200-gpu-[005-006,013,015-016,018,020,024,027,033,036,038,042,046,052,055]`.
+Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_7/`. Expect inference ready ~04:45, first
+trainer step ~05:05, and the v1 update right after is the moment of truth.
