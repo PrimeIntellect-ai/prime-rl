@@ -14,7 +14,8 @@ Read `STATE.md` for live job IDs and recovery steps.
 - `verify_math.py`: gradient checks and comparison with the official formula.
 - `verify_transport.py`: sampler-head transport and packing checks.
 - `analyze.py`: metric CSV, summary JSON, and PNG/PDF curves by update and token budget.
-- `eval_results.py`: task rewards, infrastructure errors, and task-level confidence intervals.
+- `eval_results.py`: task rewards, errors, task-level confidence intervals, and missing-reward bounds.
+- `select_holdout.py`: select the supplemental unseen-Lego audit after both training runs stop.
 
 Validate VM provisioning, tool execution, and scoring first:
 
@@ -57,3 +58,13 @@ Token-budget plots count output tokens from training episodes received by each o
 They include rejected and failed episodes when their tokens were recorded.
 They exclude unfinished episodes and tokens absent from failed responses.
 The CSV also records server generation totals, including evaluation tokens, from the latest metrics poll.
+
+After both main runs finish, create the score-independent Lego audit manifest:
+
+```bash
+uv run python experiments/score-centering/select_holdout.py outputs/score-centering/ipo-seed42 outputs/score-centering/sc-seed42 --output experiments/score-centering/results/main/heldout
+```
+
+The selector records the full dataset order and excludes every task in either dispatch log.
+Do not use a manifest generated while either run is still dispatching tasks.
+Evaluate the initial model and both final checkpoints on the selected tasks before interpreting capability retention.

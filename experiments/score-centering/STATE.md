@@ -80,3 +80,6 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Sources: /tmp/score-centering-reference at 7c56e9e; /tmp/score-centering-paper.html.
 - Dependency changes are archived in patches/; the submodule working trees remain dirty. Refresh patches after any further dependency changes.
 - Other cluster jobs are unrelated. Do not touch them.
+
+- Final audit export: checkpoints are DCP-only. After the training allocations finish, use GPU allocations for `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py <step_dir>`. Serve exported weights with the same online INT8/FP8 quantization and FP8 KV. Never allocate export/eval nodes on top of the current eight training nodes.
+- `select_holdout.py` was checked on completed smoke5 logs: 13825 source tasks, 72 excluded, 128 selected. That artifact is only a selector check, not the final audit set.
