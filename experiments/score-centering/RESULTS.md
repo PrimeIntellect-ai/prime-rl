@@ -1,13 +1,13 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 08:55 UTC: the user requested a fresh restart of both arms. No robustness conclusion yet.
+Status at 2026-09-19 08:57 UTC: both fresh API4 runs are starting. No robustness conclusion yet.
 
 ## Main comparison
 
 - Model: Qwen3-30B-A3B-Instruct-2507, pinned snapshot in `model.json`.
-- Source: experimental commit `4909f8e98`, with main `a1822f7a0` merged.
-- Baseline: current-main IPO, eps 0.3; SLURM 868, `ipo-1plus1-seed42`.
-- Treatment: published standalone score centering; SLURM 867, `sc-1plus1-seed42`.
+- Source: experimental commit `8f56c6326`, with main `a1822f7a0` merged.
+- Baseline: current-main IPO, eps 0.3; SLURM 888, `ipo-1plus1-api4-seed42`.
+- Treatment: published standalone score centering; SLURM 887, `sc-1plus1-api4-seed42`.
 - Each arm: one H200 trainer node plus one inference node, running concurrently.
 - Concurrency: adaptive, initial 512 episodes and maximum 2048 per arm.
 - Training: Terminal Lego, uniform task draws with seed 42, batch 128, group 8, 400 updates.

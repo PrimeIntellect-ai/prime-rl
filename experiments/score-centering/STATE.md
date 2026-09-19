@@ -6,6 +6,8 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- Fresh pair submitted at 08:57:24 UTC: IPO888 (`ipo-1plus1-api4-seed42`, nodes014/050), SC887 (`sc-1plus1-api4-seed42`, nodes057/058). Both RUNNING on two nodes each; source8f56c6326. Resolved configs confirm API4, initial512/max2048, IPOeps0.3 versus standalone SC, and resume=None.
+
 - USER RESUMED at 2026-09-19 08:55 UTC: launch both from scratch. The prior stop is revoked.
 - Fetched origin/main; a1822f7a0 remains latest and is already merged. Launch the validated 1+1/API4 configs with initial inflight512, cap2048, and 400 updates.
 
