@@ -80,6 +80,9 @@ env.agent.timeout.rollout = 900
 env.agent.timeout.scoring = 300
 env.agent.runtime.labels = ["score-centering-terminal"]
 env.agent.runtime.creates_per_min = 600
+curriculum.sampler.type = "difficulty_pool"
+curriculum.sampler.seed = 42
+curriculum.sampler.pools.uniform = { threshold = 1.0, weight = 1.0 }
 
 [orchestrator.eval]
 interval = 25

@@ -9,10 +9,9 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - User reported VM service recovery and resumed the experiment at 2026-09-19 05:24 UTC.
 - Recovery uv eval completed: Lego 2/2 solved; TB2 1/2 solved; no terminal errors. Both executed tools and scored. One TB2 rollout reached max_turns; hosted model transient429 retried.
 - New main commit merged by fast-forward: 8c2847721 (example configs only).
-- Concurrent smoke4 jobs: IPO849, SC850, four nodes each (eight total). SC completed3 finite updates; IPO still running. Logs under outputs/score-centering/smoke4-{ipo,sc}.
+- Concurrent smoke4 jobs: IPO849, SC850, four nodes each (eight total). Both completed three finite updates and exited successfully. Logs under outputs/score-centering/smoke4-{ipo,sc}.
 - Both arms report occasional NaN serving responses before first updates. These are excluded provider failures, not evidence of training collapse.
-- Next diagnostic pair: smoke5 with kv-fp8.toml, otherwise unchanged quantized weights. smoke-fast.toml saves only the final checkpoint; smoke4 verified intermediate saves. Require finite serving before main comparison.
-- After successful VM commands and scoring, launch smoke4-ipo and smoke4-sc together (four nodes each).
+- Diagnostic pair smoke5 started at 05:59 UTC: SC856 and IPO857, four nodes each. Both use kv-fp8.toml, otherwise unchanged quantized weights. smoke-fast.toml saves only the final checkpoint; smoke4 verified intermediate saves. Check serving before the main comparison.
 - Previous outage blocker audit resets on this user-requested resumption.
 
 ### Implementation and prior attempts
@@ -43,8 +42,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Analysis exporter captures numerical warnings omitted from sanitized metric files.
 - Raw SDK smoke jobs cleaned up. One Lego image never became ready; a second reached RUNNING but had no command result before cleanup.
 - VM sandboxes reject region overrides; eu-west test returned HTTP 400. Keep default region.
-- All experiment GPU jobs remain stopped. Next training launch uses fresh smoke4 names after eval validates.
-- Current run dirs: outputs/score-centering/smoke3-ipo and smoke3-sc.
+- All outage-era experiment jobs were stopped before the recovery preflight.
 - Dedicated dashboard: http://localhost:7790; process id in dashboard.pid.
 - Smoke2 validated all 12 endpoints and INT8 expert kernels / INT4 KV cache.
 - Live request returned valid top128 IDs and probabilities for all eight generated tokens.
@@ -55,7 +53,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Monitor concurrent smoke4-ipo and smoke4-sc through three updates, checkpointing, and quantized weight refresh.
+1. Monitor concurrent smoke5-ipo and smoke5-sc through three updates. Compare serving errors with smoke4 before choosing the main KV cache mode.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Launch matched 400-update runs after smoke succeeds. Use fresh run names if needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules.
@@ -75,5 +73,5 @@ Do not merge or open a PR unless asked. No subagents are authorized.
   Run temporary scripts with `uv run --no-sync python -P ...`, or keep scripts here.
 - Model snapshot downloaded and pinned by absolute path in common.toml.
 - Sources: /tmp/score-centering-reference at 7c56e9e; /tmp/score-centering-paper.html.
-- Dependency changes remain uncommitted. Refresh patches/ before committing or reporting completion.
-- Other user jobs 761 and 779 are unrelated. Do not touch them.
+- Dependency changes are archived in patches/; the submodule working trees remain dirty. Refresh patches after any further dependency changes.
+- Other cluster jobs are unrelated. Do not touch them.

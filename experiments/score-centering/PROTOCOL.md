@@ -48,7 +48,12 @@ No trainer optimization or reduction precision settings change.
 
 Run both arms concurrently. Each arm uses one H200 trainer node and three inference nodes.
 Never exceed eight experiment nodes, including simultaneous preflight allocations.
-Use the shared checkpoint, task order, sampling parameters, and run length.
+Use the shared checkpoint, task draw sequence, sampling parameters, and run length.
+Sample Lego tasks uniformly with replacement using seed 42 in both arms.
+Use the existing pool sampler with one pool of weight 1; rewards cannot alter sampling.
+This avoids sequential task difficulty changes that could mimic a reward collapse.
+Fix this choice before the main runs; smoke runs used sequential tasks.
+Async completion and admission can still change which draws enter each optimizer step.
 Use 32K context, batch 128, group 8, AdamW at 1e-6, and at most four stale steps.
 Use temperature 1 with no top-p, top-k, or min-p truncation.
 Disable router replay in both arms.

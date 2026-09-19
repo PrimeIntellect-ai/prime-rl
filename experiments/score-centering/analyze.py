@@ -44,7 +44,7 @@ def main():
     pattern = re.compile(
         r"reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/mean$|"
         r"optim/grad_norm$|is_masked/mean$|score_centering/.*/mean$|"
-        r"num_output_tokens/mean$|truncat.*mean$|off_policy.*mean$|has_error/mean$|loss/.*/mean$"
+        r"num_output_tokens/mean$|truncat.*mean$|off_policy.*mean$|has_error/mean$|loss/(?:.*/)?mean$"
     )
     keys = sorted({key for rows in runs.values() for row in rows.values() for key in row if pattern.search(key)})
     summary = {}
