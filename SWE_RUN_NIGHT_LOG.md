@@ -159,6 +159,19 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   - Step 1 wall time includes the first-call TileLang / torch.compile warmup, so 18 min is an upper bound.
   - Mismatch KL 0.0249 is in line with the FP8 measurement in `FP8_MISMATCH_RESULTS.md` (0.0307 at lr = 0),
     i.e. above the 0.015 bar that document discusses. Expected consequence of the FP8 decision, not a bug.
+- 05:04:29 trainer Step 2: `2m 8s | Peak Mem. 71.8 GiB | Mismatch KL 0.0277`; Step 3 `Peak Mem` similar.
+- 05:12 **Gate 3 (who waits on whom)** from `monitors/file/metrics.jsonl`, steps 1-3:
+
+  | step | trainer time/step | wait_for_batch | forward_backward | broadcast_weights | orch time/step | orch wait_for_policy |
+  |---|---|---|---|---|---|---|
+  | 1 | 1104 s | 799 s | 241 s | 37 s | 957 s | 0 |
+  | 2 | 128 s | 12 s | 93 s | 22 s | 293 s | 0 |
+  | 3 | 306 s | 169 s | 112 s | 24 s | 285 s | 0 |
+
+  Rollout-bound: the trainer spends most of each step waiting for a batch and the orchestrator never waits on
+  the policy. Steady state is ~5 min per step, set by the 64-episode rollout collection. Mean episode length is
+  10-27k tokens (`num_total_tokens/mean`), so 131k is a ceiling, not the typical case. At this pace step 20
+  (first checkpoint) lands around 06:35.
 
 ## Open questions for Garrett
 
