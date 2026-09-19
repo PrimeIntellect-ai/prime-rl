@@ -1,11 +1,13 @@
 # NGU SWE experiment
 
-Train `PrimeIntellect/GLM-4.5-Air-Scaleswe` on the frozen 1,000 SWE-rebench tasks. Evaluate SWE-bench Verified and a disjoint 500-task SWE-rebench holdout every 20 steps.
+Train `PrimeIntellect/GLM-4.5-Air-Scaleswe` on the 800 SWE-rebench tasks, 200 per difficulty tier. Evaluate SWE-bench Verified and a disjoint 500-task SWE-rebench holdout every 20 steps.
 
 | Config | Sampling | Batch target |
 |---|---|---|
 | `train-static.toml` | K=8 (48 complete groups) | 384 |
 | `train-ngu.toml` | Start at K=4; add 4 after an all-failure round with probability .8 | 384 |
+
+The balanced manifests are frozen once avg@8 screening reaches all four quotas.
 
 Both use 2 trainer + 6 TP8/EP inference H200 nodes, Muon LR 3e-6, default IPO (.3 epsilon, zero KL), and W&B project `ngu-ablations`. Both use `max_off_policy_steps=64`. Both use standard fixed-size batching; compare equal GPU-hours.
 

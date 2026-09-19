@@ -17,36 +17,36 @@ env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-1k-easy"
+name = "swerebench-balanced800-easy"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/easy.json"
+env.taskset.manifest = "tools/ngu/balanced-easy.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-1k-medium"
+name = "swerebench-balanced800-medium"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/medium.json"
+env.taskset.manifest = "tools/ngu/balanced-medium.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-1k-hard"
+name = "swerebench-balanced800-hard"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/hard.json"
+env.taskset.manifest = "tools/ngu/balanced-hard.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-1k-extra-hard"
+name = "swerebench-balanced800-extra-hard"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/extra-hard.json"
+env.taskset.manifest = "tools/ngu/balanced-extra-hard.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600

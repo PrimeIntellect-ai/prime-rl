@@ -1,16 +1,16 @@
-# NGU on the frozen 1,000-task profile; eight H200 nodes.
+# NGU on the balanced 800-task set; eight H200 nodes.
 max_steps = 10000
 seq_len = 131072
 output_dir = "outputs/ngu-swe"
 
 [run]
-name = "glm45air-swe-ngu"
+name = "glm45air-swe-ngu-balanced800"
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/mika-ngu-train/triton"
 
 [slurm]
-job_name = "glm45air-swe-ngu"
+job_name = "glm45air-swe-ngu-balanced800"
 partition = "all"
 
 [deployment]
@@ -22,7 +22,7 @@ num_infer_replicas = 6
 
 [monitors.wandb]
 project = "ngu-ablations"
-name = "glm45air-swerebench-ngu"
+name = "glm45air-swerebench-ngu-balanced800"
 
 [weight_broadcast]
 type = "nccl"
@@ -76,9 +76,9 @@ name = "glm-4.5"
 thinking_retention = "all"
 
 [[orchestrator.train.source]]
-name = "swerebench-1k"
+name = "swerebench-balanced800"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/sample-1000.json"
+env.taskset.manifest = "tools/ngu/balanced-800.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
