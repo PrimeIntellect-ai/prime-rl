@@ -18,6 +18,7 @@ class PrimeLmOutput(TypedDict, total=False):
     logprobs: Tensor | None
     entropy: Tensor | None
     loss: Tensor | None
+    score_correction: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -31,6 +32,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
         loss=output.get("loss"),
+        score_correction=_float_and_contiguous(output.get("score_correction")),
     )
 
 
@@ -45,9 +47,31 @@ class FusedOutputLinear(torch.nn.Linear):
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
+        score_head_ids: Tensor | None = None,
+        score_head_logprobs: Tensor | None = None,
+        score_ipo_eps: float | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
         assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
+
+        if score_head_ids is not None:
+            from prime_rl.trainer.rl.score_centering import chunked_score_logprobs
+
+            if sampling_mask is not None:
+                raise ValueError("Score centering requires untruncated sampling")
+            if score_head_logprobs is None:
+                raise ValueError("Score centering requires sampler logprobs")
+            logprobs, entropy, correction = chunked_score_logprobs(
+                hidden_states,
+                self.weight,
+                labels,
+                temperature,
+                score_head_ids,
+                score_head_logprobs,
+                self.chunk_size,
+                score_ipo_eps,
+            )
+            return PrimeLmOutput(logprobs=logprobs, entropy=entropy, score_correction=correction)
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
@@ -327,6 +351,9 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
+        score_head_ids: Tensor | None = None,
+        score_head_logprobs: Tensor | None = None,
+        score_ipo_eps: float | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -345,12 +372,21 @@ def _patch_model_forward(model: nn.Module) -> None:
             slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
         )
 
+        score_kwargs = {}
+        if score_head_ids is not None:
+            score_kwargs = dict(
+                score_head_ids=score_head_ids[:, slice_indices],
+                score_head_logprobs=score_head_logprobs[:, slice_indices],
+                score_ipo_eps=score_ipo_eps,
+            )
+
         # Pass through the wrapped lm_head
         return self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
             sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
+            **score_kwargs,
         )
 
     # Bind the new forward to the model

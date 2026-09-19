@@ -567,6 +567,9 @@ class CheckpointConfig(BaseConfig):
 
 
 class IPOLossConfig(BaseConfig):
+    score_centering: bool = False
+    """Center the masked importance-weighted score using logged sampler top-k probabilities."""
+
     type: Literal["ipo"] = "ipo"
     eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
@@ -576,6 +579,12 @@ class IPOLossConfig(BaseConfig):
 
     kl_tau: float = Field(0.0, ge=0)
     """Temperature for the KL term."""
+
+
+class ScoreCenteringLossConfig(BaseConfig):
+    type: Literal["score_centering"] = "score_centering"
+    adv_tau: float = Field(1.0, ge=0)
+    kl_tau: float = Field(0.0, ge=0)
 
 
 class IcePopLossConfig(BaseConfig):
@@ -607,7 +616,9 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[
+    IPOLossConfig | ScoreCenteringLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):

@@ -1,0 +1,7 @@
+{
+  "dataset": "PrimeIntellect/Terminal-Lego-15k",
+  "path": "/home/mika/.cache/huggingface/terminal-lego-git/PrimeIntellect--Terminal-Lego-15k",
+  "revision": "92e6b5f577610cec9b040250a94ce66cfce24839",
+  "first_task": "task_00000",
+  "first_image": "terminal-lego/000000:latest"
+}

@@ -1,0 +1,2 @@
+[inference.vllm]
+kv_cache_dtype = "fp8_per_token_head"

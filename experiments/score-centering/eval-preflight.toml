@@ -1,0 +1,35 @@
+num_examples = 2
+group_size = 1
+output_dir = "outputs/score-centering"
+
+[concurrency]
+min_inflight = 2
+max_inflight = 2
+
+[sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[[source]]
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["score-centering-terminal", "score-centering-eval-preflight"]
+env.agent.runtime.creates_per_min = 600
+env.agent.max_turns = 24
+env.agent.max_output_tokens = 16384
+env.agent.timeout.rollout = 900
+env.agent.timeout.scoring = 300
+
+[[source]]
+name = "terminal-bench-2"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["score-centering-terminal", "score-centering-eval-preflight"]
+env.agent.runtime.creates_per_min = 600
+env.agent.max_turns = 24
+env.agent.max_output_tokens = 16384
+env.agent.timeout.rollout = 900
+env.agent.timeout.scoring = 300

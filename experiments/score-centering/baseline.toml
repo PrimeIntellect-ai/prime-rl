@@ -1,0 +1,9 @@
+[run]
+name = "ipo-eps03-seed42"
+
+[slurm]
+job_name = "sc-baseline"
+
+[trainer.loss]
+score_centering = false
+eps = 0.3

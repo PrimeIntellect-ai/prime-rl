@@ -1,0 +1,9 @@
+[run]
+name = "ipo-sc-eps03-seed42"
+
+[slurm]
+job_name = "sc-centered"
+
+[trainer.loss]
+score_centering = true
+eps = 0.3

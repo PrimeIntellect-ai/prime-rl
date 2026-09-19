@@ -133,6 +133,28 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
+def _score_heads(branch):
+    heads = [node for node in branch.nodes if node.score_head_ids is not None]
+    if not heads:
+        return None, None
+    k = heads[0].score_head_ids.shape[1]
+    ids = np.full((len(branch.token_ids), k), -1, dtype=np.int32)
+    logprobs = np.zeros(ids.shape, dtype=np.float32)
+    offset = 0
+    for node in branch.nodes:
+        positions = np.flatnonzero(node.mask) + offset
+        if len(positions):
+            if node.score_head_ids is None or node.score_head_ids.shape != (len(positions), k):
+                raise ValueError("Missing or misaligned score-centering evidence")
+            ids[positions] = node.score_head_ids
+            logprobs[positions] = node.score_head_logprobs
+        offset += len(node.token_ids)
+    return (
+        EncodedTensor(dtype="int32", shape=list(ids.shape), data=ids.tobytes()),
+        EncodedTensor(dtype="float32", shape=list(logprobs.shape), data=logprobs.tobytes()),
+    )
+
+
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
@@ -149,6 +171,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
+        score_ids, score_logprobs = _score_heads(branch)
         mm_kwargs: dict[str, EncodedTensor] | None = None
         mmd = branch.multi_modal_data
         if mmd is not None:
@@ -156,6 +179,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
+                score_head_ids=score_ids,
+                score_head_logprobs=score_logprobs,
                 mask=mask,
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group

@@ -378,6 +378,19 @@ def train(config: TrainerConfig):
 
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
+            score_ids = micro_batch.get("score_head_ids")
+            score_logprobs = micro_batch.get("score_head_logprobs")
+            if score_ids is not None:
+                score_ids = score_ids.to("cuda")
+                score_logprobs = score_logprobs.to("cuda")
+                if bool((loss_mask & (score_ids < 0).all(-1)).any()):
+                    raise ValueError("Missing score-centering evidence on a trainable token")
+                score_ids = shift_tensor_left(score_ids, pad_value=-1)
+                score_logprobs = shift_tensor_left(score_logprobs)
+                if cp_enabled:
+                    score_ids = shard_for_cp(score_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+                    score_logprobs = shard_for_cp(score_logprobs, cp_rank=cp_rank, cp_world_size=cp_size)
+
             labels = shift_tensor_left(input_ids)
             if sampling_mask is not None:
                 # Sampling masks ride at the sampled token's own position (like inference
@@ -446,6 +459,11 @@ def train(config: TrainerConfig):
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
+                    score_head_ids=score_ids,
+                    score_head_logprobs=score_logprobs,
+                    score_ipo_eps=(
+                        config.loss.eps if config.loss.type == "ipo" and config.loss.score_centering else None
+                    ),
                 )
 
             if out.get("logprobs") is None:
@@ -464,6 +482,18 @@ def train(config: TrainerConfig):
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+
+            correction = out.get("score_correction")
+            if correction is not None and cp_enabled:
+                correction = gather_for_cp(correction, cp_group)
+            if correction is None and (
+                config.loss.type == "score_centering" or (config.loss.type == "ipo" and config.loss.score_centering)
+            ):
+                if bool(loss_mask.any()):
+                    raise ValueError("Score-centering batch has no sampler evidence")
+                correction = out["logprobs"] * 0.0
+            if correction is not None:
+                correction = shift_tensor_right(correction)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -489,6 +519,7 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                score_correction=correction.squeeze(0).split(sequence_lengths) if correction is not None else None,
             )
 
             # Backward pass
@@ -500,6 +531,12 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
+            if correction is not None and micro_batch.get("score_head_ids") is not None:
+                tensors["score_centering/correction"].append(correction[loss_mask].detach().cpu())
+                head_logq = micro_batch["score_head_logprobs"]
+                head_ids = micro_batch["score_head_ids"]
+                head_mass = torch.where(head_ids >= 0, head_logq.exp(), 0.0).sum(-1)
+                tensors["score_centering/head_mass"].append(head_mass[micro_batch["loss_mask"]])
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]

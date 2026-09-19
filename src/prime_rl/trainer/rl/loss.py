@@ -6,7 +6,13 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    LossConfig,
+    ScoreCenteringLossConfig,
+)
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -27,6 +33,7 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    score_correction: Tensor | None = None
 
 
 @dataclass
@@ -165,6 +172,10 @@ class IPOLoss:
         pg_loss = keep_mask * advantages * importance_ratio
         kl_loss = loss_mask * log_importance_ratio**2
         per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+        if loss_config.score_centering:
+            if inputs.score_correction is None:
+                raise ValueError("Score centering requires sampler top-k evidence and the chunked LM head")
+            per_token_loss = per_token_loss + loss_mask * advantages * inputs.score_correction
         if inputs.loss_weights is not None:
             per_token_loss = per_token_loss * inputs.loss_weights
         loss = per_token_loss.sum()
@@ -176,6 +187,25 @@ class IPOLoss:
         }
 
         return LossOutputs(loss=loss, metrics=metrics)
+
+
+class ScoreCenteringLoss:
+    """Unweighted score centering with the proportional-tail approximation."""
+
+    def __init__(self, config: ScoreCenteringLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        if inputs.score_correction is None:
+            raise ValueError("Score centering requires sampler top-k evidence")
+        logp = inputs.trainer_logprobs
+        advantage = self.config.adv_tau * inputs.advantages
+        per_token_loss = -advantage * (logp - inputs.score_correction)
+        log_ratio = logp - inputs.inference_logprobs
+        per_token_loss = per_token_loss + self.config.kl_tau * log_ratio.square()
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+        return LossOutputs(loss=(inputs.loss_mask * per_token_loss).sum(), metrics={})
 
 
 class IcePopLoss:
@@ -296,6 +326,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return CustomLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
+        case ScoreCenteringLossConfig():
+            return ScoreCenteringLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
         case _:
@@ -315,6 +347,7 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    score_correction: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -353,6 +386,8 @@ def compute_loss(
     all_metrics: dict[str, list[Tensor]] = {}
 
     n = len(trainer_logprobs)
+    if score_correction is None:
+        score_correction = [None] * n
     if ref_logprobs is None:
         ref_logprobs = [None] * n
     if rl_weights is None:
@@ -375,7 +410,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, correction in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -384,6 +419,7 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        score_correction,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -394,6 +430,7 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                score_correction=correction,
             )
 
         if rl_w is None:

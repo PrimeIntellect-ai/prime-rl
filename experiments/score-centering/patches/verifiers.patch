@@ -1,0 +1,86 @@
+diff --git a/verifiers/v1/clients/train.py b/verifiers/v1/clients/train.py
+index 53d0dd34..ef409638 100644
+--- a/verifiers/v1/clients/train.py
++++ b/verifiers/v1/clients/train.py
+@@ -156,6 +156,7 @@ def response_from_generate(
+             prompt_ids=prompt_ids,
+             completion_ids=completion_ids,
+             completion_logprobs=result.get("completion_logprobs") or [],
++            score_head=result.get("score_head"),
+             message_spans=message_spans,
+             is_content=attribution.is_content if attribution is not None else None,
+             multi_modal_data=result.get("multi_modal_data"),
+diff --git a/verifiers/v1/graph.py b/verifiers/v1/graph.py
+index ee4d649b..4038e2e5 100644
+--- a/verifiers/v1/graph.py
++++ b/verifiers/v1/graph.py
+@@ -165,6 +165,9 @@ class MessageNode(BaseModel):
+     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
+     """
+ 
++    score_head_ids: SkipJsonSchema[np.ndarray | None] = None
++    score_head_logprobs: SkipJsonSchema[np.ndarray | None] = None
++
+     model_config = ConfigDict(arbitrary_types_allowed=True)
+ 
+     @field_serializer(
+@@ -227,12 +230,14 @@ class MessageNode(BaseModel):
+             },
+         )
+ 
+-    @field_serializer("routed_experts")
++    @field_serializer("routed_experts", "score_head_ids", "score_head_logprobs")
+     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
+         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
+         return None if arr is None else _encode_ndarray(arr)
+ 
+-    @field_validator("routed_experts", mode="before")
++    @field_validator(
++        "routed_experts", "score_head_ids", "score_head_logprobs", mode="before"
++    )
+     @classmethod
+     def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
+         if value is None or isinstance(value, np.ndarray):
+@@ -919,6 +924,17 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
+         trace, assistant_id, tokens.sampling_mask if tokens else None
+     )
+ 
++    if tokens is not None and tokens.score_head is not None:
++        node = trace.nodes[assistant_id]
++        if len(tokens.score_head) != sum(node.mask):
++            raise ValueError("Score-centering rows must align with sampled tokens")
++        node.score_head_ids = np.asarray(
++            [row[0] for row in tokens.score_head], dtype=np.int32
++        )
++        node.score_head_logprobs = np.asarray(
++            [row[1] for row in tokens.score_head], dtype=np.float32
++        )
++
+     return assistant_id
+ 
+ 
+diff --git a/verifiers/v1/trace.py b/verifiers/v1/trace.py
+index e60077e9..845cd88e 100644
+--- a/verifiers/v1/trace.py
++++ b/verifiers/v1/trace.py
+@@ -46,6 +46,8 @@ EXCLUDE_FIELDS: dict = {
+             "multi_modal_data",
+             "routed_experts",
+             "sampling_mask",
++            "score_head_ids",
++            "score_head_logprobs",
+         }
+     }
+ }
+diff --git a/verifiers/v1/types.py b/verifiers/v1/types.py
+index 4f97e95b..1763aeef 100644
+--- a/verifiers/v1/types.py
++++ b/verifiers/v1/types.py
+@@ -218,6 +218,7 @@ class TurnTokens(BaseModel):
+     prompt_ids: list[int] = Field(default_factory=list)
+     completion_ids: list[int] = Field(default_factory=list)
+     completion_logprobs: list[float] = Field(default_factory=list)
++    score_head: Any = Field(default=None, exclude=True)
+ 
+     # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
+     # consumed by the turn's `commit` to attribute tokens per message, then dropped.

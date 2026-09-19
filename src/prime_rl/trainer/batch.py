@@ -411,6 +411,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    score_heads = {}
+    for name in ("score_head_ids", "score_head_logprobs"):
+        value = getattr(training_example, name)
+        if value is not None:
+            n = min(len(input_ids), seq_len)
+            score_heads[name] = EncodedTensor(value.dtype, [n, value.shape[1]], value.data[: n * value.shape[1] * 4])
 
     if len(input_ids) > seq_len:
         # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
@@ -486,6 +492,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        **score_heads,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -599,6 +606,23 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    score_heads = {}
+    for name in ("score_head_ids", "score_head_logprobs"):
+        values = [getattr(sample, name) for sample in bin_content.samples]
+        present = [v for v in values if v is not None]
+        if present:
+            k = present[0].shape[1]
+            parts = []
+            for sample, value in zip(bin_content.samples, values):
+                if value is None:
+                    fill = -1 if name == "score_head_ids" else 0
+                    parts.append(np.full((len(sample.input_ids), k), fill, dtype=present[0].dtype).tobytes())
+                else:
+                    assert value.shape == [len(sample.input_ids), k]
+                    parts.append(value.data)
+            score_heads[name] = EncodedTensor(
+                present[0].dtype, [sum(len(s.input_ids) for s in bin_content.samples), k], b"".join(parts)
+            )
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
@@ -660,6 +684,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        **score_heads,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -791,6 +816,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         _pad_routed_experts(micro_batch, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
+    for name in ("score_head_ids", "score_head_logprobs"):
+        value = getattr(micro_batch, name)
+        if value is not None:
+            fill = -1 if name == "score_head_ids" else 0
+            value.data += np.full((padding_size, value.shape[1]), fill, dtype=value.dtype).tobytes()
+            value.shape[0] += padding_size
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -856,6 +887,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
+    dummy.score_head_ids = None
+    dummy.score_head_logprobs = None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None

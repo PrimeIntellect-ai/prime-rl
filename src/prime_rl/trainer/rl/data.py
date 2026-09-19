@@ -46,6 +46,9 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
+    score_head_ids: Tensor | None
+    score_head_logprobs: Tensor | None
+
     # Generic multimodal kwargs — flat dict matching the model's forward
     # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
     # Qwen3-VL; ``{"pixel_values": ...}`` for Gemma3-VL). The trainer
@@ -232,7 +235,18 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+        score_heads = {}
+        for name in ("score_head_ids", "score_head_logprobs"):
+            value = getattr(micro_batch, name)
+            score_heads[name] = (
+                torch.frombuffer(bytearray(value.data), dtype=_torch_dtype(value.dtype))
+                .reshape(value.shape)
+                .unsqueeze(0)
+                if value is not None
+                else None
+            )
         return TensorMicroBatch(
+            **score_heads,
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),

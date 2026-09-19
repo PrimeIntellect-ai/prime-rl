@@ -1,0 +1,19 @@
+max_steps = 3
+
+[slurm]
+time = "02:00:00"
+
+[ckpt]
+interval = 1
+keep_last = 1
+
+[orchestrator]
+batch_size = 32
+group_size = 4
+
+[orchestrator.concurrency]
+initial_inflight = 32
+max_inflight = 48
+
+[orchestrator.eval]
+num_examples = 4

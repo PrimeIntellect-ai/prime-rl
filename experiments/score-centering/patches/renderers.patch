@@ -1,0 +1,63 @@
+diff --git a/renderers/client.py b/renderers/client.py
+index 468b466..5651fe7 100644
+--- a/renderers/client.py
++++ b/renderers/client.py
+@@ -10,12 +10,12 @@ import asyncio
+ import json
+ import logging
+ import math
++import os
+ from collections.abc import Mapping
+ from typing import Any, cast
+ 
+ import httpx
+ from openai import AsyncOpenAI
+-
+ from renderers.base import (
+     Message,
+     MultiModalData,
+@@ -309,7 +309,8 @@ async def generate(
+ 
+     sp: dict[str, Any] = dict(sampling_params or {})
+     sp["stop_token_ids"] = stop_token_ids
+-    sp["logprobs"] = 1
++    score_topk = int(os.environ.get("PRL_SCORE_TOPK", "0"))
++    sp["logprobs"] = score_topk + 1 if score_topk else 1
+     sp.setdefault("skip_special_tokens", False)
+ 
+     body: dict[str, Any] = {
+@@ -366,6 +367,26 @@ async def generate(
+         )
+ 
+     completion_logprobs = _parse_completion_logprobs(choice, completion_ids)
++    score_head = None
++    if score_topk:
++        score_head = []
++        for row in choice["logprobs"]["content"]:
++            head = sorted(
++                row["top_logprobs"], key=lambda item: item["logprob"], reverse=True
++            )[:score_topk]
++            if len(head) != score_topk:
++                raise MalformedGenerateResponseError(
++                    "Incomplete score-centering top-k logprobs"
++                )
++            ids = [int(item["token"].removeprefix("token_id:")) for item in head]
++            values = [float(item["logprob"]) for item in head]
++            if len(set(ids)) != len(ids) or not all(
++                math.isfinite(x) and x <= 0 for x in values
++            ):
++                raise MalformedGenerateResponseError(
++                    "Invalid score-centering top-k logprobs"
++                )
++            score_head.append((ids, values))
+ 
+     parsed = renderer.parse_response(
+         completion_ids,
+@@ -401,6 +422,7 @@ async def generate(
+         "mm_placeholders": mm_placeholders,
+         "completion_ids": list(completion_ids),
+         "completion_logprobs": completion_logprobs,
++        "score_head": score_head,
+         "content": parsed.content,
+         "reasoning_content": parsed.reasoning_content,
+         "tool_calls": parsed.tool_calls,

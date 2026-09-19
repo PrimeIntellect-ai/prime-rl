@@ -1,0 +1,127 @@
+max_steps = 400
+seq_len = 32768
+output_dir = "outputs/score-centering"
+
+[env_vars]
+PRL_SCORE_TOPK = "128"
+TRITON_CACHE_DIR = "/tmp/score-centering-triton"
+OMP_NUM_THREADS = "8"
+
+[model]
+name = "/home/mika/.cache/huggingface/hub/models--Qwen--Qwen3-30B-A3B-Instruct-2507/snapshots/0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe"
+
+[slurm]
+partition = "all"
+time = "2-00:00:00"
+cleanup_grace_period = 120
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 3
+
+[weight_broadcast]
+type = "nccl"
+timeout = 1800
+
+[ckpt]
+interval = 25
+keep_last = 2
+
+[monitors.wandb]
+project = "score-centering-terminal"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 2
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 128
+
+[trainer.model.ac]
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[trainer.loss]
+type = "ipo"
+adv_tau = 1.0
+kl_tau = 0.001
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+max_off_policy_steps = 4
+
+[orchestrator.concurrency]
+initial_inflight = 128
+max_inflight = 192
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 4096
+
+[[orchestrator.train.source]]
+name = "terminal-lego"
+env.taskset.id = "terminal-lego"
+env.agent.harness.id = "bash"
+env.agent.max_turns = 24
+env.agent.max_output_tokens = 16384
+env.agent.timeout.rollout = 900
+env.agent.timeout.scoring = 300
+env.agent.runtime.labels = ["score-centering-terminal"]
+env.agent.runtime.creates_per_min = 600
+
+[orchestrator.eval]
+interval = 25
+num_examples = 64
+group_size = 1
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = -1
+max_completion_tokens = 4096
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.max_turns = 24
+env.agent.max_output_tokens = 16384
+env.agent.timeout.rollout = 900
+env.agent.timeout.scoring = 300
+env.agent.runtime.labels = ["score-centering-terminal"]
+env.agent.runtime.creates_per_min = 600
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/score-centering-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/score-centering-flashinfer"
+
+[inference.vllm]
+tool_call_parser = "hermes"
+enable_auto_tool_choice = true
+quantization = "fp8_per_block"
+tensor_parallel_size = 4
+max_model_len = 32768
+max_num_seqs = 128
+max_num_batched_tokens = 8192
+max_logprobs = 129
+kv_cache_dtype = "int4_per_token_head"
+seed = 42
+
+[inference.vllm.attention_config]
+backend = "TRITON_ATTN"
+
+[inference.vllm.quantization_config]
+linear = "fp8_per_tensor"
+moe = "int8_per_channel_weight_only"
