@@ -37,6 +37,14 @@ Config at `e1e8e4881` (unchanged from handoff). Run-dir attempt number is 3 beca
 Nodes: `prime-nebius-puku-h200-gpu-[005,012,014-015,023,026-028,033,035,040-041,051,056-058]`.
 Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_3/`, batch log `launcher/logs/job_829.log`.
 
+
+### Attempt 3 (SLURM job 829), submitted 02:30, 16 nodes
+
+Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe.toml`
+Config at `e1e8e4881` (unchanged from handoff). Run-dir attempt number is 3 because the dry run consumed 2.
+Nodes: `prime-nebius-puku-h200-gpu-[005,012,014-015,023,026-028,033,035,040-041,051,056-058]`.
+Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_3/`, batch log `launcher/logs/job_829.log`.
+
 ## Open questions for Garrett
 
 - KV pool is 11.55x concurrency per FP8 replica at 131k (1.51M tokens), not ~1.4x. Worth re-checking whether
@@ -173,3 +181,5 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - `wait_for_ready_timeout = 7200` and `gpu_memory_utilization = 0.75` are now in the config. The second costs
   ~18% of the KV pool (11.55x to 9.46x concurrency per replica). An alternative that keeps 0.85 would be
   sub-chunking the NCCL receive buffer in `inference/vllm/worker/nccl.py`; I did not make that code change.
+
+
