@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 09:35 UTC: both arms have four finite updates. No robustness conclusion yet.
+Status at 2026-09-19 09:55 UTC: both arms have ten finite updates. No robustness separation observed.
 
 ## Main comparison
 
@@ -21,13 +21,18 @@ See `PROTOCOL.md` for the estimator and fixed decision rules.
 
 ## Early current-run observations
 
-At 09:35 UTC, both arms completed four finite optimizer updates.
-IPO step 4: gradient norm 0.1045, mismatch KL 0.0051.
-Centered step 4: gradient norm 0.0814, mismatch KL 0.0048.
+At 09:55 UTC, both arms completed ten finite optimizer updates.
+IPO step 10: gradient norm 0.0820, mismatch KL 0.0045.
+Centered step 10: gradient norm 0.0806, mismatch KL 0.0048.
+Received training output tokens at update 10: IPO 8.07 million; centered 8.44 million.
+The exported metrics and logs contain no detected nonfinite values or numerical warnings.
+Metrics and curves are in `results/main-api4-step10`.
 Both inference pools accept refreshed weights. No stability separation is established.
-Warm steps currently take roughly 1.5–4.5 minutes; most time is spent waiting for rollouts.
+Warm steps currently take roughly 1.5–5.3 minutes; most time is spent waiting for rollouts.
+Across updates 2–9, rollout waits account for 77% of IPO time and 82% of centered time.
 API4 has avoided the earlier unhealthy-worker request storm so far. Intermittent health-check misses remain.
-Training errors are approximately 8% in each arm, mainly from the 900-second rollout deadline.
+The latest ten-minute window contains 10 errors among 635 IPO completions and 15 among 515 centered completions.
+Earlier errors mainly came from the 900-second rollout deadline. Error rates vary as long episodes finish.
 
 Initial TB2 evaluation solved 2/64 IPO tasks and 1/64 centered tasks.
 IPO had 24 failed episodes; centered had 16. These sparse scores have substantial missingness.
@@ -77,7 +82,7 @@ Both encountered repeated router health-check failures before any optimizer upda
 Both orchestrators completed forced cleanup before their allocations were cancelled.
 A matched restart with four API workers per engine passed config validation.
 The user cancelled the experiment before those replacement launchers submitted jobs.
-The API-worker change has not been validated under rollout load.
+The API-worker change was unvalidated at that cancellation. The current pair has now completed ten updates under load.
 
 ## Pending
 

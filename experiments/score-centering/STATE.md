@@ -16,9 +16,9 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 - Runtime verifies four API processes per engine through the experimental per-rank override.
 - SC launch source: 9a282107e. IPO source: 8e2282999, adding UV_NO_SYNC and records only.
 - Latest main is a1822f7a0, fetched again before this restart and already merged.
-- At 09:35 UTC: both arms completed four finite updates. No numerical separation observed.
+- At 09:55 UTC: both arms completed ten finite updates. No numerical separation observed. Step-10 curves and metrics are in results/main-api4-step10.
 - Both pools have avoided unhealthy-worker request failures. Isolated health-check misses remain.
-- Training errors are approximately 8% in each arm, mostly from 900-second rollout deadlines.
+- At 09:55 UTC, the latest ten-minute error counts are IPO 10/635 and centered 15/515. Earlier errors mainly came from 900-second rollout deadlines.
 - Initial TB2: IPO 2 solved, 24 errors; SC 1 solved, 16 errors (64 tasks each). Online episodes can span policy refreshes.
 - Monitor helper: `/tmp/score-centering-monitor.py`; snapshots: `results/monitor/snapshots.jsonl`.
 - Current IPO W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/f7acea587c9a4bd5aeb33be0d270fd65
@@ -106,10 +106,10 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 
 ## Next
 
-1. Launch and monitor the fresh concurrent 1+1/API4 pair. Verify serving health under load before interpreting training.
+1. Continue close monitoring of jobs893/891. Both actual API4 pools have completed ten updates. Next checkpoint and scheduled evaluation: update25.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
-4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. TB2 initial success is sparse (IPO1/51, SC5/43 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
+4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. Current TB2 initial success is sparse (IPO2/40, SC1/48 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
 5. Repeat a positive separation with a second seed; use a matched BF16 control pair to check mismatch attribution.
 6. Report positive, negative, or inconclusive results honestly.
 
@@ -129,7 +129,7 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 - Dependency changes are archived in patches/; the submodule working trees remain dirty. Refresh patches after any further dependency changes.
 - Other cluster jobs are unrelated. Do not touch them.
 
-- Final audit export: checkpoints are DCP-only. After the training allocations finish, use GPU allocations for `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py <step_dir>`. Serve exported weights with the same online INT8/FP8 quantization and FP8 KV. Never allocate export/eval nodes on top of the current eight training nodes.
+- Final audit export: checkpoints are DCP-only. After the training allocations finish, use GPU allocations for `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py <step_dir>`. Serve exported weights with the same online INT8/FP8 quantization and FP8 KV. Use released training nodes for final export/eval; preserve the user's one-trainer-plus-one-inference allocation per arm.
 - `select_holdout.py` was checked on completed smoke5 logs: 13825 source tasks, 72 excluded, 128 selected. That artifact is only a selector check, not the final audit set.
 
 - All 384 active VM sandboxes from the cancelled 4-node pair were deleted using exact old-run labels. Cleanup completed with zero errors; inventories are in results/initial-4node-attempt.
