@@ -533,6 +533,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   129 trace failures (no new classes), 2 provisioning blips, 44 cleanup 500s (all before 19:02).
 - 20:28:12 step 220 checkpoint saved (`Step 220 | 2m 26s | Mismatch KL 0.0049`); `checkpoints/` holds `step_200`,
   `step_220`. Steps 201-220: reward 0.75-0.88, turns 30-39, one batch with 13.7% cancellations (step 210).
+- 20:53:32 step 240 checkpoint saved (`Step 240 | 2m 37s | Mismatch KL 0.0064`); `checkpoints/` holds `step_220`,
+  `step_240`. Steps 221-240: reward 0.59-0.88, turns 30-43.
 
 ## Open questions for Garrett (GLM run)
 
