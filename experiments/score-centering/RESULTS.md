@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 07:27 UTC: the user cancelled both runs to give another run priority. No robustness conclusion yet.
+Status at 2026-09-19 08:55 UTC: the user requested a fresh restart of both arms. No robustness conclusion yet.
 
 ## Main comparison
 

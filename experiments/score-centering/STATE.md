@@ -6,7 +6,10 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
-- USER STOP at 2026-09-19 07:27 UTC: cancel both runs because another run has priority. Do not launch or resume training until the user requests it.
+- USER RESUMED at 2026-09-19 08:55 UTC: launch both from scratch. The prior stop is revoked.
+- Fetched origin/main; a1822f7a0 remains latest and is already merged. Launch the validated 1+1/API4 configs with initial inflight512, cap2048, and 400 updates.
+
+- Previous USER STOP at 2026-09-19 07:27 UTC: cancelled both runs because another run had priority; superseded by the 08:55 restart request.
 - Jobs867/868 were already cancelled. Terminated both pending API4 launchers before SLURM submission; verified no experiment allocations remain. Preserve configs and all logs.
 
 - At 07:24 UTC, interrupted both 1+1 orchestrators after repeated router unhealthy-worker errors; neither completed an optimizer update. Both reported forced cleanup complete. Cancelled allocations867/868 after episode cleanup.
@@ -70,7 +73,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Wait for an explicit user request to resume. Do not allocate experiment nodes while another run has priority.
+1. Launch and monitor the fresh concurrent 1+1/API4 pair. Verify serving health under load before interpreting training.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. TB2 initial success is sparse (IPO1/51, SC5/43 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
