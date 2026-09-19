@@ -5,22 +5,58 @@ import csv
 import json
 import math
 import re
+from bisect import bisect_right
+from itertools import accumulate
 from pathlib import Path
 
 
 def read_metrics(run):
     rows = {}
+    generation = []
     for path in sorted((run / "monitors/file").glob("metrics*.jsonl")):
         with path.open() as stream:
             for line in stream:
                 if not line.endswith("\n"):
                     continue
                 row = json.loads(line)
+                generated = [v for k, v in row.items() if k.endswith("/generation_tokens_total")]
+                if generated:
+                    generation.append((row["time"], sum(generated)))
+                if "optim/grad_norm" in row:
+                    row["trainer/update_time"] = row["time"]
+                producer = "trainer" if "time/forward_backward" in row else "orchestrator"
+                if "time/forward_backward" in row or "progress/output_tokens" in row:
+                    row.update({f"{producer}/{k}": v for k, v in row.items() if k.startswith("time/")})
                 step = row.get("step")
                 if step is None:
                     continue
                 rows.setdefault(step, {}).update(row)
+    attach_budgets(run, rows, generation)
     return rows
+
+
+def attach_budgets(run, rows, generation):
+    path = run / "monitors/file/traces/stream.index.jsonl"
+    if not path.exists():
+        return
+    with path.open() as stream:
+        episodes = [json.loads(line) for line in stream if line.endswith("\n")]
+    episodes = [ep for ep in episodes if ep.get("kind") == "train" and ep.get("arrival") is not None]
+    if not episodes:
+        return
+    arrivals, output_tokens = zip(*sorted((ep["arrival"], ep.get("output_tokens", 0)) for ep in episodes))
+    cumulative = [0, *accumulate(output_tokens)]
+    start = min(ep["dispatch"] for ep in episodes if ep.get("dispatch") is not None)
+    generation.sort()
+    generation_times = [time for time, _ in generation]
+    for row in rows.values():
+        if (time := row.get("trainer/update_time")) is None:
+            continue
+        row["budget/elapsed_seconds"] = time - start
+        row["budget/received_train_output_tokens"] = cumulative[bisect_right(arrivals, time)]
+        index = bisect_right(generation_times, time) - 1
+        if index >= 0:
+            row["budget/server_output_tokens_including_eval"] = generation[index][1]
 
 
 def numerical_warnings(run):
@@ -42,7 +78,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     runs = {run.name: read_metrics(run) for run in args.runs}
     pattern = re.compile(
-        r"reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/mean$|"
+        r"^budget/|^trainer/time/|^orchestrator/time/|reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/mean$|"
         r"optim/grad_norm$|is_masked/mean$|score_centering/.*/mean$|"
         r"num_output_tokens/mean$|truncat.*mean$|off_policy.*mean$|has_error/mean$|loss/(?:.*/)?mean$"
     )
@@ -89,6 +125,37 @@ def main():
     fig.tight_layout()
     fig.savefig(args.output / "curves.png", dpi=150)
     fig.savefig(args.output / "curves.pdf")
+    plt.close(fig)
+
+    overview = {
+        "train/agg/all/agent/reward/mean": "Training success (all arrivals)",
+        "eval/terminal-bench-2/all/agent/avg@1": "Terminal Bench 2 success (inspect failures separately)",
+        "optim/grad_norm": "Gradient norm",
+        "mismatch_kl/all/mean": "Trainer–sampler mismatch KL",
+        "entropy/all/mean": "Token entropy",
+    }
+    fig, axes = plt.subplots(len(overview), 2, figsize=(14, 3 * len(overview)), squeeze=False)
+    for (key, title), pair in zip(overview.items(), axes):
+        for column, ax in enumerate(pair):
+            for name, rows in runs.items():
+                points = []
+                for step, row in sorted(rows.items()):
+                    x = step if column == 0 else row.get("budget/received_train_output_tokens")
+                    y = row.get(key)
+                    if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                        points.append((x if column == 0 else x / 1e6, y))
+                if points:
+                    x, y = zip(*points)
+                    ax.plot(x, y, label=name, linewidth=1.5)
+            ax.set_title(title)
+            ax.set_xlabel("Optimizer step" if column == 0 else "Received training output tokens (millions)")
+            if ax.lines:
+                ax.legend()
+            ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(args.output / "overview.png", dpi=150)
+    fig.savefig(args.output / "overview.pdf")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

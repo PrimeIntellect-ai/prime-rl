@@ -13,7 +13,7 @@ Read `STATE.md` for live job IDs and recovery steps.
 - `smoke-fast.toml`: save only at the final smoke step after intermediate saves are verified.
 - `verify_math.py`: gradient checks and comparison with the official formula.
 - `verify_transport.py`: sampler-head transport and packing checks.
-- `analyze.py`: metric CSV, summary JSON, and PNG/PDF curves.
+- `analyze.py`: metric CSV, summary JSON, and PNG/PDF curves by update and token budget.
 - `eval_results.py`: task rewards, infrastructure errors, and task-level confidence intervals.
 
 Validate VM provisioning, tool execution, and scoring first:
@@ -52,3 +52,8 @@ uv run python experiments/score-centering/eval_results.py outputs/score-centerin
 
 Valid-task reward estimates exclude failed episodes. Report error rates and missing-reward bounds alongside them.
 
+
+Token-budget plots count output tokens from training episodes received by each optimizer update.
+They include rejected and failed episodes when their tokens were recorded.
+They exclude unfinished episodes and tokens absent from failed responses.
+The CSV also records server generation totals, including evaluation tokens, from the latest metrics poll.
