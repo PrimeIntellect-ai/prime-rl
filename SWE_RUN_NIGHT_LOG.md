@@ -240,6 +240,10 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   One broadcast stall (3.5 min at step 81), none since.
 - 09:33:14 step 120 checkpoint saved (`Step 120 | 5m 41s`); `checkpoints/` holds `step_100` and `step_120`.
   Steps 101-120 uneventful: ~2 min/step, mismatch KL 0.021-0.027, Peak Mem 72-92 GiB.
+- 09:48 hourly summary through step 130: 5h 39m job time, ~2 min/step, reward 0.73-0.98 (last 10 mean ~0.85),
+  mismatch KL 0.020-0.034, grad norm 0.008-0.09, Peak Mem 72-92 GiB. 13,662 episodes finished. Cumulative:
+  132 off-policy cancellations, 100 trace failures (88 `uv --script`, 6 sandbox OOM exit 137, 6 sandbox API
+  one-offs). No further broadcast stalls after step 81. Cluster is otherwise full (1 idle node).
 
 ## Open questions for Garrett
 
