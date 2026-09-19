@@ -531,6 +531,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   0.18-0.26, grad norm 0.08-0.13, Peak Mem 34-49 GiB, inference p99 ~30 s. 24,982 episodes finished; 150
   off-policy cancellations (5-7% of some batches, the 1 min/step cadence makes the 32-step limit ~35 min),
   129 trace failures (no new classes), 2 provisioning blips, 44 cleanup 500s (all before 19:02).
+- 20:28:12 step 220 checkpoint saved (`Step 220 | 2m 26s | Mismatch KL 0.0049`); `checkpoints/` holds `step_200`,
+  `step_220`. Steps 201-220: reward 0.75-0.88, turns 30-39, one batch with 13.7% cancellations (step 210).
 
 ## Open questions for Garrett (GLM run)
 
