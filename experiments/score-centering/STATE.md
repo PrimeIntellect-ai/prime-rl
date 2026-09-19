@@ -6,6 +6,10 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- Relaunching as `ipo-1plus1-api4-seed42-r2` and `sc-1plus1-api4-seed42-r2` with the per-rank API override fixed. Generated script validation passed; actual API worker counts still require runtime verification.
+
+- At 09:01 UTC, found the per-rank SLURM helper hard-coded --vllm.api-server-count 1 despite the resolved API4 config. Stopped jobs887/888 during startup. Added an experimental per-engine API count environment override, defaulting to the existing value1. Validate the generated script and actual runtime worker count before rollout collection.
+
 - Fresh pair submitted at 08:57:24 UTC: IPO888 (`ipo-1plus1-api4-seed42`, nodes014/050), SC887 (`sc-1plus1-api4-seed42`, nodes057/058). Both RUNNING on two nodes each; source8f56c6326. Resolved configs confirm API4, initial512/max2048, IPOeps0.3 versus standalone SC, and resume=None.
 
 - USER RESUMED at 2026-09-19 08:55 UTC: launch both from scratch. The prior stop is revoked.

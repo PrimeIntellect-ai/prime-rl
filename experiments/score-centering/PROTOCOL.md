@@ -138,3 +138,11 @@ Both arms hit repeated unhealthy-worker errors under the larger episode load.
 Restart both with four API workers per engine to parallelize Python response processing.
 Retain the same model, GPU engines, loss, sampling, initial concurrency, and inflight cap.
 Use fresh run names `ipo-1plus1-api4-seed42` and `sc-1plus1-api4-seed42`.
+
+At the 08:55 restart, jobs888/887 exposed a hard-coded single-API-worker CLI override in the per-rank launcher.
+Both jobs stopped before rollout collection. The helper now reads PRL_INFERENCE_API_SERVER_COUNT, defaulting to its previous value1.
+The experiment explicitly sets4; all other configurations retain the default.
+The generated two-node launch passed shell syntax validation.
+A synthetic head-node benchmark measured 3.37s and28.9MB for a4096-token top129 response, versus0.026s and0.50MB for top1.
+This supports a response-processing hypothesis but does not establish the live bottleneck.
+The replacement names are `ipo-1plus1-api4-seed42-r2` and `sc-1plus1-api4-seed42-r2`.

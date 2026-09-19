@@ -4,6 +4,7 @@ output_dir = "outputs/score-centering"
 
 [env_vars]
 PRL_SCORE_TOPK = "128"
+PRL_INFERENCE_API_SERVER_COUNT = "4"
 TRITON_CACHE_DIR = "/tmp/score-centering-triton"
 OMP_NUM_THREADS = "8"
 
