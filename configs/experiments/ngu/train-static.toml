@@ -1,0 +1,123 @@
+# Static GRPO on the balanced 800-task set; eight H200 nodes.
+max_steps = 10000
+seq_len = 131072
+output_dir = "outputs/ngu-swe"
+
+[run]
+name = "glm45air-swe-baseline-balanced800"
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/mika-ngu-train/triton"
+
+[slurm]
+job_name = "glm45air-swe-baseline-balanced800"
+partition = "all"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 6
+
+[monitors.wandb]
+project = "ngu-ablations"
+name = "glm45air-swerebench-baseline-balanced800"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[model]
+name = "PrimeIntellect/GLM-4.5-Air-Scaleswe"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "muon"
+lr = 3e-6
+
+[orchestrator]
+batch_size = 384
+group_size = 8
+max_off_policy_steps = 64
+
+[orchestrator.env_vars]
+PYTHONPATH = "tools/ngu/tasksets"
+
+[orchestrator.concurrency]
+min_inflight = 512
+max_inflight = 1536
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "swerebench-balanced800"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/balanced-800.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[orchestrator.eval]
+interval = 20
+num_examples = -1
+group_size = 1
+skip_first_step = false
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-heldout-500"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/eval-500.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/mika-ngu-train/vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/mika-ngu-train/flashinfer"
+
+[inference.vllm]
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+tensor_parallel_size = 8
+enable_expert_parallel = true
+enable_return_routed_experts = true
+enable_auto_tool_choice = true
+tool_call_parser = "glm45"
+reasoning_parser = "glm45"

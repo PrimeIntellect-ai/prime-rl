@@ -279,10 +279,13 @@ class Orchestrator:
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
         self.train_source = TrainSource(self.train_envs)
+        resumed_sink = None
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            resumed_sink = self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -374,7 +377,11 @@ class Orchestrator:
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
             on_result=self.train_source.on_result,
+            train_source=self.train_source,
         )
+
+        if resumed_sink is not None:
+            self.train_sink.load_state_dict(resumed_sink)
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -451,7 +458,12 @@ class Orchestrator:
             if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                self.ckpt_manager.save(
+                    self.progress,
+                    self.train_source,
+                    step=self.progress.step,
+                    train_sink=self.train_sink if self.train_source.ngu else None,
+                )
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")
@@ -541,6 +553,8 @@ class Orchestrator:
             if not isinstance(episode.run, vf.TrainRunInfo):
                 raise ValueError("Orchestrated episode is missing training-run provenance")
             kind = episode.run.work.type
+            if kind == "train":
+                self.train_source.annotate_episode(episode)
             step = episode.run.work.step if kind == "eval" else self.progress.step
             stamp_arrival([episode], kind, step)
             await monitors.log([episode], step, kind, "all")
@@ -968,9 +982,11 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
+        # Synchronous on purpose: snapshotting on the
         # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        self.ckpt_manager.save(
+            self.progress, self.train_source, step, train_sink=self.train_sink if self.train_source.ngu else None
+        )
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:

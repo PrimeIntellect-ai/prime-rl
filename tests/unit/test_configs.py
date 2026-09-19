@@ -50,7 +50,7 @@ def can_parse(config_cls: type, args: list[str]) -> bool:
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
-def test_load_configs(config_file: Path):
+def test_load_configs(config_file: Path, monkeypatch):
     """Tests that all config files can be loaded by at least one config class.
 
     A file that no class parses standalone is an overlay — a checked-in config that only carries
@@ -59,6 +59,8 @@ def test_load_configs(config_file: Path):
     documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
     "TOML Composition").
     """
+    if config_file.parent == Path("configs/experiments/ngu"):
+        monkeypatch.syspath_prepend(str(Path("tools/ngu/tasksets").resolve()))
     could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
     if not any(could_parse):
         sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)

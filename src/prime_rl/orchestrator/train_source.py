@@ -8,10 +8,12 @@ from typing import Any
 
 import verifiers.v1 as vf
 
+from prime_rl.configs.algorithm import NGUAlgoConfig
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.ngu import NGUController
 from prime_rl.orchestrator.types import TaskRequest
-from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id
 
 
 class TrainSource:
@@ -30,14 +32,34 @@ class TrainSource:
             tasks = env.tasks if env.num_tasks is None else list(env.tasks)
             self.curricula[env.name] = Curriculum(env.config.curriculum, tasks)
 
+        self.ngu = {
+            env.name: NGUController(env.config.algo, env.name)
+            for env in self.envs
+            if isinstance(env.config.algo, NGUAlgoConfig)
+        }
         self.env_names = [env.name for env in self.envs]
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
     def next_task(self, *, step: int) -> TaskRequest:
+        for controller in self.ngu.values():
+            if controller.retries:
+                return controller.next_retry(step)
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
+        task = next(self.curricula[env_name].sampler)
+        if env_name in self.ngu:
+            return self.ngu[env_name].start(task, step)
+        return TaskRequest(env_name=env_name, task=task, step=step)
+
+    def annotate_episode(self, episode: vf.Episode) -> None:
+        controller = self.ngu.get(episode_env_name(episode))
+        if controller is None:
+            return
+        visit = controller.visits[episode_group_id(episode)]
+        for trace in episode.traces:
+            trace.info["ngu_visit"] = visit.id
+            trace.info["ngu_round"] = visit.rounds + 1
 
     def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
@@ -62,16 +84,19 @@ class TrainSource:
             if total:
                 metrics[f"curriculum/{env_name}/admission_rate"] = admitted / total
             metrics |= {f"curriculum/{env_name}/{name}": float(value) for name, value in curriculum.metrics().items()}
+        for controller in self.ngu.values():
+            metrics |= controller.metrics()
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
         return {
             "rng": self.rng.getstate(),
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
+            **({"ngu": {name: c.state_dict() for name, c in self.ngu.items()}} if self.ngu else {}),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        expected_fields = {"rng", "envs"}
+        expected_fields = {"rng", "envs"} | ({"ngu"} if self.ngu else set())
         if set(state_dict) != expected_fields:
             raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
         env_states = state_dict["envs"]
@@ -83,3 +108,9 @@ class TrainSource:
         self.rng.setstate(state_dict["rng"])
         for name, curriculum in self.curricula.items():
             curriculum.load_state_dict(env_states[name])
+
+        if self.ngu:
+            if set(state_dict["ngu"]) != set(self.ngu):
+                raise ValueError("NGU checkpoint sources do not match configured sources")
+            for name, controller in self.ngu.items():
+                controller.load_state_dict(state_dict["ngu"][name])

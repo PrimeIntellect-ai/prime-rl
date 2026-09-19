@@ -576,6 +576,9 @@ class OrchestratorConfig(BaseConfig):
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
+    max_zero_output_batches: int = Field(10, ge=1)
+    """Abort after this many batch equivalents without trainable output, including unsuccessful NGU rounds."""
+
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
@@ -636,6 +639,12 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.source:
             assert env_cfg.algo is not None  # resolved by inherit_env_algorithms
             env_cfg.algo.validate_env(env_cfg.env)
+            if env_cfg.algo.type == "ngu":
+                if not self.constant_trainer_batch_size:
+                    raise ValueError("NGU requires constant_trainer_batch_size=true")
+                group_size = env_cfg.group_size if "group_size" in env_cfg.model_fields_set else self.group_size
+                if group_size < 2:
+                    raise ValueError("NGU requires group_size >= 2")
         return self
 
     @model_validator(mode="after")

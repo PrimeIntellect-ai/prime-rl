@@ -99,6 +99,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     pools = {"all": DifficultyPoolConfig(threshold=1.0, weight=1.0)}
     config = SimpleNamespace(
         ratio=1.0,
+        algo=None,
         curriculum=CurriculumConfig(
             sampler=DifficultyPoolSamplerConfig(pools=pools),
             gates={

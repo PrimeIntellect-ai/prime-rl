@@ -1,0 +1,54 @@
+# Optional training-difficulty diagnostics; retains both held-out eval sources.
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-heldout-500"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/eval-500.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-balanced800-easy"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/balanced-easy.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-balanced800-medium"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/balanced-medium.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-balanced800-hard"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/balanced-hard.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
+[[orchestrator.eval.source]]
+name = "swerebench-balanced800-extra-hard"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/balanced-extra-hard.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
+
