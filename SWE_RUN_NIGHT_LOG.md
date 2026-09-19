@@ -290,6 +290,15 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   "fp8"`; with FP8 KV it is likely fine). The run stays up. If Garrett wants the switch, the recipe is: `scancel`,
   drop `quantization`, `quantization_config` and `use_deep_gemm` in `[inference]` and `[inference.vllm]`, keep
   `kv_cache_dtype = "fp8"`, relaunch with bare `[resume]` from `step_180`, and confirm the KV pool clears 131k.
+- 12:16:16 step 200 checkpoint saved (`Step 200 | 5m 10s`); `checkpoints/` holds `step_180` and `step_200`.
+- 12:17 hourly summary through step 200: 8h 08m job time, ~2 min/step, reward 0.69-1.00 (last 10 mean ~0.87),
+  Peak Mem 72-92 GiB. 21,216 episodes finished; 230 cancellations, 134 trace failures, one env-server
+  `interception: unauthorized request` warning (11:41, single). No harness bursts, no broadcast stalls.
+  - **Mismatch KL update, correcting the 11:38 entry**: the rise was a transient bump, not a runaway. Per step
+    180-200: 0.078 0.057 **0.100** 0.071 0.077 0.069 0.060 0.056 0.051 0.050 0.051 0.043 0.049 0.045 0.047
+    0.043 0.047 0.050 0.053 0.046 0.048. Masked fraction peaked at 2.9% (step 182) and is back to 0.7-1.0%.
+    So the run now sits at roughly 2x its first-100-step mismatch (0.045-0.05 vs 0.025) with a plateau rather
+    than a slope. Still worth Garrett's eyes, but it did not warrant an overnight intervention.
 
 ## Open questions for Garrett
 
@@ -315,6 +324,7 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   acknowledging the trainer's broadcast (3.5 min at step 81 with ~300 live sandboxes). The trainer idles for
   that whole time. Worth a look at whether the stale-drain barrier needs the full scheduling pass, or whether
   `fill_inflight` should yield more often; `weight_broadcast.timeout = 3600` is the only guard today.
-- **Mismatch KL is climbing: 0.025 (steps 1-100) to 0.078 at step 180, masked-token fraction 0.03% to 1.9%**,
-  with staleness, entropy, grad norm and reward flat. See the 11:38 entry for the table and the bf16-relaunch
-  recipe. This is the strongest data point so far on the FP8 serving decision and I left it for you.
+- **Mismatch KL roughly doubled over the run**: 0.025 for steps 1-100, a transient bump to 0.100 at step 182
+  (masked fraction 2.9%), then a plateau at 0.045-0.05 (masked 0.7-1.0%) through step 200. Staleness, entropy,
+  grad norm and reward all flat throughout. See the 11:38 entry for the table and a bf16-relaunch recipe. This
+  is the main data point on the FP8 serving decision and I left it for you.
