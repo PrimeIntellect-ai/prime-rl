@@ -1,14 +1,15 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 06:34 UTC: the main pair is running. No robustness conclusion yet.
+Status at 2026-09-19 07:12 UTC: the replacement main pair is starting. No robustness conclusion yet.
 
 ## Main comparison
 
 - Model: Qwen3-30B-A3B-Instruct-2507, pinned snapshot in `model.json`.
-- Source: experimental commit `ef2cfad80`, with main `a1822f7a0` merged.
-- Baseline: current-main IPO, eps 0.3; SLURM 861, `ipo-seed42`.
-- Treatment: published standalone score centering; SLURM 860, `sc-seed42`.
-- Each arm: one H200 trainer node plus three inference nodes, running concurrently.
+- Source: experimental commit `4909f8e98`, with main `a1822f7a0` merged.
+- Baseline: current-main IPO, eps 0.3; SLURM 868, `ipo-1plus1-seed42`.
+- Treatment: published standalone score centering; SLURM 867, `sc-1plus1-seed42`.
+- Each arm: one H200 trainer node plus one inference node, running concurrently.
+- Concurrency: adaptive, initial 512 episodes and maximum 2048 per arm.
 - Training: Terminal Lego, uniform task draws with seed 42, batch 128, group 8, 400 updates.
 - Evaluation: Terminal Bench 2, 64 tasks initially, every 25 updates, and at completion.
 - Inference: INT8 expert weights, FP8 dense weights, FP8 KV cache.
@@ -42,6 +43,15 @@ The INT4 pair used jobs 849/850; the FP8 pair used jobs 857/856.
 Machine-readable metrics, plots, and task-level evaluation exports are under `results/smoke4` and `results/smoke5`.
 Evaluation exports report failed episodes and bounds for missing rewards.
 Malformed tool-call JSON is distinct from a numerical or VM-service failure.
+
+## Superseded early pair
+
+Jobs 861/860 ran with three inference nodes per arm and a 192-episode cap.
+They completed six IPO updates and five centered updates; both remained finite.
+The trainers spent most wall time waiting for rollouts; sampled KV utilization was below 1%.
+At the user's request, both jobs stopped and the replacement pair starts from the same base weights.
+The old logs and metrics remain separate under `results/initial-4node-attempt`.
+These early updates do not establish a robustness difference.
 
 ## Pending
 
