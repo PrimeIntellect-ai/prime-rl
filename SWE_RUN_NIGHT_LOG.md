@@ -345,6 +345,9 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
 - 13:13:46 trainer `Resuming from step 220 (total_tokens=213484544, total_samples=245)`; checkpoint load plus v220
   broadcast succeeded (`POST /update_weights 200 OK`). Total downtime 13:01 to 13:14, about 13 minutes. So a
   restart on warm nodes costs ~13 min, not the ~40 min a cold boot costs; the same node set is worth asking for.
+- 13:19:40 orchestrator Step 221 `Reward 0.9844 | Error 0.0% | Cancelled 0.0%` and 13:22:02 trainer Step 221
+  (`8m 16s`, includes refilling the rollout pipeline; `Mismatch KL 0.0589`). v221 update 200 OK. Interception pool
+  back at 4 servers with fresh tunnels; zero harness failures in the first post-resume batch. Steady state again.
 
 ## Open questions for Garrett
 
