@@ -24,7 +24,7 @@ def read_metrics(run):
 
 
 def numerical_warnings(run):
-    pattern = re.compile(r"non-finite|nonfinite|nan_count|NaN|gradient.*(?:inf|nan)", re.IGNORECASE)
+    pattern = re.compile(r"\b(?:non-finite|nonfinite|nan_count|nan)\b|gradient.*\b(?:inf|nan)\b", re.IGNORECASE)
     warnings = []
     for path in sorted((run / "logs").glob("attempt_*/**/*.log")):
         with path.open(errors="replace") as stream:

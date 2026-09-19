@@ -11,7 +11,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Main was refreshed again before the full launch: a1822f7a0 (expert-parallel load filtering; inactive for this TP-only setup).
 - Concurrent smoke4 jobs: IPO849, SC850, four nodes each (eight total). Both completed three finite updates and exited successfully. Logs under outputs/score-centering/smoke4-{ipo,sc}.
 - Both arms report occasional NaN serving responses before first updates. These are excluded provider failures, not evidence of training collapse.
-- Diagnostic pair smoke5: SC856 and IPO857, four nodes each. Both completed three finite updates with FP8 KV; no observed NaN serving responses. Final saves and shutdown are in progress. Main uses FP8 KV and uniform task sampling.
+- Diagnostic pair smoke5: SC856 and IPO857, four nodes each. Both completed three finite updates with FP8 KV; no observed NaN serving responses. Both jobs exited successfully (0:0) by 06:28 UTC. Main uses FP8 KV and uniform task sampling.
 - Previous outage blocker audit resets on this user-requested resumption.
 
 ### Implementation and prior attempts
@@ -53,7 +53,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Wait for smoke5 jobs to exit, then launch ipo-seed42 and sc-seed42 concurrently from the shared base model. Main configs use FP8 KV and uniform task sampling.
+1. Launch ipo-seed42 and sc-seed42 concurrently from the shared base model. Main configs use FP8 KV and uniform task sampling.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Launch matched 400-update runs after smoke succeeds. Use fresh run names if needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules.
