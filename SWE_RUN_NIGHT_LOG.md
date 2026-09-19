@@ -524,6 +524,13 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   `step_160`. Steps 141-160: reward 0.53-0.89, turns 28-40.
 - 19:44:48 step 180 checkpoint saved (`Step 180 | 2m 32s | Mismatch KL 0.0052`); `checkpoints/` holds `step_160`,
   `step_180`. Steps 161-180 routine: reward 0.53-0.88, turns 30-40, cancellations 5-7% of a batch at times.
+- 20:08:01 **step 200 checkpoint saved** (`Step 200 | 2m 32s | Mismatch KL 0.0054 | Peak Mem. 49.1 GiB`);
+  `checkpoints/` holds `step_180`, `step_200`. 3h 44m of job time to step 200 (DeepSeek needed ~7h 20m).
+- 20:08 hourly summary through step 200: ~1 min/step, reward 0.55-0.88 over steps 181-200, mean reward by
+  50-step window 0.58 / 0.70 / 0.70 / 0.73, turns 29-40, mismatch KL 0.0043-0.0062 with no trend, entropy
+  0.18-0.26, grad norm 0.08-0.13, Peak Mem 34-49 GiB, inference p99 ~30 s. 24,982 episodes finished; 150
+  off-policy cancellations (5-7% of some batches, the 1 min/step cadence makes the 32-step limit ~35 min),
+  129 trace failures (no new classes), 2 provisioning blips, 44 cleanup 500s (all before 19:02).
 
 ## Open questions for Garrett (GLM run)
 
