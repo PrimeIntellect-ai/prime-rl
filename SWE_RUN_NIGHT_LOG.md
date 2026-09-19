@@ -439,3 +439,20 @@ others, 14 planned for this job, 1 idle. Starts when two more free up. Run-dir a
 Nodes: `prime-nebius-puku-h200-gpu-[013-016,018,020,024,036,038,042,046,050,052,055,057-058]`. GLM weights are cold
 on every node (different model), so expect a longer first load than the warm DeepSeek resumes.
 Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_2/`.
+- 16:06 job 915 started (SLURM estimate was 16:48). 16:16 **died at inference startup**: every replica's workers
+  raised `torch._dynamo.exc.ObservedAssertionErrorError` inside `profile_run` -> `glm4_moe.py:602` `down_proj` ->
+  `fp8_linear.apply_weights` -> `ops.cutlass_scaled_mm` -> `triton_scaled_mm` (`_custom_ops.py:867`). Log:
+  `logs/attempt_2/inference/node_0.log`. Weight load itself was fine (337 s cold).
+  - Cause: blockwise FP8 (128 x 128 blocks) needs every sharded weight dimension to be a multiple of 128.
+    GLM-4.5-Air's layer-0 dense MLP has `intermediate_size = 10944` (10944 / 8 = 1368, not even 16-aligned, so
+    the call falls to the Triton path whose block-shape assertion fires) and its shared expert has
+    `moe_intermediate_size = 1408`, which TP=8 splits to 176. Routed experts stay whole under expert parallelism
+    (1408 = 11 x 128) and attention shards cleanly (q 1536, kv 128, o 1536 per rank). DeepSeek V4 Flash never hit
+    this because all of its dimensions tile. The `fp8_per_block` literal is the only quantization prime-rl's
+    inference config accepts, so "same FP8" for GLM means blockwise with exclusions.
+  - `scancel 915` at 16:18 (first attempt got `Connection reset by peer` from slurmctld; retry worked).
+  - Fix: `quantization_config = { ignore = ["re:.*\\.layers\\.0\\.mlp\\..*", "re:.*\\.shared_experts\\..*"] }`,
+    the same mechanism as the DeepSeek indexer exclusion (vLLM's online-quant `should_ignore_layer` takes
+    `re:` regexes and expands fused `gate_up_proj` into its `gate_proj` / `up_proj` shards). Layer 0 and the 45
+    shared experts run in bf16; the 128 x 45 routed experts and all attention stay FP8. Not a perfect match to
+    the DeepSeek run, but the closest one that boots. Noted for Garrett below.
