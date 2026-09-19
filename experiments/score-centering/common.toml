@@ -3,6 +3,7 @@ seq_len = 32768
 output_dir = "outputs/score-centering"
 
 [env_vars]
+UV_NO_SYNC = "1"
 PRL_SCORE_TOPK = "128"
 PRL_INFERENCE_API_SERVER_COUNT = "4"
 TRITON_CACHE_DIR = "/tmp/score-centering-triton"

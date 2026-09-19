@@ -6,6 +6,10 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- SC891 runtime confirms four API processes per engine. IPO892 inference failed in uv metadata resolution (GitHub wheel HTTP500) before model loading. Cancelled IPO892; relaunch IPO from scratch with UV_NO_SYNC=1 to use the installed environment. SC891 continues. This changes dependency resolution only, not the installed model/training stack.
+
+- Current pair launched at 09:04:46 UTC: IPO892 (`ipo-1plus1-api4-seed42-r2`, nodes014/050), SC891 (`sc-1plus1-api4-seed42-r2`, nodes057/058). Two nodes each, launch source9a282107e.
+
 - Relaunching as `ipo-1plus1-api4-seed42-r2` and `sc-1plus1-api4-seed42-r2` with the per-rank API override fixed. Generated script validation passed; actual API worker counts still require runtime verification.
 
 - At 09:01 UTC, found the per-rank SLURM helper hard-coded --vllm.api-server-count 1 despite the resolved API4 config. Stopped jobs887/888 during startup. Added an experimental per-engine API count environment override, defaulting to the existing value1. Validate the generated script and actual runtime worker count before rollout collection.
