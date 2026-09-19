@@ -299,6 +299,31 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
     0.043 0.047 0.050 0.053 0.046 0.048. Masked fraction peaked at 2.9% (step 182) and is back to 0.7-1.0%.
     So the run now sits at roughly 2x its first-100-step mismatch (0.045-0.05 vs 0.025) with a plateau rather
     than a slope. Still worth Garrett's eyes, but it did not warrant an overnight intervention.
+- 12:19-12:21 two `Dropped 8 queued traces past max_off_policy_steps=32` right after the step 200 checkpoint
+  pause; transient, same staleness family.
+- 12:40 **tunnel outage, ongoing, degrading rollouts by ~70%**. Burst of `HarnessError: harness 'bash' exited 1`
+  whose traceback ends in `openai.InternalServerError: <html>... 502 Bad Gateway ... nginx/1.27.5`, raised from
+  `client.chat.completions.create` inside the sandboxed bash harness. Sustained 56-80 failures/min against
+  18-29 completions/min from 12:40 on; orchestrator step 216 reported `Error 36.2%`. Steps still complete
+  (batches fill from the surviving 3/4), so no guard has fired.
+  - Path: sandbox harness -> `https://<tunnel-id>.tunnel.pinfra.io` (Prime frps behind nginx) -> `frpc` on the
+    orchestrator node -> local interception server (aiohttp, 4 in the elastic pool) -> vllm-router. Inference
+    engines and router: zero errors. Sandbox API: fine (512 live, 2-3 s list).
+  - Diagnosis: probed every tunnel's public URL from the head node (`/v1/models`, expecting 401 behind basic
+    auth). Active pool = local ports 34457, 38669, 37619, 40447. Three answer 401 in 0.2 s. The fourth,
+    `t-2-aada33686cd8ced8` (port 37619), alternates 401-instant / 502-after-30 s. Its local server answers 401
+    in 45 ms from the node, so the break is between frps and frpc. Least-loaded balancing keeps assigning new
+    sessions to the broken server, so it never drains.
+  - Surgical attempt: started a second `frpc` for the same toml (rejected: `proxy already exists`), then SIGKILLed
+    the wedged frpc (pid 336786, 6h47m old; needed -9) and relaunched -> `start proxy success` at 12:50:01, but
+    public probes still alternate 401 / 502-30s. So the fault is on Prime's side for this tunnel id (looks like
+    round-robin over one healthy and one stale frontend route), not in our client. Only a fresh tunnel id fixes
+    it, and only the env server's pool can mint one.
+  - Side finding: 20 `frpc` processes alive for a 4-server pool; the elastic pool leaks the old tunnels when it
+    resizes (every earlier tunnel from 03:45 on still had a live frpc and answered 401). Not harmful tonight.
+  - **Decision: restart the run right after the step 220 checkpoint lands** (both halves), with the config
+    unchanged, so nothing but boot time is lost and the pool mints four new tunnels. Fallback path is well
+    exercised (attempt 5 -> 7). Fits "kill, fix and relaunch"; changes nothing about what the run measures.
 
 ## Open questions for Garrett
 
@@ -328,3 +353,7 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   (masked fraction 2.9%), then a plateau at 0.045-0.05 (masked 0.7-1.0%) through step 200. Staleness, entropy,
   grad norm and reward all flat throughout. See the 11:38 entry for the table and a bf16-relaunch recipe. This
   is the main data point on the FP8 serving decision and I left it for you.
+- The sandbox-to-inference tunnel (`prime_tunnel` / frps) is a single point of failure per interception server,
+  and the pool has no health check: a broken tunnel became a black hole for new sessions (least-loaded picks
+  it) and cost ~70% of rollouts until a run restart. Worth a tunnel health probe in the pool, or a retry on 5xx
+  in the harness's model client, or both. Also: the pool leaks frpc processes when it resizes (20 alive for 4).
