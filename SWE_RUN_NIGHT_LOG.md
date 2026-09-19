@@ -517,6 +517,11 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   turns 21-39, mismatch KL 0.0046-0.0062, Peak Mem 34-49 GiB, inference p99 request latency ~40 s (no runaway
   generations). 18,256 episodes finished; 98 off-policy cancellations, 128 trace failures (88 `uv --script`,
   31 the coordinate-list burst, 4 OOM-137, 5 assorted sandbox one-offs), 44 sandbox cleanup 500s (cleanup only).
+- 19:12:01 one `prime sandbox provisioning failed: Connect RPC failed (unavailable): Service Unavailable` (2 total);
+  sandbox creation and completions stayed at 50-115/min, so a blip, not a degradation. Cleanup 500s stopped
+  after 19:02 (44 total); live sandboxes matched inflight (510 vs 512), so nothing leaked.
+- 19:23:15 step 160 checkpoint saved (`Step 160 | 2m 18s | Mismatch KL 0.0045`); `checkpoints/` holds `step_140`,
+  `step_160`. Steps 141-160: reward 0.53-0.89, turns 28-40.
 
 ## Open questions for Garrett (GLM run)
 
