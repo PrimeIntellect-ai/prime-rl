@@ -66,3 +66,27 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_3/`, batch log `l
   - Fix: `[orchestrator.model.client] wait_for_ready_timeout = 7200` (default 1800, field in
     `configs/shared.py:174`). Rejected: fewer replicas (does not fix a per-replica timing problem) and
     pre-quantized FP8 weights on disk (would cut load time 2x but changes what the run measures).
+
+### Attempt 5 (SLURM job 833), submitted 03:05, 16 nodes
+
+Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe.toml`. Config at `79292001b` (adds the 7200 s
+inference ready timeout and the wandb entity/name/tags). Run-dir attempt 4 was the dry run.
+Nodes: `prime-nebius-puku-h200-gpu-[005-006,015,017,024,027,033,036,040,042,046,048-049,052,057,063]`, mostly
+different from attempt 3, so node-local JIT caches are cold again on most of them.
+Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_5/`, batch log `launcher/logs/job_833.log`.
+Expect the inference fleet to be ready around 03:40.
+
+#### Attempt 5 progress
+
+- 03:05 batch log: the reaper now finds the CLI but refuses: `Error: Cannot scope to your sandboxes - no user_id
+  configured. Use --all-users ... or configure your user_id.` Team id comes from `PRIME_TEAM_ID`, user id was
+  unset. Fixed without a config change: `prime whoami` fetched and persisted the user id into
+  `~/.prime/config.json` (shared `/home`, so compute nodes see it). Verified the scoped delete path with a
+  no-match label. Applies from the next attempt; this attempt's pre-run reap was a no-op again (harmless, no
+  sandboxes existed). `PRIME_USER_ID=<id>` in the `pre_run_command` would be the fallback if the config file
+  ever gets reset; the top-level `[env_vars]` are exported only inside the component blocks, after the
+  pre-run command, so they cannot carry it.
+- 03:07 orchestrator: `Train environments ready in 21.6s` (scaleswe env server up).
+- 03:24 replica 0 `Loading weights took 874 s`; 03:34 KV pool again 1,513,358 tokens / 11.55x.
+- 03:43:45 **`Policy inference pool ready after 36m 24s`** (the 1800 s default would have failed again by a
+  wide margin). Trainer: `Broadcasting startup policy weights (v0) to inference engines`.
