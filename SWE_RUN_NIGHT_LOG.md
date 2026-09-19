@@ -456,3 +456,16 @@ Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_2/`.
     `re:` regexes and expands fused `gate_up_proj` into its `gate_proj` / `up_proj` shards). Layer 0 and the 45
     shared experts run in bf16; the 128 x 45 routed experts and all attention stay FP8. Not a perfect match to
     the DeepSeek run, but the closest one that boots. Noted for Garrett below.
+
+### Attempt 4 (SLURM job 918), submitted 16:24, started immediately, 16 nodes
+
+Config at `e70a6fce6` (adds the two FP8 `ignore` patterns). Run-dir attempt 3 was the dry run. Same node set as
+attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_4/`.
+
+## Open questions for Garrett (GLM run)
+
+- The GLM comparison is not a perfect "same FP8": layer 0's dense MLP and every layer's shared expert run in bf16
+  because their dimensions do not tile into 128 x 128 blocks under TP=8 (or at all, for 10944). Routed experts
+  and attention are FP8 as in the DeepSeek run. If you want the shared experts in FP8 too, the option is TP=1
+  with more replicas per node (1408 tiles at TP=1, 10944 never does), which changes the serving topology.
+- wandb project is `deepseek-v4-flash` for side-by-side comparison; rename if you want a model-neutral project.
