@@ -123,6 +123,8 @@ data_parallel_size = 8
 
 This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tensor_parallel_size = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
 
+Under expert parallelism, non-local expert weights are skipped at load time (`inference.vllm.enable_ep_weight_filter`, defaults to `true`), so each rank only reads its own expert shard from disk. Since experts make up most of the weight bytes of MoE models, this greatly reduces load I/O on shared storage. It is a no-op for non-MoE models and when EPLB is enabled.
+
 ## P/D Disaggregation
 
 This is the most advanced deployment shape. It allows you to disaggregate the prefill and decode stages, with KV cache flowing between them. This is useful for large scale deployments, where there are high requirements on latency, such as agentic workflows spanning 100s of turns.

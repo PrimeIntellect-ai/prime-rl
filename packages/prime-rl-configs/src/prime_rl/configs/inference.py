@@ -132,6 +132,12 @@ class VllmConfig(BaseConfig):
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
 
+    enable_ep_weight_filter: bool = True
+    """Skip non-local expert weights at load time under expert parallelism, so each
+    rank reads only its own expert shard from disk. No-op for non-MoE models, when
+    expert parallelism is disabled, or under EPLB (redundant expert slots need all
+    logical expert weights)."""
+
     enable_dbo: bool = False
     """Enable dual batch overlap (DBO)."""
 
