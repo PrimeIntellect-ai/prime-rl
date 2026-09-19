@@ -196,6 +196,13 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   plus resume from step 20, losing ~15 steps) to save a handful of the longest episodes per hour. Will revisit
   if cancellations become a large fraction of a batch. Recommend `max_off_policy_steps = 64` on the next
   relaunch; see open questions.
+- 06:34:19 `Cancelled 8 train episodes past max_off_policy_steps=32`: 10 cancelled in total by step 40, under
+  0.5% of ~2,500 episodes. Holding the no-restart decision.
+- 06:46:08 **checkpoint step 40**: trainer save started 06:43:05, `Step 40 | 5m 12s` (roughly 3 min of write).
+  `checkpoints/` now holds `step_20` and `step_40`, both complete, 5.4 TB total; `/home` at 18% used, 207 TB
+  free. `keep_last = 2` should delete `step_20` after the step 60 save (~07:30).
+- 06:47 hourly summary: steps 21-40 in 45 min (~2.3 min/step), reward 0.72-0.95, mismatch KL 0.020-0.027,
+  grad norm 0.006-0.09, Peak Mem 72-92 GiB, no errors beyond the two image-level harness failures.
 
 ## Open questions for Garrett
 
