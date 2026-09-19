@@ -6,7 +6,10 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
-- Full 400-update pair started at 2026-09-19 06:29 UTC: IPO861 (`ipo-seed42`) and SC860 (`sc-seed42`), four nodes each. Both use FP8 KV, INT8 experts, FP8 dense weights, and uniform task draws with seed 42.
+- At 07:09 UTC, stopped IPO861 and SC860 at user request to resize. The user explicitly approved starting from scratch. Both allocations have released.
+- Replacement pair: `ipo-1plus1-seed42` and `sc-1plus1-seed42`. Each uses one trainer and one inference node, initial inflight 512, cap 2048. Both dry runs passed and request exactly two nodes. Preserve the old runs as a separate early attempt.
+
+- Superseded 400-update pair started at 2026-09-19 06:29 UTC: IPO861 (`ipo-seed42`) and SC860 (`sc-seed42`), four nodes each. Both use FP8 KV, INT8 experts, FP8 dense weights, and uniform task draws with seed 42.
 - Launch source: ef2cfad80; latest main a1822f7a0 is merged. Latest parser tests: 155 passed.
 
 - User reported VM service recovery and resumed the experiment at 2026-09-19 05:24 UTC.
@@ -58,7 +61,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Monitor IPO861 and SC860 through 400 updates. Main configs use FP8 KV and uniform task sampling.
+1. Launch and monitor the replacement 1+1 pair through 400 updates. Main configs use FP8 KV and uniform task sampling.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. TB2 initial success is sparse (IPO1/51, SC5/43 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.

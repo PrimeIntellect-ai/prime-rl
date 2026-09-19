@@ -26,13 +26,13 @@ uv run eval @ experiments/score-centering/eval-preflight.toml --run.name runtime
 Launch both arms together, using distinct fresh run names:
 
 ```bash
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-seed42 --no-dashboard &
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name sc-seed42 --no-dashboard &
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-1plus1-seed42 --no-dashboard &
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name sc-1plus1-seed42 --no-dashboard &
 wait
 ```
 
 Append `@ experiments/score-centering/smoke.toml` before the CLI overrides for smoke runs.
-Each launch allocates four nodes. Stop or finish previous experiment allocations first.
+Each launch allocates two nodes (one trainer and one inference node). Stop or finish previous experiment allocations first.
 Keep at most eight experiment nodes allocated across all checks and runs.
 
 The renderer and verifiers changes are archived in `patches/` against their pinned submodules.
@@ -40,7 +40,7 @@ Apply these patches when reconstructing this experiment from a fresh checkout.
 The model snapshot path in `common.toml` points to the revision recorded in `model.json`.
 
 ```bash
-uv run python experiments/score-centering/analyze.py outputs/score-centering/ipo-seed42 outputs/score-centering/sc-seed42 --output experiments/score-centering/results/main
+uv run python experiments/score-centering/analyze.py outputs/score-centering/ipo-1plus1-seed42 outputs/score-centering/sc-1plus1-seed42 --output experiments/score-centering/results/main
 ```
 
 The exporter also records numerical warnings, including nonfinite values dropped by metric writers.
@@ -48,7 +48,7 @@ Review these warnings before classifying numerical stability.
 Export trace-level results for task uncertainty and failure classification:
 
 ```bash
-uv run python experiments/score-centering/eval_results.py outputs/score-centering/ipo-seed42 outputs/score-centering/sc-seed42 --output experiments/score-centering/results/main
+uv run python experiments/score-centering/eval_results.py outputs/score-centering/ipo-1plus1-seed42 outputs/score-centering/sc-1plus1-seed42 --output experiments/score-centering/results/main
 ```
 
 Valid-task reward estimates exclude failed episodes. Report error rates and missing-reward bounds alongside them.
@@ -62,7 +62,7 @@ The CSV also records server generation totals, including evaluation tokens, from
 After both main runs finish, create the score-independent Lego audit manifest:
 
 ```bash
-uv run python experiments/score-centering/select_holdout.py outputs/score-centering/ipo-seed42 outputs/score-centering/sc-seed42 --output experiments/score-centering/results/main/heldout
+uv run python experiments/score-centering/select_holdout.py outputs/score-centering/ipo-1plus1-seed42 outputs/score-centering/sc-1plus1-seed42 --output experiments/score-centering/results/main/heldout
 ```
 
 The selector records the full dataset order and excludes every task in either dispatch log.

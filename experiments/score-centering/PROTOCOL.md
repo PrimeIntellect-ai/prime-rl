@@ -46,7 +46,8 @@ No trainer optimization or reduction precision settings change.
 
 ## Resource and configuration limits
 
-Run both arms concurrently. Each arm uses one H200 trainer node and three inference nodes.
+Run both arms concurrently. Each arm uses one H200 trainer node and one inference node.
+Set adaptive concurrency to initial 512 and maximum 2048 episodes per arm.
 Never exceed eight experiment nodes, including simultaneous preflight allocations.
 Use the shared checkpoint, task draw sequence, sampling parameters, and run length.
 Sample Lego tasks uniformly with replacement using seed 42 in both arms.
@@ -120,3 +121,13 @@ Use task-level paired uncertainty and report errors plus missing-reward bounds.
 Do not select tasks or checkpoints using evaluation scores.
 This is a supplemental audit selected by training exposure, not an original random holdout split.
 Its conclusion applies to the unseen task set; retain the original TB2 results and limitations.
+
+## Resource revision on 2026-09-19
+
+The user requested one trainer plus one inference node per arm and a cap near 2000.
+Restart both arms from the same base weights with initial concurrency 512 and cap 2048.
+Archive the early four-node runs (`ipo-seed42`, `sc-seed42`) separately; do not pool their updates with the new pair.
+The early runs had no saved checkpoint and spent most trainer time waiting for rollouts.
+Inference KV use was below 1% in the inspected sample with the 192-episode cap.
+All other training, loss, quantization, task, and evaluation settings stay fixed.
+New run names are `ipo-1plus1-seed42` and `sc-1plus1-seed42`.

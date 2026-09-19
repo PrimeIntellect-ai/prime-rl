@@ -19,7 +19,7 @@ cleanup_grace_period = 120
 type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
-num_infer_replicas = 3
+num_infer_replicas = 1
 
 [weight_broadcast]
 type = "nccl"
@@ -56,8 +56,8 @@ group_size = 8
 max_off_policy_steps = 4
 
 [orchestrator.concurrency]
-initial_inflight = 128
-max_inflight = 192
+initial_inflight = 512
+max_inflight = 2048
 
 [orchestrator.renderer]
 name = "qwen3"
