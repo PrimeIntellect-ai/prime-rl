@@ -505,8 +505,9 @@ function flowGraphLayout(data, selected, viewportWidth) {
   const positions = new Map();
   const lanes = [];
   const width = Math.max(520, viewportWidth || 900);
-  const columns = Math.max(3, Math.floor((width - 72) / 166));
-  const xStep = (width - 72 - 142) / Math.max(1, columns - 1);
+  const inset = selected === "all" && data.edges.some((edge) => edge.kind === "link") ? 104 : 36;
+  const columns = Math.max(3, Math.floor((width - inset - 36) / 166));
+  const xStep = (width - inset - 36 - 142) / Math.max(1, columns - 1);
   let top = 0;
   groups.forEach((group) => {
     const items = nodes.filter((node) => node.group === group).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
@@ -517,11 +518,11 @@ function flowGraphLayout(data, selected, viewportWidth) {
       const row = Math.floor(i / columns);
       const offset = i % columns;
       const column = row % 2 ? columns - 1 - offset : offset;
-      positions.set(node.id, { x: 36 + column * xStep, y: top + 50 + row * 92 });
+      positions.set(node.id, { x: inset + column * xStep, y: top + 50 + row * 92 });
     });
     top += height;
   });
-  return { groups, lanes, nodes, positions, width, height: Math.max(250, top) };
+  return { groups, lanes, nodes, positions, width, inset, height: Math.max(250, top) };
 }
 
 function flowEdgePath(a, b) {
@@ -553,28 +554,45 @@ function renderFlowGraph() {
   const groupById = new Map(data.units.map((group) => [group.id, group]));
   const lanes = layout.lanes.map((lane) => {
     const group = groupById.get(lane.group);
-    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.name || lane.group)}</span></div>`;
+    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span style="left:${layout.inset > 36 ? layout.inset : 10}px">${esc(group?.name || lane.group)}</span></div>`;
   }).join("");
-  const edgeSvg = edges.map((edge) => {
+  const edgeSvg = [...edges].sort((a, b) => Number(a.id === state.flow.selectedEdge) - Number(b.id === state.flow.selectedEdge)).map((edge) => {
     const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
     if (!a || !b) return "";
-    return `<path class="fg-edge route" d="${flowEdgePath(a, b)}" marker-end="url(#fg-route)"></path>`;
+    const crossUnit = nodeById.get(edge.source).group !== nodeById.get(edge.target).group;
+    const path = crossUnit
+      ? `M ${a.x + 71} ${a.y + 54} V ${a.y + 70} H 16 V ${b.y - 12} H ${b.x + 71} V ${b.y}`
+      : flowEdgePath(a, b);
+    return `<path class="fg-edge route ${edge.kind} ${state.flow.selectedEdge === edge.id ? "active" : ""}" d="${path}" marker-end="url(#fg-route)"></path>`;
   }).join("");
-  const routeLabels = edges.map((edge) => {
+  const linkLabels = [];
+  const routeLabels = edges.filter((edge) => edge.target).map((edge) => {
     const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
     const sameRow = b && Math.abs(a.y - b.y) < 8;
-    const left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + (b ? 80 : 0);
-    const top = sameRow ? a.y - 25 : a.y + 62;
-    return `<button class="fg-route ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" style="left:${left}px;top:${top}px">${esc(edge.outcome || "route")}</button>`;
+    let left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + 80;
+    let top = sameRow ? a.y - 25 : a.y + 62;
+    if (edge.kind === "link") {
+      left = 22;
+      top = (a.y + b.y) / 2;
+      while (linkLabels.some((y) => Math.abs(y - top) < 24)) top += 24;
+      linkLabels.push(top);
+    }
+    return `<button class="fg-route ${edge.kind} ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" style="left:${left}px;top:${top}px">${esc(edge.outcome || "route")}</button>`;
   }).join("");
+  const outcomes = new Map(edges.filter((edge) => !edge.target).map((edge) => [edge.source, edge]));
   const cards = layout.nodes.map((node) => {
     const pos = layout.positions.get(node.id);
     if (!pos) return "";
     const suffix = node.occurrence ? ` · ${node.occurrence + 1}` : "";
     const duration = flowDuration(node);
     const calls = node.calls?.length ? ` · ${node.calls.length} call${node.calls.length === 1 ? "" : "s"}` : "";
-    return `<button class="fg-node ${flowStatusClass(node.status)} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.path)}">
+    const failed = node.calls.filter((call) => call.status === "failed").length;
+    const held = node.outcome === "held" || node.unit_status === "held";
+    const outcome = outcomes.get(node.id);
+    return `<button class="fg-node ${held || failed ? "bad" : flowStatusClass(node.status)} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.reason || node.path)}">
+      ${outcome ? `<span class="fg-outcome ${held ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome)}</span>` : ""}
       <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}${duration ? ` · ${esc(duration)}` : ""}${calls}</small>
+      ${failed ? `<span class="fg-failures">${failed} failed call${failed === 1 ? "" : "s"}</span>` : ""}
     </button>`;
   }).join("");
   graph.innerHTML = `<div class="fg-canvas" style="width:${layout.width}px;height:${layout.height}px">${lanes}
@@ -620,7 +638,7 @@ function openFlowStage(nodeId) {
         <span class="fm-kind">${esc(call.kind)}</span><code>${esc(call.key)}</code>
         <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)} ${call.source_call ? " · cached result" : ""}${call.trace_id ? " · trace" : ""}</small>
         ${call.error ? `<small>${esc(call.error)}</small>` : ""}
-        ${(call.rollouts || []).length > 1 ? call.rollouts.map((r, j) => `<button class="btn" data-fm-rollout="${j}">rollout ${r.rollout}: ${esc(r.status)}</button>`).join("") : ""}
+        ${(call.rollouts || []).length > 1 ? call.rollouts.map((r, j) => `<button class="btn" data-fm-rollout="${j}" title="${esc(r.error || "")}">rollout ${r.rollout}: ${esc(r.status)}</button>`).join("") : ""}
       </div>
       ${call.kind !== "agent" ? `<pre class="fm-payload" hidden>${esc(flowPayload(call) || "(no result recorded)")}</pre>` : ""}`).join("")
     : `<div class="empty"><span>no calls recorded</span><small>this stage has no call events</small></div>`;

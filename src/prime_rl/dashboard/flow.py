@@ -12,7 +12,7 @@ from typing import Any
 
 import orjson
 from verifiers.v1.flow.calls import Record
-from verifiers.v1.flow.events import CallEvent, EventRecord, RunEvent, StageEvent, SteerEvent, event_adapter
+from verifiers.v1.flow.events import CallEvent, EventRecord, LinkEvent, RunEvent, StageEvent, SteerEvent, event_adapter
 from verifiers.v1.flow.unit import UnitState
 
 TRANSITIONS = "transitions.jsonl"
@@ -147,7 +147,9 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     steers: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for order, event in enumerate(events):
         if isinstance(event, SteerEvent):
-            steers[event.unit].append({"at": event.at, "action": event.action.model_dump(exclude_none=True)})
+            steers[event.unit].append(
+                {"at": event.at, "order": order, "action": event.action.model_dump(exclude_none=True)}
+            )
             continue
         if not isinstance(event, StageEvent):
             continue
@@ -264,22 +266,62 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         by_unit[node["unit"]].append(node)
     for lane in by_unit.values():
         for i, source in enumerate(lane):
-            if source["outcome"] is None:
-                continue
-            target = lane[i + 1] if i + 1 < len(lane) else None
+            following = lane[i + 1] if i + 1 < len(lane) else None
+            target = following
             if source["unit_status"] != "ready" or (target and target["name"] != source["to"]):
                 target = None
-            edges.append(
-                {
-                    "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
-                    "source": source["id"],
-                    "target": target["id"] if target else None,
-                    "outcome": source["outcome"],
-                    "to": source["to"],
-                    "summary": source["reason"],
-                    "report": source.get("report"),
-                }
-            )
+            if source["outcome"] is not None:
+                edges.append(
+                    {
+                        "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
+                        "kind": "route",
+                        "source": source["id"],
+                        "target": target["id"] if target else None,
+                        "outcome": source["outcome"],
+                        "to": source["to"],
+                        "summary": source["reason"],
+                        "report": source.get("report"),
+                    }
+                )
+            if following is not None and target is None:
+                controls = [
+                    s
+                    for s in steers[source["unit"]]
+                    if source["order"] < s["order"] < following["order"]
+                    and ("stage" in s["action"] or "status" in s["action"])
+                ]
+                edges.append(
+                    {
+                        "id": f"resume:{source['id']}:{following['id']}",
+                        "kind": "resume",
+                        "source": source["id"],
+                        "target": following["id"],
+                        "outcome": "steer / resume" if controls else "resume",
+                        "to": following["name"],
+                        "summary": "Next recorded execution of this unit."
+                        + "".join(f"\n{s['at']}: {orjson.dumps(s['action']).decode()}" for s in controls),
+                    }
+                )
+    linked = set()
+    for event in events:
+        if not isinstance(event, LinkEvent):
+            continue
+        key = (event.source_execution, event.target_execution, event.label)
+        if key in linked:
+            continue
+        linked.add(key)
+        source, target = executions[event.source_execution], executions[event.target_execution]
+        edges.append(
+            {
+                "id": f"link:{source['id']}:{target['id']}:{event.label}",
+                "kind": "link",
+                "source": source["id"],
+                "target": target["id"],
+                "outcome": event.label,
+                "to": f"{target['unit']}/{target['name']}",
+                "summary": f"This execution selected work from {source['path']}.",
+            }
+        )
     units = []
     for unit, state in states.items():
         lane = by_unit.get(unit, [])

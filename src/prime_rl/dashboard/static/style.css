@@ -1741,6 +1741,10 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-svg { position: absolute; inset: 0; z-index: 1; overflow: visible; pointer-events: none; }
 .fg-edge { fill: none; stroke: var(--grey-4); stroke-width: 1; opacity: 0.42; }
 .fg-edge.route { stroke: var(--accent); stroke-width: 1.8; opacity: 0.9; }
+.fg-edge.resume { stroke-dasharray: 2 4; }
+.fg-edge.active { stroke: var(--grey-6); stroke-width: 2.5; }
+.fg-route.link { max-width: 76px; }
+.fg-route.resume { border-style: dotted; }
 #fg-route path { fill: var(--accent); }
 .fg-node {
   position: absolute; z-index: 3; width: 142px; height: 54px; padding: 8px 9px;
@@ -1754,6 +1758,10 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-node.live { border-color: var(--infra); animation: flow-pulse 1.2s steps(2) infinite; }
 .fg-node.stale { border-color: var(--infra); }
 .fg-node > span, .fg-node > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fg-node .fg-outcome { position: absolute; top: -10px; right: 6px; max-width: 125px; padding: 1px 5px; background: var(--grey-1); border: 1px solid var(--accent); color: var(--accent); font-size: 10px; }
+.fg-outcome.bad { border-color: var(--negative); color: var(--negative); }
+.fg-outcome.active { background: var(--grey-3); }
+.fg-node .fg-failures { position: absolute; bottom: -7px; right: 6px; padding: 0 4px; background: var(--grey-1); color: var(--negative); font-size: 9px; }
 #flow-modal { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .fm-panel { width: min(960px, 100%); max-height: 90vh; overflow: auto; background: var(--bg, #111); border: 1px solid var(--grey-3, #333); border-radius: 8px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
 .fm-head { display: flex; align-items: center; gap: 12px; }
@@ -1763,6 +1771,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fm-call { display: grid; grid-template-columns: 64px 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--grey-3, #333); border-radius: 6px; cursor: pointer; }
 .fm-call:hover { border-color: var(--grey-6); }
 .fm-call.agent { border-left: 2px solid var(--infra); }
+.fm-call.failed { border-color: var(--negative); }
 .fm-call.running { border-style: dashed; }
 .fm-call code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fm-kind { font-size: 11px; color: var(--grey-5); text-transform: uppercase; }

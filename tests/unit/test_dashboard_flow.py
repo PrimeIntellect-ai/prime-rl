@@ -102,7 +102,10 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert unkeyed["status"] == "cancelled" and lost["status"] == "incomplete"
     unit = next(u for u in result["units"] if u["name"] == "t")
     assert [s["action"]["note"] for s in unit["steers"]] == ["initial guidance", "pause after review", "retry"]
-    assert len(result["edges"]) == 1 and result["edges"][0]["target"] is None
+    outcome, resume = result["edges"]
+    assert outcome["target"] is None
+    assert resume["kind"] == "resume" and resume["target"] == second["id"]
+    assert '"note":"retry"' in resume["summary"]
     with (run / "transitions.jsonl").open("a") as file:
         for kind, execution in [("stopped", "second"), ("started", "third"), ("cancelled", "third")]:
             file.write(json.dumps({"type": kind, "execution": execution, "unit": "t", "stage": "evaluate"}) + "\n")

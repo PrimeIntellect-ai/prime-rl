@@ -15,6 +15,9 @@ A verifiers flow run directory opens a **Flow** tab following `transitions.jsonl
 `calls/`, and `traces.jsonl`. Units under `units/<id>/` form equal lanes; stage executions form nodes
 and transitions form edges. The inspector shows unit steering and affected-unit links without
 inferring execution dependencies. Completed agent calls open the existing trace viewer.
+Explicit execution links draw green cross-unit arrows; dotted connections show subsequent
+executions with recorded steering controls. Outcomes without a connected transition stay on
+their node, and holds and failed calls receive red emphasis.
 Unit state is read from committed Git HEAD, including the pipeline's typed `data`.
 Stage and call IDs determine attribution; cache attachments keep producer provenance.
 Failed and uncached calls remain visible, and native retry traces open individually.
