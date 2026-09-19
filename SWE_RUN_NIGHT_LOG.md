@@ -255,6 +255,8 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - 10:30 hourly summary through step 150: 6h 22m job time, ~2 min/step, reward 0.53-0.98 (last 10 mean ~0.82),
   mismatch KL 0.024-0.034, grad norm 0.009-0.10, Peak Mem 72-92 GiB. 15,958 episodes finished. Cumulative: 160
   off-policy cancellations, 129 trace failures (of which 29 were the single 09:56 harness burst; no repeat).
+- 10:52:24 step 160 checkpoint saved (`Step 160 | 6m 10s`); `checkpoints/` holds `step_140` and `step_160`.
+  Steps 151-160 routine.
 
 ## Open questions for Garrett
 
