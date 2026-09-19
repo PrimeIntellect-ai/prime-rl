@@ -178,6 +178,11 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - 05:48:23 orchestrator: `Discarded 72/136 episodes (52.9%): stale=0, errored=0, no_signal=72`. Groups whose 8
   rewards are identical (mostly all-pass, given mean reward 0.78-0.94) have zero advantage and are dropped.
   A throughput cost, not a failure; the batch still reached 64 effective episodes. See open questions.
+- 06:01:16 **first checkpoint, step 20**: trainer `Saving checkpoint at step 20` at 05:57:44, step 20 logged at
+  06:01:16 with `6m 27s` total versus 1.5-4 min for neighbouring steps, so the 3.2 TB DCP write took roughly
+  3.5 min. `checkpoints/step_20/` has both `trainer/` (3.2T) and `orchestrator/`, so a bare `[resume]` is safe
+  from here. Step 21 followed at 06:02:45, so nothing stalled after the save. Next checkpoint at step 40 will
+  test `keep_last = 2` cleanup at step 60.
 
 ## Open questions for Garrett
 
