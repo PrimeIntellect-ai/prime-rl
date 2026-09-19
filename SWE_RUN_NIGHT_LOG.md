@@ -571,6 +571,10 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   `step_300`, `step_320`. Disk 55 TB of 250 TB.
 - 23:38:39 step 340 checkpoint saved (`Step 340 | 2m 18s | Mismatch KL 0.0063 | Grad. Norm 0.2588`); `checkpoints/`
   holds `step_320`, `step_340`. Steps 331-340 routine.
+- 23:52:05 last trainer step 351. **Stopped on Garrett's instruction** (`scancel 918` at 23:53:27, gone 23:53:32).
+  `checkpoints/` is exactly `step_320` and `step_340`, both halves, 64 shards each; no stray orchestrator-only
+  checkpoint. Deleted the 512 live sandboxes. Total: 351 steps in 7h 27m of job time, one restart (the FP8
+  tiling fix before any step), zero trainer or inference errors, mismatch KL 0.004-0.007 throughout.
 
 ## Open questions for Garrett (GLM run)
 
