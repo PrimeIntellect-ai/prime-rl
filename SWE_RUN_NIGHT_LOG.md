@@ -569,6 +569,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   (mean ~0.72), mismatch KL 0.0048-0.0066 with no trend, inference p99 36-38 s, Peak Mem 34-49 GiB. 39,567
   episodes finished; 220 off-policy cancellations, 133 trace failures, 3 provisioning blips. Checkpoints
   `step_300`, `step_320`. Disk 55 TB of 250 TB.
+- 23:38:39 step 340 checkpoint saved (`Step 340 | 2m 18s | Mismatch KL 0.0063 | Grad. Norm 0.2588`); `checkpoints/`
+  holds `step_320`, `step_340`. Steps 331-340 routine.
 
 ## Open questions for Garrett (GLM run)
 
