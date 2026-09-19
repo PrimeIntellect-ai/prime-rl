@@ -209,6 +209,11 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   which fits a selection effect: the episodes that outlive 32 steps are the long, hard ones. Still holding
   (the run is alive; the knob changes the data mix). If Garrett wants it changed, the cheapest moment is right
   after a checkpoint: `scancel`, set `max_off_policy_steps = 64`, relaunch with the bare `[resume]`.
+- 07:25:09 **checkpoint step 60 and first `keep_last` cleanup**: save 07:21:13, `Step 60 | 4m 51s`; `checkpoints/`
+  now holds `step_40` and `step_60` only (6.3 TB), so `step_20` was deleted after the save as designed.
+- 07:26 hourly summary: steps 41-61 in ~40 min (~2 min/step), reward 0.70-0.98, mismatch KL 0.020-0.027, grad
+  norm 0.006-0.09, Peak Mem 79-92 GiB. Off-policy cancellations 42 total by step 61 (~1% of episodes, spiky per
+  batch, 0-15%). No new failure classes.
 
 ## Open questions for Garrett
 
