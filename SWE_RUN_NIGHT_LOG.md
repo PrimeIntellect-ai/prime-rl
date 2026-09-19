@@ -462,6 +462,13 @@ Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_2/`.
 Config at `e70a6fce6` (adds the two FP8 `ignore` patterns). Run-dir attempt 3 was the dry run. Same node set as
 attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_output_dir/glm45air-swe-131k/logs/attempt_4/`.
 
+#### Attempt 4 progress
+
+- 16:27:29 replica 0 `Loading weights took 14.07 seconds` (warm). Profiling passed with the FP8 exclusions.
+- 16:29:56 KV pool: `GPU KV cache size: 7,923,472 tokens, Maximum concurrency for 131,072 tokens per request: 60.45x`
+  (6.4x the DeepSeek pool; GLM-4.5-Air is ~1/3 the parameters and has 8 KV heads).
+- 16:34:30 `Policy inference pool ready after 8m 0s`; v0 `POST /update_weights 200 OK` shortly after.
+
 ## Open questions for Garrett (GLM run)
 
 - The GLM comparison is not a perfect "same FP8": layer 0's dense MLP and every layer's shared expert run in bf16
