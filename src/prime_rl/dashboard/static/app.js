@@ -550,26 +550,20 @@ function renderFlowGraph() {
   const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
   const visible = new Set(nodeById.keys());
   const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target || visible.has(edge.target)));
-  const edgeTarget = (edge) => {
-    const target = edge.target && layout.positions.get(edge.target);
-    if (target) return target;
-    const source = layout.positions.get(edge.source);
-    return source.x + 326 < layout.width ? { x: source.x + 184, y: source.y } : { x: source.x, y: source.y + 78 };
-  };
   const groupById = new Map(data.units.map((group) => [group.id, group]));
   const lanes = layout.lanes.map((lane) => {
     const group = groupById.get(lane.group);
     return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.name || lane.group)}</span></div>`;
   }).join("");
   const edgeSvg = edges.map((edge) => {
-    const a = layout.positions.get(edge.source), b = edgeTarget(edge);
+    const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
     if (!a || !b) return "";
-    return `<path class="fg-edge route ${edge.target ? "" : "pending"}" d="${flowEdgePath(a, b)}" marker-end="url(#fg-route)"></path>`;
+    return `<path class="fg-edge route" d="${flowEdgePath(a, b)}" marker-end="url(#fg-route)"></path>`;
   }).join("");
   const routeLabels = edges.map((edge) => {
-    const a = layout.positions.get(edge.source), b = edgeTarget(edge);
-    const sameRow = Math.abs(a.y - b.y) < 8;
-    const left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + 80;
+    const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
+    const sameRow = b && Math.abs(a.y - b.y) < 8;
+    const left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + (b ? 80 : 0);
     const top = sameRow ? a.y - 25 : a.y + 62;
     return `<button class="fg-route ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" style="left:${left}px;top:${top}px">${esc(edge.outcome || "route")}</button>`;
   }).join("");
@@ -3722,7 +3716,7 @@ async function openEpisode(line, target = {}) {
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
   currentEvidenceView = target.evidence ?? null;
-  traceView = currentEvidenceView == null ? preferredTraceView : "transcript";
+  traceView = target.highlight || currentEvidenceView != null ? "transcript" : preferredTraceView;
   if (traceView === "timeline" || traceView === "semantic") await ensureTimeline();
   if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   if (traceView === "semantic" && !timelineHasSemantic()) traceView = "transcript";
@@ -4001,7 +3995,7 @@ function renderTokenNode(node, signal, scales) {
   return spans.join("");
 }
 
-/* tool calls render directly as python-style calls, e.g. ipython("!ls -la /app") */
+/* Replay uses Python-style calls; transcript arguments retain their decoded text. */
 function pyLiteral(value) {
   if (value === null) return "None";
   if (value === true) return "True";
@@ -4011,24 +4005,29 @@ function pyLiteral(value) {
   return JSON.stringify(value);
 }
 
-function toolCallHtml(toolCall) {
-  return `<div class="tool-call">${esc(toolCallText(toolCall))}</div>`;
+function toolArguments(toolCall) {
+  const raw = toolCall.function?.arguments ?? toolCall.arguments;
+  let parsed;
+  try {
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    parsed = raw ?? "";
+  }
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.entries(parsed) : [["", parsed]];
+}
+
+function toolCallHtml(toolCall, marks = []) {
+  const name = toolCall.function?.name ?? toolCall.name ?? "?";
+  const args = toolArguments(toolCall).map(([key, value]) =>
+    `${key ? `${esc(key)}: ` : ""}${quoteMarkedHtml(typeof value === "string" ? value : pyLiteral(value), marks)}`
+  );
+  return `<div class="tool-call">${esc(name)}\n${args.join("\n")}</div>`;
 }
 
 function toolCallText(toolCall) {
   const name = toolCall.function?.name ?? toolCall.name ?? "?";
-  const raw = toolCall.function?.arguments ?? toolCall.arguments;
-  let args;
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const entries = Object.entries(parsed);
-      // one argument reads best positionally: ipython("!ls -la /app")
-      args = entries.length === 1 ? pyLiteral(entries[0][1]) : entries.map(([k, v]) => `${k}=${pyLiteral(v)}`).join(", ");
-    } else args = pyLiteral(parsed);
-  } catch {
-    args = String(raw ?? "");
-  }
+  const entries = toolArguments(toolCall);
+  const args = entries.length === 1 ? pyLiteral(entries[0][1]) : entries.map(([k, v]) => `${k}=${pyLiteral(v)}`).join(", ");
   return `${name}(${args})`;
 }
 
@@ -4342,7 +4341,9 @@ function renderMessages(ep, trace, branches) {
     const reasoningMarked = reasoningMarks.some(
       (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
     );
-    const marked = contentMarked || reasoningMarked;
+    const toolMarks = marks.filter((h) => !h.field || h.field === "tool_arguments");
+    const toolCalls = (node.message?.tool_calls || []).map((call) => toolCallHtml(call, toolMarks));
+    const marked = contentMarked || reasoningMarked || toolCalls.some((html) => html.includes('<mark class="hl-quote"'));
     // a node with no recorded token ids carries nothing to colour - it still shows its
     // message, whole, and says why it is uncoloured
     const overlayable = !!node.token_ids?.length;
@@ -4361,7 +4362,6 @@ function renderMessages(ep, trace, branches) {
     // Reasoning is parsed into its own box only in the text view; under a signal the
     // recorded sequence is what is being read, so it stays inline with the message.
     if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
-    const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
@@ -4409,7 +4409,7 @@ function renderMessages(ep, trace, branches) {
         `<span class="chip">awaiting model</span><span class="entry-chev">›</span></summary>` +
         (text ? `<div class="entry-body">${esc(text)}</div>` : "") +
         imagesHtml(message) +
-        (message?.tool_calls || []).map(toolCallHtml).join("") +
+        (message?.tool_calls || []).map((call) => toolCallHtml(call)).join("") +
         `</details>`
       );
     })
@@ -4422,7 +4422,7 @@ function renderMessages(ep, trace, branches) {
     unlinkedCallsHtml +
     pendingHtml;
   if (hl && !hl.scrolled) {
-    const first = container.querySelector(".hl-entry");
+    const first = container.querySelector("mark.hl-quote");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
     // twice (enrichment re-render), which detaches the first render's node
     // before its scheduled scroll fires
@@ -4430,7 +4430,7 @@ function renderMessages(ep, trace, branches) {
       requestAnimationFrame(() => {
         if (!first.isConnected) return;
         hl.scrolled = true;
-        first.scrollIntoView({ block: "start", behavior: "smooth" });
+        first.scrollIntoView({ block: "center", behavior: "instant" });
       });
   }
   if (rendered < path.length) {
@@ -6095,8 +6095,8 @@ async function resolveCitation(c, cache) {
     if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
   if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
     return { matched: false, reason: "branch must be an integer >= -1" };
-  if (c.field != null && !["content", "reasoning"].includes(c.field))
-    return { matched: false, reason: "field must be content or reasoning" };
+  if (c.field != null && !["content", "reasoning", "tool_arguments"].includes(c.field))
+    return { matched: false, reason: "field must be content, reasoning, or tool_arguments" };
   if (!byTrace && (typeof c.episode !== "string" || !c.episode)) return { matched: false, reason: "citation needs an episode id" };
   if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
@@ -6158,6 +6158,9 @@ async function resolveCitation(c, cache) {
     const fields = [
       ["content", messageText(node.message)],
       ["reasoning", reasoningText(node.message?.reasoning_content ?? node.message?.reasoning)],
+      ...(node.message?.tool_calls || []).flatMap((call) => toolArguments(call).map(([, value]) =>
+        ["tool_arguments", typeof value === "string" ? value : pyLiteral(value)]
+      )),
     ].filter(([field]) => !c.field || c.field === field);
     for (const [field, text] of fields) {
       for (const _ of findQuotes(text, c.quote, c.prefix, c.suffix)) matches.push({ nodeIdx: i, field });
@@ -6166,7 +6169,7 @@ async function resolveCitation(c, cache) {
   if (!matches.length)
     return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
   if (matches.length > 1) return { matched: false, reason: "quote is ambiguous — add node and prefix or suffix", line };
-  return { matched: true, line, ...matches[0] };
+  return { matched: true, line, trace: traceIndex, ...matches[0] };
 }
 
 function paintCitation(id, res) {
@@ -6229,7 +6232,7 @@ async function openCitation(id) {
     subset: c.subset,
     episode: c.episode,
     line: res.line,
-    trace: c.trace,
+    trace: res.trace,
     branch: c.branch ?? -1,
     highlight: [{ node: res.nodeIdx, field: res.field, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }],
   });
@@ -6258,7 +6261,10 @@ function primeTraceCommand(cmd) {
   traces.bin = null;
   traces.env = "";
   traces.errorsOnly = false;
-  if (cmd.highlight?.length) traces.viewMode = "messages";
+  if (cmd.highlight?.length) {
+    traces.viewMode = "messages";
+    $("#token-signal").value = "";
+  }
   pendingHighlight = null;
 }
 
@@ -6327,7 +6333,7 @@ async function applyTraceCommand(cmd) {
     highlights: (cmd.highlight || []).filter((h) => h && h.node != null),
     scrolled: false,
   };
-  await openEpisode(line, { trace: cmd.trace, branch: cmd.branch });
+  await openEpisode(line, { trace: cmd.trace, branch: cmd.branch, highlight: cmd.highlight?.length });
 }
 
 let toastEl = null;

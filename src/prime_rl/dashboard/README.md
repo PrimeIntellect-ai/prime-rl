@@ -24,6 +24,8 @@ Workflow updates, new call events/results, and process exit invalidate the view 
 Flow reports are ordinary Markdown files under `reports/`; only filenames referenced by
 recorded transitions appear in the Report tab. Pipelines write each report once using a
 unique execution filename. A missing requested report is shown as unavailable.
+Citation quotes can match message content, reasoning, or decoded tool arguments
+(`field: "tool_arguments"`); missing or ambiguous quotes remain broken.
 
 The Config and Logs views keep each launch attempt available. The Config view
 shows a copyable command above the launch TOML or resolved JSON. Both views

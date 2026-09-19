@@ -2073,8 +2073,8 @@ def validate_view_command(cmd: dict) -> dict:
             for key in ("prefix", "suffix", "reason"):
                 if key in h and not isinstance(h[key], str):
                     raise HTTPException(400, f"highlight {key} must be a string")
-            if h.get("field") not in (None, "content", "reasoning"):
-                raise HTTPException(400, "highlight field must be content|reasoning")
+            if h.get("field") not in (None, "content", "reasoning", "tool_arguments"):
+                raise HTTPException(400, "highlight field must be content|reasoning|tool_arguments")
     return cmd
 
 

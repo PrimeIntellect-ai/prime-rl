@@ -1241,8 +1241,8 @@ details.entry[open] > summary > .entry-preview { visibility: hidden; }
 details.entry[open] .entry-chev { transform: rotate(90deg); }
 .entry-body { padding: 10px 14px; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--grey-5); }
 .entry-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 10px; }
-.entry-images img { max-height: 220px; max-width: 100%; border: 1px solid var(--hairline); border-radius: 4px; cursor: zoom-in; }
-.entry-images img.full { max-height: none; cursor: zoom-out; }
+.entry-images img { width: 100%; height: 220px; object-fit: contain; border: 1px solid var(--hairline); border-radius: 4px; cursor: zoom-in; }
+.entry-images img.full { height: auto; cursor: zoom-out; }
 .chip {
   font-size: 10px;
   border: 1px solid var(--grey-3);
@@ -1741,7 +1741,6 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-svg { position: absolute; inset: 0; z-index: 1; overflow: visible; pointer-events: none; }
 .fg-edge { fill: none; stroke: var(--grey-4); stroke-width: 1; opacity: 0.42; }
 .fg-edge.route { stroke: var(--accent); stroke-width: 1.8; opacity: 0.9; }
-.fg-edge.pending { stroke-dasharray: 4 4; opacity: 0.6; }
 #fg-route path { fill: var(--accent); }
 .fg-node {
   position: absolute; z-index: 3; width: 142px; height: 54px; padding: 8px 9px;
