@@ -4,39 +4,32 @@ User authorized autonomous implementation, launches, monitoring, fixes, and anal
 Latest main merged: a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
 Do not merge or open a PR unless asked. No subagents are authorized.
 
-## Current work
+## Current state
 
-Both training jobs stopped for a shared gateway failure. User authorization to continue remains active.
-Do not relaunch until the runtime recovery check passes. Resume both arms from the preserved step-50 checkpoints.
-
-- IPO job 893 and centered job 891 are cancelled. No experiment GPU allocation remains.
-- Both orchestrators received SIGINT at 12:46:33 UTC. Forced VM cleanup completed by 12:46:36.
-- First recorded HTTP 502 failures: centered 12:40:10 UTC; IPO 12:40:14 UTC.
-- Failures came from the VM-to-interception tunnel path; local inference remained available and trainers stayed finite.
-- An isolated head-node tunnel probe returned 200 once, then hit a 15-second read timeout. It cleaned up its tunnel.
-- Step-50 trainer and orchestrator checkpoints are verified and hard-linked under each run's `preserved-checkpoints/step_50`.
-- Current run directories remain `ipo-1plus1-api4-seed42-r3` and `sc-1plus1-api4-seed42-r2`.
-- The first 50 optimizer updates precede the gateway incident. Treat later interrupted work separately.
-- Step-50 online evaluations overlapped the incident; preserve errors and interruption records. Do not interpret their scores as clean measurements.
-- Recovery eval: `gateway-recovery-20260919-1249`, using eval-preflight.toml (2 Lego + 2 TB2 episodes, hosted model).
-- First recovery eval finished: Lego 1/2 harness errors (502), TB2 0/2 errors. One of four episodes solved.
-- At 13:00 UTC, a second tunnel probe passed 12/12 public and local requests.
-- Second recovery eval: `gateway-recovery-20260919-1301`, session74638, concurrency4. Console `/tmp/score-centering-gateway-recovery-r2.log`.
-- Verified zero active sandboxes for both stopped run labels.
-- Both external step-50 resume dry runs passed. New names: `ipo-1plus1-api4-seed42-resume50-r1`, `sc-1plus1-api4-seed42-resume50-r1`. Generated scripts request two nodes each.
-- `lineage.json` records parent updates1–50 plus planned continuations. Original runs ended at IPO54 and SC52; updates after50 stay excluded.
-- Next: validate recovery eval, then submit both generated scripts concurrently. Repeat the step-50 online eval (`retrigger_on_resume=true`).
-- Preserve the cap of 2048 and actual API4 per engine. No scientific configuration change is planned.
-- First-50 curves and window statistics: `results/main-api4-step50`. No numerical or predefined reward collapse.
-- Checkpoint manifests: `results/monitor/checkpoints-step50.json`; each trainer checkpoint is 341.24 GiB.
-- Current IPO W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/f7acea587c9a4bd5aeb33be0d270fd65
-- Current centered W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/a5741426ea7d458783ceace65a5b1509
-- Shared dashboard: port 7789. Do not stop it.
-- Latest main merged before launch: a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
+- Preparing one four-node allocation for both step-50 continuations. Separate jobs908/909 were stopped before rollout collection because only one node pair was available.
+- IPO: `ipo-1plus1-api4-seed42-resume50-r2`; centered: `sc-1plus1-api4-seed42-resume50-r2`.
+- Each requests one trainer plus one inference node. Preserve API4 per engine and initial512/max2048 inflight.
+- Both resume external trainer and orchestrator state from each parent's `preserved-checkpoints/step_50`.
+- Runtime restoration remains to be verified. Next optimizer update must be51; startup policy broadcast must be50.
+- The step-50 online eval repeats in the new directories. Max updates stays400.
+- Paired launcher: `resume-pair.sbatch`. Both generated launchers run concurrently on disjoint two-node subsets. Stub checks verified cleanup and startup node scopes.
+- Analysis source:849715d94; latest main merged before the experiment:a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
+- Recovery eval `gateway-recovery-20260919-1301` completed all4 VM episodes with no errors. Lego1/2solved; TB2 1/2solved.
+- Two fresh tunnel checks passed12/12 public requests each after the earlier intermittent failures.
+- Old jobs891/893 were stopped after shared502 gateway failures beginning12:40UTC. Both allocations released; exact-label VM inventories empty.
+- Original IPO ended at54; centered52. Keep original updates1–50, then new continuation51 onward. `lineage.json` records this boundary.
+- Original step-50 online evals are affected by gateway errors and interruption. Exports: `results/gateway-incident/evals`.
+- Original first50updates remain finite; no predefined collapse. Export: `results/main-api4-step50`.
+- Both preserved checkpoint manifests pass11,475 shard-extent checks; each trainer checkpoint341.24GiB.
+- `analyze.py --lineage experiments/score-centering/lineage.json --output <directory>` joins clean segments and offsets cumulative budgets.
+- Joined first50gradients, mismatch means/maxima, and budgets exactly match the prior export. Synthetic boundary/budget checks passed.
+- Monitor helper:`/tmp/score-centering-monitor.py`, now points to both continuations and counts gateway502 messages.
+- W&B project:https://wandb.ai/primeintellect/score-centering-terminal. New run IDs pending startup.
+- Shared dashboard:port7789. Do not stop it.
 
 ### Restart history
 
-- Current active pair: IPO893 (`ipo-1plus1-api4-seed42-r3`, launched09:08:21 UTC, nodes014/050) and SC891 (`sc-1plus1-api4-seed42-r2`, launched09:04:46 UTC, nodes057/058). Source differs only in dependency-sync control and experiment records; scientific settings match. User requested close monitoring at09:08 UTC.
+- Previous pair: IPO893 (`ipo-1plus1-api4-seed42-r3`, launched09:08:21 UTC, nodes014/050) and SC891 (`sc-1plus1-api4-seed42-r2`, launched09:04:46 UTC, nodes057/058). Source differs only in dependency-sync control and experiment records; scientific settings match. User requested close monitoring at09:08 UTC.
 
 - SC891 runtime confirms four API processes per engine. IPO892 inference failed in uv metadata resolution (GitHub wheel HTTP500) before model loading. Cancelled IPO892; relaunch IPO from scratch with UV_NO_SYNC=1 to use the installed environment. SC891 continues. This changes dependency resolution only, not the installed model/training stack.
 

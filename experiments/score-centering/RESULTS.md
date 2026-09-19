@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 13:00 UTC: both arms stopped after a shared gateway failure. Fifty finite updates are preserved. No collapse observed.
+Status at 2026-09-19 13:10 UTC: runtime recovery passed. The paired step-50 restart is awaiting a four-node allocation; full restore pending. No collapse observed.
 
 ## Main comparison
 
@@ -95,6 +95,15 @@ A fresh tunnel probe returned nine successful requests and three timeouts in twe
 Both persistent and fresh connections timed out. This does not identify the service root cause.
 A hosted-model `uv run eval` also reproduced the 502 inside a fresh Lego VM.
 Another Lego episode completed and scored. Recovery was not yet validated at 13:00 UTC.
+A second eval finished at13:09 UTC with all four episodes scored and no errors.
+Two subsequent tunnel probes each passed12/12 public requests.
+Submitted paired step-50 continuations as IPO908 and centered909 at13:10 UTC.
+Full checkpoint restore and next optimizer updates remain to be verified.
+Only IPO908 received nodes; centered909 remained pending for resources.
+Stopped both before episode collection to preserve concurrent execution.
+The replacement `resume-pair.sbatch` reserves four nodes atomically.
+Each arm runs on its own two-node subset, with explicit scoping for cleanup and startup.
+A stub launch verified both disjoint scopes. Scientific settings stay fixed.
 These infrastructure failures do not meet the experiment's policy-collapse criterion.
 Resume both arms from their preserved step-50 states after runtime recovery.
 Use new run directories to preserve the affected records and repeat the step-50 online evaluation.
