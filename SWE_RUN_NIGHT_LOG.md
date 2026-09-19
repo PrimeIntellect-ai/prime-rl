@@ -220,6 +220,16 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - 08:06 hourly summary through step 80: ~2 min/step, reward 0.70-0.98, mismatch KL 0.020-0.028, Peak Mem 72-92
   GiB. Failure tally since 04:44: 73 image-level harness failures (`uv --script` / no `/bin/bash`), 68 off-policy
   cancellations, 1 Bad Gateway, out of ~5,100 episodes. No trainer or inference errors since the v0 broadcast.
+- 08:06-08:09 **broadcast stall, self-resolved**: trainer `Still waiting for the broadcast receiver after 60s /
+  120s / 180s` for v81. Timeline from `broadcasts/step_81/` markers: `.sender_ready` 08:05:59, `.receiver_ready`
+  and `.started` 08:09:28, `.finished` 08:09:48; trainer `Step 81 | 4m 26s` at 08:09:49. Inference was healthy
+  throughout (all 8 replicas serving, no errors) and the orchestrator process was alive (25% CPU, 64 threads in
+  futex wait, no tracebacks). Cause: `WeightWatcher.apply_policy_update` runs
+  `Dispatcher.on_version_pending` before acknowledging, and that first does `async with self.scheduling_lock`
+  to let an in-flight `fill_inflight` finish; with ~300 live sandboxes that scheduling pass took ~3.5 min.
+  The 8 stale cancels then landed at 08:09:28 and the ack followed immediately. So the stall length tracks
+  sandbox provisioning latency, and `weight_broadcast.timeout = 3600` bounds it. py-spy was denied (ptrace).
+  No action; noted in open questions as something that would get worse with more inflight rollouts.
 
 ## Open questions for Garrett
 
@@ -241,3 +251,7 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - `max_off_policy_steps = 32` is being hit: the longest SWE rollouts outlive 32 trainer steps at ~2.5 min each
   (first 2 cancellations at 06:26, step ~33; 19 by step 50, up to 15% of a single batch). The episodes it drops are the hardest, longest ones, which biases
   the batch toward short tasks. Suggest 64 on the next relaunch. I did not restart the run for this.
+- Weight updates can stall for minutes because the watcher waits on the dispatcher's `scheduling_lock` before
+  acknowledging the trainer's broadcast (3.5 min at step 81 with ~300 live sandboxes). The trainer idles for
+  that whole time. Worth a look at whether the stale-drain barrier needs the full scheduling pass, or whether
+  `fill_inflight` should yield more often; `weight_broadcast.timeout = 3600` is the only guard today.
