@@ -122,6 +122,11 @@ VLLM_USE_DEEP_GEMM_E8M0 = "0"
 [inference.vllm]
 dtype = "bfloat16"
 quantization = "fp8_per_block"
+# Blockwise FP8 needs every sharded weight dimension to be a multiple of 128. GLM-4.5-Air's dense MLP in
+# layer 0 (intermediate 10944) and its shared expert (1408, split 8 ways to 176) are not, and the Triton
+# block-scaled GEMM asserts on them at startup. Routed experts stay whole under expert parallelism (1408 =
+# 11 x 128) and attention shards cleanly, so only these two module families are kept in bf16.
+quantization_config = { ignore = ["re:.*\\.layers\\.0\\.mlp\\..*", "re:.*\\.shared_experts\\..*"] }
 tensor_parallel_size = 8
 enable_expert_parallel = true
 enable_return_routed_experts = true
