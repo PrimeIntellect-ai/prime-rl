@@ -522,6 +522,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   after 19:02 (44 total); live sandboxes matched inflight (510 vs 512), so nothing leaked.
 - 19:23:15 step 160 checkpoint saved (`Step 160 | 2m 18s | Mismatch KL 0.0045`); `checkpoints/` holds `step_140`,
   `step_160`. Steps 141-160: reward 0.53-0.89, turns 28-40.
+- 19:44:48 step 180 checkpoint saved (`Step 180 | 2m 32s | Mismatch KL 0.0052`); `checkpoints/` holds `step_160`,
+  `step_180`. Steps 161-180 routine: reward 0.53-0.88, turns 30-40, cancellations 5-7% of a batch at times.
 
 ## Open questions for Garrett (GLM run)
 
