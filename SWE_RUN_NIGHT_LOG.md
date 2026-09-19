@@ -495,6 +495,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   Checkpoints `step_20`, `step_40` (1.2 TB each). Nothing new to escalate.
 - 17:31:47 step 60 checkpoint saved (`Step 60 | 2m 12s`); `checkpoints/` now `step_40 step_60` so `keep_last = 2` cleanup
   works here too. Steps 41-60: reward 0.34-0.89, turns 21-45, KL 0.0045-0.0061, `Max Off-Policy` up to 23.
+- 17:53:41 step 80 checkpoint saved (`Step 80 | 2m 27s`); `checkpoints/` holds `step_60`, `step_80`. Steps 61-80
+  routine: reward 0.5-0.8, KL 0.005-0.006, Peak Mem 34-49 GiB.
 
 ## Open questions for Garrett (GLM run)
 
