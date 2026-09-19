@@ -214,6 +214,12 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
 - 07:26 hourly summary: steps 41-61 in ~40 min (~2 min/step), reward 0.70-0.98, mismatch KL 0.020-0.027, grad
   norm 0.006-0.09, Peak Mem 79-92 GiB. Off-policy cancellations 42 total by step 61 (~1% of episodes, spiky per
   batch, 0-15%). No new failure classes.
+- 07:56:00 one `SandboxError: prime exec failed: Connect RPC failed (unavailable): Bad Gateway` (transient
+  sandbox API blip, single trace, did not recur).
+- 08:05:22 **checkpoint step 80**: `Step 80 | 6m 46s`; `checkpoints/` holds `step_60` and `step_80` (6.3 TB).
+- 08:06 hourly summary through step 80: ~2 min/step, reward 0.70-0.98, mismatch KL 0.020-0.028, Peak Mem 72-92
+  GiB. Failure tally since 04:44: 73 image-level harness failures (`uv --script` / no `/bin/bash`), 68 off-policy
+  cancellations, 1 Bad Gateway, out of ~5,100 episodes. No trainer or inference errors since the v0 broadcast.
 
 ## Open questions for Garrett
 
