@@ -484,6 +484,10 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   Peak Mem. 43.8 GiB`; steps 2-3 at 20-46 s, Peak Mem 33.6 GiB. Mismatch KL is ~6x lower than DeepSeek's
   0.025 at step 1 under the same FP8 serving (bf16 dense MLP and shared experts aside). Steps are trainer-cheap
   and rollout-bound as expected for a 106B model on 8 nodes.
+- 16:44 step 10: reward 0.53, turns 15.8; 16:52 step 20: reward 0.86, turns 24.4. The tool-hallucination
+  hurdle is gone within 20 steps. Trainer steps 20-60 s, mismatch KL 0.004-0.006, Peak Mem 34-49 GiB.
+- 16:53:52 **first checkpoint, step 20**: `Step 20 | 2m 7s`, ~75 s of write, trainer half 1.2T (vs 3.2 TB for
+  DeepSeek); both halves present.
 
 ## Open questions for Garrett (GLM run)
 
