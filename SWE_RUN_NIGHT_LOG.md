@@ -165,3 +165,11 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   - Step 1 wall time includes the first-call TileLang / torch.compile warmup, so 18 min is an upper bound.
   - Mismatch KL 0.0249 is in line with the FP8 measurement in `FP8_MISMATCH_RESULTS.md` (0.0307 at lr = 0),
     i.e. above the 0.015 bar that document discusses. Expected consequence of the FP8 decision, not a bug.
+- The `scaleswe` bash harness fails setup on some task images with `uv ... unexpected argument '--script'`
+  (old `uv` in the image). Whole groups die with reward 0 and no signal (task 41 in attempt 5; 7.1% error on
+  attempt 7 step 2). Fix belongs in the harness setup or the images, not this config. Left alone.
+- Mismatch KL is ~0.025 at step 1 under FP8 serving with the indexer excluded, consistent with the
+  `FP8_MISMATCH_RESULTS.md` numbers and above the 0.015 bar discussed there. Not touched (FP8 on/off is yours).
+- `wait_for_ready_timeout = 7200` and `gpu_memory_utilization = 0.75` are now in the config. The second costs
+  ~18% of the KV pool (11.55x to 9.46x concurrency per replica). An alternative that keeps 0.85 would be
+  sub-chunking the NCCL receive buffer in `inference/vllm/worker/nccl.py`; I did not make that code change.
