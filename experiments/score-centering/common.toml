@@ -111,6 +111,7 @@ VLLM_CACHE_ROOT = "/tmp/score-centering-vllm"
 FLASHINFER_WORKSPACE_BASE = "/tmp/score-centering-flashinfer"
 
 [inference.vllm]
+api_server_count = 4
 tool_call_parser = "hermes"
 enable_auto_tool_choice = true
 quantization = "fp8_per_block"

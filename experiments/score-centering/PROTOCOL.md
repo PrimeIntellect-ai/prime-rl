@@ -132,3 +132,9 @@ The early runs had no saved checkpoint and spent most trainer time waiting for r
 Inference KV use was below 1% in the inspected sample with the 192-episode cap.
 All other training, loss, quantization, task, and evaluation settings stay fixed.
 New run names are `ipo-1plus1-seed42` and `sc-1plus1-seed42`.
+
+The first 1+1 attempt (jobs 868/867) failed serving health checks before any optimizer update.
+Both arms hit repeated unhealthy-worker errors under the larger episode load.
+Restart both with four API workers per engine to parallelize Python response processing.
+Retain the same model, GPU engines, loss, sampling, initial concurrency, and inflight cap.
+Use fresh run names `ipo-1plus1-api4-seed42` and `sc-1plus1-api4-seed42`.

@@ -6,6 +6,9 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- At 07:24 UTC, interrupted both 1+1 orchestrators after repeated router unhealthy-worker errors; neither completed an optimizer update. Both reported forced cleanup complete. Cancelled allocations867/868 after episode cleanup.
+- Preparing the identical 1+1 pair with api_server_count=4 per engine; fresh names `ipo-1plus1-api4-seed42` and `sc-1plus1-api4-seed42`. Initial inflight512 and max2048 stay fixed.
+
 - Fresh pair launched concurrently at 07:10:42 UTC: IPO868 (`ipo-1plus1-seed42`, nodes014/050) and SC867 (`sc-1plus1-seed42`, nodes057/058). Both RUNNING, two nodes each, source 4909f8e98.
 
 - At 07:09 UTC, stopped IPO861 and SC860 at user request to resize. The user explicitly approved starting from scratch. Both allocations have released.
