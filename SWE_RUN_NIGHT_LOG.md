@@ -183,6 +183,10 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   3.5 min. `checkpoints/step_20/` has both `trainer/` (3.2T) and `orchestrator/`, so a bare `[resume]` is safe
   from here. Step 21 followed at 06:02:45, so nothing stalled after the save. Next checkpoint at step 40 will
   test `keep_last = 2` cleanup at step 60.
+- 06:12:38 second per-image harness failure class: `SandboxError: prime exec failed: Connect RPC failed
+  (invalid_argument): resolve command "/bin/bash": stat /bin/bash: ...` (one group; the task image has no bash).
+  Same bucket as the `uv --script` failure: image-level, a few percent of episodes, left alone.
+- 06:02-06:14 steps 21-27 at 1-3 min each, Peak Mem 72-92 GiB, mismatch KL 0.020-0.025. Nothing new.
 
 ## Open questions for Garrett
 
@@ -190,7 +194,7 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   bf16 serving now fits too (the 0.74x figure may have predated `kv_cache_dtype = "fp8"`), which would reopen
   the FP8-vs-bf16 mismatch trade. Also 8 inference replicas may be more than the 8-node trainer can consume.
 - The `scaleswe` bash harness fails setup on some task images with `uv ... unexpected argument '--script'`
-  (old `uv` in the image). Whole groups die with reward 0 and no signal (task 41 in attempt 5; 7.1% error on
+  (old `uv` in the image), and on others with no `/bin/bash`. Whole groups die with reward 0 and no signal (task 41 in attempt 5; 7.1% error on
   attempt 7 step 2). Fix belongs in the harness setup or the images, not this config. Left alone.
 - Mismatch KL is ~0.025 at step 1 under FP8 serving with the indexer excluded, consistent with the
   `FP8_MISMATCH_RESULTS.md` numbers and above the 0.015 bar discussed there. Not touched (FP8 on/off is yours).
