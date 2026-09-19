@@ -1,17 +1,17 @@
 # Experiment state
 
 User authorized autonomous implementation, launches, monitoring, fixes, and analysis.
-Latest main merged: 8c2847721ada557e3c9dabb4d34af81393c27391.
+Latest main merged: a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
 Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
 - User reported VM service recovery and resumed the experiment at 2026-09-19 05:24 UTC.
 - Recovery uv eval completed: Lego 2/2 solved; TB2 1/2 solved; no terminal errors. Both executed tools and scored. One TB2 rollout reached max_turns; hosted model transient429 retried.
-- New main commit merged by fast-forward: 8c2847721 (example configs only).
+- Main was refreshed again before the full launch: a1822f7a0 (expert-parallel load filtering; inactive for this TP-only setup).
 - Concurrent smoke4 jobs: IPO849, SC850, four nodes each (eight total). Both completed three finite updates and exited successfully. Logs under outputs/score-centering/smoke4-{ipo,sc}.
 - Both arms report occasional NaN serving responses before first updates. These are excluded provider failures, not evidence of training collapse.
-- Diagnostic pair smoke5 started at 05:59 UTC: SC856 and IPO857, four nodes each. Both use kv-fp8.toml, otherwise unchanged quantized weights. smoke-fast.toml saves only the final checkpoint; smoke4 verified intermediate saves. Check serving before the main comparison.
+- Diagnostic pair smoke5: SC856 and IPO857, four nodes each. Both completed three finite updates with FP8 KV; no observed NaN serving responses. Final saves and shutdown are in progress. Main uses FP8 KV and uniform task sampling.
 - Previous outage blocker audit resets on this user-requested resumption.
 
 ### Implementation and prior attempts
@@ -53,7 +53,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Next
 
-1. Monitor concurrent smoke5-ipo and smoke5-sc through three updates. Compare serving errors with smoke4 before choosing the main KV cache mode.
+1. Wait for smoke5 jobs to exit, then launch ipo-seed42 and sc-seed42 concurrently from the shared base model. Main configs use FP8 KV and uniform task sampling.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Launch matched 400-update runs after smoke succeeds. Use fresh run names if needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules.

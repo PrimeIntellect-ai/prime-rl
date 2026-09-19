@@ -10,7 +10,7 @@ Treat baseline collapse as a hypothesis, not a required outcome.
 
 - Paper: https://arxiv.org/html/2609.20807v1
 - Reference code: https://github.com/martin-marek/score-centering/tree/7c56e9ee2972aa57f446cf564de1a1658d14b321
-- Baseline main: `8c2847721ada557e3c9dabb4d34af81393c27391` (merged before experimental training).
+- Baseline main: `a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54` (merged before experimental training).
 - Model: `Qwen/Qwen3-30B-A3B-Instruct-2507`, revision recorded in `model.json`.
 - Training taskset: Terminal Lego (`PrimeIntellect/Terminal-Lego-15k`), with checkout revision archived before launch.
 - Held-out evaluation: Terminal Bench 2, 64 tasks at step 0 and every 25 steps.
