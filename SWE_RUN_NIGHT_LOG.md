@@ -324,6 +324,19 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   - **Decision: restart the run right after the step 220 checkpoint lands** (both halves), with the config
     unchanged, so nothing but boot time is lost and the pool mints four new tunnels. Fallback path is well
     exercised (attempt 5 -> 7). Fits "kill, fix and relaunch"; changes nothing about what the run measures.
+- 13:01:00 trainer `Step 220 | 5m 2s | Mismatch KL 0.0573` with the checkpoint complete (64 shards). Attempt 7
+  final tally: steps 1-220 in 8h 17m of training, 220 steps, 2 checkpoints kept (`step_200`, `step_220`).
+- 13:01:21 `scancel 837` (job gone 13:03:42). The orchestrator's exit did not leave a stray orchestrator-only
+  checkpoint; `checkpoints/` is exactly `step_200` and `step_220`, both halves each.
+
+### Attempt 9 (SLURM job 907), submitted 13:05, 16 nodes, resume from step 220
+
+Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe.toml` (config unchanged at `f7ceea189`; run-dir attempt
+8 was the dry run). Three-way resolved-config check: all OK. Launcher: `Resuming from step 220, cleaning future
+rollouts and broadcasts`. Same node set as attempt 7 (`prime-nebius-puku-h200-gpu-[005-006,013,015-016,018,020,
+024,027,033,036,038,042,046,052,055]`), so weight loads should be page-cache warm on all 8 inference nodes.
+Reason for the restart: the 12:40 tunnel outage (see above); a fresh launch mints four new tunnels.
+Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
 
 ## Open questions for Garrett
 
