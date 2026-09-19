@@ -101,6 +101,11 @@ max_off_policy_steps = 32
 [orchestrator.ckpt]
 wait_for_weights_timeout = 3600
 
+[orchestrator.model.client]
+# Each FP8 replica takes 14-19 min to load and quantize the 1.1 TB bf16 checkpoint over NFS, then ~4 min
+# to profile and capture graphs; the slowest of 8 cleared 34 min. The default 1800 s killed job 829.
+wait_for_ready_timeout = 7200
+
 [orchestrator.concurrency]
 max_inflight = 512
 
