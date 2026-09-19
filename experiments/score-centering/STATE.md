@@ -46,7 +46,9 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Raw SDK smoke jobs cleaned up. One Lego image never became ready; a second reached RUNNING but had no command result before cleanup.
 - VM sandboxes reject region overrides; eu-west test returned HTTP 400. Keep default region.
 - All outage-era experiment jobs were stopped before the recovery preflight.
-- Dedicated dashboard: http://localhost:7790; process id in dashboard.pid.
+- User prefers the existing dashboard on port 7789. The output root is registered; both main runs were verified through /api/runs. An earlier isolated dashboard also remains on port 7790 (PID in dashboard.pid).
+- W&B project: https://wandb.ai/primeintellect/score-centering-terminal
+- IPO W&B: f2e85d1b20984a64bf6f476ea051bd04; SC W&B: a47c84d8a8bd425f976db52e7939c98b.
 - Smoke2 validated all 12 endpoints and INT8 expert kernels / INT4 KV cache.
 - Live request returned valid top128 IDs and probabilities for all eight generated tokens.
 - No updates occurred in any preflight attempt. Jobs 804/805 are stopped.
@@ -59,7 +61,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 1. Monitor IPO861 and SC860 through 400 updates. Main configs use FP8 KV and uniform task sampling.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
-4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules.
+4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. TB2 initial success is sparse (IPO1/51, SC5/43 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
 5. Repeat a positive separation with a second seed; use a matched BF16 control pair to check mismatch attribution.
 6. Report positive, negative, or inconclusive results honestly.
 

@@ -98,3 +98,25 @@ remains finite and preserves capability under the same mismatch and training bud
 A single pair is exploratory evidence. If both fail or both succeed, report that outcome.
 The paper's most severe experiments use a different engine, optimizer, and short math sequences.
 This experiment tests transfer to production-style agentic RL rather than reproducing those curves exactly.
+
+## Supplemental unseen-task audit
+
+Decision recorded at 2026-09-19 06:55 UTC, after the initial TB2 evaluation.
+IPO solved 1/51 scored tasks, with 13/64 failed episodes.
+SC solved 5/43 scored tasks, with 21/64 failed episodes.
+The estimates are sparse and have different missingness. They do not establish a treatment effect.
+
+Keep the running pair and its scheduled TB2 evaluations unchanged.
+After both runs finish, select up to 128 Lego tasks absent from either arm's training dispatch logs.
+Exclude every dispatched task, including failed, rejected, and cancelled episodes.
+Map task indices using the pinned dataset and its complete source-order manifest.
+Sort eligible task names by SHA256("score-centering-heldout-v1:" + task_name), then take the first 128.
+Archive the eligible set, excluded set, selected set, dataset revision, and run revisions before scoring.
+If fewer than 64 tasks remain, report that this audit lacks the planned sample size.
+
+Evaluate the initial model and both final checkpoints on the same selected tasks, four attempts per task.
+Use the same quantization, context, agent budgets, and sampling settings as the main pair.
+Use task-level paired uncertainty and report errors plus missing-reward bounds.
+Do not select tasks or checkpoints using evaluation scores.
+This is a supplemental audit selected by training exposure, not an original random holdout split.
+Its conclusion applies to the unseen task set; retain the original TB2 results and limitations.
