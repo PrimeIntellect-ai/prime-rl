@@ -191,6 +191,11 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   6-26 with no trend and `stale=0` in every `Discarded` warning so far. Because trainer steps are ~2.5 min and
   a long SWE rollout can run over an hour, the longest episodes sit close to the stale cutoff. Watch item: if
   `stale=` becomes non-zero, the fix is a higher `max_off_policy_steps` (a `[orchestrator]` knob), not a guard.
+- 06:26:28 orchestrator: `Cancelled 2 train episodes past max_off_policy_steps=32. Consider increasing it`.
+  The watch item above fired. Decision: leave the run alone. Raising the knob needs a relaunch (~35 min boot
+  plus resume from step 20, losing ~15 steps) to save a handful of the longest episodes per hour. Will revisit
+  if cancellations become a large fraction of a batch. Recommend `max_off_policy_steps = 64` on the next
+  relaunch; see open questions.
 
 ## Open questions for Garrett
 
@@ -209,3 +214,6 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   for this model (`train/agg/effective/agent/reward/mean` 0.78-0.94). That halves effective rollout throughput
   on an already rollout-bound run. Options for later: a curriculum/difficulty filter on the source, a larger
   `group_size`, or a harder taskset mix. Not a bring-up concern.
+- `max_off_policy_steps = 32` is being hit: the longest SWE rollouts outlive 32 trainer steps at ~2.5 min each
+  (first 2 cancellations at 06:26, step ~33). The episodes it drops are the hardest, longest ones, which biases
+  the batch toward short tasks. Suggest 64 on the next relaunch. I did not restart the run for this.
