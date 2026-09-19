@@ -74,9 +74,12 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("runs", type=Path, nargs="+")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--max-step", type=int, help="Limit both arms to this optimizer step")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     runs = {run.name: read_metrics(run) for run in args.runs}
+    if args.max_step is not None:
+        runs = {name: {step: row for step, row in rows.items() if step <= args.max_step} for name, rows in runs.items()}
     pattern = re.compile(
         r"^budget/|^trainer/time/|^orchestrator/time/|reward/mean$|avg@1$|entropy/all/mean$|mismatch_kl/all/mean$|"
         r"optim/grad_norm$|is_masked/mean$|score_centering/.*/mean$|"
