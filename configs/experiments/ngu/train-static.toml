@@ -64,7 +64,7 @@ max_off_policy_steps = 64
 PYTHONPATH = "tools/ngu/tasksets"
 
 [orchestrator.concurrency]
-min_inflight = 256
+min_inflight = 512
 max_inflight = 1536
 
 [orchestrator.algo]
