@@ -244,6 +244,12 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   mismatch KL 0.020-0.034, grad norm 0.008-0.09, Peak Mem 72-92 GiB. 13,662 episodes finished. Cumulative:
   132 off-policy cancellations, 100 trace failures (88 `uv --script`, 6 sandbox OOM exit 137, 6 sandbox API
   one-offs). No further broadcast stalls after step 81. Cluster is otherwise full (1 idle node).
+- 09:56:56 **burst of 29 `HarnessError: harness 'bash' exited 1`** within one second, all with the same stderr
+  tail (a long list of numeric coordinate pairs, evidently tool output from one task that leaked into a shared
+  log). Identical text across 29 traces in mid-rollout (turns 11-97) means one shared harness worker process
+  died and took every rollout it hosted with it. Confined to that second; no inference errors, sandbox API
+  responsive (512 live sandboxes, ~2 s list). The orchestrator kept collecting (`Train batch 21/64`). New
+  failure class, watching for recurrence; a repeat pattern would point at the harness runner rather than tasks.
 
 ## Open questions for Garrett
 
