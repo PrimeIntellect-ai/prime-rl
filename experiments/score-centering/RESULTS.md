@@ -5,8 +5,8 @@ Status at 2026-09-19 09:04 UTC: the corrected API4 pair is starting. No robustne
 ## Main comparison
 
 - Model: Qwen3-30B-A3B-Instruct-2507, pinned snapshot in `model.json`.
-- Source: experimental commit `9a282107e`, with main `a1822f7a0` merged.
-- Baseline: current-main IPO, eps 0.3; SLURM 892, `ipo-1plus1-api4-seed42-r2`.
+- Source: SC `9a282107e`, IPO `8e2282999`; main `a1822f7a0` is merged. IPO adds dependency-sync suppression and records only.
+- Baseline: current-main IPO, eps 0.3; SLURM 893, `ipo-1plus1-api4-seed42-r3`.
 - Treatment: published standalone score centering; SLURM 891, `sc-1plus1-api4-seed42-r2`.
 - Each arm: one H200 trainer node plus one inference node, running concurrently.
 - Concurrency: adaptive, initial 512 episodes and maximum 2048 per arm.

@@ -6,6 +6,8 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
+- Current active pair: IPO893 (`ipo-1plus1-api4-seed42-r3`, launched09:08:21 UTC, nodes014/050) and SC891 (`sc-1plus1-api4-seed42-r2`, launched09:04:46 UTC, nodes057/058). Source differs only in dependency-sync control and experiment records; scientific settings match. User requested close monitoring at09:08 UTC.
+
 - SC891 runtime confirms four API processes per engine. IPO892 inference failed in uv metadata resolution (GitHub wheel HTTP500) before model loading. Cancelled IPO892; relaunch IPO from scratch with UV_NO_SYNC=1 to use the installed environment. SC891 continues. This changes dependency resolution only, not the installed model/training stack.
 
 - Current pair launched at 09:04:46 UTC: IPO892 (`ipo-1plus1-api4-seed42-r2`, nodes014/050), SC891 (`sc-1plus1-api4-seed42-r2`, nodes057/058). Two nodes each, launch source9a282107e.
@@ -72,7 +74,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - All outage-era experiment jobs were stopped before the recovery preflight.
 - User prefers the existing dashboard on port 7789. The output root is registered; both main runs were verified through /api/runs. An earlier isolated dashboard also remains on port 7790 (PID in dashboard.pid).
 - W&B project: https://wandb.ai/primeintellect/score-centering-terminal
-- Current IPO W&B: 5f64dcfa10274df294c0e73841c20fea; SC W&B: 442b9b054a1440b984fbb8fe1e98e4ce.
+- Current IPO W&B: f7acea587c9a4bd5aeb33be0d270fd65; SC W&B: a5741426ea7d458783ceace65a5b1509.
 - Superseded IPO W&B: f2e85d1b20984a64bf6f476ea051bd04; SC W&B: a47c84d8a8bd425f976db52e7939c98b.
 - Smoke2 validated all 12 endpoints and INT8 expert kernels / INT4 KV cache.
 - Live request returned valid top128 IDs and probabilities for all eight generated tokens.
@@ -111,3 +113,5 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 - All 384 active VM sandboxes from the cancelled 4-node pair were deleted using exact old-run labels. Cleanup completed with zero errors; inventories are in results/initial-4node-attempt.
 - Final audit selector now writes a complete eval.json preserving the training agent configuration and scheduled-eval sampling. Four attempts per task, pinned concurrency 128 for all models. The generated config passed uv run eval --dry-run against completed smoke5 logs.
+
+- At09:13 UTC, both actual pools have API4 and roughly500 inflight episodes. No router health warnings or unhealthy-worker failures observed. SC has123 completed training episodes and zero training errors; no optimizer update yet. Read-only snapshot helper: /tmp/score-centering-monitor.py; artifacts: results/monitor/snapshots.jsonl.
