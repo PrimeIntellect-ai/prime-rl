@@ -230,6 +230,14 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   The 8 stale cancels then landed at 08:09:28 and the ack followed immediately. So the stall length tracks
   sandbox provisioning latency, and `weight_broadcast.timeout = 3600` bounds it. py-spy was denied (ptrace).
   No action; noted in open questions as something that would get worse with more inflight rollouts.
+- 08:14-08:42 three new one-off sandbox failure classes, one trace each: `prime sandbox provisioning failed:
+  Sandbox ... is not running`, `Read file failed: HTTP 503 ... sandbox_not_placed`, and `harness 'bash' exited
+  137` (OOM kill inside a sandbox). All task-level; none recurred.
+- 08:50:36 **step 100, checkpoint saved** (`Step 100 | 5m 51s`); `checkpoints/` holds `step_80` and `step_100`.
+- 08:51 hourly summary through step 100: 4h 42m of job time, ~2 min/step, reward 0.70-0.97 (last 10 steps
+  mean ~0.87), mismatch KL 0.020-0.034, grad norm 0.03-0.09, Peak Mem 72-92 GiB. 10,577 episodes finished.
+  Failure tally: 88 `uv --script` image failures, 95 off-policy cancellations, 5 assorted sandbox one-offs.
+  One broadcast stall (3.5 min at step 81), none since.
 
 ## Open questions for Garrett
 
