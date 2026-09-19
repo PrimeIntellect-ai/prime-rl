@@ -8,12 +8,14 @@ from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
+    MegaMoeMoEDispatchConfig,
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
+from prime_rl.trainer.distributed.mega_moe_dispatcher import MegaMoeTokenDispatcher
 from prime_rl.trainer.distributed.token_dispatcher import (
     LocalTokenDispatcher,
     MXFP8TorchTokenDispatcher,
@@ -78,9 +80,17 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     bf16_grouped_gemm = BF16GroupedGemm()
-    selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_moes else bf16_grouped_gemm
-    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
+    if isinstance(dispatch, MegaMoeMoEDispatchConfig):
+        # Compute is fused into dispatch; ignore whatever `model.moe.compute` was configured.
+        selected_grouped_gemm = bf16_grouped_gemm
+    else:
+        selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_moes else bf16_grouped_gemm
+    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
+    if ep_mesh is None and isinstance(dispatch, MegaMoeMoEDispatchConfig):
+        raise ValueError(
+            "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
+        )
 
     for moe in moe_layers:
         grouped_gemm = selected_grouped_gemm if moe in selected_moes else bf16_grouped_gemm
@@ -119,6 +129,22 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
+            )
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            if moe.experts.gate_proj is None and moe.experts.gate_up_proj is None:
+                raise ValueError("Mega MoE dispatch requires gated experts (SwiGLU gate+up), got non-gated experts.")
+            if moe.score_before_experts:
+                raise ValueError(
+                    "Mega MoE dispatch requires `score_before_experts=False` on the MoE layer "
+                    "(router weights are applied at combine time, after both expert GEMMs)."
+                )
+            token_dispatcher = MegaMoeTokenDispatcher(
+                num_experts=moe.experts.num_experts,
+                top_k=moe.router.top_k,
+                hidden=moe.experts.down_proj.shape[1],
+                intermediate_hidden=moe.experts.hidden_dim,
+                group=ep_mesh.get_group(),
+                max_tokens_per_rank=dispatch.max_tokens_per_rank,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")

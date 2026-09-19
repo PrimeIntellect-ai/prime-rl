@@ -57,6 +57,18 @@ def test_unselected_moe_uses_bf16_without_loading_quantization_backend(selection
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
+def test_mega_moe_dispatch_requires_expert_parallelism():
+    moe = MoE.from_args(MoEArgs(num_experts=2, score_before_experts=False), dim=512, hidden_dim=512, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"moe": {"dispatch": {"type": "mega_moe"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(ValueError, match="expert-parallel group"):
+        configure_moe_runtime(model, config, dims)
+
+
 def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
     outputs = []
     start = 0

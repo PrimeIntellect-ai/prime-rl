@@ -253,8 +253,16 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    max_tokens_per_rank: int = Field(8192, ge=1)
+    """Upper bound on routed tokens per rank per forward call, used to size Mega MoE's symmetric
+    buffer once at startup. Must be >= the largest `bs * slen` any rank will pass through a MoE
+    layer; raise it if you hit a "buffer is sized for N tokens/rank" error."""
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -416,6 +424,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
