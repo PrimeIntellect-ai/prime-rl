@@ -1,0 +1,78 @@
+# GLM-4.5-Air: 2 training nodes and 4 one-node inference replicas.
+
+max_steps = 1000
+seq_len = 131072
+
+[slurm]
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[ckpt]
+interval = 50
+keep_last = 1
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+
+[orchestrator.concurrency]
+initial_inflight = 256
+max_inflight = 512
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[inference]
+
+[inference.vllm]
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+tensor_parallel_size = 8
+enable_expert_parallel = true
+enable_return_routed_experts = true

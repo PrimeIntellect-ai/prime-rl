@@ -77,7 +77,7 @@ Evaluate the base model:
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/wiki-search/eval.toml
+uv run eval @ configs/basic/wiki-search/eval.toml
 ```
 
 ## RL Training
@@ -86,7 +86,7 @@ Train with the unified config file:
 
 ```bash
 # Run this in the other terminal
-uv run rl @ examples/basic/wiki-search/rl.toml \
+uv run rl @ configs/basic/wiki-search/rl.toml \
   --run.name rl \
   --monitors.wandb.project your-project-name \
   --monitors.wandb.name your-run-name
@@ -110,7 +110,7 @@ uv run inference --vllm.enable-lora --vllm.model <user>/Qwen3-4B-Instruct-WikiSe
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/wiki-search/eval.toml -m <user>/Qwen3-4B-Instruct-WikiSearch-RL
+uv run eval @ configs/basic/wiki-search/eval.toml -m <user>/Qwen3-4B-Instruct-WikiSearch-RL
 ```
 
 ## Taskset Configuration

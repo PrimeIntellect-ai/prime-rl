@@ -1,9 +1,4 @@
-# SFT warmup for wordle on 2 GPUs. Dev-sized mirror of examples/basic/wordle/sft.toml.
-
 max_steps = 20
-
-[deployment]
-num_train_gpus = 2
 
 [ckpt] # Checkpoint at the end of training
 

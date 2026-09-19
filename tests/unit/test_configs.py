@@ -30,8 +30,11 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
+    """Standalone TOML configs inside `configs/`, `examples/`, or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
+    recipe_root = Path("configs/advanced")
+    recipe_files = set((recipe_root / "envs").glob("*.toml")) | set((recipe_root / "models").glob("*/rl/*.toml"))
+    config_files = [path for path in config_files if path not in recipe_files]
     example_files = list(Path("examples").rglob("*.toml"))
     # The k8s example configs are mounted into the chart's containers verbatim, so a
     # stale key there breaks a deploy with nothing else to catch it.
@@ -53,11 +56,10 @@ def can_parse(config_cls: type, args: list[str]) -> bool:
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class.
 
-    A file that no class parses standalone is an overlay — a checked-in config that only carries
-    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    A file that no class parses standalone is an overlay. Retry it composed with each sibling
+    TOML as the base, following the documented `@ base.toml @ overlay.toml` left-to-right merge
+    (docs/configuration.md, "TOML Composition"). Advanced recipe fragments are checked by their
+    dedicated composition matrix below.
     """
     could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
     if not any(could_parse):
@@ -68,6 +70,18 @@ def test_load_configs(config_file: Path):
             for config_cls in CONFIG_CLASSES
         ]
     assert any(could_parse), f"No config class could be parsed from {config_file}"
+
+
+@pytest.mark.parametrize("env_file", sorted(Path("configs/advanced/envs").glob("*.toml")), ids=lambda x: x.as_posix())
+@pytest.mark.parametrize(
+    "model_file", sorted(Path("configs/advanced/models").glob("*/rl/*.toml")), ids=lambda x: x.as_posix()
+)
+def test_advanced_recipe_combinations(env_file: Path, model_file: Path):
+    """Every checked-in advanced environment composes with every model profile."""
+    config = cli(RLConfig, args=["@", env_file.as_posix(), "@", model_file.as_posix()])
+
+    assert config.orchestrator.train.source
+    assert config.trainer.model.name
 
 
 class NestedConfig(BaseConfig):

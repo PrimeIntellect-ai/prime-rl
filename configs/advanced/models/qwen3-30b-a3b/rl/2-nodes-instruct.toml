@@ -1,0 +1,39 @@
+# Qwen3-30B-A3B Instruct: one training and one inference node.
+
+max_steps = 400
+seq_len = 32768
+
+[slurm]
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[ckpt]
+interval = 50
+keep_last = 1
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+max_off_policy_steps = 32
+
+[inference]
+
+[inference.vllm]
+max_model_len = 32768
+data_parallel_size = 2
+tensor_parallel_size = 4
+gpu_memory_utilization = 0.85

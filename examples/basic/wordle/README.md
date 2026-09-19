@@ -29,7 +29,7 @@ Then, use the `eval` entrypoint to evaluate the model in the `wordle` environmen
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/wordle/eval.toml
+uv run eval @ configs/basic/wordle/eval.toml
 ```
 
 We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary, we can see that the most of the reward is coming from format and partial rewards. In fact, the model does not guess the correct word within any game, leading to a win rate of **0%**. Looking at some samples, it is evident repeatedly submitting guesses in the wrong format and is not able to revise its strategy from the environment feedback. Let's do some SFT warmup to get the model to learn the format of the environment.
@@ -44,7 +44,7 @@ To train on a single GPU, run
 
 ```bash
 # Run this in the other terminal
-uv run sft @ examples/basic/wordle/sft.toml \
+uv run sft @ configs/basic/wordle/sft.toml \
   --run.name sft \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
@@ -57,7 +57,7 @@ To train on multiple GPUs, run
 uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/basic/wordle/sft.toml \
+  src/prime_rl/trainer/sft/train.py @ configs/basic/wordle/sft.toml \
   --monitors.wandb.project ... \
   --monitors.wandb.name ... 
 ```
@@ -75,7 +75,7 @@ Finally, we will do multi-turn RL against the `wordle` environment using the mod
 
 ```bash
 # Run this in the other terminal
-uv run rl @ examples/basic/wordle/rl.toml \
+uv run rl @ configs/basic/wordle/rl.toml \
   --model.name ... \
   --run.name rl \
   --monitors.wandb.project ... \
@@ -97,7 +97,7 @@ uv run inference --vllm.model PrimeIntellect/Qwen3-1.7B-Wordle-RL
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/wordle/eval.toml -m PrimeIntellect/Qwen3-1.7B-Wordle-RL
+uv run eval @ configs/basic/wordle/eval.toml -m PrimeIntellect/Qwen3-1.7B-Wordle-RL
 ```
 
 Way better! Our model now wins **~60%** and gets an average reward of **~1.5**.

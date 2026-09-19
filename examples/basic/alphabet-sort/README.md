@@ -39,7 +39,7 @@ uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507
 Evaluate the base model:
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/alphabet-sort/eval.toml
+uv run eval @ configs/basic/alphabet-sort/eval.toml
 ```
 
 We got an **average reward of ~0.26** across 20×3 rollouts. The model achieves **0% perfect attempts** (no rollouts score 1.0) and **0% perfect examples** (no examples have all 3 rollouts at 1.0). The model shows high variance and struggles on most examples, with the high similarity power (8) heavily penalizing even small errors, and the scores aren't different for most attempts.
@@ -86,7 +86,7 @@ We train with LoRA (rank 32, alpha 64) for 100 steps.
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
 # Run this in the other terminal
-uv run rl @ examples/basic/alphabet-sort/rl.toml \
+uv run rl @ configs/basic/alphabet-sort/rl.toml \
   --run.name rl \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
@@ -106,7 +106,7 @@ uv run inference --vllm.enable-lora --vllm.model PrimeIntellect/Qwen3-4B-Instruc
 
 ```bash
 # Run this in the other terminal
-uv run eval @ examples/basic/alphabet-sort/eval.toml -m PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
+uv run eval @ configs/basic/alphabet-sort/eval.toml -m PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 Way better! Our model now gets an **average reward of ~0.81** with **73% perfect attempts** (44/60 rollouts score 1.0) and **65% perfect examples** (13/20 examples have all 3 rollouts at 1.0).

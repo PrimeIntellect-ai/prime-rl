@@ -40,7 +40,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/hendrycks-sanity/rl.toml",
+        "configs/basic/hendrycks-sanity/rl.toml",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",

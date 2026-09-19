@@ -1,0 +1,28 @@
+# Terminal training and evaluation.
+
+[[orchestrator.train.source]]
+name = "tmax"
+env.agent.harness.id = "rlm"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-terminal"]
+env.taskset.id = "tmax"
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.agent.harness.id = "rlm"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-terminal"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "swebench-verified"
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2"
+group_size = 4
+env.agent.harness.id = "rlm"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["prime-rl-terminal"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "terminal-bench-2"

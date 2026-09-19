@@ -34,7 +34,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/reverse-text/rl.toml",
+        "configs/basic/reverse-text/rl.toml",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
