@@ -252,6 +252,9 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   failure class, watching for recurrence; a repeat pattern would point at the harness runner rather than tasks.
 - 10:13:28 step 140 checkpoint saved (`Step 140 | 5m 47s`); `checkpoints/` holds `step_120` and `step_140`.
   No repeat of the 09:56 harness burst. Steps 131-140 routine.
+- 10:30 hourly summary through step 150: 6h 22m job time, ~2 min/step, reward 0.53-0.98 (last 10 mean ~0.82),
+  mismatch KL 0.024-0.034, grad norm 0.009-0.10, Peak Mem 72-92 GiB. 15,958 episodes finished. Cumulative: 160
+  off-policy cancellations, 129 trace failures (of which 29 were the single 09:56 harness burst; no repeat).
 
 ## Open questions for Garrett
 
