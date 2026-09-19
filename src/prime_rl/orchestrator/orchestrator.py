@@ -89,9 +89,6 @@ monkey_patch_chat_completion_logprobs()
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Abort after this many consecutive train batches contain no samples.
-MAX_CONSECUTIVE_EMPTY_BATCHES = 10
-
 # Maximum batches the orchestrator may run ahead of the trainer. The
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
@@ -111,7 +108,6 @@ class Orchestrator:
     stopped: asyncio.Event
     draining: bool
     last_batch_at: float | None
-    consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
@@ -161,7 +157,6 @@ class Orchestrator:
         self.last_batch_at = None
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
-        self.consecutive_empty_batches = 0
         self.gate_closed_at = None
         # Pulsed after inference applies a policy so held work can re-check it.
         self.version_advanced = asyncio.Event()
@@ -611,19 +606,10 @@ class Orchestrator:
             return
 
         if not batch.samples:
-            self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: empty train batch after {len(batch.episodes)} finalized episodes "
-                f"(consecutive empty batches: "
-                f"{self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
+                f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
             )
-            if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
-                raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check algorithm credit and task difficulty."
-                )
             return
-        self.consecutive_empty_batches = 0
         effective = batch.cohort.effective
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
