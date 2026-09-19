@@ -6,27 +6,18 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current state
 
-- Job911 (`score-centering-pair`) is queued for four nodes as of13:17UTC. SLURM reports Resources and no start estimate.
-- Separate jobs908/909 were stopped before rollout collection because only one node pair was available. Both dispatched zero episodes.
-- IPO: `ipo-1plus1-api4-seed42-resume50-r2`; centered: `sc-1plus1-api4-seed42-resume50-r2`.
-- Each requests one trainer plus one inference node. Preserve API4 per engine and initial512/max2048 inflight.
-- Both resume external trainer and orchestrator state from each parent's `preserved-checkpoints/step_50`.
-- Runtime restoration remains to be verified. Next optimizer update must be51; startup policy broadcast must be50.
-- The step-50 online eval repeats in the new directories. Max updates stays400.
-- Paired launcher: `resume-pair.sbatch`. Both generated launchers run concurrently on disjoint two-node subsets. Stub checks verified cleanup and startup node scopes.
-- Paired launch source:2d12a5209; analysis source:849715d94; latest main merged before the experiment:a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
-- Recovery eval `gateway-recovery-20260919-1301` completed all4 VM episodes with no errors. Lego1/2solved; TB2 1/2solved.
-- Two fresh tunnel checks passed12/12 public requests each after the earlier intermittent failures.
-- Old jobs891/893 were stopped after shared502 gateway failures beginning12:40UTC. Both allocations released; exact-label VM inventories empty.
-- Original IPO ended at54; centered52. Keep original updates1–50, then new continuation51 onward. `lineage.json` records this boundary.
-- Original step-50 online evals are affected by gateway errors and interruption. Exports: `results/gateway-incident/evals`.
-- Original first50updates remain finite; no predefined collapse. Export: `results/main-api4-step50`.
-- Both preserved checkpoint manifests pass11,475 shard-extent checks; each trainer checkpoint341.24GiB.
-- `analyze.py --lineage experiments/score-centering/lineage.json --output <directory>` joins clean segments and offsets cumulative budgets.
-- Joined first50gradients, mismatch means/maxima, and budgets exactly match the prior export. Synthetic boundary/budget checks passed.
-- Monitor helper:`/tmp/score-centering-monitor.py`, now points to both continuations and counts gateway502 messages.
-- W&B project:https://wandb.ai/primeintellect/score-centering-terminal. New run IDs pending startup.
-- Shared dashboard:port7789. Do not stop it.
+- At 2026-09-19 21:14 UTC, cancelled job 911 after graceful cleanup. Both exact run labels have zero active VM sandboxes.
+- The pair ran from 14:38 until 21:14 with zero resumed optimizer updates. Both restored step 50.
+- IPO recorded 41,138 training episode completions, including 40,985 errors. Centered recorded 42,517 completions, including 42,360 errors.
+- The paired launcher restricted each task to one CPU. SLURM accounting shows two CPUs per two-node arm, versus 232 in the successful original arms.
+- `srun --exclusive` restricted step resources because no CPU request was specified. This was an experiment launcher error, not evidence of policy collapse.
+- API4 was active on both engines in both arms. The CPU restriction explains the slow startup and likely the serving health failures.
+- The passive monitor recorded the failure but did not intervene. Do not leave another restart with recording alone.
+- Fixed `resume-pair.sbatch` to request 116 CPUs per task and check actual CPU affinity on every node before startup.
+- Preparing fresh directories `ipo-1plus1-api4-seed42-resume50-r3` and `sc-1plus1-api4-seed42-resume50-r3`. Both still resume preserved parent step50.
+- `lineage.json` and the snapshot helper now point to r3. No r3 job submitted yet.
+- Preserve original parent updates1–50. No additional scientific signal exists. Full comparison and frozen-checkpoint audit remain pending.
+- Evidence: `results/resume50-stall/incident.json`, `sandbox-inventory.json`, and SLURM accounting.
 
 ### Restart history
 

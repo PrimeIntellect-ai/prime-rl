@@ -5,7 +5,7 @@
       "through_step": 50
     },
     {
-      "run": "outputs/score-centering/ipo-1plus1-api4-seed42-resume50-r2"
+      "run": "outputs/score-centering/ipo-1plus1-api4-seed42-resume50-r3"
     }
   ],
   "score-centering-seed42": [
@@ -14,7 +14,7 @@
       "through_step": 50
     },
     {
-      "run": "outputs/score-centering/sc-1plus1-api4-seed42-resume50-r2"
+      "run": "outputs/score-centering/sc-1plus1-api4-seed42-resume50-r3"
     }
   ]
 }

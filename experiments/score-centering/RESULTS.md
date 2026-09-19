@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 13:10 UTC: runtime recovery passed. The paired step-50 restart is awaiting a four-node allocation; full restore pending. No collapse observed.
+Status at 2026-09-19 21:14 UTC: restart stopped after zero new optimizer updates. A launcher CPU restriction caused severe resource starvation. Fifty clean updates remain preserved.
 
 ## Main comparison
 
@@ -175,3 +175,18 @@ No audit allocation has been submitted. Actual checkpoint export and frozen serv
 Inspect trace failures before classifying instability.
 If a separation appears, repeat with a second seed and a matched BF16 control.
 Report a negative or inconclusive result if the requested separation does not occur.
+
+## Failed checkpoint restart (job 911)
+
+Both arms started at14:38 UTC and stopped at21:14 UTC with zero resumed optimizer updates.
+IPO recorded40,985 errors among41,138 training completions; centered recorded42,360 among42,517.
+SLURM accounting shows each two-node launch step received only two CPUs total.
+The successful original steps received232 CPUs each, or116 per node.
+The paired launcher used `srun --exclusive` without an explicit CPU request.
+It restricted each node's trainer or inference process tree to one CPU.
+API4 was active, but its processes shared that restriction.
+This explains the slow startup and likely the repeated serving health failures; no model-instability conclusion follows.
+The passive monitor recorded these failures without stopping the run. That monitoring gap allowed hours of wasted allocation.
+Both orchestrators completed cleanup; the allocation was cancelled and both VM inventories were empty.
+The launcher now requests116 CPUs per task and asserts CPU affinity before model startup.
+A corrected restart and an automatic stall stop are still required.
