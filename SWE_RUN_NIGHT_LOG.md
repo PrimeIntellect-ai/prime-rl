@@ -542,6 +542,8 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   Step 300 due ~21:55.
 - 21:16:30 step 260 checkpoint saved (`Step 260 | 2m 47s | Mismatch KL 0.0056`); `checkpoints/` holds `step_240`,
   `step_260`. Steps 251-260 routine.
+- 21:46:13 step 280 checkpoint saved (`Step 280 | 3m 13s | Mismatch KL 0.0063`); `checkpoints/` holds `step_260`,
+  `step_280`. Steps 261-280: reward 0.61-0.75 at the sampled steps, turns 35-39, one more single harness traceback.
 
 ## Open questions for Garrett (GLM run)
 
