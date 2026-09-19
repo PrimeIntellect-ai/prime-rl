@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 12:40 UTC: both arms passed fifty finite updates and saved checkpoints. No collapse observed.
+Status at 2026-09-19 13:00 UTC: both arms stopped after a shared gateway failure. Fifty finite updates are preserved. No collapse observed.
 
 ## Main comparison
 
@@ -21,7 +21,7 @@ See `PROTOCOL.md` for the estimator and fixed decision rules.
 
 ## Early current-run observations
 
-Both arms completed fifty finite updates and continued training.
+Both arms completed fifty finite updates before the gateway incident.
 No nonfinite metrics or numerical warnings were detected in the exported metrics and logs.
 Matched curves stop both arms at update 50, including mean and tail mismatch diagnostics.
 See `results/main-api4-step50`; earlier snapshots remain under `main-api4-step10` and `main-api4-step25`.
@@ -54,7 +54,7 @@ The same checks passed for step 25.
 Both inference pools accept refreshed weights. API4 has avoided the earlier unavailable-worker storm so far.
 Intermittent health-check misses remain. Most trainer time is spent waiting for rollouts.
 Ten-minute error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline.
-The step-50 scheduled TB2 evaluations are running. Wait for all tasks before comparing scores.
+The step-50 scheduled TB2 evaluations overlapped the gateway incident and shutdown. Treat them as affected data.
 
 Initial TB2 evaluation solved 2/64 IPO tasks and 1/64 centered tasks.
 IPO had 24 failed episodes; centered had 16. These sparse scores have substantial missingness.
@@ -79,6 +79,38 @@ Most provider errors concern malformed tool-call JSON. Inspected harness errors 
 Recorded policy spans cover versions 25–28 for IPO and 25–29 for centered.
 These evaluations measure the live training pools, not frozen step-25 checkpoints.
 Task-level exports and uncertainty are in `results/main-api4-eval25`.
+
+## Gateway incident and recovery
+
+At 12:40 UTC, both arms began receiving nginx 502 responses inside their VM harnesses.
+The local inference pools remained available. No trainer numerical failure was observed.
+Both orchestrators completed forced cleanup after SIGINT at 12:46 UTC.
+SLURM allocations 891 and 893 were then released.
+Both step-50 checkpoints were preserved with hard links before stopping.
+IPO stopped after update 54; centered stopped after update 52.
+Updates after step 50 and the interrupted step-50 evaluations remain in the original run directories.
+They will stay separate from the checkpoint continuation.
+
+A fresh tunnel probe returned nine successful requests and three timeouts in twelve requests.
+Both persistent and fresh connections timed out. This does not identify the service root cause.
+A hosted-model `uv run eval` also reproduced the 502 inside a fresh Lego VM.
+Another Lego episode completed and scored. Recovery was not yet validated at 13:00 UTC.
+These infrastructure failures do not meet the experiment's policy-collapse criterion.
+Resume both arms from their preserved step-50 states after runtime recovery.
+Use new run directories to preserve the affected records and repeat the step-50 online evaluation.
+Keep the same one-trainer-plus-one-inference allocation per arm.
+
+`lineage.json` joins each parent through update 50 to its planned continuation.
+Run `analyze.py --lineage experiments/score-centering/lineage.json --output <directory>` for joined curves.
+Parent records stop at the checkpoint update's final trainer metric timestamp.
+Later evaluation records and discarded updates are excluded from those curves.
+The continuation adds received-token and active-run-time budgets to the parent boundary.
+These budgets exclude recovery downtime and discarded work; original logs preserve those costs.
+The joined first-50 export exactly matches the prior gradients, mismatch statistics, and budgets.
+Boundary and budget checks passed on a small synthetic continuation.
+Affected eval exports are under `results/gateway-incident/evals`.
+Centered has only 52 of 64 step-50 eval records; twelve were interrupted before recording.
+Do not use the export's recorded-episode bounds as bounds across all 64 tasks.
 
 ## Validation and smoke evidence
 

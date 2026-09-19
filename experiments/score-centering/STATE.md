@@ -6,24 +6,33 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current work
 
-User resumed at 08:55 UTC and requested close monitoring. The earlier stop is revoked.
+Both training jobs stopped for a shared gateway failure. User authorization to continue remains active.
+Do not relaunch until the runtime recovery check passes. Resume both arms from the preserved step-50 checkpoints.
 
-- IPO: job 893, `ipo-1plus1-api4-seed42-r3`; inference node014, trainer node050.
-- Centered: job 891, `sc-1plus1-api4-seed42-r2`; inference node057, trainer node058.
-- Each arm uses one trainer and one inference node. Total experiment allocation: four nodes.
-- Both start from the pinned base weights. No checkpoint resume.
-- Adaptive concurrency starts at 512 and caps at 2048 per arm.
-- Runtime verifies four API processes per engine through the experimental per-rank override.
-- SC launch source: 9a282107e. IPO source: 8e2282999, adding UV_NO_SYNC and records only.
-- Latest main is a1822f7a0, fetched again before this restart and already merged.
-- At 12:40 UTC: both arms passed fifty finite updates. No collapse observed. Matched curves and window metrics are in results/main-api4-step50.
-- Both pools have avoided unhealthy-worker request failures. Isolated health-check misses remain.
-- Training error rates fluctuate as long episodes finish; inspected bursts mainly hit the 900-second deadline. Step25 TB2 evaluations are complete: IPO3/64 solved,22 errors; centered2/64 solved,20 errors. Exports: results/main-api4-eval25.
-- Initial TB2: IPO 2 solved, 24 errors; SC 1 solved, 16 errors (64 tasks each). Online episodes can span policy refreshes.
-- Monitor helper: `/tmp/score-centering-monitor.py`; snapshots: `results/monitor/snapshots.jsonl`.
+- IPO job 893 and centered job 891 are cancelled. No experiment GPU allocation remains.
+- Both orchestrators received SIGINT at 12:46:33 UTC. Forced VM cleanup completed by 12:46:36.
+- First recorded HTTP 502 failures: centered 12:40:10 UTC; IPO 12:40:14 UTC.
+- Failures came from the VM-to-interception tunnel path; local inference remained available and trainers stayed finite.
+- An isolated head-node tunnel probe returned 200 once, then hit a 15-second read timeout. It cleaned up its tunnel.
+- Step-50 trainer and orchestrator checkpoints are verified and hard-linked under each run's `preserved-checkpoints/step_50`.
+- Current run directories remain `ipo-1plus1-api4-seed42-r3` and `sc-1plus1-api4-seed42-r2`.
+- The first 50 optimizer updates precede the gateway incident. Treat later interrupted work separately.
+- Step-50 online evaluations overlapped the incident; preserve errors and interruption records. Do not interpret their scores as clean measurements.
+- Recovery eval: `gateway-recovery-20260919-1249`, using eval-preflight.toml (2 Lego + 2 TB2 episodes, hosted model).
+- First recovery eval finished: Lego 1/2 harness errors (502), TB2 0/2 errors. One of four episodes solved.
+- At 13:00 UTC, a second tunnel probe passed 12/12 public and local requests.
+- Second recovery eval: `gateway-recovery-20260919-1301`, session74638, concurrency4. Console `/tmp/score-centering-gateway-recovery-r2.log`.
+- Verified zero active sandboxes for both stopped run labels.
+- Both external step-50 resume dry runs passed. New names: `ipo-1plus1-api4-seed42-resume50-r1`, `sc-1plus1-api4-seed42-resume50-r1`. Generated scripts request two nodes each.
+- `lineage.json` records parent updates1–50 plus planned continuations. Original runs ended at IPO54 and SC52; updates after50 stay excluded.
+- Next: validate recovery eval, then submit both generated scripts concurrently. Repeat the step-50 online eval (`retrigger_on_resume=true`).
+- Preserve the cap of 2048 and actual API4 per engine. No scientific configuration change is planned.
+- First-50 curves and window statistics: `results/main-api4-step50`. No numerical or predefined reward collapse.
+- Checkpoint manifests: `results/monitor/checkpoints-step50.json`; each trainer checkpoint is 341.24 GiB.
 - Current IPO W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/f7acea587c9a4bd5aeb33be0d270fd65
-- Current SC W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/a5741426ea7d458783ceace65a5b1509
-- Both runs appear in the shared dashboard on port 7789. Do not stop that dashboard.
+- Current centered W&B: https://wandb.ai/primeintellect/score-centering-terminal/runs/a5741426ea7d458783ceace65a5b1509
+- Shared dashboard: port 7789. Do not stop it.
+- Latest main merged before launch: a1822f7a0a8f0e4abcb4b1d07a7f6bba6c101d54.
 
 ### Restart history
 
@@ -106,7 +115,7 @@ User resumed at 08:55 UTC and requested close monitoring. The earlier stop is re
 
 ## Next
 
-1. Continue close monitoring of jobs893/891. Both actual API4 pools passed fifty finite updates. The step-50 TB2 evaluations are running. Continue toward 400.
+1. Validate recovery from the gateway incident. Resume both arms from preserved step 50, then continue toward 400.
 2. Fix runtime failures, with equal configuration changes in both arms. Keep total experiment nodes <=8.
 3. Analyze the running main pair at matched steps and token budgets. Preserve failed attempts if a restart is needed.
 4. Monitor to completion; collect curves and task traces. Apply PROTOCOL.md decision rules. Current TB2 initial success is sparse (IPO2/40, SC1/48 scored) with many errors. The protocol now fixes a supplemental unseen-Lego audit after training; select by exposure only, then evaluate base and both final checkpoints.
