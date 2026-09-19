@@ -338,6 +338,14 @@ rollouts and broadcasts`. Same node set as attempt 7 (`prime-nebius-puku-h200-gp
 Reason for the restart: the 12:40 tunnel outage (see above); a fresh launch mints four new tunnels.
 Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
 
+#### Attempt 9 progress
+
+- 13:05 reaper: `Successfully deleted 444 sandbox(es)` from attempt 7.
+- 13:12:13 `Policy inference pool ready after 3m 52s` (all 8 nodes page-cache warm: `Loading weights took 27 s`).
+- 13:13:46 trainer `Resuming from step 220 (total_tokens=213484544, total_samples=245)`; checkpoint load plus v220
+  broadcast succeeded (`POST /update_weights 200 OK`). Total downtime 13:01 to 13:14, about 13 minutes. So a
+  restart on warm nodes costs ~13 min, not the ~40 min a cold boot costs; the same node set is worth asking for.
+
 ## Open questions for Garrett
 
 - KV pool is 11.55x concurrency per FP8 replica at 131k (1.51M tokens), not ~1.4x. Worth re-checking whether
