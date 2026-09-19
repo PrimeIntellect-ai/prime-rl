@@ -203,6 +203,12 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   free. `keep_last = 2` should delete `step_20` after the step 60 save (~07:30).
 - 06:47 hourly summary: steps 21-40 in 45 min (~2.3 min/step), reward 0.72-0.95, mismatch KL 0.020-0.027,
   grad norm 0.006-0.09, Peak Mem 72-92 GiB, no errors beyond the two image-level harness failures.
+- 07:00:36 orchestrator Step 50: `Reward 0.9844 | Cancelled 15.3%`. Per-batch cancelled share since the first
+  hit: 4.5% (34), 4.0% (42), 6.8% (44), 5.1% (49), 15.3% (50), 0% elsewhere; 19 episodes total out of ~3,200
+  dispatched (0.6%). Reward over steps 46-50 is 0.83, 0.94, 0.95, 0.94, 0.98 versus 0.69-0.89 for steps 29-43,
+  which fits a selection effect: the episodes that outlive 32 steps are the long, hard ones. Still holding
+  (the run is alive; the knob changes the data mix). If Garrett wants it changed, the cheapest moment is right
+  after a checkpoint: `scancel`, set `max_off_policy_steps = 64`, relaunch with the bare `[resume]`.
 
 ## Open questions for Garrett
 
@@ -222,5 +228,5 @@ trainer step ~05:05, and the v1 update right after is the moment of truth.
   on an already rollout-bound run. Options for later: a curriculum/difficulty filter on the source, a larger
   `group_size`, or a harder taskset mix. Not a bring-up concern.
 - `max_off_policy_steps = 32` is being hit: the longest SWE rollouts outlive 32 trainer steps at ~2.5 min each
-  (first 2 cancellations at 06:26, step ~33). The episodes it drops are the hardest, longest ones, which biases
+  (first 2 cancellations at 06:26, step ~33; 19 by step 50, up to 15% of a single batch). The episodes it drops are the hardest, longest ones, which biases
   the batch toward short tasks. Suggest 64 on the next relaunch. I did not restart the run for this.
