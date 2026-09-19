@@ -1,14 +1,10 @@
-"""Read-only projection of a verifiers flow root for the web dashboard.
-
-A flow root holds units (`campaign/`, `tasks/<id>/`: git repositories whose `state.json` says
-where each stands), `transitions.jsonl` (one line per stage start and per transition), `calls/`
-(one record per durable call, with the trace it made) and `live/` (a snapshot per seat in
-flight). Every stage run is a node in its unit's lane; a transition is a labeled edge to the
-stage the unit moved to; the calls a stage made hang on its node, an agent's opening its trace.
-"""
+"""Read-only projection of uniform units and explicit stage/call execution events."""
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import subprocess
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +15,23 @@ import orjson
 TRANSITIONS = "transitions.jsonl"
 STATUS = {"ready": "completed", "terminal": "completed", "waiting": "completed", "held": "failed"}
 """A transition's unit status as the node's status: a hold is the failure an operator sees."""
+
+
+def flow_etag(run_dir: Path) -> str:
+    paths = [run_dir / "transitions.jsonl", run_dir / "traces.jsonl", run_dir / "drain"]
+    paths.extend((run_dir / "calls").glob("*/*.json"))
+    paths.extend((run_dir / "live").glob("*.json"))
+    for unit in sorted((run_dir / "units").glob("*")):
+        paths.extend([unit / "state.json", unit / ".git/HEAD", unit / ".git/packed-refs"])
+        paths.extend((unit / ".git/refs/heads").rglob("*"))
+    parts = [str(_running(run_dir))]
+    for path in sorted(paths):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        parts.append(f"{path.relative_to(run_dir)}:{stat.st_size}:{stat.st_mtime_ns}")
+    return hashlib.sha256(":".join(parts).encode()).hexdigest()[:16]
 
 
 def is_flow_run(run_dir: Path) -> bool:
@@ -61,13 +74,18 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def unit_states(run_dir: Path) -> dict[str, dict[str, Any]]:
-    """Every unit's `state.json`: the campaign first, then the tasks by id."""
+    """Committed unit state, matching what the scheduler reads."""
     states = {}
-    if (campaign := _read(run_dir / "campaign" / "state.json")) is not None:
-        states["campaign"] = campaign
-    for path in sorted((run_dir / "tasks").glob("*/state.json")):
-        if (state := _read(path)) is not None:
-            states[path.parent.name] = state
+    for unit in sorted((run_dir / "units").glob("*")):
+        if not (unit / ".git").exists():
+            continue
+        result = subprocess.run(
+            ["git", "-C", str(unit), "show", "HEAD:state.json"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            states[unit.name] = orjson.loads(result.stdout)
     return states
 
 
@@ -75,13 +93,24 @@ def call_records(run_dir: Path) -> list[dict[str, Any]]:
     return [r for p in sorted((run_dir / "calls").glob("*/*.json")) if (r := _read(p)) is not None]
 
 
-def live_seats(run_dir: Path) -> dict[str, list[str]]:
-    """The seats in flight per unit, from the live snapshot names `<unit>--<key>.json`."""
-    out: dict[str, list[str]] = defaultdict(list)
-    for path in sorted((run_dir / "live").glob("*.json")):
-        unit, _, key = path.stem.partition("--")
-        out[unit].append(key.replace("__", "/"))
-    return out
+def _running(run_dir: Path) -> bool:
+    try:
+        with (run_dir / "flow.lock").open() as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except FileNotFoundError:
+        pass
+    return False
+
+
+def run_status(run_dir: Path, events: list[dict[str, Any]]) -> str:
+    boundary = next((e for e in reversed(events) if e["type"] in ("run_started", "run_finished")), None)
+    if boundary is None:
+        return "pending"
+    if boundary["type"] == "run_finished":
+        return boundary["reason"]
+    return "running" if _running(run_dir) else "incomplete"
 
 
 PAYLOAD_CAP = 65_536
@@ -102,11 +131,12 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     row = run_dir.name
     states = unit_states(run_dir)
     nodes: list[dict[str, Any]] = []
-    open_by_unit: dict[str, dict[str, Any]] = {}
+    executions: dict[str, dict[str, Any]] = {}
+    execution_status = run_status(run_dir, events)
     occurrences: dict[tuple[str, str], int] = defaultdict(int)
 
     def group_id(unit: str) -> str:
-        return f"{row}/" if unit == "campaign" else f"{row}/{unit}"
+        return f"{row}/{unit}"
 
     steers: list[dict[str, Any]] = []
     for order, event in enumerate(events):
@@ -117,18 +147,11 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         if not isinstance(unit, str) or not isinstance(stage, str):
             continue
         if kind == "started":
-            if (abandoned := open_by_unit.pop(unit, None)) is not None:
-                # the same unit starting again means the earlier run never finished: its
-                # process died (a kill, a crash) before a transition or a stop was written
-                abandoned["status"], abandoned["finished_at"], abandoned["done_order"] = (
-                    "cancelled",
-                    event.get("at"),
-                    order,
-                )
             n = occurrences[(unit, stage)]
             occurrences[(unit, stage)] += 1
             node = {
-                "id": f"{row}:{unit}/{stage}#{n}",
+                "id": f"{row}:{event['execution']}",
+                "execution": event["execution"],
                 "row": row,
                 "unit": unit,
                 "path": f"{unit}/{stage}#{n}",
@@ -137,7 +160,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "occurrence": n,
                 "index": None,
                 "kind": "stage",
-                "status": "running",
+                "status": "incomplete",
                 "attached": False,
                 "reason": None,
                 "error": None,
@@ -155,11 +178,13 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "report": None,
             }
             nodes.append(node)
-            open_by_unit[unit] = node
-        elif kind in ("transition", "stopped") and (node := open_by_unit.pop(unit, None)) is not None:
+            executions[event["execution"]] = node
+        elif (
+            kind in ("transition", "stopped", "cancelled") and (node := executions.get(event["execution"])) is not None
+        ):
             node["finished_at"] = event.get("at")
             node["done_order"] = order
-            if kind == "stopped":
+            if kind in ("stopped", "cancelled"):
                 node["status"] = "cancelled"
                 continue
             status = event.get("status")
@@ -171,51 +196,72 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             if status == "held":
                 node["error"] = event.get("reason")
 
-    # The calls a stage made hang on its node, in start order: an agent's trace, a function's
-    # or command's result. A seat still in flight (a live snapshot) is a running row.
-    by_unit_stage: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for node in nodes:
-        by_unit_stage[(node["unit"], node["name"])].append(node)
-    for record in sorted(call_records(run_dir), key=lambda r: (r.get("started_at") or "", r.get("key") or "")):
-        unit, stage, finished = record.get("unit"), record.get("stage"), record.get("finished_at") or ""
-        candidates = by_unit_stage.get((unit, stage)) or []
-        parent = next(
-            (n for n in reversed(candidates) if (n["started_at"] or "") <= finished <= (n["finished_at"] or "9")),
-            candidates[-1] if candidates else None,
-        )
+    # Invocation and attempt IDs, never timestamps, determine attachment to a stage.
+    records = {r["call"]: r for r in call_records(run_dir)}
+    calls: dict[tuple[str, int], dict[str, Any]] = {}
+    for event in events:
+        if event.get("type") not in ("call", "rollout"):
+            continue
+        parent = executions.get(event["execution"])
         if parent is None:
             continue
-        trace_id = record.get("trace_id")
-        episode = trace_lines.get(trace_id) if isinstance(trace_id, str) else None
-        parent["calls"].append(
-            {
-                "key": str(record.get("key") or record.get("kind")),
-                "kind": record.get("kind"),
-                "status": "completed",
-                "started_at": record.get("started_at"),
-                "finished_at": record.get("finished_at"),
-                "trace_id": trace_id,
-                "episode_line": episode[0] if episode else None,
-                "episode_id": episode[1] if episode else None,
-                "payload": _payload(record.get("payload")),
+        identity = (event["call"], event["attempt"])
+        if identity not in calls:
+            call = calls[identity] = {
+                "id": event["call"],
+                "execution": event["execution"],
+                "key": event.get("key") or event["kind"],
+                "kind": event["kind"],
+                "attempt": event["attempt"],
+                "parent": event.get("parent"),
+                "status": "incomplete",
+                "started_at": event["at"],
+                "finished_at": None,
+                "trace_id": None,
+                "payload": None,
+                "rollouts": [],
             }
-        )
-    live = live_seats(run_dir)
-    for unit, node in open_by_unit.items():  # a stage without its transition is running
-        for key in live.get(unit, []):
-            node["calls"].append(
-                {
-                    "key": key,
-                    "kind": "agent",
-                    "status": "running",
-                    "started_at": None,
-                    "finished_at": None,
-                    "trace_id": None,
-                    "episode_line": None,
-                    "episode_id": None,
-                    "payload": None,
-                }
+            parent["calls"].append(call)
+        call = calls[identity]
+        if event["type"] == "rollout":
+            rollouts = call["rollouts"]
+            if event["status"] == "started":
+                rollouts.append(
+                    {
+                        "trace_id": event["trace_id"],
+                        "status": "incomplete",
+                        "rollout": event["rollout"],
+                        "started_at": event["at"],
+                    }
+                )
+            else:
+                rollout = next(r for r in rollouts if r["rollout"] == event["rollout"])
+                rollout.update(status=event["status"], finished_at=event["at"], error=event.get("error"))
+            call["trace_id"] = event["trace_id"]
+            continue
+        if event["status"] != "started":
+            call.update(
+                status=event["status"],
+                finished_at=event["at"],
+                trace_id=event.get("trace_id") or call["trace_id"],
+                error=event.get("error"),
+                source_call=event.get("source_call"),
+                source_execution=event.get("source_execution"),
             )
+            record = records.get(event.get("source_call") or event["call"])
+            if record:
+                call["payload"] = _payload(record.get("payload"))
+    last_launch = max((i for i, e in enumerate(events) if e["type"] == "run_started"), default=-1)
+    for node in nodes:
+        if node["status"] == "incomplete" and execution_status == "running" and node["order"] > last_launch:
+            node["status"] = "running"
+        for call in node["calls"]:
+            for item in [call, *call["rollouts"]]:
+                if item["status"] == "incomplete" and node["status"] == "running":
+                    item["status"] = "running"
+                episode = trace_lines.get(item.get("trace_id"))
+                item["episode_line"] = episode[0] if episode else None
+                item["episode_id"] = episode[1] if episode else None
 
     edges: list[dict[str, Any]] = []
     by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -249,9 +295,9 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "kind": "route",
                     "source": before[-1]["id"],
                     "target": after[0]["id"] if after else None,
-                    "outcome": steer.get("action") or "steer",
+                    "outcome": "steer",
                     "to": after[0]["name"] if after else "operator",
-                    "summary": steer.get("note") or steer.get("action"),
+                    "summary": steer["action"].get("note") or orjson.dumps(steer["action"]).decode(),
                 }
             )
     for source in nodes:  # between lanes: a stage that created, released or woke another unit
@@ -270,12 +316,10 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                     "summary": source["reason"],
                 }
             )
-    tasks = []
+    units = []
     for unit, state in states.items():
-        if unit == "campaign":
-            continue
         lane = by_unit.get(unit, [])
-        tasks.append(
+        units.append(
             {
                 "id": group_id(unit),
                 "name": unit,
@@ -283,40 +327,38 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "stage": state.get("stage"),
                 "status": state.get("status"),
                 "reason": state.get("reason"),
+                "data": state["data"],
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
             }
         )
     all_nodes = sorted(nodes, key=lambda n: (n["order"], n["id"]))
-    campaign_done = states.get("campaign", {}).get("status") in ("waiting", "terminal")
-    finished = campaign_done and bool(tasks) and all(t["status"] == "terminal" for t in tasks) and not open_by_unit
+    finished = execution_status in ("quiescent", "draining")
     rows = [
         {
             "id": row,
-            "status": "completed" if finished else "running",
+            "status": execution_status,
             "started_at": events[0]["at"] if events else None,
             "finished_at": events[-1]["at"] if finished and events else None,
         }
     ]
-    groups = [{"id": group_id("campaign"), "name": row, "row": row, "kind": "run"}] + [
-        {"id": t["id"], "name": t["name"], "row": row, "kind": "task"} for t in tasks
-    ]
+    groups = [{"id": u["id"], "name": u["name"], "row": row, "kind": "unit"} for u in units]
     return {
         "rows": rows,
         "groups": groups,
-        "tasks": tasks,
+        "units": units,
         "nodes": all_nodes,
         "edges": edges,
         "stats": {
             "rows": 1,
-            "tasks": len(tasks),
+            "units": len(units),
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),
             "failed": sum(n["status"] == "failed" for n in nodes),
             "traces": sum(c["trace_id"] is not None for n in nodes for c in n["calls"]),
             "routes": sum(e["kind"] == "route" for e in edges),
-            "held": sum(t["status"] == "held" for t in tasks),
-            "waiting": sum(t["status"] == "waiting" for t in tasks),
+            "held": sum(t["status"] == "held" for t in units),
+            "waiting": sum(t["status"] == "waiting" for t in units),
             "live": sum(c["status"] == "running" for n in nodes for c in n["calls"]),
         },
     }

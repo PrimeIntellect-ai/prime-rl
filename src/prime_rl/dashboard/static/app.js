@@ -344,7 +344,7 @@ function renderOverview() {
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
     meta.type === "flow"
-      ? ["tasks", `<span class="val">${state.flow.data?.stats.tasks ?? "–"}</span>`]
+      ? ["units", `<span class="val">${state.flow.data?.stats.units ?? "–"}</span>`]
       : meta.type === "eval"
         ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
         : ["step", `<span class="val">${stepText}</span>`],
@@ -429,7 +429,7 @@ async function fetchFlow() {
   flow.etag = data.etag;
   flow.data = data;
   renderOverview();
-  if (flow.task !== "all" && !data.tasks.some((task) => task.id === flow.task)) flow.task = "all";
+  if (flow.task !== "all" && !data.units.some((task) => task.id === flow.task)) flow.task = "all";
   renderFlow();
 }
 
@@ -444,6 +444,7 @@ function flowDuration(node) {
 }
 
 function flowStatusClass(status) {
+  if (status === "incomplete") return "stale";
   if (status === "failed" || status === "cancelled") return "bad";
   if (status === "running" || status === "retrying") return runStatus(currentStep()) === "running" ? "live" : "stale";
   return "done";
@@ -465,7 +466,7 @@ function renderFlow() {
   const data = flow.data;
   if (!data) return;
   const taskSelect = $("#flow-task-select");
-  taskSelect.innerHTML = `<option value="all">all tasks</option>` + data.tasks.map((task) =>
+  taskSelect.innerHTML = `<option value="all">all units</option>` + data.units.map((task) =>
     `<option value="${esc(task.id)}">${esc(task.name)}</option>`
   ).join("");
   taskSelect.value = flow.task;
@@ -473,16 +474,16 @@ function renderFlow() {
 
   const stat = (label, value) => `<div class="flow-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
   $("#flow-summary").innerHTML = [
-    stat("tasks", data.stats.tasks), stat("steps", data.stats.steps), stat("active", data.stats.running),
+    stat("units", data.stats.units), stat("steps", data.stats.steps), stat("active", data.stats.running),
     stat("failed", data.stats.failed), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
   ].join("");
-  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : "caught up"} · ${data.stats.routes} routes`;
+  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : data.rows[0].status} · ${data.stats.routes} routes`;
 
   $("#flow-tasks").innerHTML =
     `<button class="flow-task ${flow.task === "all" ? "active" : ""}" data-flow-task="all">
-      <span><b>all tasks</b><small>run trajectory</small></span><em>${data.tasks.length}</em>
+      <span><b>all units</b><small>run trajectory</small></span><em>${data.units.length}</em>
     </button>` +
-    data.tasks.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
+    data.units.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
       <i class="${flowStatusClass(task.status === "held" ? "failed" : task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${esc(task.status || "")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
     </button>`).join("");
   renderFlowGraph();
@@ -490,9 +491,7 @@ function renderFlow() {
 }
 
 function flowGraphLayout(data, selected, viewportWidth) {
-  const task = data.tasks.find((item) => item.id === selected);
-  const runGroup = task && data.groups.find((group) => group.kind === "run" && group.row === task.row);
-  const groups = selected === "all" ? data.groups.map((group) => group.id) : [runGroup?.id, selected].filter(Boolean);
+  const groups = selected === "all" ? data.groups.map((group) => group.id) : [selected];
   const wanted = new Set(groups);
   const nodes = data.nodes.filter((node) => wanted.has(node.group));
   const positions = new Map();
@@ -637,10 +636,12 @@ function openFlowStage(nodeId) {
     ? calls.map((call, i) => `
       <div class="fm-call ${esc(call.kind)} ${esc(call.status)}" data-fm-call="${i}" title="${call.kind === "agent" ? "open the trace" : "show the result"}">
         <span class="fm-kind">${esc(call.kind)}</span><code>${esc(call.key)}</code>
-        <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)}${call.trace_id ? " · trace" : ""}</small>
+        <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)} ${call.source_call ? "cached result" : `attempt ${call.attempt}`}${call.trace_id ? " · trace" : ""}</small>
+        ${call.error ? `<small>${esc(call.error)}</small>` : ""}
+        ${(call.rollouts || []).length > 1 ? call.rollouts.map((r, j) => `<button class="btn" data-fm-rollout="${j}">rollout ${r.rollout}: ${esc(r.status)}</button>`).join("") : ""}
       </div>
       ${call.kind !== "agent" ? `<pre class="fm-payload" hidden>${esc(flowPayload(call) || "(no result recorded)")}</pre>` : ""}`).join("")
-    : `<div class="empty"><span>no calls recorded</span><small>this stage made no durable calls</small></div>`;
+    : `<div class="empty"><span>no calls recorded</span><small>this stage has no call events</small></div>`;
   $("#flow-modal").hidden = false;
 }
 
@@ -650,7 +651,7 @@ function closeFlowStage() {
 }
 
 async function openFlowTrace(node) {
-  if (!node?.episode_line) return toastMsg("this step has no trace");
+  if (node?.episode_line == null) return toastMsg("this step has no trace");
   await applyViewCommand({ run: state.run, tab: "traces", episode: node.episode_id, line: node.episode_line, trace: 0 });
 }
 
@@ -6582,8 +6583,15 @@ $("#flow-modal").addEventListener("click", (event) => {
   if (!row) return;
   const call = state.flow.modal?.calls[Number(row.dataset.fmCall)];
   if (!call) return;
+  const rolloutButton = event.target.closest("[data-fm-rollout]");
+  if (rolloutButton) {
+    const rollout = call.rollouts[Number(rolloutButton.dataset.fmRollout)];
+    if (rollout.episode_line == null) return toastMsg("trace not yet recorded");
+    closeFlowStage();
+    return openFlowTrace(rollout);
+  }
   if (call.kind === "agent") {
-    if (!call.episode_line) return toastMsg(call.status === "running" ? "still running" : "this call has no trace");
+    if (call.episode_line == null) return toastMsg(call.status === "running" ? "still running" : "this call has no trace");
     closeFlowStage();
     return openFlowTrace(call);
   }

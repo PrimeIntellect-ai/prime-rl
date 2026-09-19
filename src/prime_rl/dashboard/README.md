@@ -11,13 +11,15 @@ the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 skips the registry. See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
-A verifiers flow run directory opens a **Flow** tab that follows `events.jsonl`
-as it grows. Rows, task scopes, steps and spreads form the trajectory;
-`ctx.route(step, outcome, to)` adds labeled edges. When that step's trace keeps
-`{"outcome": ..., "summary": ...}` in `trace.info["decision"]`, the edge inspector
-shows the agent's explanation; the trace remains the source of truth. A task lane
-is a top-level scope containing an `init` step. Agent nodes open the existing trace
-viewer, and spread nodes list their evaluation traces.
+A verifiers flow run directory opens a **Flow** tab following `transitions.jsonl`,
+`calls/`, `traces.jsonl`, and `live/`. Units under `units/<id>/` form equal lanes; stage executions form nodes;
+transitions and operator controls form edges. Agent calls open the existing trace viewer.
+Unit state is read from committed Git HEAD, including the pipeline's typed `data`.
+Stage and call IDs determine attribution; cache attachments keep producer provenance.
+Failed and uncached calls remain visible, and native retry traces open individually.
+Unfinished starts after a process exits remain incomplete. Run status reports quiescence
+or draining without deciding whether pipeline outcomes constitute success.
+Workflow updates, new call events/results, process exit, and live snapshots invalidate the view cache.
 
 The Config and Logs views keep each launch attempt available. The Config view
 shows a copyable command above the launch TOML or resolved JSON. Both views

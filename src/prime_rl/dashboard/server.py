@@ -25,7 +25,7 @@ from pathlib import Path
 
 import orjson
 
-from prime_rl.dashboard.flow import is_flow_run, project_flow, read_complete_jsonl, unit_states
+from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_complete_jsonl, run_status
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -301,7 +301,7 @@ def eval_total_episodes(config: dict) -> int | None:
 
 
 def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
-    """When the flow started (its first transition line) and whether every task unit is terminal."""
+    """When execution started and whether the scheduler reported a settled stop."""
     events = read_complete_jsonl(run_dir / "transitions.jsonl")
     started = None
     for event in events:
@@ -310,10 +310,7 @@ def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
             break
         except (KeyError, TypeError, ValueError):
             continue
-    states = unit_states(run_dir)
-    tasks = [state for unit, state in states.items() if unit != "campaign"]
-    campaign_done = states.get("campaign", {}).get("status") in ("waiting", "terminal")
-    return started, campaign_done and bool(tasks) and all(state.get("status") == "terminal" for state in tasks)
+    return started, run_status(run_dir, events) in ("quiescent", "draining")
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -2138,24 +2135,6 @@ def get_episode_timeline(run: str, line: int) -> dict:
     return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
 
 
-def _flow_etag(run_dir: Path) -> str:
-    parts = []
-    for name in ("events.jsonl", "traces.jsonl"):
-        path = run_dir / name
-        try:
-            stat = path.stat()
-            parts.append(f"{stat.st_size}:{stat.st_mtime_ns}")
-        except OSError:
-            parts.append("0:0")
-    for path in sorted((run_dir / "steps").glob("*/*.json")):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        parts.append(f"{path.parent.name}/{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
-    return hashlib.sha256(":".join(parts).encode()).hexdigest()[:16]
-
-
 def _flow_trace_lines(run_dir: Path) -> dict[str, tuple[int, str]]:
     lines = {}
     for row in episode_rows(run_dir):
@@ -2174,7 +2153,7 @@ def get_flow(run: str, etag: str | None = None) -> dict:
     run_dir = get_run_dir(run)
     if not is_flow_run(run_dir):
         raise HTTPException(404, "not a flow run")
-    current = _flow_etag(run_dir)
+    current = flow_etag(run_dir)
     if etag == current:
         return {"etag": current, "unchanged": True}
     with _lock:
