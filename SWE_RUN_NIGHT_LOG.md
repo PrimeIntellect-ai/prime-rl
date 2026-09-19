@@ -565,6 +565,10 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
 - 22:40:43 third provisioning blip (`Connect RPC failed (unavailable)`), single trace.
 - 23:10:17 step 320 checkpoint saved (`Step 320 | 3m 51s | Mismatch KL 0.0062`); `checkpoints/` holds `step_300`,
   `step_320`. Steps 301-320: reward 0.48-0.84, turns 30-61, ~2 min/step.
+- 23:23 hourly summary through step 330 (7h of job time): ~1.9 min/step, reward 0.44-0.94 over steps 311-330
+  (mean ~0.72), mismatch KL 0.0048-0.0066 with no trend, inference p99 36-38 s, Peak Mem 34-49 GiB. 39,567
+  episodes finished; 220 off-policy cancellations, 133 trace failures, 3 provisioning blips. Checkpoints
+  `step_300`, `step_320`. Disk 55 TB of 250 TB.
 
 ## Open questions for Garrett (GLM run)
 
