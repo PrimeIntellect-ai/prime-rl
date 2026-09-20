@@ -636,6 +636,9 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
   5m 10s, 2m 16s as the concurrency controller ramps the inflight cap 36 -> 157 (ceiling 512). **Mismatch KL
   0.0005-0.0006 at every step**, versus 0.025-0.028 for the FP8 run's first six. Reward 0.88 at step 1. No
   errors of any kind so far. Expect ~2 min/step once the cap reaches the KV-bound limit.
+- 01:48:21 **first checkpoint, step 20** (`Step 20 | 5m 54s | Mismatch KL 0.0007 | Peak Mem. 71.9 GiB`); ~4 min of
+  write, `checkpoints/step_20/` has both halves. Steps ~2 min each now. Mismatch KL for steps 1-20: 0.0005 0.0005 0.0006 0.0006 0.0005 0.0006 0.0006 0.0006 0.0006 0.0008 0.0006 0.0006 0.0006 0.0006 0.0006 0.0006 0.0007 0.0006 0.0007 0.0007(FP8 run
+  over the same steps: 0.023-0.032). Reward 0.81-0.89 at the sampled steps.
 
 ## Open questions for Garrett (bf16 control)
 
