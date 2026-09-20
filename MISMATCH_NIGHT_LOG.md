@@ -22,6 +22,11 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 05:20 Submitted job 988: `swe-fp8-e8m0.toml`, 16 nodes, FP8 with UE8M0 scales, checkpointing off, wandb
   `swe-scaleswe-131k-fp8-e8m0-adamw1e-6-bs64g8-8t8i`. Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-e8m0`.
 - 05:17 Round 5 started (S10, S3).
+- 05:38 Round 5 done: activation-scale misread confirmed; S10 (E8M0=1 + exact power-of-two weight scales) is the
+  best config. Bisection nodes released (jobs 978, 979 gone).
+- 05:39 Killed job 988 after 90 s: it tested E8M0=1 alone, and the run should test the recommended config.
+- 05:45 Promoted the weight-scale diagnostic to `inference.fp8_ue8m0_weight_scales`; relaunching as
+  `swe-fp8-ue8m0.toml` (run `dsv4-swe-131k-fp8-ue8m0`).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -42,8 +47,8 @@ about 11:26). Scripts under `~/tmp/fp8diag/bisect/`: `start_server.sh`, `stop_se
 | S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | up 04:39, clean 0/30, stopped 05:00 |
 | S7 | routed-experts-only FP8 | `servers/s7-routed-only.toml` (ignore `.*attn.*`, `.*shared_experts.*`) | up 05:10, reproduces 13-14/30, stopped 05:17 |
 | S9 | S1 + UE8M0 scales | `VLLM_USE_DEEP_GEMM_E8M0=1` | up 05:10, CLEAN 0/30, stopped 05:17 |
-| S10 | S9 + power-of-two weight scales | `VLLM_USE_DEEP_GEMM_E8M0=1 PRIME_DIAG_UE8M0_WEIGHTS=1` | starting 05:17, slot 0 |
-| S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | starting 05:17, slot 1 |
+| S10 | S9 + power-of-two weight scales | `VLLM_USE_DEEP_GEMM_E8M0=1 PRIME_DIAG_UE8M0_WEIGHTS=1` | up 05:30, CLEAN 0/30, best bulk, stopped 05:38 |
+| S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | up 05:29, reproduces 17/30, stopped 05:38 |
 | S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | superseded by S7 |
 
 Round 1 (S0 vs S1, 50 items, 822k tokens): running since 04:05.
@@ -140,6 +145,27 @@ Report `~/tmp/fp8diag/bisect/results/r4.decode.report.txt`, `r4.s9.prefill.repor
   tests bit-exact power-of-two weight scales via `PRIME_DIAG_UE8M0_WEIGHTS=1` to recover that).
 - Round 5 (05:17): S10 = E8M0=1 + `PRIME_DIAG_UE8M0_WEIGHTS=1`; S3 = `PRIME_DIAG_UE8M0_WEIGHTS=1` alone (fp32-format
   activation scales) to tell whether the misread is on weight or activation scales. Then release both nodes.
+
+### Round 5 result (05:38): the misread is on ACTIVATION scales; exact weight scales lower the bulk penalty
+
+Report `~/tmp/fp8diag/bisect/results/r5.decode.report.txt`, `r5.*.prefill.report.txt`. Both nodes released 05:38.
+
+| server | glitch d2 lp > -3 | bulk KL | IPO masked | lr p90 | lr max | mean lr |
+|---|---|---|---|---|---|---|
+| S1 FP8 production (fp32 scales) | 18/30 | 5.65e-3 | 0.0002 | 0.116 | 5.60 | -0.0016 |
+| S9 E8M0=1 (requantized weights) | 0/30 | 8.48e-3 | 0.0005 | 0.144 | 4.68 | -0.0001 |
+| S10 E8M0=1 + power-of-two weight scales | 0/30 | 3.46e-3 | 0.0000 | 0.086 | 3.74 | +0.0010 |
+| S3 fp32 act scales + power-of-two weight scales | 17/30 | 5.40e-3 | 0.0001 | 0.085 | 6.04 | +0.0009 |
+| production trainer vs inference (same tokens) | | 1.23e-2 | 0.0002 | 0.100 | 34.6 | -0.0126 |
+
+- S3 keeps the glitch at production strength while S9/S10 remove it, so the small-M DeepGEMM grouped GEMM misreads
+  the fp32 per-token-group ACTIVATION scales (`per_token_group_quant_fp8` with `disable_ue8m0_cast=True`), not the
+  weight scales. The large-M path used by full prefill reads them correctly.
+- Power-of-two weight scales (bit-exact for this checkpoint) cut the diffuse penalty: S10 has the lowest KL, p90
+  and masked fraction of every FP8 config measured (61% of production's KL, below the production trainer-vs-inference
+  p90 of 0.100). S9's higher penalty came from vLLM's re-quantization of already-rounded weights.
+- Recommended production change: `VLLM_USE_DEEP_GEMM_E8M0=1` plus power-of-two weight scales, promoted from the
+  `PRIME_DIAG_UE8M0_WEIGHTS` diagnostic to the config field `inference.fp8_ue8m0_weight_scales` (commit below).
 
 ### Glitch position structure in production traces (04:30; `~/tmp/mismatch_evidence/glitch_position_structure.md`)
 
