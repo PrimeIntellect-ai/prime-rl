@@ -65,11 +65,13 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
         intermediate_hidden: int,
         group: ProcessGroup,
         max_tokens_per_rank: int,
+        num_reserved_sms: int = 16,
     ) -> None:
         from prime_rl.trainer.models.layers.mega_moe import (
             build_mega_moe_buffer,
             check_mega_moe_dims,
             mega_moe_available,
+            reserve_sms_for_comm,
         )
 
         if not mega_moe_available():
@@ -78,6 +80,7 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
                 "deep_gemm build with `bf16_mega_moe` and `bf16_mega_moe_backward`)."
             )
         check_mega_moe_dims(hidden, intermediate_hidden)
+        reserve_sms_for_comm(num_reserved_sms)
 
         self.num_experts = num_experts
         self.top_k = top_k
@@ -112,15 +115,21 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
                 "Raise `model.moe.dispatch.max_tokens_per_rank`."
             )
 
-        if experts.gate_up_proj is not None:
-            gate_up_proj = _to_local(experts.gate_up_proj)
-        elif experts.gate_proj is not None:
-            gate_up_proj = torch.cat([_to_local(experts.gate_proj), _to_local(experts.up_proj)], dim=1)
-        else:
+        if experts.gate_up_proj is None and experts.gate_proj is None:
             raise ValueError("Mega MoE dispatch requires gated experts (SwiGLU gate+up), got non-gated experts.")
-        return _MegaMoeRoutedExperts.apply(
-            x, top_scores, selected_experts_indices, gate_up_proj, _to_local(experts.down_proj), self.buffer
-        )
+
+        def fused(module) -> torch.Tensor:
+            # Runs inside `experts.forward`, i.e. inside FSDP's pre/post-forward hooks: the weights are
+            # unsharded here and the post-backward gradient reduce/scale gets registered on the output.
+            if module.gate_up_proj is not None:
+                gate_up_proj = _to_local(module.gate_up_proj)
+            else:
+                gate_up_proj = torch.cat([_to_local(module.gate_proj), _to_local(module.up_proj)], dim=1)
+            return _MegaMoeRoutedExperts.apply(
+                x, top_scores, selected_experts_indices, gate_up_proj, _to_local(module.down_proj), self.buffer
+            )
+
+        return experts(x, None, fused=fused)
 
     def synchronize(self) -> None:
         return None

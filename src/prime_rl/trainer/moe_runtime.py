@@ -145,6 +145,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 intermediate_hidden=moe.experts.hidden_dim,
                 group=ep_mesh.get_group(),
                 max_tokens_per_rank=dispatch.max_tokens_per_rank,
+                num_reserved_sms=dispatch.num_reserved_sms,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")

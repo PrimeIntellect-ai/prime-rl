@@ -56,6 +56,16 @@ def uninterleave_mega_moe_l1_grad(dw1: torch.Tensor) -> torch.Tensor:
     )
 
 
+def reserve_sms_for_comm(num_reserved_sms: int) -> None:
+    import deep_gemm
+
+    total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+    deep_gemm.set_num_sms(max(total - num_reserved_sms, 1))
+
+
+_BUFFER_CACHE: dict[tuple, object] = {}
+
+
 def build_mega_moe_buffer(
     group: ProcessGroup,
     num_experts: int,
@@ -67,9 +77,14 @@ def build_mega_moe_buffer(
     import deep_gemm
 
     check_mega_moe_dims(hidden, intermediate_hidden)
-    return deep_gemm.get_symm_buffer_for_mega_moe(
-        group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden, mma_type="bf16xbf16"
-    )
+    key = (id(group), num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
+    buffer = _BUFFER_CACHE.get(key)
+    if buffer is None:
+        buffer = deep_gemm.get_symm_buffer_for_mega_moe(
+            group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden, mma_type="bf16xbf16"
+        )
+        _BUFFER_CACHE[key] = buffer
+    return buffer
 
 
 def _stage_inputs(buffer, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor) -> None:

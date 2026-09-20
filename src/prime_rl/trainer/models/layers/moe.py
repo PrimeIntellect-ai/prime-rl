@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 import torch
 import torch.nn.functional as F
@@ -124,9 +124,13 @@ class GroupedExperts(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor | None,
+        fused: Callable[["GroupedExperts"], torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        assert x.dim() == 2
+
+        if fused is not None:
+            return fused(self)
+        assert x.dim() == 2 and num_tokens_per_expert is not None
 
         def to_local(tensor: torch.Tensor) -> torch.Tensor:
             return tensor.to_local() if isinstance(tensor, DTensor) else tensor

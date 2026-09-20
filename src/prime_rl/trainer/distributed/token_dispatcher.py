@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Callable, Generic, Protocol, TypeVar
 
 import torch
 from torch.distributed import ProcessGroup
@@ -14,7 +14,9 @@ from prime_rl.trainer.distributed.collectives import (
 
 
 class ExpertFunction(Protocol):
-    def __call__(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor: ...
+    def __call__(
+        self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor | None, fused: Callable | None = None
+    ) -> torch.Tensor: ...
 
 
 class TokenDispatcher(Protocol):

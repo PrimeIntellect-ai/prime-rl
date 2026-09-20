@@ -260,6 +260,12 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     buffer once at startup. Must be >= the largest `bs * slen` any rank will pass through a MoE
     layer; raise it if you hit a "buffer is sized for N tokens/rank" error."""
 
+    num_reserved_sms: int = Field(16, ge=0)
+    """SMs left free for concurrent NCCL kernels (FSDP all-gathers etc.). The Mega MoE kernels are
+    persistent grids that synchronize across ranks; if they occupied every SM while an NCCL kernel
+    on another stream was waiting for a peer, the two would deadlock. Pair with ``NCCL_MAX_CTAS``
+    <= this value in ``env_vars`` so every NCCL kernel fits in the reserved SMs."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
