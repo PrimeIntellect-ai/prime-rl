@@ -29,6 +29,7 @@ def setup_vllm_env(config: InferenceConfig):
     deep_gemm_enabled = "1" if config.use_deep_gemm else "0"
     os.environ["VLLM_USE_DEEP_GEMM"] = deep_gemm_enabled
     os.environ["VLLM_MOE_USE_DEEP_GEMM"] = deep_gemm_enabled
+    os.environ["PRIME_FP8_UE8M0_WEIGHT_SCALES"] = "1" if config.fp8_ue8m0_weight_scales else "0"
 
     if config.vllm.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
