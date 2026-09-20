@@ -310,6 +310,14 @@ name = "pytorch-cu130-test"
 url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
 
+# Environments Hub wheels carry no upload time, so the exclude-newer cooldown
+# would reject every one of them. The Hub is first-party: skip the cutoff there.
+[[tool.uv.index]]
+name = "prime-hub"
+url = "https://hub.primeintellect.ai/primeintellect/simple/"
+explicit = true
+exclude-newer = false
+
 [tool.ruff.lint]
 select = ["F", "I"]
 
