@@ -87,6 +87,9 @@ jobs:
           - test: benchmark_regression
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"
+          - test: gsm8k_eval
+            runner: vm
+            pytest_args: "tests/integration/test_gsm8k_eval.py"
     steps:
       - name: Install Git
         run: |

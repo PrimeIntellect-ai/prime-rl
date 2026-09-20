@@ -1,0 +1,20 @@
+# Multi env: 16 terminal-bench-2 tasks under two harnesses, bash and rlm, in prime
+# sandboxes (PRIME_API_KEY authenticates sandbox creation), one rollout each with
+# a ten-minute budget, against Prime Inference on the default model. One env server
+# per source; the sources share the taskset, so each carries its own name.
+#
+#   uv run eval @ configs/debug/eval/multi-env.toml
+
+num_examples = 16
+
+[[source]]
+name = "tb2-bash"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 600
+
+[[source]]
+name = "tb2-rlm"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 600

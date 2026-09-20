@@ -21,29 +21,57 @@
   </div>
   <nav id="tabs">
     <button data-tab="config">Config</button>
-    <button data-tab="metrics" class="active">Metrics</button>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="metrics">Metrics</button>
     <button data-tab="traces">Traces</button>
     <button data-tab="report">Report</button>
     <button data-tab="logs">Logs</button>
   </nav>
   <label class="toggle" title="apply agent view commands as they arrive"><input type="checkbox" id="follow-toggle" checked><span class="dot"></span>follow</label>
   <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
+  <div id="platform-wrap" class="dd-wrap" hidden>
+    <a id="platform-link" class="btn platform" target="_blank" rel="noopener">view on platform<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M9 7h8v8"></path></svg></a>
+    <button id="platform-btn" class="btn dd-btn platform" hidden>view on platform</button>
+    <div class="dd-menu" id="platform-menu" hidden></div>
+  </div>
 </header>
 
 <div id="run-overview"></div>
 
 <main>
-  <section id="tab-metrics">
+  <section id="tab-overview">
     <div class="controls">
-      <div class="seg" id="metrics-mode">
-        <button data-mode="overview" class="active">Overview</button>
-        <button data-mode="all">All</button>
+      <div id="overview-filter-wrap" class="dd-wrap" hidden>
+        <button id="overview-filter-btn" class="btn dd-btn" title="filter">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div class="dd-menu dd-filters" id="overview-filter-menu" hidden>
+          <div class="dd-sec">filter</div>
+          <label class="dd-row" id="overview-env-row"><span class="t-label">env</span>
+            <select id="overview-env"></select>
+          </label>
+          <label class="toggle dd-row"><input type="checkbox" id="overview-errors"><span class="dot"></span>include errors</label>
+        </div>
       </div>
+      <input id="overview-search" class="search" type="search" placeholder="regex filter, e.g. reward or ^inference/">
+      <label class="ctl">smooth <input id="overview-smooth" type="range" min="1" max="50" value="1"><span id="overview-smooth-val">off</span></label>
+      <span id="overview-status" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="overview-collapse" class="btn">collapse</button>
+      <button id="overview-expand" class="btn">expand</button>
+    </div>
+    <div id="overview-body"></div>
+    <div id="swarm-tip" hidden></div>
+  </section>
+
+  <section id="tab-metrics" hidden>
+    <div class="controls">
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
-      <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
+      <label class="ctl">smooth <input id="metrics-smooth" type="range" min="1" max="50" value="1"><span id="metrics-smooth-val">off</span></label>
       <span id="metrics-status" class="muted"></span>
       <div class="spacer"></div>
-      <div class="seg" id="all-layout" hidden>
+      <div class="seg" id="metrics-layout">
         <button data-layout="flat">Flat</button>
         <button data-layout="nested">Nested</button>
       </div>
@@ -91,6 +119,12 @@
         </button>
         <div class="dd-menu dd-filters" id="trace-filter-menu" hidden>
           <div class="dd-sec">filter</div>
+          <div class="dd-row"><span class="t-label">status</span>
+            <div class="seg toggle-seg" id="trace-status-filter">
+              <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
+              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
+            </div>
+          </div>
           <div class="dd-row"><span class="t-label">kind</span>
             <div class="seg toggle-seg" id="trace-kinds">
               <button data-kind="train" class="on">train</button>
@@ -130,9 +164,13 @@
     </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
+        <colgroup>
+          <col class="c-line"><col class="c-phase"><col class="c-span"><col class="c-kind"><col class="c-env"><col class="c-group">
+          <col class="c-tok"><col class="c-turns"><col class="c-branches"><col class="c-stop"><col class="c-reward">
+        </colgroup>
         <thead><tr>
-          <th>#</th><th>arrived</th><th>took</th><th>kind</th><th>env</th><th>group</th><th>reward</th>
-          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th>
+          <th>#</th><th>phase</th><th title="when the rollout was dispatched, when its episode arrived, and how long that took (or has taken so far)">dispatched → arrived</th><th>kind</th><th>env</th><th>group</th>
+          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>reward</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -179,7 +217,7 @@
   <aside id="tm-left">
     <div class="tm-head tm-stephead" id="tm-stephead">
       <button id="tm-step-prev" class="btn tm-nav" title="previous step">‹</button>
-      <span id="tm-step-label"></span>
+      <span id="tm-step-label"></span><span id="tm-live-label" class="muted"></span>
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
     </div>
     <div class="tm-head tm-ctlrow">
@@ -190,6 +228,12 @@
         </button>
         <div class="dd-menu dd-filters" id="tm-filter-menu" hidden>
           <div class="dd-sec">filter</div>
+          <div class="dd-row"><span class="t-label">status</span>
+            <div class="seg toggle-seg" id="tm-status-filter">
+              <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
+              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
+            </div>
+          </div>
           <div class="dd-row"><span class="t-label">kind</span>
             <div class="seg toggle-seg" id="tm-kinds">
               <button data-kind="train" class="on">train</button>

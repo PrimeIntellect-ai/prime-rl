@@ -7,6 +7,7 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from prime_rl.utils.cp import CPContext
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
@@ -47,12 +48,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.in_proj_z = nn.Linear(config.hidden_size, self.value_dim, bias=False)
         self.in_proj_b = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
-        self.context_parallel_group = None
-        self.context_parallel_world_size = 1
-
-    def set_context_parallel_attributes(self, process_group, world_size: int) -> None:
-        self.context_parallel_group = process_group
-        self.context_parallel_world_size = world_size
+        self.cp_context = CPContext()
 
     def forward(
         self,
@@ -68,10 +64,10 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         decay = -self.A_log.float().exp() * F.softplus(self.in_proj_a(hidden_states).float() + self.dt_bias)
 
         context = None
-        if self.context_parallel_group is not None:
+        if self.cp_context.cp_enabled:
             context = build_cp_context(
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
-                group=self.context_parallel_group,
+                group=self.cp_context.cp_group,
                 conv1d_kernel_size=self.conv_kernel_size,
             )
 

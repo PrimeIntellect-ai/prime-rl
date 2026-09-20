@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint. Standalone evals are the `eval` skill.
 ---
 
 # Start a run
@@ -74,7 +74,9 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 ## `inference` — vLLM server
 
-OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly.
+Router session cleanup runs on successful, failed, and cancelled episodes, including discarded retry traces. Cleanup failures are logged per session and do not disable subsequent releases.
+
+OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly. The default `sticky_least_loaded` policy keeps each rollout on one replica while assigning new sessions to the least-loaded replica; RL and SFT online eval automatically release completed sessions.
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-0.6B
@@ -95,43 +97,6 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
-## `evals` — multi-env evals
-
-Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
-
-```bash
-uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
-uv run evals @ eval.toml
-```
-
-Minimal standalone `eval.toml`:
-
-```toml
-model = "Qwen/Qwen3-4B"
-
-[eval.client]
-base_url = "http://localhost:8000/v1"
-
-[eval.concurrency]  # adaptive; same controller as [orchestrator.concurrency]
-min_inflight = 8
-max_inflight = 128
-
-[[eval.source]]
-num_examples = 32   # always cap eval size for smokes
-group_size = 4
-env.taskset.id = "aime25"
-env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
-
-[ckpt]               # optional: make a standalone eval resumable
-interval = 10        # completed task groups between cursor saves
-```
-
-- Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/latest/envs/eval/{name}.log`.
-- External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `configs/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
-- Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
-- Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
-
 ## Exporting checkpoints
 
 Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). Convert to HF safetensors with `uv run python tools/convert_dcp_to_bf16.py <run_dir>/checkpoints/step_{n}` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run’s `configs/latest/resolved/trainer.json`/`sft.json`; multi-rank via `torchrun --nproc-per-node N`; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `tools/convert_bf16_to_fp8.py <dir>` (vLLM-native format), or straight from a checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (rank-parallel, writes only `<ckpt_dir>/weights-FP8`, no bf16 on disk); dequantize fp8-only releases with `tools/convert_fp8_to_bf16.py <dir>`. Caveat: on SM120 GPUs (RTX PRO 6000) vLLM 0.26 picks `CutlassFp8BlockScaledMMKernel` for blockwise-fp8 checkpoints and it silently degrades outputs — serve with `VLLM_DISABLED_KERNELS=CutlassFp8BlockScaledMMKernel,MarlinFP8ScaledMMLinearKernel` to fall back to the Triton kernel.
@@ -143,7 +108,8 @@ Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). 
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
-| `evals` | Multi-env evals | Standalone evals / SFT online evals |
+
+Standalone evals (`uv run eval`) are covered by the `eval` skill.
 
 ## Key paths
 

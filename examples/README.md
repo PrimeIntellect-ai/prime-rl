@@ -10,7 +10,7 @@ Larger runs on frontier models, one folder per model, each with a launch README 
 
 - [`qwen3-30b-a3b/`](advanced/qwen3-30b-a3b/README.md) — `Qwen3-30B-A3B` RL on math (`i3_math`), SWE (`r2e-gym`), and agentic tool use (general-agent on Modal). 2 train + 2 infer nodes; the SWE config runs at 131k context with `ep = 8` + `cp = 2`.
 - [`glm-4.5-air/`](advanced/glm-4.5-air/README.md) — `GLM-4.5-Air` (100B MoE) RL across search, SWE, and terminal domains at 131k context, with agents in sandboxes. 2 train + 4 infer nodes (SWE: 1 + 3).
-- [`glm-5.2/`](advanced/glm-5.2/README.md) — the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8 inference, and an llm-d router + Mooncake KV-offload variant. Also ships standalone `infer/` pre-flights.
+- [`glm-5.3/`](advanced/glm-5.3/README.md) — the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8 inference, and an llm-d router + Mooncake KV-offload variant. Also ships standalone `infer/` pre-flights.
 - `intellect-3.1/` — reproduce the `INTELLECT-3.1` run: 4 train + 12 infer nodes on SWE.
 
 All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table) and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
@@ -19,7 +19,7 @@ All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch
 
 Walk-throughs for the core environments (baseline eval → optional SFT warmup → RL → eval), each with its own README:
 
-- [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B)
+- [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B): `eval.toml` → `sft.toml` → `rl.toml`
 - [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator, LoRA
 - [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
@@ -35,5 +35,4 @@ Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 ## Related config folders
 
 - Frontier-model configs without launch walkthroughs (`minimax-m2.5`, `nemotron-3-super`, `deepseek-v4-flash`) live in [`configs/advanced/`](../configs/advanced).
-- Standalone eval configs live in [`configs/evals/`](../configs/evals).
 - Dev-sized (2-GPU) counterparts of `basic/` live in [`configs/basic/`](../configs/basic).

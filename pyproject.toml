@@ -16,14 +16,15 @@ dependencies = [
     "transformers==5.6.2",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
-    "prime>=0.6.19",
-    "prime-runs[train]>=0.1.1",
+    "prime-sandboxes>=0.3.0",
+    "prime-runs[train]>=0.1.3",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
     "orjson>=3.11.0",
     "psutil>=7.0.0",
+    "prometheus-client>=0.20.0",
     "pyzstd>=0.16.2",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
@@ -42,7 +43,7 @@ sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
-evals = "prime_rl.entrypoints.evals:main"
+eval = "prime_rl.entrypoints.eval:main"
 env-server = "prime_rl.entrypoints.env_server:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
 
@@ -268,8 +269,8 @@ torchao = [
 dion = { git = "https://github.com/samsja/dion.git", rev = "99e5f7e" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.1/vllm_router-0.2.1-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.1/vllm_router-0.2.1-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },

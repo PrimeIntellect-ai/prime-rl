@@ -4,6 +4,8 @@ from typing import Literal
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.utils.cp import CPContext
+
 CPStyle = Literal["ring", "ulysses"]
 ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
 
@@ -24,6 +26,8 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
     after loading with meta device.
     """
+
+    cp_context: CPContext = CPContext()
 
     @classmethod
     def cp_support(cls, config) -> CPSupport:
@@ -138,23 +142,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         use the returned value. Default implementation is a no-op.
         """
         return state_dict
-
-    @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls,
-        state_dict: dict[str, Tensor],
-        layer_idx: int,
-        quantize_fp8: bool = False,
-    ) -> dict[str, Tensor]:
-        """
-        Convert a single layer's state dict from PrimeRL format to vLLM kernel format.
-
-        Args:
-            state_dict: Layer weights in PrimeRL format.
-            layer_idx: Layer index to convert.
-            quantize_fp8: Whether to emit FP8 (e4m3) kernel weights with per-block scales.
-        """
-        raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
 
     def init_buffers_post_meta(self) -> None:
         """

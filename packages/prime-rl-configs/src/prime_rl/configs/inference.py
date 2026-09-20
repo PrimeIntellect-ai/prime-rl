@@ -38,6 +38,8 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
+QuantizationType = Literal["fp8_per_block"]
+
 
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
@@ -105,7 +107,7 @@ class VllmConfig(BaseConfig):
     enable_prefix_caching: bool | None = None
     """Enable prefix caching."""
 
-    quantization: str | None = None
+    quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
     enable_lora: bool = False
@@ -129,6 +131,12 @@ class VllmConfig(BaseConfig):
 
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
+
+    enable_ep_weight_filter: bool = True
+    """Skip non-local expert weights at load time under expert parallelism, so each
+    rank reads only its own expert shard from disk. No-op for non-MoE models, when
+    expert parallelism is disabled, or under EPLB (redundant expert slots need all
+    logical expert weights)."""
 
     enable_dbo: bool = False
     """Enable dual batch overlap (DBO)."""
@@ -220,7 +228,7 @@ class CPUOffloadTier(BaseConfig):
 
 class DiskOffloadTier(BaseConfig):
     path: Path
-    """Filesystem root for the disk tier. For ``native`` this is the ``fs_python`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
+    """Filesystem root for the disk tier. For ``native`` this is the ``fs`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
 
 
 class BaseKVCacheOffloadConfig(BaseConfig):
@@ -242,14 +250,14 @@ class BaseKVCacheOffloadConfig(BaseConfig):
 
 class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
-    """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs_python`` disk secondary). Fully self-contained — no external processes."""
+    """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs`` disk secondary). Fully self-contained — no external processes."""
 
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
         extra: dict[str, Any] = {"cpu_bytes_to_use": int(self.cpu.num_bytes)}
         if self.disk is not None:
             extra["spec_name"] = "TieringOffloadingSpec"
-            extra["secondary_tiers"] = [{"type": "fs_python", "root_dir": str(self.disk.path)}]
+            extra["secondary_tiers"] = [{"type": "fs", "root_dir": str(self.disk.path)}]
         return {
             "kv_connector": "OffloadingConnector",
             "kv_role": "kv_both",
@@ -303,8 +311,8 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    policy: str = "consistent_hash"
-    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+    policy: str = "sticky_least_loaded"
+    """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 
 
 class LlmdRouterConfig(BaseConfig):

@@ -1,0 +1,21 @@
+# Evaluate a model on reverse-text against a local inference server
+# (`uv run inference --vllm.model Qwen/Qwen3-0.6B`). Override the model
+# with `-m` to evaluate a trained checkpoint.
+#
+#   uv run eval @ examples/basic/reverse-text/eval.toml
+
+model = "Qwen/Qwen3-0.6B"
+num_examples = 20
+group_size = 3
+
+[client]
+base_url = "http://localhost:8000/v1"
+
+[sampling]
+max_completion_tokens = 1024
+
+[[source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"

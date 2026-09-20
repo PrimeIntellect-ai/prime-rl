@@ -12,8 +12,10 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_referenc
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
-from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
 try:
@@ -1244,7 +1246,7 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
-        module.set_context_parallel_attributes(MagicMock(), cp_rank, cp_world_size)
+        module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
 
         packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
         out_rank, _ = module(chunk, packed=packed)
@@ -1256,3 +1258,64 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
 
     _assert_relative(hidden_full.grad, reference_input_grad, PACKED_GRAD_RTOL, "hidden states gradient")
     _compare_accumulated_grads(module, reference_grads)
+
+
+MHC_SHAPES = [(1, 256), (1, 203), (3, 67)]
+MHC_SHAPE_IDS = ["aligned", "misaligned", "batched"]
+
+SINKHORN_RTOL = 1e-5
+SINKHORN_GRAD_RTOL = 1e-5
+POST_BDA_RTOL = 1e-2
+POST_BDA_GRAD_RTOL = 1e-2
+
+
+@pytest.mark.parametrize(("batch", "seq_len"), MHC_SHAPES, ids=MHC_SHAPE_IDS)
+def test_fused_sinkhorn_matches_the_eager_reference(batch, seq_len):
+    hc = V4FLASH_MODEL["hc_mult"]
+    iters, eps = V4FLASH_MODEL["hc_sinkhorn_iters"], V4FLASH_MODEL["hc_eps"]
+    with torch.device("cuda"):
+        logits = torch.randn(batch, seq_len, hc, hc)
+        weight = torch.randn(batch, seq_len, hc, hc)
+
+    fused_logits, reference_logits = _leaves(logits, logits)
+
+    fused_comb = dsv4_mhc.fused_sinkhorn(fused_logits, iters, eps)
+    (fused_comb * weight).sum().backward()
+
+    reference_comb = eager_reference.eager_sinkhorn(reference_logits, iters, eps)
+    (reference_comb * weight).sum().backward()
+
+    _assert_relative(fused_comb, reference_comb, SINKHORN_RTOL, "comb")
+    _assert_relative(fused_logits.grad, reference_logits.grad, SINKHORN_GRAD_RTOL, "logits gradient")
+
+
+def test_fused_post_bda_matches_the_eager_reference():
+    batch, seq_len = 2, 129
+    hc, dim = V4FLASH_MODEL["hc_mult"], V4FLASH_MODEL["hidden_size"]
+    with torch.device("cuda"):
+        module = DeepseekV4HyperConnection(V4FLASH_CONFIG)
+        streams = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
+        sublayer_out = torch.randn(batch, seq_len, dim, dtype=torch.bfloat16)
+        post = 2 * torch.sigmoid(torch.randn(batch, seq_len, hc))
+        comb = torch.softmax(torch.randn(batch, seq_len, hc, hc), dim=-1)
+        weight = torch.randn(batch, seq_len, hc, dim, dtype=torch.bfloat16)
+
+    fused_post, fused_comb, fused_x, fused_streams = _leaves(post, comb, sublayer_out, streams)
+    reference_post, reference_comb, reference_x, reference_streams = _leaves(post, comb, sublayer_out, streams)
+
+    fused_out = module.update_states(fused_post, fused_comb, fused_x, fused_streams)
+    (fused_out * weight).sum().backward()
+
+    reference_out = eager_reference.eager_update_states(reference_post, reference_comb, reference_x, reference_streams)
+    (reference_out * weight).sum().backward()
+
+    _assert_relative(fused_out, reference_out, POST_BDA_RTOL, "write-back output")
+    grads = (
+        ("post gradient", fused_post, reference_post),
+        ("comb gradient", fused_comb, reference_comb),
+        ("sublayer output gradient", fused_x, reference_x),
+        ("streams gradient", fused_streams, reference_streams),
+    )
+    for label, fused_leaf, reference_leaf in grads:
+        assert reference_leaf.grad is not None, f"{label}: the reference backward left the leaf without a gradient"
+        _assert_relative(fused_leaf.grad, reference_leaf.grad, POST_BDA_GRAD_RTOL, label)

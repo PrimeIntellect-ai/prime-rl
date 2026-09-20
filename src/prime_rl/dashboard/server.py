@@ -28,24 +28,27 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
+from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
 from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
-from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
 
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
+    from fastapi.middleware.gzip import GZipMiddleware
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
-MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
+MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=1)
 output_dirs: list[Path] = [default_output_dir()]
 
 # run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
@@ -75,6 +78,8 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
+"""Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
 _index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
@@ -239,7 +244,7 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
         return "sft", read_json(configs / "sft.json")
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
-    if (configs / "eval.json").exists():  # verifiers `uv run eval` run dir
+    if (configs / "eval.json").exists():
         return "eval", read_json(configs / "eval.json")
     return "other", {}
 
@@ -256,6 +261,40 @@ def metrics_file(run_dir: Path) -> Path:
 def step_numbers(run_dir: Path) -> list[int]:
     """The steps a cohort shipped at — what a run's progress is measured in."""
     return sorted({step for _, step in effective_steps(run_dir)})
+
+
+def eval_env(config: dict) -> str | None:
+    """The taskset(s) of an eval run: the ``[[source]]`` list, else a single ``[env]``."""
+    sources = config.get("source") or []
+    if sources:
+        return "+".join(((s.get("env") or {}).get("taskset") or {}).get("id") or "?" for s in sources)
+    return ((config.get("env") or {}).get("taskset") or {}).get("id")
+
+
+def source_total_episodes(source: dict) -> int | None:
+    """What one ``[[source]]`` will produce, from its config alone: ``num_examples = -1``
+    means the whole taskset, unknown up front unless the source names its tasks."""
+    tasks = ((source.get("env") or {}).get("taskset") or {}).get("tasks")
+    count = source.get("num_examples") or -1
+    if count < 0 and not tasks:
+        return None
+    return (count if count >= 0 else len(tasks)) * (source.get("group_size") or 1)
+
+
+def eval_totals(config: dict) -> dict[str, int | None]:
+    """Expected episodes per eval env (a source's name, else its taskset id)."""
+    return {
+        s.get("name") or ((s.get("env") or {}).get("taskset") or {}).get("id") or "?": source_total_episodes(s)
+        for s in config.get("source") or []
+    }
+
+
+def eval_total_episodes(config: dict) -> int | None:
+    sources = config.get("source") or []
+    if sources:
+        totals = [source_total_episodes(s) for s in sources]
+        return None if any(t is None for t in totals) else sum(totals) or None
+    return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -278,18 +317,43 @@ def run_meta(run_dir: Path) -> dict:
                 started = orjson.loads(f.readline()).get("time")
             except orjson.JSONDecodeError:
                 started = None
+    # Liveness reads every artifact the processes touch: an eval ships its metrics at
+    # epoch end and its first episode can take minutes, but its log ticks every few
+    # seconds. The launch itself is the start until a metrics row says otherwise.
     stream = traces_file(run_dir)
-    if updated is None and stream is not None:  # eval runs have no metrics
-        updated = stream.stat().st_mtime
-        started = configs.stat().st_mtime if configs.is_dir() else None
+    touched = []
+    for path in (run_dir / "logs" / "latest").glob("*.log"):
+        try:
+            touched.append(path.stat().st_mtime)
+        except FileNotFoundError:
+            continue  # rotated away between the listing and the stat
+    if stream is not None:
+        touched.append(stream.stat().st_mtime)
+    if touched:
+        updated = max(touched + ([updated] if updated is not None else []))
+    # An eval writes its only metrics row at the end of the epoch, so its start is the
+    # launch, not that row; a training run's first row follows its launch closely.
+    if (started is None or run_type == "eval") and resolved.is_dir():
+        started = resolved.stat().st_mtime
+    # An eval has no step horizon; it is complete when its file monitor finalized, which
+    # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
+    finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
+    plan_path = get_eval_plan_path(run_dir)
+    eval_plan = orjson.loads(plan_path.read_bytes()) if plan_path.is_file() else {}
+    platform_path = get_platform_run_path(run_dir)
+    platform = orjson.loads(platform_path.read_bytes()) if platform_path.is_file() else None
     return {
         "name": run_dir.name,
         "type": run_type,
+        "finished": finished,
+        "eval_plan": eval_plan,
+        "platform": platform,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "has_validation": run_type == "sft" and config.get("val") is not None,
-        "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
-        "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
+        "env": eval_env(config),
+        "total_episodes": eval_total_episodes(config),
+        "eval_totals": eval_totals(config),
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
@@ -329,8 +393,7 @@ def log_component(rel: Path) -> tuple[str, str]:
             "trainer.log": ("trainer", "trainer"),
             "orchestrator.log": ("orch", "orchestrator"),
             "inference.log": ("infer", "inference"),
-            "evals.log": ("evals", "evals"),
-            "eval.log": ("evals", "eval"),
+            "eval.log": ("eval", "eval"),
         }.get(parts[0], ("other", parts[0]))
     if parts[0] == "trainer":
         if parts[1] == "torchrun":  # trainer/torchrun/<rdzv>/attempt_0/<rank>/std{out,err}.log
@@ -377,7 +440,7 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
             add(path, component, label)
     # Include unscoped env logs from runs created before attempt-scoped eval logging.
     for path in sorted((run_dir / "logs" / "envs").rglob("*.log")):
-        add(path, f"env:{path.stem}", f"{path.stem} (evals)")
+        add(path, f"env:{path.stem}", f"{path.stem} (eval)")
     return {"attempt": attempt_num, "attempts": attempts, "files": files}
 
 
@@ -408,7 +471,7 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl", "sft", "eval", "evals", "orchestrator", "trainer", "inference"]
+CONFIG_ORDER = ["rl", "sft", "eval", "orchestrator", "trainer", "inference"]
 
 
 def config_rank(name: str) -> tuple[int, str]:
@@ -489,7 +552,7 @@ def read_report(run: str, file: str) -> dict:
 # ------------------------------------------------------------------------- metrics
 
 
-MAX_METRICS_CHUNK = 4 * 1024 * 1024
+MAX_METRICS_CHUNK = 16 * 1024 * 1024
 """Per-response cap on /metrics: huge runs stream in chunks the client loops over,
 so the first charts paint long before a 100MB metrics.jsonl finishes loading."""
 
@@ -505,7 +568,9 @@ def read_metrics(run: str, offset: int = 0) -> dict:
     rows = []
     with path.open("rb") as f:
         f.seek(offset)
-        data = f.read(MAX_METRICS_CHUNK)
+        # Keep the first response small for quick initial chart rendering.
+        chunk_size = 4 * 1024 * 1024 if offset == 0 else MAX_METRICS_CHUNK
+        data = f.read(chunk_size)
         if data and b"\n" not in data:  # a single line larger than the chunk
             data += f.readline()
     consumed = data.rfind(b"\n") + 1  # leave a partially-written last line for the next poll
@@ -529,8 +594,7 @@ def _file_size(path: Path) -> int:
 
 def traces_file(run_dir: Path) -> Path | None:
     """The run's episode stream: the chunk directory the file monitor writes, browsed
-    through its index, or the single ``traces.jsonl`` a verifiers ``uv run eval`` run
-    writes at the run root."""
+    through its index, or a bare ``traces.jsonl`` at the run root."""
     stream = get_trace_stream(run_dir)
     if _file_size(get_index_path(stream)) > 0:
         return stream
@@ -1687,6 +1751,51 @@ def rendered_token_text(trace: dict, model: str | None) -> dict:
     }
 
 
+_live_folds = LiveFolds()
+"""The dashboard's incremental folds of every run's live files."""
+
+
+@app.get("/api/runs/{run}/live")
+def live_traces(run: str, etag: str | None = None) -> dict:
+    """The run's in-flight traces, folded from the env servers' streamed deltas
+    (``monitors/file/traces/live/<trace_id>.jsonl``): one row per live trace with its
+    phase, turns, tokens, cost, elapsed time and last message. A trace whose file is
+    gone has finished and sits in the stream. ``etag`` is the fingerprint the client
+    last saw: an unchanged live set answers a poll with ``{unchanged}``."""
+    run_dir = get_run_dir(run)
+    current = live_etag(run_dir)
+    if etag is not None and etag == current:
+        return {"unchanged": True}
+    return {"time": time.time(), "etag": current, "rows": live_rows(run_dir, _live_folds)}
+
+
+@app.get("/api/runs/{run}/live/{trace_id}")
+def live_trace(run: str, trace_id: str, etag: str | None = None) -> dict:
+    """One in-flight trace assembled from its deltas, shaped like a stream record (an
+    episode with this one trace) so the trace viewer renders it as it grows. ``etag``
+    is the file size the client last folded: nothing appended means ``{unchanged}``."""
+    path = live_path(get_run_dir(run), trace_id)
+    try:
+        size = path.stat().st_size  # before the read: a delta landing in between shows up next poll
+    except FileNotFoundError:
+        raise HTTPException(404, "live trace not found - its episode finished or never streamed")
+    if etag is not None and etag == str(size):
+        return {"unchanged": True}
+    folded = _live_folds.read(path)
+    if folded is None:
+        raise HTTPException(404, "live trace not found - its episode finished or never streamed")
+    dispatch, trace = folded
+    return {
+        "id": None,
+        "etag": str(size),
+        "kind": dispatch.get("kind"),
+        "env": {"name": dispatch.get("env")},
+        "group": {"id": dispatch.get("group")},
+        "live": {**dispatch, "stage": stage(trace)},
+        "traces": [trace],
+    }
+
+
 @app.get("/api/runs/{run}/episodes/series")
 def episode_series(run: str, kind: str | None = None, etag: str | None = None, after: int = 0) -> dict:
     """Per-episode series over the stream (x = arrival order): reward, shape, and the
@@ -1698,15 +1807,37 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
     summaries = [s for s in episode_summaries(path) if not kind or s.get("kind") == kind]
-    keys: set[str] = set()
-    for s in summaries:
+    # the key set only grows: rescan the summaries past the ones already scanned
+    with _lock:
+        scanned, keys = _series_keys.get((path, kind)) or (0, set())
+        if scanned > len(summaries):
+            scanned, keys = 0, set()
+    for s in summaries[scanned:]:
         keys.update(
             k
-            for k in ("reward", "advantage", "cost", "turns", "branches", "input_tokens", "output_tokens")
+            for k in (
+                "env",
+                "group",
+                "line",
+                "ok",
+                "num_errors",
+                "truncated",
+                "stop_condition",
+                "duration",
+                "reward",
+                "advantage",
+                "cost",
+                "turns",
+                "branches",
+                "input_tokens",
+                "output_tokens",
+            )
             if s.get(k) is not None
         )
         for group in ("rewards", "metrics", "timing"):
             keys.update(f"{group}/{name}" for name in s.get(group) or {})
+    with _lock:
+        _series_keys[(path, kind)] = (len(summaries), keys)
 
     def value(s: dict, key: str):
         group, _, name = key.partition("/")
@@ -1980,6 +2111,17 @@ def get_episode_timeline(run: str, line: int) -> dict:
 # -------------------------------------------------------------------------- static
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """The page and its assets change with the checkout the daemon runs; a reload must
+    revalidate them (an ETag answers 304 when unchanged) instead of trusting a heuristic
+    freshness from ``Last-Modified``."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/")
