@@ -5,7 +5,7 @@ Plan: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse
 Ground rules: one 16-node training run at a time (job 961, the bf16 control, until killed); under 20 nodes total;
 checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-flash`; one commit per logical change.
 
-## Morning summary (last refreshed 09:47, job 991 at step 80 and running)
+## Morning summary (last refreshed 10:36, job 991 at step 100 and running)
 
 1. **The FP8 mismatch had two causes, both now attributed.** (a) A kernel fault: DeepGEMM's grouped FP8 GEMM for routed
    experts misreads fp32 activation scales in its small-M path (decode steps and prefill tails under about 128
@@ -19,8 +19,9 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
    new `inference.fp8_ue8m0_weight_scales` quantizes with exact power-of-two scales (lowest bulk error of every FP8
    config measured); run config `swe-fp8-ue8m0.toml`; a fake-quant ignore regex; a logger fix.
 3. **Fix test (job 991, 16 nodes, running since 05:43):** mismatch KL 0.0015 at step 1 versus 0.025 for the FP8
-   baseline (17x lower; max 1.5 versus 370), zero glitch tokens in 585k trained tokens, then an accelerating climb to 0.0084
-   by step 80 (20-step means 0.0022, 0.0033, 0.0043, 0.0066; bf16 control: 0.0005 to 0.0010 over the same steps) from the pinned-policy drift plus lag. Reward
+   baseline (17x lower; max 1.5 versus 370), zero glitch tokens in 585k trained tokens, then an accelerating climb to 0.0135
+   by step 100 (20-step means 0.0022, 0.0033, 0.0043, 0.0066, 0.0119; bf16 control: 0.0005 to 0.0010 over the same
+   steps), doubling every 20 steps and on course to pass the FP8 baseline's flat 0.025 around step 115 from the pinned-policy drift plus lag. Reward
    and entropy healthy. Leave it running or kill it; it is the only job I hold.
 4. **Not done:** trainer floor fixes (fp32 RoPE from PR 3584, fp32 logits) for lack of nodes under the 20-node rule;
    any remedy for the pinning (stochastic rounding at broadcast, larger lr, or bf16 serving). The bf16 control (job
@@ -60,6 +61,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
+- 10:34 Job 991 step 100: steps 81-100 mean 0.01187, doubling per 20-step window; is_masked up to 3.6e-3; reward healthy.
 - 09:45 Job 991 step 80: steps 61-80 mean 0.00656, accelerating; is_masked 2.5e-3; reward healthy. Left running.
 - 09:05 Job 991 step 60: steps 41-60 mean 0.00432; the 20-step means are linear in step count; reward 0.36-0.89.
 - 08:25 Job 991 step 40: steps 21-40 mean 0.00327 (+0.00107 over steps 1-20), max <= 4.4, reward 0.3-0.7, no
@@ -315,6 +317,7 @@ at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no g
 | 21-40 | 0.00236-0.00403, mean 0.00327 | <= 4.41 | <= 3.6e-4 | 0.0198-0.0294 | 0.00052-0.00159 |
 | 41-60 | 0.00336-0.00508, mean 0.00432 | <= 12.9 (one spike at 42), else <= 7.8 | <= 6.4e-4 | 0.0226-0.0297 | 0.00063-0.00128 |
 | 61-80 | 0.00520-0.00866, mean 0.00656 | <= 26 (76), 16 (67), 14 (79) | <= 2.5e-3 | 0.0216-0.0313 | 0.00058-0.00143 |
+| 81-100 | 0.00887-0.01403, mean 0.01187 | <= 57 (95), 52 (87), 47 (100) | 1.8e-3 to 3.6e-3 | 0.0221-0.0338 | 0.00062-0.00165 |
 
 The 20-step means 0.00220 / 0.00327 / 0.00432 are linear in the step count (+0.00107 per 20 steps, i.e. +0.000054
 per step, matching the +0.044e-3 per step from the per-token fit plus the lag term). That linearity is the pinned-policy
@@ -324,6 +327,13 @@ fraction rising 6e-4 -> 2.5e-3 and single-step maxima of 12-26. Under the pinnin
 drift dominates lag: KL between nearby policies scales with the square of the parameter distance, and the trainer's
 distance from the frozen served weights grows linearly with steps. The old FP8 run collapsed with `is_masked` near 0.02;
 this run is at 0.0025 with reward 0.37-0.83 and entropy 0.21-0.41, so it is left running as evidence of the trajectory.
+Steps 81-100 (10:34): mean 0.01187, so the 20-step means now double per window (0.0066 -> 0.0119); step 100 reads 0.0135,
+half the FP8 baseline's flat 0.025, and extrapolates past it around step 115. Reward 0.36-0.86, entropy 0.28-0.44,
+grad norm 0.007-0.088, no inference errors. Kill rule while unattended: `is_masked/mean` above 0.01 or reward falling
+below 0.3 for five consecutive steps; otherwise the run stays up so the trajectory is on record. Without the glitch
+floor this run makes the growth mechanism plain: with the served FP8 policy pinned at step 0, the trainer-vs-inference
+KL tracks the trainer's distance from the initial checkpoint, which is why the old run also collapsed once the
+importance ratios became meaningless.
 
 Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
 control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
