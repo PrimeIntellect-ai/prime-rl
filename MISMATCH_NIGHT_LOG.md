@@ -37,6 +37,8 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
+- 08:05 Growth analysis done: lag plus an FP8-specific drift explained by sub-quantum weight updates never reaching
+  the served FP8 weights (the served policy is pinned at step 0).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -49,11 +51,13 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 | Residual FP8 activation quantization (UE8M0 per-128 groups) | S10 vs bf16 reference: KL 3.5e-3, p90 0.086 | about 4-6x the bf16 floor | none tonight; bf16 serving if unacceptable | measured |
 | Weight drift off the e4m3 grid (handoff hypothesis 1) | B2: 87-93% of FP8-scope weights bit-identical at step 40, rest one bf16 ULP; > 1000 coherent steps to move a quantum | cannot explain growth at step 150 | none needed | ruled out |
 | o_proj UE8M0 activation quant (hypothesis 3) | S4 reproduces the glitch at production strength | not the glitch; bulk effect not separately measured | none | exonerated for the glitch |
-| Lightning Indexer top-k flips as amplifier (hypotheses 4, 8) | bf16 self-noise above 2048 tokens reaches several nats on single tokens; bf16 control drifted 0.0006 -> 0.0010 over 106 steps with no acceleration | a slow floor-level drift at most; FP8 growth mechanism still unassigned | fp32 RoPE (PR 3584) would reduce indexer input divergence | open |
+| FP8 serving cannot represent sub-quantum weight updates: the served policy stays pinned at the initial checkpoint | growth analysis: on-policy FP8 KL climbs +0.044e-3 per step while bf16 on-policy is flat; B2: 0.000% of routed-expert weights changed FP8 value by step 40; GLM (off-grid bf16 checkpoint) never grew | the diffuse climb (old run 0.005 -> 0.056 tail-excluded; fix-test 0.0015 -> 0.0031 by step 20) | stochastic rounding at broadcast, larger lr, or bf16 serving | explained, remedy untested |
+| Rollout lag (staleness) | KL vs lag rises in both runs, 2x FP8 / 2.6x bf16 from lag 0 to 9+, mostly inside `<think>` | +0.0007 of the fix-test's step 1-20 climb | lower `max_off_policy_steps` or more inference capacity | measured |
+| Lightning Indexer top-k flips as amplifier (hypotheses 4, 8) | bf16 self-noise above 2048 tokens reaches several nats on single tokens; bf16 control drifted 0.0006 -> 0.0010 over 106 steps with no acceleration | a slow floor-level drift at most, explained by lag in bf16 | fp32 RoPE (PR 3584) would reduce indexer input divergence | low priority |
 | Trainer bf16 logits before fp32 log-softmax (hypothesis 7) | code: `lm_head.py:177`; about 0.1 nat at logit 30 | part of the 5e-4 floor, cannot make a 44-nat gap | `torch.mm(..., out_dtype=float32)` | not run (node budget) |
 | Trainer bf16 RoPE tables (hypothesis 2) | PR 3584 applies cleanly | floor contributor | cherry-pick PR 3584 | not run (node budget) |
 
-Open question: what made the FP8 run's mismatch grow 5x after step 150 and collapse at 240. Grid drift is out. The
+Growth (resolved 08:05, see the job 991 growth analysis under Track C): what made the FP8 run's mismatch grow 5x after step 150 and collapse at 240. Grid drift is out. The
 glitch rate per token fell over the run (35.7 -> 19.1 per 100k), so the growth was in the diffuse bulk (tail-excluded
 KL 0.005 -> 0.056), i.e. the policy drifted into states where the misread-scale kernel error is larger, or another
 mechanism. Job 991 with the fix is the test: if its mismatch stays flat past step 150 the growth was FP8-kernel-driven.
@@ -302,6 +306,53 @@ mostly bit-identical to initial at step 40, so weight-version lag alone should n
 sensitivity to small weight changes, or an episode-mix effect as longer episodes start completing, are the candidates.
 This is the late-growth question from the handoff showing up early without the glitch floor. Analysis of KL versus
 lag, episode length and think fraction on this run's traces started 07:36.
+
+### Growth analysis on job 991 (08:05; `~/tmp/mismatch_evidence/growth_analysis.md`)
+
+Per-token lag from the `watcher/policy_version` gauge matched to each call's start time (lag = ship step - 1 -
+version). FP8 fix-test: steps 1-22, 11.2M trained tokens; bf16 control: steps 1-30, 15.2M tokens. Token-weighted
+per-step KL reproduces the trainer's `mismatch_kl/all/mean` to the last digit.
+
+| lag | FP8 fix-test KL | bf16 control KL |
+|---|---|---|
+| 0 | 0.00173 | 0.00051 |
+| 1 | 0.00189 | 0.00055 |
+| 2 | 0.00217 | 0.00058 |
+| 3-4 | 0.00254 | 0.00064 |
+| 5-8 | 0.00311 | 0.00087 |
+| 9+ | 0.00370 | 0.00131 |
+
+Within lag 1, by step bucket (1-5 / 6-10 / 11-15 / 16-20 / 21+): FP8 0.00160 / 0.00194 / 0.00199 / 0.00231 / 0.00240;
+bf16 0.00055 / 0.00055 / 0.00054 / 0.00054 / 0.00054. On-policy (lag 0) FP8 climbs 0.00151 -> 0.00270. Outside
+`<think>`, where lag has no effect, FP8 climbs 0.00078 (step 1) -> 0.00135 (step 20) while bf16 sits at 0.00027-0.00033
+for 30 steps. Joint fit (KL x 1e-3): FP8 lag +0.124 per lag step and +0.044 per training step; bf16 +0.066 per lag
+step and -0.003 per training step. Length and position add nothing once lag is held fixed; think fraction is noise.
+
+**Mechanism for the FP8-specific per-step drift (the handoff's growth question).** The checkpoint is a dequantized
+FP8 release, so every FP8-scope weight sits exactly at the centre of an e4m3 bin. Online quantization maps a weight
+to a different FP8 value only after it moves at least half a quantum (8 bf16 ULPs at the median |w|, about 1000-2000
+coherent AdamW steps at lr 1e-6). B2 measured the fraction that had done so by step 40: 0.41% of attention weights,
+0.59% of shared-expert weights, 0.000% of routed-expert weights (98% of FP8-scope parameters). So the FP8 server keeps
+serving the initial policy while the trainer's bf16 weights move (7-12% of elements by step 40). The trainer scores
+rollouts from a policy that is effectively frozen at step 0: mismatch grows like a lag equal to the step count, which
+is what the on-policy FP8 column shows (+0.044e-3 per step, the same order as the measured per-lag-step slope), and
+it is diffuse over all tokens, not glitch-structured. It predicts the old FP8 run's trajectory (glitch floor 0.025
+plus a slow diffuse climb reaching 0.045-0.05 by step 200, then the collapse from training on ever-staler rollouts,
+with `is_masked` rising 25x), and it predicts GLM's flat curve: GLM-4.5-Air is a genuine bf16 checkpoint whose
+weights sit at random offsets inside their bins, so a fraction proportional to the drift flips each step and the
+served model tracks the trainer in expectation. bf16 serving has no quantum and tracks exactly. Power-of-two weight
+scales make the pinning exact; amax/448 scales rotate the grid so a little dithering occurs, at the cost of full
+rounding error at step 0.
+
+Consequences: (1) online FP8 serving of an on-grid checkpoint at lr 1e-6 is off-policy by construction, and the
+mismatch it produces is not a numerics bug but a resolution floor; (2) shipped fixes (UE8M0 scales, exact weight
+scales) remove the catastrophic glitch and lower the step-0 gap 17x, but do not stop the drift; (3) candidate
+remedies, none tested tonight: stochastic (unbiased) rounding of weights at each broadcast so the served model
+tracks the trainer in expectation (raises the per-step noise floor to roughly a generic FP8 checkpoint's level, GLM's
+0.004-0.007, but removes growth), a larger learning rate, or bf16 serving. Direct test: save one checkpoint at
+step N, quantize it with the production path, and count elements whose FP8 value differs from the initial FP8
+weights (prediction: about 0 for routed experts); and two-server KL of bf16(step N) vs FP8(step N) should equal
+bf16(step 0) vs bf16(step N).
 
 ### C1 (trainer floor fixes, fp32 RoPE from PR 3584 and fp32 logits in the LM head): not run
 
