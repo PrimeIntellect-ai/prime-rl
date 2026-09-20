@@ -34,6 +34,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
   `VLLM_USE_DEEP_GEMM=1` are in the EngineCore and worker process environments, and the log shows "DeepGEMM E8M0
   enabled". The patch's own INFO line was swallowed by a non-`vllm.*` logger name; fixed in a follow-up commit
   (does not affect the running job's behaviour, only its logging).
+- 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -269,6 +270,18 @@ dry run without the variable; left for Garrett to delete.
 
 Success criteria: mismatch KL at steps 1-40 well below the FP8 baseline band 0.020-0.032 (bf16 control 0.0005-0.0008
 at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no glitch ids sampled with a large gap.
+
+### C2 results (job 991)
+
+| step | fix-test kl_mean | kl_max | is_masked | FP8 baseline kl_mean (max) | bf16 control kl_mean (max) |
+|---|---|---|---|---|---|
+| 1 | 0.00149 | 1.48 | 2.7e-6 | 0.0249 (370) | 0.00054 (0.77) |
+
+Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
+control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
+(now pointed at this run). Trace glitch check: `uv run python ~/tmp/mismatch_evidence/glitch_check_run.py
+/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0` (validated: FP8 run 31.9 glitches per 100k trained tokens,
+KL 0.031; bf16 control 0 glitches, KL 0.0010).
 
 ### C1 (trainer floor fixes, fp32 RoPE from PR 3584 and fp32 logits in the LM head): not run
 
