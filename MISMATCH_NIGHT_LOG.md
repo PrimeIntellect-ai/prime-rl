@@ -340,7 +340,10 @@ it is diffuse over all tokens, not glitch-structured. It predicts the old FP8 ru
 plus a slow diffuse climb reaching 0.045-0.05 by step 200, then the collapse from training on ever-staler rollouts,
 with `is_masked` rising 25x), and it predicts GLM's flat curve: GLM-4.5-Air is a genuine bf16 checkpoint whose
 weights sit at random offsets inside their bins, so a fraction proportional to the drift flips each step and the
-served model tracks the trainer in expectation. bf16 serving has no quantum and tracks exactly. Power-of-two weight
+served model tracks the trainer in expectation. bf16 serving has no quantum and tracks exactly. Checked 07:50
+(`~/tmp/mismatch_evidence/glm_grid_check.py`): 21 GLM-4.5-Air tensors including routed experts have 93.7% of elements
+with nonzero low-4 mantissa bits and about 2600 distinct values per 128x128 block, versus 0% and about 20 for the
+DeepSeek release, so GLM's checkpoint is native bf16 and starts off-grid as the mechanism requires. Power-of-two weight
 scales make the pinning exact; amax/448 scales rotate the grid so a little dithering occurs, at the cost of full
 rounding error at step 0.
 
