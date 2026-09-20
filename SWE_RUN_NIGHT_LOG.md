@@ -656,6 +656,11 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
 - 02:30 the four evidence agents finished; `MISMATCH_HANDOFF.md` (repo root, untracked pending Garrett's edits)
   and `/home/garrett/tmp/mismatch_evidence/` hold the mismatch investigation handoff. Headline: the FP8 server
   samples glitch tokens (`)Skip` and friends) the trainer scores at -45; see that document.
+- 03:20 **monitoring handed off**: Garrett is giving control of job 961 to another agent, who may stop it. I have
+  stopped my monitor and will not touch the job. State at hand-off: step 60 done at 03:17:45, `checkpoints/`
+  holds `step_40` and `step_60` (old resolved config still saving; the committed config has checkpointing off),
+  mismatch KL at steps 10/20/.../60: 10:0.0008 20:0.0007 30:0.0009 40:0.0011 50:0.0010 60:0.0009 70:0.0008 80:0.0014 90:0.0012 100:0.0010 , reward 0.75-0.86, no errors. The wandb run is
+  `swe-scaleswe-131k-fp16-serving-adamw1e-6-bs64g8-8t8i`.
 
 ## Open questions for Garrett (bf16 control)
 
