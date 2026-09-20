@@ -16,6 +16,12 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 04:27 Round 2 done: glitch REPRODUCED on the FP8 server's decode path, deterministic argmax, M = 1. Round 3 started.
 - 04:30 Glitch position-structure analysis done (below). Control at step 92, steps 81-92 mean 0.00109.
 - 04:58 Round 3 done: ffn FP8 required, o_proj exonerated. Round 4 (S7 routed-only, S9 E8M0=1) started.
+- 05:12 Round 4 done: routed-experts DeepGEMM GEMM is the culprit; E8M0=1 removes the glitch (0/30).
+- 05:15 Killed job 961 (bf16 control) at step 106: fix candidate in hand and the control past 100 steps. Its
+  checkpoints (`step_80`, `step_100`, 6.3 TB) deleted (background rm, log `~/tmp/rm_bf16_ckpts.log`).
+- 05:20 Submitted job 988: `swe-fp8-e8m0.toml`, 16 nodes, FP8 with UE8M0 scales, checkpointing off, wandb
+  `swe-scaleswe-131k-fp8-e8m0-adamw1e-6-bs64g8-8t8i`. Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-e8m0`.
+- 05:17 Round 5 started (S10, S3).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -31,13 +37,14 @@ about 11:26). Scripts under `~/tmp/fp8diag/bisect/`: `start_server.sh`, `stop_se
 |---|---|---|---|
 | S0 | bf16 | | up 03:53, stopped 04:28 (prefill results saved in r1.bf16.json) |
 | S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52, stopped 04:28 |
-| S2 | bf16 + fake-quant weights | `PRIME_DIAG_FAKE_QUANT_WEIGHTS=1 PRIME_DIAG_FAKE_QUANT_IGNORE=.*indexer.*` | queued |
-| S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | queued |
+| S2 | bf16 + fake-quant weights | `PRIME_DIAG_FAKE_QUANT_WEIGHTS=1 PRIME_DIAG_FAKE_QUANT_IGNORE=.*indexer.*` | not needed (glitch is a kernel effect, not weight rounding) |
 | S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | up 04:44, reproduces 17/30, stopped 05:00 |
 | S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | up 04:39, clean 0/30, stopped 05:00 |
-| S7 | routed-experts-only FP8 | `servers/s7-routed-only.toml` (ignore `.*attn.*`, `.*shared_experts.*`) | starting 05:00, slot 0 |
-| S9 | S1 + UE8M0 scales | `VLLM_USE_DEEP_GEMM_E8M0=1` | starting 05:00, slot 1 |
-| S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | queued |
+| S7 | routed-experts-only FP8 | `servers/s7-routed-only.toml` (ignore `.*attn.*`, `.*shared_experts.*`) | up 05:10, reproduces 13-14/30, stopped 05:17 |
+| S9 | S1 + UE8M0 scales | `VLLM_USE_DEEP_GEMM_E8M0=1` | up 05:10, CLEAN 0/30, stopped 05:17 |
+| S10 | S9 + power-of-two weight scales | `VLLM_USE_DEEP_GEMM_E8M0=1 PRIME_DIAG_UE8M0_WEIGHTS=1` | starting 05:17, slot 0 |
+| S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | starting 05:17, slot 1 |
+| S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | superseded by S7 |
 
 Round 1 (S0 vs S1, 50 items, 822k tokens): running since 04:05.
 
@@ -106,6 +113,34 @@ Report `~/tmp/fp8diag/bisect/results/r3.report.txt`. Decode probe counts (d2: to
 - Round 4 (05:00): slot 0 -> S7 routed-experts-only FP8; slot 1 -> S9 production FP8 with `VLLM_USE_DEEP_GEMM_E8M0=1`
   (power-of-two scales). Hypothesis: the small-M DeepGEMM kernel misreads fp32 scales, which UE8M0 avoids.
 
+### Round 4 result (05:12): routed experts carry the glitch; `VLLM_USE_DEEP_GEMM_E8M0=1` removes it
+
+Report `~/tmp/fp8diag/bisect/results/r4.decode.report.txt`, `r4.s9.prefill.report.txt`.
+
+| server | d2 top-20 / lp > -3 / argmax | p1 top-20 / lp > -3 / argmax |
+|---|---|---|
+| S1 FP8 production | 20 / 18 / 17 | 8 / 8 / - |
+| S7 routed-experts-only FP8 | 19 / 13 / 14 | 10 / 7 / 5 |
+| S9 production + E8M0=1 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+- S7 (only `ffn.experts` quantized; attention, shared experts, indexer bf16) reproduces at production magnitude, so
+  the glitch lives in DeepGEMM's `m_grouped_fp8_gemm_nt_contiguous` for routed experts. Shared experts and the plain
+  `fp8_gemm_nt` linears are not needed.
+- S9 (production scope, UE8M0 power-of-two scales for weights and activations) is clean at every position; the
+  glitch token never enters the top-20 anywhere (floors -7 to -15); the argmax is the ordinary `.` / `,` as on bf16.
+- Mechanism (consistent, not proven at the CUDA level since DeepGEMM 2.5.0+891d57b is compiled-only here): the
+  kernel variant DeepGEMM selects for M below its 128 BLOCK_M reads block scales in a layout that only matches
+  power-of-two scales, so fp32 scales are misread in decode steps and small prefill tails while full prefill
+  chunks (M >= 128) are correct. Fits the 111-vs-135 boundary, decode-only production glitches, and the trainer
+  (prefill-like) agreeing with FP8 prefill.
+- Cost of E8M0=1 on bulk prefill (203k tokens vs the bf16 reference): KL 8.5e-3 vs 5.6e-3 for the fp32-scale
+  config, IPO masked 0.0005 vs 0.0002, |lr| p90 0.144 vs 0.116, mean signed lr -0.0001 vs -0.0016. Production
+  trainer-vs-inference on the same tokens: KL 1.2e-2, p90 0.100, mean lr -0.0126. So the catastrophic tail is
+  gone and the diffuse penalty is about 25% higher than fp32 scales (double rounding of weight scales; round 5
+  tests bit-exact power-of-two weight scales via `PRIME_DIAG_UE8M0_WEIGHTS=1` to recover that).
+- Round 5 (05:17): S10 = E8M0=1 + `PRIME_DIAG_UE8M0_WEIGHTS=1`; S3 = `PRIME_DIAG_UE8M0_WEIGHTS=1` alone (fp32-format
+  activation scales) to tell whether the misread is on weight or activation scales. Then release both nodes.
+
 ### Glitch position structure in production traces (04:30; `~/tmp/mismatch_evidence/glitch_position_structure.md`)
 
 330 occurrences in 83 of 128 traces versus 200k ordinary sampled tokens.
@@ -135,7 +170,12 @@ Report `~/tmp/fp8diag/bisect/results/r3.report.txt`. Decode probe counts (d2: to
 | 46-60 | 0.00063-0.00128 | <= 3.9 | <= 4.9e-5 | 0.005-0.073 | mean 0.00090 |
 | 61-80 | 0.00058-0.00143 | <= 6.6 | <= 1.5e-5 | 0.02-0.09 | mean 0.00096 |
 | 81-84 | 0.00083-0.00143 | <= 2.5 | <= 8.7e-6 | 0.04-0.08 | mean 0.00105; slow creep, about +0.0001 per 20 steps |
-| 85-92 | 0.00062-0.00165 | <= 3.4 | <= 3.2e-5 | 0.02-0.07 | steps 81-92 mean 0.00109 (04:30) |
+| 81-100 | 0.00062-0.00165 | <= 9.8 | <= 3.2e-5 | 0.02-0.09 | mean 0.00101 |
+| 101-106 | 0.00074-0.00117 | <= 4.7 | <= 5.0e-6 | 0.004-0.045 | mean 0.00095; killed at step 106 (05:15) |
+
+Verdict on the control: the bf16 mismatch drifted from 0.00061 (steps 1-20) to about 0.00100 (steps 81-106), a
+1.6x rise over 100 steps with no acceleration, versus the FP8 run's 0.025 flat to step 150 then 5x by step 239. Not
+the FP8 shape; a slow DeepSeek-specific drift (hypothesis 8) remains plausible at a much smaller scale.
 
 ### B2: e4m3 grid departure at step 40 (done 03:57; `~/tmp/mismatch_evidence/grid_drift.md`)
 
@@ -164,9 +204,20 @@ Hypothesis 1 (weights leave the e4m3 grid, so online re-quantization error grows
 
 ## Track C: fixes
 
-(pending)
+### C2 fix-test config prepared (05:05, not submitted)
+
+`configs/advanced/deepseek-v4-flash/swe-fp8-e8m0.toml`: copy of `swe.toml` with `VLLM_USE_DEEP_GEMM_E8M0 = "1"`,
+run name `dsv4-swe-131k-fp8-e8m0`, wandb `swe-scaleswe-131k-fp8-e8m0-adamw1e-6-bs64g8-8t8i`, tags include
+`e8m0`, `fix-test`. Dry run clean, all three resolved JSONs re-validate OK, no ckpt. Launch:
+`PRL_OUTPUT_DIR=/home/garrett/prl_output_dir uv run rl @ configs/advanced/deepseek-v4-flash/swe-fp8-e8m0.toml`
+(non-interactive shells do not source `~/.localrc`, so the variable must be explicit). Attempt 1 of that run dir
+was consumed by the dry run. A stray gitignored `outputs/dsv4-swe-131k-fp8-e8m0/` in the worktree came from a
+dry run without the variable; left for Garrett to delete.
 
 ## Commits made tonight
+
+- `feat(configs): add the FP8 SWE run variant with UE8M0 DeepGEMM scales` (05:20).
+- `docs(mismatch): ...` log commits after each round.
 
 - `feat(inference): add PRIME_DIAG_FAKE_QUANT_IGNORE regex to the fake-quant diagnostic` (03:45). Needed so S2
   can skip `.*indexer.*` like production, and so weight-only rounding can be bisected by module family.
