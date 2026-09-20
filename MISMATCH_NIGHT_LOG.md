@@ -35,6 +35,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
   enabled". The patch's own INFO line was swallowed by a non-`vllm.*` logger name; fixed in a follow-up commit
   (does not affect the running job's behaviour, only its logging).
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
+- 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -276,12 +277,19 @@ at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no g
 | step | fix-test kl_mean | kl_max | is_masked | FP8 baseline kl_mean (max) | bf16 control kl_mean (max) |
 |---|---|---|---|---|---|
 | 1 | 0.00149 | 1.48 | 2.7e-6 | 0.0249 (370) | 0.00054 (0.77) |
+| 2-7 | 0.00153-0.00201, mean 0.00176 | <= 3.43 | <= 3.2e-5 | 0.0232-0.0318 | 0.00051-0.00061 |
 
 Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
 control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
 (now pointed at this run). Trace glitch check: `uv run python ~/tmp/mismatch_evidence/glitch_check_run.py
 /home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0` (validated: FP8 run 31.9 glitches per 100k trained tokens,
 KL 0.031; bf16 control 0 glitches, KL 0.0010).
+
+Trace scan at 06:58 (80 traces, 584,665 trained tokens, steps 1-10): glitch tokens 0, tokens with |gap| > 5: 0,
+|gap| > 20: 0; mean |lr| 0.0216 (bf16 control 0.0179, FP8 run 0.0688); mismatch KL 0.00178; IPO masked 5e-6.
+Inside `<think>` mean |lr| 0.037 (bf16 control's think-region KL was 0.0015 vs this run's 0.0029); outside 0.009.
+The FP8 run's same-step numbers were 32 glitches and 118 large-gap tokens per 100k. Steps take about 4-5 min
+while the rollout pipeline ramps (off_policy 0-1.6).
 
 ### C1 (trainer floor fixes, fp32 RoPE from PR 3584 and fp32 logits in the LM head): not run
 
