@@ -1,0 +1,15 @@
+{
+  "run": "ipo-sc-runtime-preflight-20260920",
+  "episodes": 4,
+  "all_scored_without_error": true,
+  "by_source": {
+    "terminal-lego": {
+      "episodes": 2,
+      "reward_mean": 0.5
+    },
+    "terminal-bench-2": {
+      "episodes": 2,
+      "reward_mean": 0.5
+    }
+  }
+}

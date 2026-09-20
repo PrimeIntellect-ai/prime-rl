@@ -1,0 +1,18 @@
+[
+  {
+    "host": "prime-nebius-puku-h200-gpu-004",
+    "ready": true,
+    "compact_verified": true,
+    "tokens": 2,
+    "head_width": 128,
+    "response_bytes": 3490
+  },
+  {
+    "host": "prime-nebius-puku-h200-gpu-008",
+    "ready": true,
+    "compact_verified": true,
+    "tokens": 2,
+    "head_width": 128,
+    "response_bytes": 3490
+  }
+]

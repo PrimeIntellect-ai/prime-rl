@@ -15,7 +15,16 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 - Both full-config dry runs passed. Resolved trainer, orchestrator, and inference settings match after normalizing run paths, except `trainer.loss.score_centering`.
 - Both resolved trainers have `resume=None`, IPO eps0.3, adv_tau1.0, and kl_tau0.001.
 - Weighted-score gradients match an independent dense reference, including advantages, loss masks, and loss weights.
-- No launch has been submitted. Public push remains blocked pending explicit approval.
+- User authorized scheduling both fresh experiments at 2026-09-20T20:34:15.489287+00:00. This supersedes the prior stop.
+- Paired SLURM job1039 released at 2026-09-20T20:38:17.616927+00:00. Four nodes total; both arms start from base weights.
+- Runtime preflight completed: four scored episodes, zero errors; Lego1/2 and TB2 1/2 solved. One TB2 rollout reached its turn limit.
+- Job1039 is RUNNING. IPO uses inference004/trainer007; IPO+SC uses inference008/trainer002. All four CPU-affinity checks passed at116 CPUs.
+- At 2026-09-20T20:49:16.507229+00:00, both inference routers passed live compact-logprob generation checks: sampled scores and top128 head decode correctly. Both orchestrators are collecting initial train/eval rollouts at about517 inflight each. No completed optimizer update yet.
+- The allocation-scoped stall guard is emitting heartbeats with no stop reasons. Initial rollout logs include some malformed tool calls, one context overflow, and one sandbox provisioning failure; these are task/provider errors, not training instability.
+- W&B IPO: https://wandb.ai/primeintellect/score-centering-terminal/runs/215ad83bb301492184c0ca1fc616a221
+- W&B IPO+SC: https://wandb.ai/primeintellect/score-centering-terminal/runs/4ca8f7fb1e5544aa96b016c2f93ac8be
+- Both runs are visible at http://localhost:7789. Live check artifact: `results/monitor/compact-live-1039.json`.
+- Preflight: `ipo-sc-runtime-preflight-20260920`. Public push remains blocked pending explicit approval.
 
 ### Previous standalone-estimator comparison
 
