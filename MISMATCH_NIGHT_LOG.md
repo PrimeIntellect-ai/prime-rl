@@ -13,6 +13,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
   (50 items, 30 glitch prefixes from steps 1-10, 20 bulk sequences 3k-69k tokens, all glitch joins verified).
 - 04:05 B2 done (below). Round 1 scoring S0 vs S1 started.
 - 04:35 Round 1 done: glitch not reproduced in prefill on the FP8 server. Round 2 (decode path) started.
+- 05:05 Round 2 done: glitch REPRODUCED on the FP8 server's decode path, deterministic argmax, M = 1. Round 3 started.
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -26,12 +27,12 @@ about 11:26). Scripts under `~/tmp/fp8diag/bisect/`: `start_server.sh`, `stop_se
 
 | id | serving | env / ignore | status |
 |---|---|---|---|
-| S0 | bf16 | | up 03:53, reference |
-| S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52 |
+| S0 | bf16 | | up 03:53, stopped 05:10 (prefill results saved in r1.bf16.json) |
+| S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52, stopped 05:10 |
 | S2 | bf16 + fake-quant weights | `PRIME_DIAG_FAKE_QUANT_WEIGHTS=1 PRIME_DIAG_FAKE_QUANT_IGNORE=.*indexer.*` | queued |
 | S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | queued |
-| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | queued |
-| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | queued |
+| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | starting 05:10, slot 0 |
+| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | starting 05:10, slot 1 |
 | S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | queued |
 
 Round 1 (S0 vs S1, 50 items, 822k tokens): running since 04:05.
@@ -56,6 +57,27 @@ Report `~/tmp/fp8diag/bisect/results/r1.report.txt`. 50/50 items scored on both 
   decode path (`fp8_paged_mqa_logits` plus decode top-k selectors), FlashMLA sparse decode, or batch composition.
   Round 2 tests decode at the glitch position, single request and under a 40-request decode load, on S0 and S1.
 
+### Round 2 result (05:05): the glitch reproduces on S1 through the DECODE path, single request
+
+Report `~/tmp/fp8diag/bisect/results/r2.report.txt`, script `decode_probe.py`. Probe: prompt = path tokens up to
+g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real decode step (M = 1).
+
+- S1 (FP8 production): glitch token in the top-20 at 20/30 positions, logprob > -3 at 18/30, `)Skip` is the greedy
+  ARGMAX at 17/30 (logprob as high as -0.04). S1 decode logprobs match production inference to within about 0.1
+  nat (item 11: -0.07 vs -0.11; item 15: -0.11 vs -0.07; item 27: -0.07 vs -0.04; item 20: -7.69 vs -7.33). 8 of
+  the 12 non-reproducing items had a different greedy token at g-1 than the sampled original.
+- S0 (bf16): 0/30 in the top-20 (floors -6 to -16), argmax is the ordinary `.` / `,` / ` (`.
+- S1 decode agrees with S1 prefill at position g-1 (|dlp| p50 0.03, max 0.14) and diverges by 40-50 nats at g. So
+  the FP8 server has a decode-path-specific failure, not a generic quantization error. Production trainer logprobs
+  match S0/S1 prefill; production inference logprobs match S1 decode.
+- Load is irrelevant: with 40 concurrent sampling requests (M about 41) S1 reproduces 16/30, S0 0/30.
+- M-dependence: with the prefix cache warm and only the tail past the last 256-token block computed as a small
+  prefill chunk, S1 reproduces 8/30, all with tails of 19-111 tokens; none of the 17 items with tails >= 135
+  tokens reproduced. The trigger is a token-count branch somewhere near 128, not F4's M < 32.
+- S0 decode vs prefill self-consistency: argmax |dlp| p50 0.02 / p90 0.07 / max 0.13.
+- Round 3 (05:10): S0 and S1 stopped; slot 0 -> S4 (FP8 + `PRIME_DIAG_BF16_OPROJ=1`), slot 1 -> S5 (attention-only
+  FP8). Decode probe on both. Meanwhile reading vLLM for the decode/prefill threshold and FP8-only decode kernels.
+
 ## Track B: bf16 control (job 961) and weight drift
 
 | step | kl_mean | kl_max | is_masked | grad_norm | note |
@@ -63,7 +85,8 @@ Report `~/tmp/fp8diag/bisect/results/r1.report.txt`. 50/50 items scored on both 
 | 1-20 | 0.00051-0.00084 | <= 3.4 | 0 | 0.03-0.09 | from handoff-time extraction |
 | 21-45 | 0.00052-0.00159 | <= 3.0 | <= 1.2e-4 | 0.02-0.13 | mean 0.00087, 1.4x steps 1-20 |
 | 46-60 | 0.00063-0.00128 | <= 3.9 | <= 4.9e-5 | 0.005-0.073 | mean 0.00090 |
-| 61-65 | 0.00067-0.00083 | <= 2.9 | <= 9.6e-5 | 0.04-0.07 | mean 0.00078; plateau, not a climb (03:35) |
+| 61-80 | 0.00058-0.00143 | <= 6.6 | <= 1.5e-5 | 0.02-0.09 | mean 0.00096 |
+| 81-84 | 0.00083-0.00143 | <= 2.5 | <= 8.7e-6 | 0.04-0.08 | mean 0.00105 (04:45); slow creep, about +0.0001 per 20 steps |
 
 ### B2: e4m3 grid departure at step 40 (done 04:05; `~/tmp/mismatch_evidence/grid_drift.md`)
 
