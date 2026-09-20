@@ -36,6 +36,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
   (does not affect the running job's behaviour, only its logging).
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
+- 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -278,6 +279,8 @@ at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no g
 |---|---|---|---|---|---|
 | 1 | 0.00149 | 1.48 | 2.7e-6 | 0.0249 (370) | 0.00054 (0.77) |
 | 2-7 | 0.00153-0.00201, mean 0.00176 | <= 3.43 | <= 3.2e-5 | 0.0232-0.0318 | 0.00051-0.00061 |
+| 8-14 | 0.00182-0.00246 | <= 3.58 | <= 8.0e-5 | 0.0229-0.0285 | 0.00056-0.00064 |
+| 15-20 | 0.00266-0.00315, monotone | <= 3.92 | <= 1.0e-4 | 0.0226-0.0269 | 0.00059-0.00071 |
 
 Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
 control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
@@ -290,6 +293,15 @@ Trace scan at 06:58 (80 traces, 584,665 trained tokens, steps 1-10): glitch toke
 Inside `<think>` mean |lr| 0.037 (bf16 control's think-region KL was 0.0015 vs this run's 0.0029); outside 0.009.
 The FP8 run's same-step numbers were 32 glitches and 118 large-gap tokens per 100k. Steps take about 4-5 min
 while the rollout pipeline ramps (off_policy 0-1.6).
+
+Steps 8-20 (07:34): the mean climbs steadily from 0.0020 to 0.0031, a doubling since step 1, while off_policy lag
+ramps 1.2 -> 5.2 and `is_masked/mean` rises 1e-5 -> 1e-4. The FP8 baseline was flat at 0.025 over the same steps
+because glitch tokens set its floor; its tail-excluded bulk KL grew 0.005 (steps 1-10) -> 0.056 (230-239). The bf16
+control did not climb over steps 1-20 (0.0005-0.0008) at similar lag, and B2 showed bf16 broadcast weights are
+mostly bit-identical to initial at step 40, so weight-version lag alone should not move bf16 logprobs; an FP8-specific
+sensitivity to small weight changes, or an episode-mix effect as longer episodes start completing, are the candidates.
+This is the late-growth question from the handoff showing up early without the glitch floor. Analysis of KL versus
+lag, episode length and think fraction on this run's traces started 07:36.
 
 ### C1 (trainer floor fixes, fp32 RoPE from PR 3584 and fp32 logits in the LM head): not run
 
