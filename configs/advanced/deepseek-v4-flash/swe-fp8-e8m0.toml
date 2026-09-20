@@ -1,0 +1,165 @@
+# DeepSeek V4 Flash on the `scaleswe` SWE taskset at 131k context, bash harness on a prime sandbox
+# runtime. First DeepSeek V4 training recipe in the repo: every other config for this model runs at
+# seq_len 2048-4096 with lr = 0 for mismatch measurement only. Structure follows
+# examples/advanced/glm-4.5-air/swe.toml; topology follows configs/advanced/minimax-m2.5/swe.toml.
+#
+# This is the bring-up run: no eval source, a small batch, and a low LR. Add the
+# swebench-verified eval block once the 131k path is proven.
+
+max_steps = 1000
+seq_len = 131072
+
+[run]
+# Explicit: without it the run name gets a random suffix and a relaunch with [resume] silently
+# starts over in a new directory.
+name = "dsv4-swe-131k-fp8-e8m0"
+
+# TODO: all six of these are temporary and hardcode a user path. Replace with $USER/$HOME (which
+# does expand, since they are emitted as shell `export` lines in the sbatch) or a proper default
+# once the environment is sorted. Note they must stay at the top level rather than under
+# [inference.env_vars]: the inference entrypoint re-applies its own table through
+# os.environ.update with the raw TOML string, which would clobber any expansion.
+#
+# JIT caches go to node-local /tmp, following the ~/.localrc convention, so 128 ranks do not
+# contend on shared /home. TILELANG_CACHE_DIR is the one ~/.localrc misses; it defaults to
+# ~/.tilelang/cache and both the trainer's sparse-attention kernels and inference's mHC pre-norm
+# compile through TileLang. HF_HOME is here because the inherited /home/huggingface has its
+# hub/datasets/xet subdirectories owned by another user, so taskset loads fail on a lock file.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/garrett/.triton-cache"
+DG_JIT_CACHE_DIR = "/tmp/garrett/.research_deep_gemm"
+TILELANG_CACHE_DIR = "/tmp/garrett/.tilelang-cache"
+VLLM_CACHE_ROOT = "/tmp/garrett/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/garrett/.flashinfer-cache"
+HF_HOME = "/home/garrett/.cache/huggingface"
+
+[slurm]
+job_name = "dsv4-swe-fp8-e8m0"
+partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe-fp8-e8m0" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+num_infer_nodes = 1
+num_infer_replicas = 8
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "deepseek-v4-flash"
+name = "swe-scaleswe-131k-fp8-e8m0-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp8", "e8m0", "fix-test"]
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+# Checkpointing disabled for quick testing: these checkpoints are 1-3 TB each.
+
+[resume]
+
+[trainer]
+dist_timeout_seconds = 14400
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+ep = 8
+# Ring is the default and the only supported style: DeepSeek V4 declares ring-only CP support and
+# dispatches unconditionally to the TileLang sparse-attention kernel, so cp_style = "ulysses" is a
+# startup ValueError despite what docs/scaling.md recommends.
+cp = 4
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.compile]
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.01
+
+[orchestrator]
+batch_size = 64
+group_size = 8
+max_off_policy_steps = 32
+
+[orchestrator.model.client]
+# Each FP8 replica takes 14-19 min to load and quantize the 1.1 TB bf16 checkpoint over NFS, then ~4 min
+# to profile and capture graphs; the slowest of 8 cleared 34 min. The default 1800 s killed job 829.
+wait_for_ready_timeout = 7200
+
+[orchestrator.concurrency]
+max_inflight = 512
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+# Explicit because MODEL_RENDERER_MAP keys on the DeepSeek repo id, not our bf16 re-export, so
+# name = "auto" fails validation. The deepseek-v4 renderer defaults enable_thinking to False.
+name = "deepseek-v4"
+enable_thinking = true
+# drop_thinking defaults to true, which implies thinking_retention = "tool_cycle" and conflicts
+# with "all". The orchestrator re-validates its resolved JSON in a subprocess, where every default
+# counts as explicitly set, so the conflict fires at launch even though the dry run passes. With
+# tools present the encoder preserves all reasoning regardless; false just makes the pair agree.
+drop_thinking = false
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["dsv4-swe-fp8-e8m0"]
+
+[inference]
+# Mandatory with online FP8: DeepSeek V4's o_proj reads wo_a.weight directly and hands it to
+# DeepGEMM's grouped fp8_einsum, which needs the 3D layout only DeepGemmFp8BlockScaledMMKernel
+# builds, and that kernel is skipped unless VLLM_USE_DEEP_GEMM is on.
+use_deep_gemm = true
+
+[inference.env_vars]
+# On: the FP8 mismatch bisection localized the glitch tokens to the small-M DeepGEMM MoE path
+# with fp32 scales, so this run tests power-of-two UE8M0 scales as the fix.
+VLLM_USE_DEEP_GEMM_E8M0 = "1"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+# The Lightning Indexer's top-512 key selection is recomputed independently by the trainer and is
+# not replayed, unlike routed experts. Quantizing indexer.wq_b flips that selection: measured
+# bitwise-identical below 2048 tokens, where a short-context shortcut selects all candidates, then
+# 0.3% of tokens moving probability by more than 0.3 above it. At 131k the whole sequence is in the
+# live regime, so the indexer stays bf16.
+quantization_config = { ignore = ["re:.*indexer.*"] }
+tensor_parallel_size = 8
+enable_expert_parallel = true
+# 0.85 left ~7.5 GiB free on a 139.8 GiB card once vLLM's non-torch allocations (~15 GiB) are counted, and the
+# NCCL weight receive path allocates one 12.25 GiB staging buffer for the largest per-dtype chunk. The v0
+# broadcast squeaked through by flushing the allocator cache; the v1 update after step 1 OOMed on all 64
+# ranks. 0.75 frees ~14 GiB more and still leaves ~9x concurrency at 131k in the KV pool.
+gpu_memory_utilization = 0.75
+max_model_len = 131072
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
