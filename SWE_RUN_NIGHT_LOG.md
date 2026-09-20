@@ -647,6 +647,15 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
   (step_320, step_340, 2.4 TB); the DeepSeek pre-collapse resume points no longer exist. Kept the live control's
   `step_20` (3.2 TB). Disk 51 TB of 250 TB. Job 961 still runs on its old resolved config and will write a
   3.2 TB checkpoint at step 40 unless restarted on the new config.
+- 02:35:27 step 40 checkpoint saved (`Step 40 | 5m 36s | Mismatch KL 0.0011 | Peak Mem. 88.9 GiB`); the run still
+  uses its pre-edit resolved config, so `checkpoints/` holds `step_20` and `step_40` (6.4 TB). Mismatch KL by
+  step 21-40: 0.0010 0.0005 0.0006 0.0005 0.0006 0.0007 0.0010 0.0013 0.0008 0.0009 0.0006 0.0008 0.0006 0.0007
+  0.0008 0.0015 0.0009 0.0008 0.0009 0.0011, versus 0.0005-0.0007 for steps 1-20. Garrett flagged this drift
+  at 02:10; it is now written into `MISMATCH_HANDOFF.md` as hypothesis 8 (DeepSeek-specific growth independent
+  of FP8; GLM never drifted). Reward 0.78 at step 40, turns 31.
+- 02:30 the four evidence agents finished; `MISMATCH_HANDOFF.md` (repo root, untracked pending Garrett's edits)
+  and `/home/garrett/tmp/mismatch_evidence/` hold the mismatch investigation handoff. Headline: the FP8 server
+  samples glitch tokens (`)Skip` and friends) the trainer scores at -45; see that document.
 
 ## Open questions for Garrett (bf16 control)
 
