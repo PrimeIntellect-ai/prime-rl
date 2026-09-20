@@ -5,6 +5,29 @@ Plan: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse
 Ground rules: one 16-node training run at a time (job 961, the bf16 control, until killed); under 20 nodes total;
 checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-flash`; one commit per logical change.
 
+## Morning summary (last refreshed 08:27, job 991 at step 40 and running)
+
+1. **The FP8 mismatch had two causes, both now attributed.** (a) A kernel fault: DeepGEMM's grouped FP8 GEMM for routed
+   experts misreads fp32 activation scales in its small-M path (decode steps and prefill tails under about 128
+   tokens), producing the glitch tokens (`)Skip` etc.) that carried 79% of the FP8 run's step-1 mismatch. Never
+   visible in prefill scoring, which is why the trainer and FP8 prefill agreed. (b) A resolution floor: the bf16
+   release is a dequantized FP8 checkpoint sitting exactly on the e4m3 grid, so at lr 1e-6 the weight updates are
+   far below half an e4m3 quantum and the served FP8 weights stay pinned at step 0 while the trainer moves. The
+   mismatch therefore grows like an ever-increasing rollout lag. This is the growth and, plausibly, the collapse.
+   GLM's FP8 run never grew because its checkpoint is native bf16 (weights dither across bin boundaries).
+2. **Shipped** (commits on `feat/ds-v4-fp8-rl`, nothing pushed): `VLLM_USE_DEEP_GEMM_E8M0=1` avoids the faulty path;
+   new `inference.fp8_ue8m0_weight_scales` quantizes with exact power-of-two scales (lowest bulk error of every FP8
+   config measured); run config `swe-fp8-ue8m0.toml`; a fake-quant ignore regex; a logger fix.
+3. **Fix test (job 991, 16 nodes, running since 05:43):** mismatch KL 0.0015 at step 1 versus 0.025 for the FP8
+   baseline (17x lower; max 1.5 versus 370), zero glitch tokens in 585k trained tokens, then a slow climb to 0.0040
+   by step 40 (bf16 control: 0.0005 to 0.0009 over the same steps) from the pinned-policy drift plus lag. Reward
+   and entropy healthy. Leave it running or kill it; it is the only job I hold.
+4. **Not done:** trainer floor fixes (fp32 RoPE from PR 3584, fp32 logits) for lack of nodes under the 20-node rule;
+   any remedy for the pinning (stochastic rounding at broadcast, larger lr, or bf16 serving). The bf16 control (job
+   961) was killed at step 106 and its checkpoints deleted as agreed.
+5. Details, per-round tables and file pointers follow. Tooling is under `~/tmp/fp8diag/bisect/` and
+   `~/tmp/mismatch_evidence/`; a stray gitignored `outputs/dsv4-swe-131k-fp8-e8m0/` in the worktree is yours to delete.
+
 ## Timeline (UTC)
 
 - 03:22 Start. Job 961 at step 63, mismatch KL 0.0008 at step 63. 5 idle nodes. Checkpoints `step_40`, `step_60`
@@ -37,6 +60,8 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
+- 08:25 Job 991 step 40: steps 21-40 mean 0.00327 (+0.00107 over steps 1-20), max <= 4.4, reward 0.3-0.7, no
+  inference errors; the climb continues at about 0.00005 per step as the pinned-policy mechanism predicts.
 - 07:48 Growth analysis done: lag plus an FP8-specific drift explained by sub-quantum weight updates never reaching
   the served FP8 weights (the served policy is pinned at step 0).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
@@ -285,6 +310,7 @@ at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no g
 | 2-7 | 0.00153-0.00201, mean 0.00176 | <= 3.43 | <= 3.2e-5 | 0.0232-0.0318 | 0.00051-0.00061 |
 | 8-14 | 0.00182-0.00246 | <= 3.58 | <= 8.0e-5 | 0.0229-0.0285 | 0.00056-0.00064 |
 | 15-20 | 0.00266-0.00315, monotone | <= 3.92 | <= 1.0e-4 | 0.0226-0.0269 | 0.00059-0.00071 |
+| 21-40 | 0.00236-0.00403, mean 0.00327 | <= 4.41 | <= 3.6e-4 | 0.0198-0.0294 | 0.00052-0.00159 |
 
 Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
 control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
