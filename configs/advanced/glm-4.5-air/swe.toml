@@ -44,9 +44,7 @@ type = "nccl"
 port = 29501
 timeout = 3600
 
-[ckpt]
-interval = 20
-keep_last = 2
+# Checkpointing disabled for quick testing: these checkpoints are 1-3 TB each.
 
 [resume]
 
@@ -83,9 +81,6 @@ weight_decay = 0.01
 batch_size = 64
 group_size = 8
 max_off_policy_steps = 32
-
-[orchestrator.ckpt]
-wait_for_weights_timeout = 3600
 
 [orchestrator.model.client]
 wait_for_ready_timeout = 7200
