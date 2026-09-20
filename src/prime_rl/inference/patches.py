@@ -1,3 +1,5 @@
+import re
+
 import torch
 
 
@@ -360,13 +362,15 @@ def _fake_quantize_block_fp8_(weight: torch.Tensor) -> None:
     weight.copy_(quantized.to(torch.float32) * block_scale)
 
 
-def _fake_quantize_model_weights(model) -> int:
+def _fake_quantize_model_weights(model, ignore: re.Pattern[str] | None = None) -> int:
     from vllm.model_executor.layers.fused_moe import RoutedExperts
     from vllm.model_executor.layers.linear import LinearBase
 
     quantized_tensors = 0
     for name, module in model.named_modules():
         if name.rsplit(".", 1)[-1] in _FAKE_QUANT_EXCLUDED_LINEARS:
+            continue
+        if ignore is not None and ignore.search(name):
             continue
         if isinstance(module, LinearBase):
             _fake_quantize_block_fp8_(module.weight.data)
@@ -402,7 +406,10 @@ def monkey_patch_diag_fake_quant_weights():
     ``embed_tokens`` are ``VocabParallelEmbedding``, not ``LinearBase``, and are
     out for that reason as well as prime-rl's ``head_dtype=float32``. The three
     DeepSeek V4 linears that online FP8 skips are listed in
-    ``_FAKE_QUANT_EXCLUDED_LINEARS``.
+    ``_FAKE_QUANT_EXCLUDED_LINEARS``. ``PRIME_DIAG_FAKE_QUANT_IGNORE`` takes a regex
+    that is searched against each module name and skips matches, mirroring the
+    production ``quantization_config.ignore`` list so the fake-quant scope can be
+    aligned with it or bisected by module family.
 
     Both entry points matter. ``BaseModelLoader.load_model`` covers the cold start,
     which ``finalize_layerwise_processing`` does not, since the loader only calls
@@ -424,15 +431,18 @@ def monkey_patch_diag_fake_quant_weights():
     from vllm.model_executor.model_loader.reload import layerwise
 
     logger = init_logger(_DIAG_LOGGER_NAME)
+    ignore_pattern = os.environ.get("PRIME_DIAG_FAKE_QUANT_IGNORE")
+    ignore = re.compile(ignore_pattern) if ignore_pattern else None
     original_load_model = base_loader.BaseModelLoader.load_model
     if getattr(original_load_model, "_prime_diag_fake_quants_weights", False):
         return
 
     def _fake_quantize_and_log(model, stage):
         logger.info(
-            "PRIME_DIAG_FAKE_QUANT_WEIGHTS=1: round-tripped %d weight tensors through 128x128 block FP8 after %s.",
-            _fake_quantize_model_weights(model),
+            "PRIME_DIAG_FAKE_QUANT_WEIGHTS=1: round-tripped %d weight tensors through 128x128 block FP8 after %s (ignore=%r).",
+            _fake_quantize_model_weights(model, ignore),
             stage,
+            ignore_pattern,
         )
 
     def load_model(self, *args, **kwargs):
