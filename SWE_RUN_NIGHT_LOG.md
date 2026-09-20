@@ -625,6 +625,13 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
   4.53x`**, 48% of the FP8 run's 1.24M at the same 0.75 utilization. Above the 1.5x relaunch threshold; leaving
   `gpu_memory_utilization` alone. Inflight will cap near 8 x 4.5 = 36 full-length episodes before the
   concurrency controller adapts to the real episode lengths.
+- 00:18:06 `Policy inference pool ready after 11m 36s`; `Derived initial max inflight 36`; v0 broadcast 200 OK.
+- 00:26:52 orchestrator Step 1 `8m 23s | Reward 0.8750 | Turns 25.5 | Error 0.0%`.
+- 00:31:53 **trainer Step 1: `Mismatch KL 0.0005`** (`13m 47s | Entropy 0.3290 | Grad. Norm 0.0302 | Peak Mem. 72.1
+  GiB`), v1 `POST /update_weights 200 OK`. Same task, same trainer, same everything but the serving dtype: the FP8
+  run read 0.025 at step 1 (50x higher) and 0.12 by step 239. This matches the `FP8_MISMATCH_RESULTS.md` bf16
+  baseline of 0.0015 at lr = 0 and settles the attribution of the FP8 run's mismatch to weight quantization,
+  not to the sparse-attention or KV path (both unchanged here).
 
 ## Open questions for Garrett (bf16 control)
 
