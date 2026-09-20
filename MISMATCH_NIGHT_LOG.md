@@ -27,6 +27,9 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 05:39 Killed job 988 after 90 s: it tested E8M0=1 alone, and the run should test the recommended config.
 - 05:45 Promoted the weight-scale diagnostic to `inference.fp8_ue8m0_weight_scales`; relaunching as
   `swe-fp8-ue8m0.toml` (run `dsv4-swe-131k-fp8-ue8m0`).
+- 05:43 Submitted job 991: `swe-fp8-ue8m0.toml`, 16 nodes, FP8 with `VLLM_USE_DEEP_GEMM_E8M0=1` and
+  `fp8_ue8m0_weight_scales = true`, checkpointing off, wandb `swe-scaleswe-131k-fp8-ue8m0-adamw1e-6-bs64g8-8t8i`.
+  Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0` (attempt_2; attempt_1 was the dry run).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -240,9 +243,25 @@ run name `dsv4-swe-131k-fp8-e8m0`, wandb `swe-scaleswe-131k-fp8-e8m0-adamw1e-6-b
 was consumed by the dry run. A stray gitignored `outputs/dsv4-swe-131k-fp8-e8m0/` in the worktree came from a
 dry run without the variable; left for Garrett to delete.
 
+### C2 launched (05:43): job 991, the recommended FP8 config under real training
+
+Success criteria: mismatch KL at steps 1-40 well below the FP8 baseline band 0.020-0.032 (bf16 control 0.0005-0.0008
+at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no glitch ids sampled with a large gap.
+
+### C1 (trainer floor fixes, fp32 RoPE from PR 3584 and fp32 logits in the LM head): not run
+
+The 5-node lr=0 profile would put the total at 21 nodes with job 991 running, above the under-20 rule, and the
+glitch finding made the inference-side fix the priority for the single 16-node slot. Both remain one-line-ish
+changes with the plan and code pointers in the handoff; they address the both-runs floor (0.0005-0.001), not the
+FP8 gap.
+
 ## Commits made tonight
 
 - `feat(configs): add the FP8 SWE run variant with UE8M0 DeepGEMM scales` (05:20).
+- `feat(inference): add fp8_ue8m0_weight_scales for power-of-two online FP8 weight scales` (05:42). Promotes the
+  `PRIME_DIAG_UE8M0_WEIGHTS` diagnostic to `inference.fp8_ue8m0_weight_scales` (env `PRIME_FP8_UE8M0_WEIGHT_SCALES`).
+- `feat(configs): test the FP8 SWE run with UE8M0 scales and exact weight scales` (05:42). Renames the run config
+  to `swe-fp8-ue8m0.toml` and turns the new field on.
 - `docs(mismatch): ...` log commits after each round.
 
 - `feat(inference): add PRIME_DIAG_FAKE_QUANT_IGNORE regex to the fake-quant diagnostic` (03:45). Needed so S2
