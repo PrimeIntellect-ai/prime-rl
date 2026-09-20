@@ -1,0 +1,78 @@
+{
+  "legacy": {
+    "median": {
+      "format_seconds": 5.4878899331670254,
+      "json_seconds": 0.6988082891330123,
+      "client_seconds": 0.5404839678667486,
+      "server_seconds": 6.189250290160999,
+      "total_seconds": 6.729734258027747,
+      "response_bytes": 34910544
+    },
+    "repeats": [
+      {
+        "format_seconds": 5.3968447600491345,
+        "json_seconds": 0.6844459979329258,
+        "client_seconds": 0.5379900839179754,
+        "server_seconds": 6.08129075798206,
+        "total_seconds": 6.619280841900036,
+        "response_bytes": 34910544
+      },
+      {
+        "format_seconds": 5.4878899331670254,
+        "json_seconds": 0.7088835539761931,
+        "client_seconds": 0.551258185878396,
+        "server_seconds": 6.1967734871432185,
+        "total_seconds": 6.7480316730216146,
+        "response_bytes": 34910544
+      },
+      {
+        "format_seconds": 5.490442001027986,
+        "json_seconds": 0.6988082891330123,
+        "client_seconds": 0.5404839678667486,
+        "server_seconds": 6.189250290160999,
+        "total_seconds": 6.729734258027747,
+        "response_bytes": 34910544
+      }
+    ]
+  },
+  "compact": {
+    "median": {
+      "format_seconds": 0.03687924798578024,
+      "json_seconds": 0.025279478169977665,
+      "client_seconds": 0.11122309695929289,
+      "server_seconds": 0.062158726155757904,
+      "total_seconds": 0.17575238598510623,
+      "response_bytes": 5760403
+    },
+    "repeats": [
+      {
+        "format_seconds": 0.038301661144942045,
+        "json_seconds": 0.026227627880871296,
+        "client_seconds": 0.11122309695929289,
+        "server_seconds": 0.06452928902581334,
+        "total_seconds": 0.17575238598510623,
+        "response_bytes": 5760403
+      },
+      {
+        "format_seconds": 0.03606353304348886,
+        "json_seconds": 0.025031593861058354,
+        "client_seconds": 0.1100531390402466,
+        "server_seconds": 0.061095126904547215,
+        "total_seconds": 0.17114826594479382,
+        "response_bytes": 5760403
+      },
+      {
+        "format_seconds": 0.03687924798578024,
+        "json_seconds": 0.025279478169977665,
+        "client_seconds": 0.1152014669496566,
+        "server_seconds": 0.062158726155757904,
+        "total_seconds": 0.1773601931054145,
+        "response_bytes": 5760403
+      }
+    ]
+  },
+  "tokens": 4096,
+  "topk": 128,
+  "exact_score_parity": true,
+  "scope": "Synthetic CPU response path; no GPU generation, live concurrency, or network benchmark."
+}

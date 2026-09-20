@@ -6,18 +6,18 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current state
 
-- At 2026-09-19 21:14 UTC, cancelled job 911 after graceful cleanup. Both exact run labels have zero active VM sandboxes.
-- The pair ran from 14:38 until 21:14 with zero resumed optimizer updates. Both restored step 50.
-- IPO recorded 41,138 training episode completions, including 40,985 errors. Centered recorded 42,517 completions, including 42,360 errors.
-- The paired launcher restricted each task to one CPU. SLURM accounting shows two CPUs per two-node arm, versus 232 in the successful original arms.
-- `srun --exclusive` restricted step resources because no CPU request was specified. This was an experiment launcher error, not evidence of policy collapse.
-- API4 was active on both engines in both arms. The CPU restriction explains the slow startup and likely the serving health failures.
-- The passive monitor recorded the failure but did not intervene. Do not leave another restart with recording alone.
-- Fixed `resume-pair.sbatch` to request 116 CPUs per task and check actual CPU affinity on every node before startup.
-- Preparing fresh directories `ipo-1plus1-api4-seed42-resume50-r3` and `sc-1plus1-api4-seed42-resume50-r3`. Both still resume preserved parent step50.
-- `lineage.json` and the snapshot helper now point to r3. No r3 job submitted yet.
-- Preserve original parent updates1–50. No additional scientific signal exists. Full comparison and frozen-checkpoint audit remain pending.
-- Evidence: `results/resume50-stall/incident.json`, `sandbox-inventory.json`, and SLURM accounting.
+- USER STOP at 2026-09-19T21:32:51.919040+00:00: cancel jobs and summarize. Do not restart without a new user instruction.
+- Job938 cancelled after both orchestrators completed forced cleanup at21:31:25UTC. Both exact run-label VM inventories are empty.
+- Both arms recorded zero new optimizer updates in the corrected restart. The comparison remains at50 clean updates per arm.
+- Job911 had previously wasted6.6hours with zero optimizer updates because the paired launcher restricted each node to one CPU.
+- The passive monitor recorded the failure without intervention. This was a monitoring gap, not policy instability.
+- The launcher fix requests116 CPUs per node; job938 verified all four affinity checks and232 CPUs per two-node step.
+- Job938 restored step50 but was cancelled before update51. The corrected setup has not yet demonstrated training progress.
+- `watch_progress.py` adds an automatic stop after20minutes without an update once serving is ready,45minutes of incomplete startup, or a nonfinite gradient. It runs inside the cancelled allocation; no relaunch loop exists.
+- Implementation, configs, original step-50 checkpoints, logs, curves, and incident records are preserved.
+- No experiment GPU jobs or pending restarts should remain. Unrelated jobs899 and878 were not touched.
+- Evidence: `results/main-api4-step50`, `results/resume50-stall`, `results/user-stop-938`.
+- The 400-update comparison, frozen-checkpoint audit, second seed, and BF16 control are unfinished. No robustness claim is established.
 
 ### Restart history
 
@@ -148,3 +148,15 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 - At 13:28 UTC, SLURM estimates job911 start at16:48UTC (not guaranteed). Node031 is drained for a missing NVIDIA driver; only three nodes are schedulable and idle. Do not modify unrelated node state or jobs.
 - Persistent monitor is running: PID 2120920, `/tmp/score-centering-watch-pair.py`, every60seconds. It checks job911, records training metrics/errors once running, appends per-run STATUS.md, and exits when the job terminates. Logs: `results/monitor/pair-watch.log`, `pair-watch.jsonl`; PID file:`pair-watch.pid`. This records status locally; it does not send chat notifications or replace the final scientific audit.
+
+- At job938 startup, all four affinity checks reported116 available CPUs and the guard emitted heartbeats. The later user stop is recorded above.
+
+
+## Compact logprob transport (2026-09-20)
+
+Implemented opt-in packed uint32/float32 logprob responses and the renderer decoder.
+Score-head requests enable the format by default; `PRL_COMPACT_LOGPROBS=0` selects the nested response.
+The synthetic 4,096-token/top-128 benchmark shows 6.189 s versus 0.0622 s of server response work.
+Response size falls from 34.91 MB to 5.76 MB, with exact sampled and head score parity.
+See `COMPACT_LOGPROBS.md` for the scope and reproduction command.
+No jobs were started. A live one-worker versus four-worker comparison remains pending.

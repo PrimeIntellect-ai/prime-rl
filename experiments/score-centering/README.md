@@ -13,6 +13,8 @@ Read `STATE.md` for live job IDs and recovery steps.
 - `smoke-fast.toml`: save only at the final smoke step after intermediate saves are verified.
 - `verify_math.py`: gradient checks and comparison with the official formula.
 - `verify_transport.py`: sampler-head transport and packing checks.
+- `benchmark_compact_logprobs.py`: CPU comparison of compact and nested logprob responses.
+- `COMPACT_LOGPROBS.md`: transport format, controls, and benchmark results.
 - `analyze.py`: metric CSV, summary JSON, and PNG/PDF curves by update and token budget.
 - `eval_results.py`: task rewards, errors, task-level confidence intervals, and missing-reward bounds.
 - `select_holdout.py`: select the supplemental unseen-Lego audit after both training runs stop.
@@ -36,7 +38,14 @@ Each launch allocates two nodes (one trainer and one inference node). Stop or fi
 Keep at most eight experiment nodes allocated across all checks and runs.
 
 The renderer and verifiers changes are archived in `patches/` against their pinned submodules.
-Apply these patches when reconstructing this experiment from a fresh checkout.
+Apply these patches once when reconstructing this experiment from a fresh checkout:
+
+```bash
+git -C deps/renderers apply ../../experiments/score-centering/patches/renderers.patch
+git -C deps/verifiers apply ../../experiments/score-centering/patches/verifiers.patch
+```
+
+The dependency changes are archived as patches; their pinned submodule commits remain unchanged.
 The model snapshot path in `common.toml` points to the revision recorded in `model.json`.
 
 ```bash

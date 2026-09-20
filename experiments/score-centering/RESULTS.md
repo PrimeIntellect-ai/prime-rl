@@ -1,6 +1,6 @@
 # Score-centering experiment results
 
-Status at 2026-09-19 21:14 UTC: restart stopped after zero new optimizer updates. A launcher CPU restriction caused severe resource starvation. Fifty clean updates remain preserved.
+Status: stopped at user request on2026-09-19 at21:31UTC. Fifty clean updates per arm remain; no robustness separation established.
 
 ## Main comparison
 
@@ -190,3 +190,12 @@ The passive monitor recorded these failures without stopping the run. That monit
 Both orchestrators completed cleanup; the allocation was cancelled and both VM inventories were empty.
 The launcher now requests116 CPUs per task and asserts CPU affinity before model startup.
 A corrected restart and an automatic stall stop are still required.
+
+## User stop after corrected restart
+
+Job938 verified116 CPUs on all four nodes and232 CPUs per two-node launch step.
+Both trainers restored step50. Neither completed a new optimizer update before the user requested cancellation.
+Both orchestrators completed cleanup at21:31:25UTC, then the allocation was cancelled.
+Both run-label VM inventories were empty. No further restart is authorized.
+The CPU allocation fix is verified; resumed training progress remains unvalidated.
+The automatic stall guard was running, but this short restart did not exercise its stop path.
