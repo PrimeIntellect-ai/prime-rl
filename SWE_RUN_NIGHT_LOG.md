@@ -411,7 +411,8 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k/logs/attempt_9/`.
   0.045-0.05 (150-200) -> 0.06-0.08 (221-236) -> 0.10-0.12 (237-239), then generations ran away (65k-token
   turns), inference clogged, and the trainer starved. Full diagnosis in the 14:15 entry. Decisions that are
   yours: bf16 serving (recipe in the 11:38 entry), an output-length cap or non-zero `num_output_tokens_weight`,
-  a lower lr, and whether to resume from `step_220` or `step_200`.
+  a lower lr. (The `step_200` / `step_220` checkpoints were deleted on 2026-09-20 at your request; the bf16
+  control run answers the serving question from a fresh start instead.)
 - The sandbox-to-inference tunnel (`prime_tunnel` / frps) is a single point of failure per interception server,
   and the pool has no health check: a broken tunnel became a black hole for new sessions (least-loaded picks
   it) and cost ~70% of rollouts until a run restart. Worth a tunnel health probe in the pool, or a retry on 5xx
@@ -639,6 +640,13 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
 - 01:48:21 **first checkpoint, step 20** (`Step 20 | 5m 54s | Mismatch KL 0.0007 | Peak Mem. 71.9 GiB`); ~4 min of
   write, `checkpoints/step_20/` has both halves. Steps ~2 min each now. Mismatch KL for steps 1-20: 0.0005 0.0005 0.0006 0.0006 0.0005 0.0006 0.0006 0.0006 0.0006 0.0008 0.0006 0.0006 0.0006 0.0006 0.0006 0.0006 0.0007 0.0006 0.0007 0.0007(FP8 run
   over the same steps: 0.023-0.032). Reward 0.81-0.89 at the sampled steps.
+- 2026-09-20 01:55 **checkpointing disabled and old checkpoints deleted** (Garrett's instructions). Removed the
+  `[ckpt]` and `[orchestrator.ckpt]` tables from all three SWE configs (`0a636c267`, one-line comment each);
+  they resolve with `ckpt = None` at the RL, trainer and orchestrator levels, so relaunches save nothing.
+  Deleted `dsv4-swe-131k/checkpoints` (step_200, step_220, 6.3 TB) and `glm45air-swe-131k/checkpoints`
+  (step_320, step_340, 2.4 TB); the DeepSeek pre-collapse resume points no longer exist. Kept the live control's
+  `step_20` (3.2 TB). Disk 51 TB of 250 TB. Job 961 still runs on its old resolved config and will write a
+  3.2 TB checkpoint at step 40 unless restarted on the new config.
 
 ## Open questions for Garrett (bf16 control)
 
