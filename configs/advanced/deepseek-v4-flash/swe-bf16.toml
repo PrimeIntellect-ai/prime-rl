@@ -47,8 +47,8 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 [monitors.wandb]
 entity = "primeintellect"
 project = "deepseek-v4-flash"
-name = "swe-scaleswe-131k-bf16-adamw1e-6-bs64g8-8t8i"
-tags = ["swe", "scaleswe", "131k", "bf16", "adamw", "control"]
+name = "swe-scaleswe-131k-fp16-serving-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp16", "bf16", "adamw", "control"]
 
 [weight_broadcast]
 type = "nccl"
