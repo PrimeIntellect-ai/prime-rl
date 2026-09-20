@@ -218,6 +218,7 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 .st-running { color: var(--accent); border-color: rgba(182, 255, 60, 0.5); background: rgba(182, 255, 60, 0.08); }
 .st-completed { color: var(--chart-1); border-color: rgba(120, 248, 165, 0.4); }
 .st-stopped { color: var(--grey-4); }
+.upload-warning { color: var(--negative); font-size: 12px; overflow-wrap: anywhere; }
 /* slider controls (smoothing, pane size) */
 .ctl {
   display: inline-flex;

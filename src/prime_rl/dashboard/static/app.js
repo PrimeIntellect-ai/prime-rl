@@ -356,7 +356,11 @@ function renderOverview() {
     left.map(field).join("") +
     `<div class="spacer"></div>` +
     right.map(field).join("") +
-    `</div>`;
+    `</div>` +
+    Object.entries(meta.platform?.evaluations || {})
+      .filter(([, evaluation]) => evaluation.incomplete)
+      .map(([env, evaluation]) => `<div class="upload-warning">${esc(env)} upload incomplete: ${esc(evaluation.incomplete)}</div>`)
+      .join("");
 }
 
 function updateHash() {

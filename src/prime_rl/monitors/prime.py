@@ -160,6 +160,7 @@ class PrimeEvalMonitor(Monitor):
         # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
         # episodes do not retry the platform on every arrival
         self.runs: dict[tuple[str, int], pr.Run | None] = {}
+        self._upload_health: dict[tuple[str, int], str | None] = {}
         self._lock = asyncio.Lock()
         self.evaluation_id = os.getenv(EVAL_ID_VAR)
         if self.evaluation_id and len(self.sources) != 1:
@@ -175,7 +176,33 @@ class PrimeEvalMonitor(Monitor):
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
-        pass
+        # Periodic metrics keep upload failures visible even while no episodes finish.
+        for (env_name, run_step), run in self.runs.items():
+            if run is not None and not run.finished:
+                self.report_upload_health(env_name, run_step, run)
+
+    def report_upload_health(self, env_name: str, step: int, run: pr.Run) -> None:
+        parts = list(run.errors)
+        parts.extend(
+            f"{count} record(s) not stored by the {sink} sink"
+            for sink, count in sorted(run.failed_records.items())
+            if count
+        )
+        if dropped := run.dropped_records:
+            parts.append(f"{dropped} record(s) never queued (uploader overrun)")
+        incomplete = "; ".join(parts) or None
+        key = (env_name, step)
+        if incomplete == self._upload_health.get(key):
+            return
+        self._upload_health[key] = incomplete
+        if incomplete:
+            self.logger.warning(f"{env_name} (Step {step}) evaluation upload incomplete: {incomplete} - {run.url}")
+        if self.output_dir is not None and (record := read_platform_record(self.output_dir)):
+            evaluation = record["evaluations"].get(env_name)
+            # The dashboard links to the latest epoch of each environment.
+            if evaluation is not None and evaluation["id"] == run.id:
+                evaluation["incomplete"] = incomplete
+                write_platform_record(self.output_dir, record)
 
     def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
@@ -253,6 +280,7 @@ class PrimeEvalMonitor(Monitor):
             run = await self.run_for(env_name, step)
             if run is not None:
                 await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
+                self.report_upload_health(env_name, step, run)
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
         run = await self.run_for(env_name, step)
@@ -263,7 +291,9 @@ class PrimeEvalMonitor(Monitor):
         except Exception as e:
             self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             return
-        self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
+        finally:
+            self.report_upload_health(env_name, step, run)
+        self.logger.info(f"Finished {env_name} (Step {step}) evaluation - {run.url}")
 
     async def finalize(self) -> None:
         # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
@@ -274,3 +304,5 @@ class PrimeEvalMonitor(Monitor):
                 await asyncio.to_thread(run.finish, status=pr.RunStatus.CANCELLED, error="interrupted")
             except Exception as e:
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+            finally:
+                self.report_upload_health(env_name, step, run)
