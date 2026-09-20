@@ -1741,9 +1741,11 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-svg { position: absolute; inset: 0; z-index: 1; overflow: visible; pointer-events: none; }
 .fg-edge { fill: none; stroke: var(--grey-4); stroke-width: 1; opacity: 0.42; }
 .fg-edge.route { stroke: var(--accent); stroke-width: 1.8; opacity: 0.9; }
+.fg-edge.link { opacity: 0.45; pointer-events: stroke; cursor: pointer; }
+.fg-canvas:has(.fg-edge.active) :is(.fg-edge, .fg-route).link:not(.active) { opacity: 0.12; }
 .fg-edge.resume { stroke-dasharray: 2 4; }
-.fg-edge.active { stroke: var(--grey-6); stroke-width: 2.5; }
-.fg-route.link { max-width: 76px; }
+.fg-edge.active { stroke: var(--grey-6); stroke-width: 2.5; opacity: 1; }
+.fg-route.link { z-index: 2; transform: translate(-50%, -50%); }
 .fg-route.resume { border-style: dotted; }
 #fg-route path { fill: var(--accent); }
 .fg-node {

@@ -527,9 +527,8 @@ function flowGraphLayout(data, selected, viewportWidth) {
   const positions = new Map();
   const lanes = [];
   const width = Math.max(520, viewportWidth || 900);
-  const inset = selected === "all" && data.edges.some((edge) => edge.kind === "link") ? 104 : 36;
-  const columns = Math.max(3, Math.floor((width - inset - 36) / 166));
-  const xStep = (width - inset - 36 - 142) / Math.max(1, columns - 1);
+  const columns = Math.max(3, Math.floor((width - 72) / 166));
+  const xStep = (width - 72 - 142) / Math.max(1, columns - 1);
   let top = 0;
   groups.forEach((group) => {
     const items = nodes.filter((node) => node.group === group).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
@@ -540,11 +539,11 @@ function flowGraphLayout(data, selected, viewportWidth) {
       const row = Math.floor(i / columns);
       const offset = i % columns;
       const column = row % 2 ? columns - 1 - offset : offset;
-      positions.set(node.id, { x: inset + column * xStep, y: top + 50 + row * 92 });
+      positions.set(node.id, { x: 36 + column * xStep, y: top + 50 + row * 92 });
     });
     top += height;
   });
-  return { groups, lanes, nodes, positions, width, inset, height: Math.max(250, top) };
+  return { groups, lanes, nodes, positions, width, height: Math.max(250, top) };
 }
 
 function flowEdgePath(a, b) {
@@ -557,8 +556,9 @@ function flowEdgePath(a, b) {
     const bend = Math.max(28, Math.abs(x2 - x1) * 0.45);
     return `M ${x1} ${y} C ${x1 + (forward ? bend : -bend)} ${y}, ${x2 + (forward ? -bend : bend)} ${y}, ${x2} ${y}`;
   }
-  const x1 = a.x + 71, y1 = a.y + 54, x2 = b.x + 71, y2 = b.y;
-  const bend = Math.max(30, Math.abs(y2 - y1) * 0.45);
+  const down = b.y > a.y;
+  const x1 = a.x + 71, y1 = a.y + (down ? 54 : 0), x2 = b.x + 71, y2 = b.y + (down ? 0 : 54);
+  const bend = (down ? 1 : -1) * Math.max(30, Math.abs(y2 - y1) * 0.45);
   return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
 }
 
@@ -570,34 +570,26 @@ function renderFlowGraph() {
     return;
   }
   const layout = flowGraphLayout(data, state.flow.task, graph.clientWidth);
-  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
-  const visible = new Set(nodeById.keys());
+  const visible = new Set(layout.nodes.map((node) => node.id));
   const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target || visible.has(edge.target)));
   const groupById = new Map(data.units.map((group) => [group.id, group]));
   const lanes = layout.lanes.map((lane) => {
     const group = groupById.get(lane.group);
-    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span style="left:${layout.inset > 36 ? layout.inset : 10}px">${esc(group?.name || lane.group)}</span></div>`;
+    return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.name || lane.group)}</span></div>`;
   }).join("");
   const edgeSvg = [...edges].sort((a, b) => Number(a.id === state.flow.selectedEdge) - Number(b.id === state.flow.selectedEdge)).map((edge) => {
     const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
     if (!a || !b) return "";
-    const crossUnit = nodeById.get(edge.source).group !== nodeById.get(edge.target).group;
-    const path = crossUnit
-      ? `M ${a.x + 71} ${a.y + 54} V ${a.y + 70} H 16 V ${b.y - 12} H ${b.x + 71} V ${b.y}`
-      : flowEdgePath(a, b);
-    return `<path class="fg-edge route ${edge.kind} ${state.flow.selectedEdge === edge.id ? "active" : ""}" d="${path}" marker-end="url(#fg-route)"></path>`;
+    return `<path class="fg-edge route ${edge.kind} ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" d="${flowEdgePath(a, b)}" marker-end="url(#fg-route)"></path>`;
   }).join("");
-  const linkLabels = [];
   const routeLabels = edges.filter((edge) => edge.target).map((edge) => {
     const a = layout.positions.get(edge.source), b = layout.positions.get(edge.target);
     const sameRow = b && Math.abs(a.y - b.y) < 8;
     let left = sameRow ? (a.x + b.x) / 2 + 36 : a.x + 80;
     let top = sameRow ? a.y - 25 : a.y + 62;
     if (edge.kind === "link") {
-      left = 22;
-      top = (a.y + b.y) / 2;
-      while (linkLabels.some((y) => Math.abs(y - top) < 24)) top += 24;
-      linkLabels.push(top);
+      left = (a.x + b.x) / 2 + 71;
+      top = (a.y + b.y) / 2 + 27;
     }
     return `<button class="fg-route ${edge.kind} ${state.flow.selectedEdge === edge.id ? "active" : ""}" data-flow-edge="${esc(edge.id)}" style="left:${left}px;top:${top}px">${esc(edge.outcome || "route")}</button>`;
   }).join("");
