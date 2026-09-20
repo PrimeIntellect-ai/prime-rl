@@ -632,6 +632,10 @@ Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
   run read 0.025 at step 1 (50x higher) and 0.12 by step 239. This matches the `FP8_MISMATCH_RESULTS.md` bf16
   baseline of 0.0015 at lr = 0 and settles the attribution of the FP8 run's mismatch to weight quantization,
   not to the sparse-attention or KV path (both unchanged here).
+- 01:03 hourly summary through step 6 (59 min of job time): trainer steps 13m 47s, 10m 46s, 6m 21s, 5m 59s,
+  5m 10s, 2m 16s as the concurrency controller ramps the inflight cap 36 -> 157 (ceiling 512). **Mismatch KL
+  0.0005-0.0006 at every step**, versus 0.025-0.028 for the FP8 run's first six. Reward 0.88 at step 1. No
+  errors of any kind so far. Expect ~2 min/step once the cap reaches the KV-bound limit.
 
 ## Open questions for Garrett (bf16 control)
 
