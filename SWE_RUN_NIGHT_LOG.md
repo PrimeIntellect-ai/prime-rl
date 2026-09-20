@@ -587,3 +587,36 @@ attempt 2, so GLM's weights are now page-cache warm. Logs: `/home/garrett/prl_ou
   the renderer drops (unknown tool), so ~70% of early episodes end after one turn with reward 0. RL is fixing it
   within a few steps, but a system-prompt note or exposing a `read` tool would make the comparison with
   DeepSeek fairer at step 0. Left unchanged since it alters the task.
+
+## DeepSeek V4 Flash bf16-serving control (Garrett's request, 2026-09-19 23:53)
+
+"fp16 everywhere instead of fp8", read as: serve the bf16 checkpoint with no online FP8 weight quantization, fresh
+start, everything else identical to the FP8 run. Garrett confirmed the KV cache stays FP8: DeepSeek V4's FlashMLA
+sparse-attention path hard-asserts on a non-fp8 KV dtype (`vllm/models/deepseek_v4/attention.py:105`), and the
+only bf16-KV route is the FlashInfer DSv4 backend (`attention_backend = FLASHINFER_MLA_SPARSE_DSV4`), a different
+kernel that would also halve the KV pool again. So this control isolates the weight quantization.
+
+Config `configs/advanced/deepseek-v4-flash/swe-bf16.toml` at `e847b5fc8`: a copy of `swe.toml` minus
+`quantization`, `quantization_config`, `use_deep_gemm` and `VLLM_USE_DEEP_GEMM_E8M0`; run name `dsv4-swe-131k-bf16`,
+sandbox label `dsv4-swe-bf16`, wandb name `swe-scaleswe-131k-fp16-serving-adamw1e-6-bs64g8-8t8i` (Garrett asked
+for an fp16 substring), tags add `fp16`, `bf16`, `control`. Unit test, dry run and the three-way check pass.
+Expectations: bf16 weights take ~71 GB per GPU (vs ~36 GB FP8), so at `gpu_memory_utilization = 0.75` the KV pool
+should land near a third of the FP8 run's 1.24M tokens, ~3-4x concurrency at 131k; the concurrency controller will
+cap inflight accordingly and rollouts will be slower. If the pool comes in under ~1.5x, raise utilization toward
+0.85 (the 12 GiB NCCL receive buffer still needs ~15 GiB of true headroom).
+
+### Attempt 2 (SLURM job 960), 00:02, cancelled after 40 s
+
+Launched with a `bf16` wandb name before Garrett asked for `fp16`; cancelled before anything logged. Attempt 1 was the dry run.
+
+### Attempt 4 (SLURM job 961), submitted 00:04, 16 nodes
+
+Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe-bf16.toml`. Attempt 3 was the dry run. Nodes:
+`prime-nebius-puku-h200-gpu-[005,013,015-016,018,020,024,027,033,036,038,042,046,052,055,061]`, largely the
+FP8 run's set, so the DeepSeek checkpoint should be page-cache warm on most of them.
+Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
+
+## Open questions for Garrett (bf16 control)
+
+- KV cache remains FP8 (`fp8_ds_mla`), per your call. A fully bf16 serving path exists via the FlashInfer DSv4
+  backend if you want it later; it is a kernel change, not just a dtype change.
