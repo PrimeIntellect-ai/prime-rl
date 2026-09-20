@@ -287,6 +287,9 @@ class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
+    shuffle_seed: int | None = None
+    """Shuffle the finite taskset before selecting examples; reuse this fixed selection every epoch."""
+
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
