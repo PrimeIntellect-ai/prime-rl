@@ -12,7 +12,7 @@ seq_len = 131072
 [run]
 # Explicit: without it the run name gets a random suffix and a relaunch with [resume] silently
 # starts over in a new directory.
-name = "dsv4-swe-131k-fp8-e8m0"
+name = "dsv4-swe-131k-fp8-ue8m0"
 
 # TODO: all six of these are temporary and hardcode a user path. Replace with $USER/$HOME (which
 # does expand, since they are emitted as shell `export` lines in the sbatch) or a proper default
@@ -34,9 +34,9 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/garrett/.flashinfer-cache"
 HF_HOME = "/home/garrett/.cache/huggingface"
 
 [slurm]
-job_name = "dsv4-swe-fp8-e8m0"
+job_name = "dsv4-swe-fp8-ue8m0"
 partition = "all"
-pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe-fp8-e8m0" -y || true'
+pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe-fp8-ue8m0" -y || true'
 
 [deployment]
 type = "multi_node"
@@ -50,8 +50,8 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 [monitors.wandb]
 entity = "primeintellect"
 project = "deepseek-v4-flash"
-name = "swe-scaleswe-131k-fp8-e8m0-adamw1e-6-bs64g8-8t8i"
-tags = ["swe", "scaleswe", "131k", "fp8", "e8m0", "fix-test"]
+name = "swe-scaleswe-131k-fp8-ue8m0-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp8", "e8m0", "ue8m0", "fix-test"]
 
 [weight_broadcast]
 type = "nccl"
@@ -130,17 +130,20 @@ name = "scaleswe"
 env.taskset.id = "scaleswe"
 env.agent.harness.id = "bash"
 env.agent.harness.compaction.summarize_at_tokens = 98304
-env.agent.runtime.labels = ["dsv4-swe-fp8-e8m0"]
+env.agent.runtime.labels = ["dsv4-swe-fp8-ue8m0"]
 
 [inference]
 # Mandatory with online FP8: DeepSeek V4's o_proj reads wo_a.weight directly and hands it to
 # DeepGEMM's grouped fp8_einsum, which needs the 3D layout only DeepGemmFp8BlockScaledMMKernel
 # builds, and that kernel is skipped unless VLLM_USE_DEEP_GEMM is on.
 use_deep_gemm = true
+# The bf16 release is a dequantized FP8 checkpoint whose weights sit on the e4m3 grid under power-of-two
+# block scales; quantizing with those scales round-trips them exactly instead of rotating the grid.
+fp8_ue8m0_weight_scales = true
 
 [inference.env_vars]
-# On: the FP8 mismatch bisection localized the glitch tokens to the small-M DeepGEMM MoE path
-# with fp32 scales, so this run tests power-of-two UE8M0 scales as the fix.
+# On: the FP8 mismatch bisection localized the glitch tokens to DeepGEMM's small-M grouped MoE GEMM
+# misreading fp32 activation scales in decode steps; UE8M0 activation scales avoid that path.
 VLLM_USE_DEEP_GEMM_E8M0 = "1"
 
 [inference.vllm]
