@@ -5,7 +5,7 @@ Plan: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse
 Ground rules: one 16-node training run at a time (job 961, the bf16 control, until killed); under 20 nodes total;
 checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-flash`; one commit per logical change.
 
-## Morning summary (last refreshed 10:36, job 991 at step 100 and running)
+## Morning summary (final, 11:25; no jobs running)
 
 1. **The FP8 mismatch had two causes, both now attributed.** (a) A kernel fault: DeepGEMM's grouped FP8 GEMM for routed
    experts misreads fp32 activation scales in its small-M path (decode steps and prefill tails under about 128
@@ -61,6 +61,8 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
+- 11:23 Job 991 step 120 at 0.0255 (level with the FP8 baseline), is_masked 0.0098: killed at step 130. Final
+  trace scan: zero glitch tokens across the run. No jobs running.
 - 10:34 Job 991 step 100: steps 81-100 mean 0.01187, doubling per 20-step window; is_masked up to 3.6e-3; reward healthy.
 - 09:45 Job 991 step 80: steps 61-80 mean 0.00656, accelerating; is_masked 2.5e-3; reward healthy. Left running.
 - 09:05 Job 991 step 60: steps 41-60 mean 0.00432; the 20-step means are linear in step count; reward 0.36-0.89.
@@ -318,6 +320,7 @@ at the same steps), `mismatch_kl/all/max` well below 48 (bf16 max about 3), no g
 | 41-60 | 0.00336-0.00508, mean 0.00432 | <= 12.9 (one spike at 42), else <= 7.8 | <= 6.4e-4 | 0.0226-0.0297 | 0.00063-0.00128 |
 | 61-80 | 0.00520-0.00866, mean 0.00656 | <= 26 (76), 16 (67), 14 (79) | <= 2.5e-3 | 0.0216-0.0313 | 0.00058-0.00143 |
 | 81-100 | 0.00887-0.01403, mean 0.01187 | <= 57 (95), 52 (87), 47 (100) | 1.8e-3 to 3.6e-3 | 0.0221-0.0338 | 0.00062-0.00165 |
+| 101-120 | 0.01252-0.02548, mean 0.01839 | <= 82 (108), 63 (101), 61 (109) | 2.7e-3 to 9.8e-3 | 0.0197-0.0302 | (control killed at 106) |
 
 The 20-step means 0.00220 / 0.00327 / 0.00432 are linear in the step count (+0.00107 per 20 steps, i.e. +0.000054
 per step, matching the +0.044e-3 per step from the per-token fit plus the lag term). That linearity is the pinned-policy
@@ -334,6 +337,18 @@ below 0.3 for five consecutive steps; otherwise the run stays up so the trajecto
 floor this run makes the growth mechanism plain: with the served FP8 policy pinned at step 0, the trainer-vs-inference
 KL tracks the trainer's distance from the initial checkpoint, which is why the old run also collapsed once the
 importance ratios became meaningless.
+
+**Killed job 991 at step 130 (11:23).** Step 120 read 0.0255, level with the FP8 baseline (predicted crossing at
+step 115, observed 118), with `is_masked/mean` 0.0098 at the kill threshold; reward was still 0.40-0.71. Continuing would
+only have replayed the old run's collapse on 16 nodes. No jobs remain.
+
+Final trace scan (240 traces, 2.15M trained tokens, steps 1-130; `glitch_check_run.py`): glitch tokens 0 at every step
+bucket; tokens with |gap| > 20: 0; |gap| > 5: 14 in total (0.7 per 100k; the old FP8 run had 118 per 100k). Per-bucket
+mismatch KL 0.0018 (steps 1-10) -> 0.0046 (51-60) -> 0.0109 (81-90) -> 0.0218 (111-120) -> 0.0292 (121-130), with the
+p90 |lr| rising 0.074 -> 0.304 and the IPO masked fraction 6e-6 -> 7.4e-3. Inside `<think>` KL is about twice the
+all-token value at every bucket; outside `<think>` it climbs 0.0008 -> 0.0038 by steps 71-80. The growth is diffuse
+across all tokens, not a tail effect: the kernel glitch is gone for good, and what remains is the served policy being
+frozen at step 0.
 
 Step 1 landed at 06:26 after a 14 min first step. The mean is 17x below the FP8 baseline and 2.8x above the bf16
 control; the max is 250x below the baseline. Monitor: `uv run python ~/tmp/mismatch_evidence/monitor_961.py <since>`
