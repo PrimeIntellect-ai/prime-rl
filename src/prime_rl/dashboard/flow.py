@@ -13,6 +13,8 @@ from typing import Any
 import orjson
 from verifiers.v1.flow.calls import Record
 from verifiers.v1.flow.events import CallEvent, EventRecord, LinkEvent, RunEvent, StageEvent, SteerEvent, event_adapter
+from verifiers.v1.flow.stats import Stats, summarize
+from verifiers.v1.flow.traces import Traces
 from verifiers.v1.flow.unit import UnitState
 
 TRANSITIONS = "transitions.jsonl"
@@ -130,9 +132,17 @@ def _payload(value: Any) -> Any:
     return value if len(text) <= PAYLOAD_CAP else text[:PAYLOAD_CAP] + " …"
 
 
+@lru_cache(maxsize=16)
+def _traces(run_dir: Path) -> Traces:
+    return Traces(run_dir)
+
+
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
     """Fold transitions, unit states and call records into the run/task/step graph the UI draws."""
     events = read_events(run_dir)
+    traces = _traces(run_dir)
+    traces.index()
+    accounting = summarize(events, traces.usage)
     trace_lines = trace_lines or {}
     row = run_dir.name
     states = unit_states(run_dir)
@@ -168,6 +178,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "reason": None,
                 "started_at": event.at,
                 "finished_at": None,
+                "tokens": accounting.executions[event.execution].tokens,
                 "order": order,
                 "group": group_id(unit),
                 "outcome": None,
@@ -334,6 +345,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "steers": steers[unit],
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
+                "stats": accounting.units.get(unit, Stats()).model_dump(),
             }
         )
     all_nodes = sorted(nodes, key=lambda n: (n["order"], n["id"]))
@@ -343,6 +355,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         "nodes": all_nodes,
         "edges": edges,
         "stats": {
+            **accounting.run.model_dump(),
             "units": len(units),
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),

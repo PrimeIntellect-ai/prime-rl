@@ -66,7 +66,7 @@ def root(tmp_path):
         {"type": "call", "execution": "second", "call": "lost", "status": "started"},
     ]
     # Identical timestamps deliberately cannot identify any stage or retry.
-    defaults = {"unit": "t", "stage": "evaluate", "at": "2026-01-01T00:00:00", "key": "solve", "kind": "agent"}
+    defaults = {"unit": "t", "stage": "evaluate", "at": "2026-01-01T00:00:00+00:00", "key": "solve", "kind": "agent"}
     rows = []
     for event in events:
         row = {**defaults, **event}
@@ -109,7 +109,9 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     with (run / "transitions.jsonl").open("a") as file:
         for kind, execution in [("stopped", "second"), ("started", "third"), ("cancelled", "third")]:
             file.write(json.dumps({"type": kind, "execution": execution, "unit": "t", "stage": "evaluate"}) + "\n")
-        file.write(json.dumps({"type": "run_finished", "reason": "quiescent", "at": "2026-01-01T00:00:00"}) + "\n")
+        file.write(
+            json.dumps({"type": "run_finished", "reason": "quiescent", "at": "2026-01-01T00:00:00+00:00"}) + "\n"
+        )
     result = project_flow(run)
     assert result["status"] == "quiescent"
     assert [n["status"] for n in result["nodes"]] == ["completed", "stopped", "cancelled"]

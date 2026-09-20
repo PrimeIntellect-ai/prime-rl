@@ -274,6 +274,7 @@ function currentStep() {
 function runStatus(step) {
   const meta = state.meta;
   if (meta.finished) return "completed";
+  if (meta.type === "flow") return meta.flow_status === "running" ? "running" : "stopped";
   if (meta.updated && Date.now() / 1000 - meta.updated < 180) return "running";
   if (step != null && meta.max_steps && step >= meta.max_steps) return "completed";
   return "stopped";
@@ -333,7 +334,7 @@ function renderOverview() {
   el.hidden = false;
   const step = currentStep();
   const status = runStatus(step);
-  const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
+  const durationEnd = status === "running" ? Date.now() / 1000 : meta.type === "flow" ? meta.ended : meta.updated;
   const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "n/a";
   const field = ([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`;
   // rollout dirs can run one step past max_steps (the final ship drains late
@@ -353,6 +354,7 @@ function renderOverview() {
       ? [
           ["traces", `<span class="val">${state.flow.data?.stats.traces ?? "–"}</span>`],
           ["routes", `<span class="val">${state.flow.data?.stats.routes ?? "–"}</span>`],
+          ["tokens", `<span class="val" title="Recorded provider usage, including extra usage; cached results counted once">${fmtCompact(state.flow.data?.stats.tokens)}</span>`],
         ]
       : meta.type === "eval"
         ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
@@ -369,7 +371,7 @@ function renderOverview() {
       ? [["cost", `<span class="val">${fmtCost(state.metrics.evalCost)}</span>`]]
       : []),
     ["duration", `<span class="val">${duration}</span>`],
-    ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
+    ...(meta.type === "flow" ? [] : [["created", `<span class="val">${fmtAgo(meta.created)}</span>`]]),
   ];
   el.innerHTML =
     `<div class="ov-top">` +
@@ -425,7 +427,11 @@ async function fetchFlow() {
   const run = state.run;
   const suffix = flow.etag ? `?etag=${encodeURIComponent(flow.etag)}` : "";
   const data = await api(`/api/runs/${encodeURIComponent(run)}/flow${suffix}`);
-  if (state.flow !== flow || state.run !== run || data.unchanged) return;
+  if (state.flow !== flow || state.run !== run) return;
+  if (data.unchanged) {
+    renderFlowStats();
+    return;
+  }
   flow.etag = data.etag;
   flow.data = data;
   renderOverview();
@@ -437,10 +443,26 @@ function flowNodeMap() {
   return new Map((state.flow.data?.nodes || []).map((node) => [node.id, node]));
 }
 
-function flowDuration(node) {
+function flowDuration(node, running = node.status === "running") {
   const start = Date.parse(node.started_at || "");
-  const finish = Date.parse(node.finished_at || "");
+  const finish = node.finished_at ? Date.parse(node.finished_at) : running && runStatus(currentStep()) === "running" ? Date.now() : NaN;
   return Number.isFinite(start) && Number.isFinite(finish) ? fmtDuration((finish - start) / 1000) : "";
+}
+
+function renderFlowStats() {
+  const { data, task, modal } = state.flow;
+  if (!data) return;
+  const unit = data.units.find((item) => item.id === task);
+  const active = unit && data.nodes.some((node) => node.group === unit.id && node.status === "running");
+  $("#flow-status").textContent = unit
+    ? `${unit.status} · ${flowDuration(unit.stats, active) || "–"} · ${fmtCompact(unit.stats.tokens)} tokens`
+    : `${data.stats.running ? `${data.stats.running} active` : data.status} · ${data.stats.routes} routes`;
+  const nodes = flowNodeMap();
+  for (const el of document.querySelectorAll("[data-flow-duration]")) {
+    const duration = flowDuration(nodes.get(el.dataset.flowDuration));
+    el.textContent = duration ? ` · ${duration}` : "";
+  }
+  if (modal) renderFlowStageFacts(nodes.get(modal.id));
 }
 
 function flowStatusClass(status) {
@@ -485,7 +507,6 @@ function renderFlow() {
     stat("units", data.stats.units), stat("steps", data.stats.steps), stat("active", data.stats.running),
     stat("held", data.stats.held), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
   ].join("");
-  $("#flow-status").textContent = `${data.stats.running ? `${data.stats.running} active` : data.status} · ${data.stats.routes} routes`;
 
   $("#flow-tasks").innerHTML =
     `<button class="flow-task ${flow.task === "all" ? "active" : ""}" data-flow-task="all">
@@ -496,6 +517,7 @@ function renderFlow() {
     </button>`).join("");
   renderFlowGraph();
   renderFlowInspector();
+  renderFlowStats();
 }
 
 function flowGraphLayout(data, selected, viewportWidth) {
@@ -591,7 +613,7 @@ function renderFlowGraph() {
     const outcome = outcomes.get(node.id);
     return `<button class="fg-node ${held || failed ? "bad" : flowStatusClass(node.status)} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.reason || node.path)}">
       ${outcome ? `<span class="fg-outcome ${held ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome)}</span>` : ""}
-      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}${duration ? ` · ${esc(duration)}` : ""}${calls}</small>
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}<span data-flow-duration="${esc(node.id)}">${duration ? ` · ${esc(duration)}` : ""}</span>${calls}</small>
       ${failed ? `<span class="fg-failures">${failed} failed call${failed === 1 ? "" : "s"}</span>` : ""}
     </button>`;
   }).join("");
@@ -620,18 +642,23 @@ function flowPayload(call) {
   return typeof value === "string" ? value : JSON.stringify(value, null, 1);
 }
 
+function renderFlowStageFacts(node) {
+  const facts = [
+    ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
+    ["tokens", fmtCompact(node.tokens)],
+    ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
+    ["unit after stage", node.unit_status], ["affected units", node.links.map((link) => `${link.unit} (${link.label})`).join(", ")],
+  ].filter(([, value]) => value);
+  $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");
+}
+
 function openFlowStage(nodeId) {
   const node = flowNodeMap().get(nodeId);
   if (!node) return;
   state.flow.modal = node;
   const calls = node.calls || [];
-  const facts = [
-    ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
-    ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
-    ["unit after stage", node.unit_status], ["affected units", node.links.map((link) => `${link.unit} (${link.label})`).join(", ")],
-  ].filter(([, value]) => value);
   $("#fm-title").textContent = `${node.name}${node.occurrence ? ` · ${node.occurrence + 1}` : ""}`;
-  $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");
+  renderFlowStageFacts(node);
   $("#fm-calls").innerHTML = calls.length
     ? calls.map((call, i) => `
       <div class="fm-call ${esc(call.kind)} ${esc(call.status)}" data-fm-call="${i}" title="${call.kind === "agent" ? "open the trace" : "show the result"}">
@@ -7440,6 +7467,7 @@ async function pollDashboard() {
     else if (state.tab === "flow" && state.flow.loaded) await fetchFlow();
     else if (state.tab === "traces" && state.traces.loaded) await refreshTraces();
     else if (state.tab === "report" && state.report.loaded) await refreshReport();
+    if (state.meta?.type === "flow" && state.tab !== "flow") await fetchFlow();
     await runsRefresh;
   } catch (err) {
     console.warn("poll failed", err);

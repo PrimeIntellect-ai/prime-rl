@@ -25,6 +25,7 @@ from pathlib import Path
 
 import orjson
 from verifiers.v1.flow.events import StageEvent
+from verifiers.v1.flow.stats import Stats, summarize
 
 from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_events, run_status
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -301,11 +302,10 @@ def eval_total_episodes(config: dict) -> int | None:
     return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
 
 
-def flow_run_state(run_dir: Path) -> tuple[float | None, bool]:
-    """When execution started and whether the scheduler reported a settled stop."""
+def flow_run_state(run_dir: Path) -> tuple[Stats, str]:
+    """Recorded execution boundaries and current scheduler status."""
     events = read_events(run_dir)
-    started = datetime.fromisoformat(events[0].at).timestamp() if events else None
-    return started, run_status(run_dir, events) in ("quiescent", "draining")
+    return summarize(events, {}).run, run_status(run_dir, events)
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -328,9 +328,12 @@ def run_meta(run_dir: Path) -> dict:
                 started = orjson.loads(f.readline()).get("time")
             except orjson.JSONDecodeError:
                 started = None
-    flow_finished = False
+    flow_status = None
+    ended = None
     if run_type == "flow":
-        started, flow_finished = flow_run_state(run_dir)
+        timing, flow_status = flow_run_state(run_dir)
+        started = datetime.fromisoformat(timing.started_at).timestamp() if timing.started_at else None
+        ended = datetime.fromisoformat(timing.finished_at).timestamp() if timing.finished_at else None
         updated = (run_dir / "transitions.jsonl").stat().st_mtime
     # Liveness reads every artifact the processes touch: an eval ships its metrics at
     # epoch end and its first episode can take minutes, but its log ticks every few
@@ -353,7 +356,7 @@ def run_meta(run_dir: Path) -> dict:
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
     if run_type == "flow":
-        finished = flow_finished
+        finished = flow_status in ("quiescent", "draining")
     else:
         finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
 
@@ -379,6 +382,8 @@ def run_meta(run_dir: Path) -> dict:
         "has_metrics": metrics_path.exists(),
         "last_step": max(steps, default=None),
         "started": started,
+        "ended": ended,
+        "flow_status": flow_status,
         "updated": updated,
         "created": configs.stat().st_mtime if configs.is_dir() else run_dir.stat().st_mtime,
         "mtime": run_dir.stat().st_mtime,
