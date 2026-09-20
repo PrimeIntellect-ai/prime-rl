@@ -1,20 +1,12 @@
 {
   "ipo-seed42": [
     {
-      "run": "outputs/score-centering/ipo-1plus1-api4-seed42-r3",
-      "through_step": 50
-    },
-    {
-      "run": "outputs/score-centering/ipo-1plus1-api4-seed42-resume50-r3"
+      "run": "outputs/score-centering/ipo-eps03-seed42-compact-v1"
     }
   ],
-  "score-centering-seed42": [
+  "ipo-score-centering-seed42": [
     {
-      "run": "outputs/score-centering/sc-1plus1-api4-seed42-r2",
-      "through_step": 50
-    },
-    {
-      "run": "outputs/score-centering/sc-1plus1-api4-seed42-resume50-r3"
+      "run": "outputs/score-centering/ipo-sc-eps03-seed42-compact-v1"
     }
   ]
 }

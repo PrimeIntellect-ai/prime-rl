@@ -1,0 +1,8 @@
+[run]
+name = "score-centering-seed42"
+
+[slurm]
+job_name = "sc-centered"
+
+[trainer.loss]
+type = "score_centering"

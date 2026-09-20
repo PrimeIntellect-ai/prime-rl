@@ -2,7 +2,14 @@
 
 Status: stopped at user request on2026-09-19 at21:31UTC. Fifty clean updates per arm remain; no robustness separation established.
 
-## Main comparison
+## Current comparison
+
+The user selected IPO versus IPO plus score centering on 2026-09-20.
+No optimizer updates exist for that fresh comparison.
+The observations below belong to IPO versus the standalone score-centering estimator.
+They cannot establish the effect of adding centering to IPO.
+
+## Historical standalone-estimator comparison
 
 - Model: Qwen3-30B-A3B-Instruct-2507, pinned snapshot in `model.json`.
 - Source: SC `9a282107e`, IPO `8e2282999`; main `a1822f7a0` is merged. IPO adds dependency-sync suppression and records only.
@@ -101,7 +108,7 @@ Submitted paired step-50 continuations as IPO908 and centered909 at13:10 UTC.
 Full checkpoint restore and next optimizer updates remain to be verified.
 Only IPO908 received nodes; centered909 remained pending for resources.
 Stopped both before episode collection to preserve concurrent execution.
-The replacement `resume-pair.sbatch` reserves four nodes atomically.
+The replacement `archive/standalone-resume-pair.sbatch` reserves four nodes atomically.
 Each arm runs on its own two-node subset, with explicit scoping for cleanup and startup.
 A stub launch verified both disjoint scopes. Scientific settings stay fixed.
 These infrastructure failures do not meet the experiment's policy-collapse criterion.
@@ -109,8 +116,8 @@ Resume both arms from their preserved step-50 states after runtime recovery.
 Use new run directories to preserve the affected records and repeat the step-50 online evaluation.
 Keep the same one-trainer-plus-one-inference allocation per arm.
 
-`lineage.json` joins each parent through update 50 to its planned continuation.
-Run `analyze.py --lineage experiments/score-centering/lineage.json --output <directory>` for joined curves.
+`archive/standalone-lineage.json` joins each parent through update 50 to its planned continuation.
+Run `analyze.py --lineage experiments/score-centering/archive/standalone-lineage.json --output <directory>` for joined curves.
 Parent records stop at the checkpoint update's final trainer metric timestamp.
 Later evaluation records and discarded updates are excluded from those curves.
 The continuation adds received-token and active-run-time budgets to the parent boundary.

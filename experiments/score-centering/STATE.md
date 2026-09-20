@@ -6,6 +6,19 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ## Current state
 
+- The user selected IPO versus IPO plus score centering on 2026-09-20.
+- Both arms use IPO eps0.3; only the score-centering switch differs in the objective.
+- Prepare fresh base-weight runs `ipo-eps03-seed42-compact-v1` and `ipo-sc-eps03-seed42-compact-v1`.
+- Do not resume the previous standalone treatment or mix its 50 updates into this comparison.
+- `launch-pair.sbatch` reserves four nodes and retains CPU checks and the stall guard.
+- Prior lineage and restart scripts are preserved under `archive/`.
+- Both full-config dry runs passed. Resolved trainer, orchestrator, and inference settings match after normalizing run paths, except `trainer.loss.score_centering`.
+- Both resolved trainers have `resume=None`, IPO eps0.3, adv_tau1.0, and kl_tau0.001.
+- Weighted-score gradients match an independent dense reference, including advantages, loss masks, and loss weights.
+- No launch has been submitted. Public push remains blocked pending explicit approval.
+
+### Previous standalone-estimator comparison
+
 - USER STOP at 2026-09-19T21:32:51.919040+00:00: cancel jobs and summarize. Do not restart without a new user instruction.
 - Job938 cancelled after both orchestrators completed forced cleanup at21:31:25UTC. Both exact run-label VM inventories are empty.
 - Both arms recorded zero new optimizer updates in the corrected restart. The comparison remains at50 clean updates per arm.
@@ -60,7 +73,7 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 ### Implementation and prior attempts
 
-- Primary treatment: standalone score centering, matching the official PyTorch formula.
+- Historical treatment: standalone score centering, matching the official PyTorch formula.
 - Optional IPO-plus-centering ablation remains implemented with its nonconstant tail mask.
 - Smoke2 used the IPO ablation; subsequent pairs use centered.toml (standalone).
 - Implemented top-k evidence in renderer/verifiers submodules and PRL batch transport.

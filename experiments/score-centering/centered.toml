@@ -1,8 +1,10 @@
 [run]
-name = "score-centering-seed42"
+name = "ipo-sc-eps03-seed42"
 
 [slurm]
 job_name = "sc-centered"
 
 [trainer.loss]
-type = "score_centering"
+type = "ipo"
+score_centering = true
+eps = 0.3

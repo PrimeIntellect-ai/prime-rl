@@ -5,8 +5,9 @@ Read `STATE.md` for live job IDs and recovery steps.
 
 - `common.toml`: shared model, tasks, trainer, quantization, and resource settings.
 - `baseline.toml`: current-main IPO with eps 0.3.
-- `centered.toml`: the paper's standalone score-centering loss.
-- `ipo-centered.toml`: optional weighted IPO-centering ablation.
+- `centered.toml`: the same IPO with score centering enabled.
+- `ipo-centered.toml`: equivalent explicit IPO-plus-centering overlay.
+- `standalone-centered.toml`: archived treatment from the earlier standalone-estimator comparison.
 - `eval-preflight.toml`: bounded Prime VM checks on Terminal Lego and Terminal Bench 2.
 - `smoke.toml`: three updates with a smaller batch and evaluation sample.
 - `kv-fp8.toml`: archived FP8-cache diagnostic override; the main config now uses the same cache precision.
@@ -25,16 +26,23 @@ Validate VM provisioning, tool execution, and scoring first:
 uv run eval @ experiments/score-centering/eval-preflight.toml --run.name runtime-preflight --no-dashboard
 ```
 
-Launch both arms together, using distinct fresh run names:
+Prepare fresh launch scripts for both arms:
 
 ```bash
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-1plus1-api4-seed42-r2 --no-dashboard &
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name sc-1plus1-api4-seed42-r2 --no-dashboard &
-wait
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-eps03-seed42-compact-v1 --no-dashboard --dry-run
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name ipo-sc-eps03-seed42-compact-v1 --no-dashboard --dry-run
 ```
 
-Append `@ experiments/score-centering/smoke.toml` before the CLI overrides for smoke runs.
-Each launch allocates two nodes (one trainer and one inference node). Stop or finish previous experiment allocations first.
+After the live preflight, schedule both arms in one four-node allocation:
+
+```bash
+sbatch experiments/score-centering/launch-pair.sbatch
+```
+
+The launcher gives each arm one trainer node and one inference node, with 116 CPUs per node.
+It retains the automatic stall guard. Both arms start from base weights with no resume.
+Preserve the earlier standalone-estimator results separately; their launch script and lineage are under `archive/`.
+For a three-update smoke check, add `@ experiments/score-centering/smoke.toml` before the CLI overrides and use separate names.
 Keep at most eight experiment nodes allocated across all checks and runs.
 
 The renderer and verifiers changes are archived in `patches/` against their pinned submodules.
@@ -49,7 +57,7 @@ The dependency changes are archived as patches; their pinned submodule commits r
 The model snapshot path in `common.toml` points to the revision recorded in `model.json`.
 
 ```bash
-uv run python experiments/score-centering/analyze.py outputs/score-centering/ipo-1plus1-api4-seed42-r2 outputs/score-centering/sc-1plus1-api4-seed42-r2 --output experiments/score-centering/results/main
+uv run python experiments/score-centering/analyze.py outputs/score-centering/ipo-eps03-seed42-compact-v1 outputs/score-centering/ipo-sc-eps03-seed42-compact-v1 --output experiments/score-centering/results/ipo-versus-ipo-sc
 ```
 
 The exporter also records numerical warnings, including nonfinite values dropped by metric writers.
@@ -57,7 +65,7 @@ Review these warnings before classifying numerical stability.
 Export trace-level results for task uncertainty and failure classification:
 
 ```bash
-uv run python experiments/score-centering/eval_results.py outputs/score-centering/ipo-1plus1-api4-seed42-r2 outputs/score-centering/sc-1plus1-api4-seed42-r2 --output experiments/score-centering/results/main
+uv run python experiments/score-centering/eval_results.py outputs/score-centering/ipo-eps03-seed42-compact-v1 outputs/score-centering/ipo-sc-eps03-seed42-compact-v1 --output experiments/score-centering/results/ipo-versus-ipo-sc
 ```
 
 Valid-task reward estimates exclude failed episodes. Report error rates and missing-reward bounds alongside them.
@@ -71,7 +79,7 @@ The CSV also records server generation totals, including evaluation tokens, from
 After both main runs finish, create the score-independent Lego audit manifest:
 
 ```bash
-uv run python experiments/score-centering/select_holdout.py outputs/score-centering/ipo-1plus1-api4-seed42-r2 outputs/score-centering/sc-1plus1-api4-seed42-r2 --output experiments/score-centering/results/main/heldout
+uv run python experiments/score-centering/select_holdout.py outputs/score-centering/ipo-eps03-seed42-compact-v1 outputs/score-centering/ipo-sc-eps03-seed42-compact-v1 --output experiments/score-centering/results/ipo-versus-ipo-sc/heldout
 ```
 
 The selector records the full dataset order and excludes every task in either dispatch log.

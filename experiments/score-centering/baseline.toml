@@ -5,5 +5,6 @@ name = "ipo-eps03-seed42"
 job_name = "sc-baseline"
 
 [trainer.loss]
+type = "ipo"
 score_centering = false
 eps = 0.3

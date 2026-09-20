@@ -3,7 +3,7 @@
 ## Question
 
 Does score centering improve robustness to quantized inference in current prime-rl?
-Compare current-main IPO (`eps=0.3`) against the paper's standalone score-centering loss.
+Compare current-main IPO (`eps=0.3`) against the same IPO loss with score centering enabled.
 Treat baseline collapse as a hypothesis, not a required outcome.
 
 ## Sources and revisions
@@ -24,27 +24,31 @@ It approximates the unlogged tail as proportional to the trainer distribution.
 We log 128 head tokens without renormalizing their probabilities.
 The sampled token's logprob is recorded separately.
 
-The primary treatment uses the paper's unweighted score-centering estimator.
-Its policy loss is `-advantage * (sampled_logp - correction)`.
-The correction has detached head coefficients `q_head - rho * p_head`, where
-`rho = max(q_tail, 1e-6) / max(p_tail, 1e-6)`.
-Both arms retain the same squared-log-ratio regularizer (coefficient 0.001).
-Thus the primary contrast tests the complete published estimator against current IPO.
-It changes importance weighting and masking as well as score centering.
-It cannot attribute a difference to centering alone without an uncentered PG ablation.
+The primary contrast changes only `trainer.loss.score_centering`: false versus true.
+Both arms use `type="ipo"`, `eps=0.3`, `adv_tau=1.0`, and `kl_tau=0.001`.
+The sampled importance ratio, absolute-probability mask, and squared-log-ratio regularizer remain identical.
+The treatment adds the expected masked, importance-weighted score correction.
 
-An optional IPO-plus-centering ablation is implemented in `ipo-centered.toml`.
 The reference code rejects absolute-probability masks because its head-only shortcut
 assumes constant importance weights across the modeled tail.
-Our extension evaluates IPO's mask across the full modeled vocabulary.
-Its correction coefficients are `-p * 1[abs(p-qhat) > eps]`, with stopped gradients.
+Our IPO extension evaluates the mask across the full modeled vocabulary.
+We reconstruct `qhat` from the logged head and a tail proportional to trainer probabilities.
+With `w = (p/qhat) * 1[abs(p-qhat) <= eps]`, the correction estimates `E_qhat[w * score]`.
+Its detached coefficients are `-p * 1[abs(p-qhat) > eps]`.
 Subtracting `p` everywhere preserves the gradient because its expected score is zero.
-The primary treatment decision was fixed before observing any training updates.
-The stopped smoke2 pair checked IPO-plus-centering plumbing only; it completed no updates.
+The treatment adds `advantage * correction` to the original IPO loss.
+This is a weighted extension of score centering to IPO, not the paper's standalone unweighted estimator.
 
-Both arms collect the same head metadata and use the same chunked LM head.
-The baseline's objective is unchanged. The treatment uses the published score estimator.
+Without rejected tokens, IPO's importance-weighted expected score is already zero and this correction vanishes.
+Track the mask fraction and correction magnitude before expecting an observable difference.
+Both arms collect the same head metadata and use the same chunked LM head and compact transport.
 No trainer optimization or reduction precision settings change.
+
+The user selected this contrast on 2026-09-20, after reviewing the standalone-estimator experiment.
+Start both arms from the same base weights in fresh run directories.
+Do not resume either arm from the previous step-50 checkpoints or pool those updates with this comparison.
+Archive the old standalone overlay as `standalone-centered.toml` and its lineage under `archive/`.
+`centered.toml` and `ipo-centered.toml` select the same IPO-plus-centering treatment.
 
 ## Resource and configuration limits
 
@@ -103,6 +107,9 @@ The paper's most severe experiments use a different engine, optimizer, and short
 This experiment tests transfer to production-style agentic RL rather than reproducing those curves exactly.
 
 ## Supplemental unseen-task audit
+
+Apply the audit below separately to the fresh IPO-versus-IPO-plus-centering pair.
+The observations in this section describe the earlier standalone-estimator experiment.
 
 Decision recorded at 2026-09-19 06:55 UTC, after the initial TB2 evaluation.
 IPO solved 1/51 scored tasks, with 13/64 failed episodes.
