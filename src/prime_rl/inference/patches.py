@@ -276,7 +276,7 @@ def monkey_patch_fp8_ue8m0_weight_scales():
     from vllm.logger import init_logger
     from vllm.model_executor.layers.quantization.online import fp8
 
-    logger = init_logger(__name__)
+    logger = init_logger("vllm.prime_rl.fp8")
     original_cast = fp8.per_block_cast_to_fp8
     if getattr(original_cast, "_prime_forces_ue8m0", False):
         return
