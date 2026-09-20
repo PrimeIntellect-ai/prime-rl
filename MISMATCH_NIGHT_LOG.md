@@ -37,6 +37,24 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
+## Attribution (as of 05:55)
+
+| cause | evidence | magnitude | fix | status |
+|---|---|---|---|---|
+| DeepGEMM grouped FP8 MoE GEMM misreads fp32 activation scales at small M (decode steps, prefill tails < ~128 tokens) | rounds 2-5: glitch reproduces only in decode / short tails on FP8 servers; routed-experts-only FP8 reproduces; attention-only and E8M0=1 do not; power-of-two weight scales alone do not remove it | 79% of the FP8 run's step-1 mismatch KL (glitch tokens), 25% late; `mismatch_kl/all/max` 48-3851; the tokens are IPO-masked so they add no gradient but pollute trajectories | `VLLM_USE_DEEP_GEMM_E8M0=1` | validated on 30 positions; under training in job 991 |
+| Online FP8 weight rounding with `amax / 448` scales rotates the checkpoint's power-of-two e4m3 grid | F27/F28; round 5: S3/S10 halve p90 log-ratio vs fp32 scales | bulk prefill KL 5.6e-3 -> 3.5e-3, IPO masked 0.0002 -> 0.0000 | `inference.fp8_ue8m0_weight_scales = true` (new field) | in job 991 |
+| Residual FP8 activation quantization (UE8M0 per-128 groups) | S10 vs bf16 reference: KL 3.5e-3, p90 0.086 | about 4-6x the bf16 floor | none tonight; bf16 serving if unacceptable | measured |
+| Weight drift off the e4m3 grid (handoff hypothesis 1) | B2: 87-93% of FP8-scope weights bit-identical at step 40, rest one bf16 ULP; > 1000 coherent steps to move a quantum | cannot explain growth at step 150 | none needed | ruled out |
+| o_proj UE8M0 activation quant (hypothesis 3) | S4 reproduces the glitch at production strength | not the glitch; bulk effect not separately measured | none | exonerated for the glitch |
+| Lightning Indexer top-k flips as amplifier (hypotheses 4, 8) | bf16 self-noise above 2048 tokens reaches several nats on single tokens; bf16 control drifted 0.0006 -> 0.0010 over 106 steps with no acceleration | a slow floor-level drift at most; FP8 growth mechanism still unassigned | fp32 RoPE (PR 3584) would reduce indexer input divergence | open |
+| Trainer bf16 logits before fp32 log-softmax (hypothesis 7) | code: `lm_head.py:177`; about 0.1 nat at logit 30 | part of the 5e-4 floor, cannot make a 44-nat gap | `torch.mm(..., out_dtype=float32)` | not run (node budget) |
+| Trainer bf16 RoPE tables (hypothesis 2) | PR 3584 applies cleanly | floor contributor | cherry-pick PR 3584 | not run (node budget) |
+
+Open question: what made the FP8 run's mismatch grow 5x after step 150 and collapse at 240. Grid drift is out. The
+glitch rate per token fell over the run (35.7 -> 19.1 per 100k), so the growth was in the diffuse bulk (tail-excluded
+KL 0.005 -> 0.056), i.e. the policy drifted into states where the misread-scale kernel error is larger, or another
+mechanism. Job 991 with the fix is the test: if its mismatch stays flat past step 150 the growth was FP8-kernel-driven.
+
 ## Track A: glitch-token and module bisection
 
 Infrastructure: two exclusive one-node `salloc` holds (jobs 978 slot 0 node 004, 979 slot 1 node 007, 8 h, expire
