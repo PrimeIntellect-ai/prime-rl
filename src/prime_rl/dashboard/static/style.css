@@ -1759,8 +1759,10 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 .fg-node.bad { border-color: var(--negative); }
 .fg-node.live { border-color: var(--infra); animation: flow-pulse 1.2s steps(2) infinite; }
 .fg-node.stale { border-color: var(--infra); }
+.fg-node.interrupted { border: 1px dashed var(--grey-4); }
 .fg-node > span, .fg-node > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fg-node .fg-outcome { position: absolute; top: -10px; right: 6px; max-width: 125px; padding: 1px 5px; background: var(--grey-1); border: 1px solid var(--accent); color: var(--accent); font-size: 10px; }
+.fg-node .fg-outcome.interrupted { border-color: var(--grey-4); color: var(--grey-5); }
 .fg-outcome.bad { border-color: var(--negative); color: var(--negative); }
 .fg-outcome.active { background: var(--grey-3); }
 .fg-node .fg-failures { position: absolute; bottom: -7px; right: 6px; padding: 0 4px; background: var(--grey-1); color: var(--negative); font-size: 9px; }
