@@ -15,6 +15,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 04:12 Round 1 done: glitch not reproduced in prefill on the FP8 server. Round 2 (decode path) started.
 - 04:27 Round 2 done: glitch REPRODUCED on the FP8 server's decode path, deterministic argmax, M = 1. Round 3 started.
 - 04:30 Glitch position-structure analysis done (below). Control at step 92, steps 81-92 mean 0.00109.
+- 04:58 Round 3 done: ffn FP8 required, o_proj exonerated. Round 4 (S7 routed-only, S9 E8M0=1) started.
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -32,8 +33,10 @@ about 11:26). Scripts under `~/tmp/fp8diag/bisect/`: `start_server.sh`, `stop_se
 | S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52, stopped 04:28 |
 | S2 | bf16 + fake-quant weights | `PRIME_DIAG_FAKE_QUANT_WEIGHTS=1 PRIME_DIAG_FAKE_QUANT_IGNORE=.*indexer.*` | queued |
 | S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | queued |
-| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | starting 04:28, slot 0 |
-| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | starting 04:28, slot 1 |
+| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | up 04:44, reproduces 17/30, stopped 05:00 |
+| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | up 04:39, clean 0/30, stopped 05:00 |
+| S7 | routed-experts-only FP8 | `servers/s7-routed-only.toml` (ignore `.*attn.*`, `.*shared_experts.*`) | starting 05:00, slot 0 |
+| S9 | S1 + UE8M0 scales | `VLLM_USE_DEEP_GEMM_E8M0=1` | starting 05:00, slot 1 |
 | S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | queued |
 
 Round 1 (S0 vs S1, 50 items, 822k tokens): running since 04:05.
@@ -79,6 +82,30 @@ g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real d
 - Round 3 (04:28): S0 and S1 stopped; slot 0 -> S4 (FP8 + `PRIME_DIAG_BF16_OPROJ=1`), slot 1 -> S5 (attention-only
   FP8). Decode probe on both. Meanwhile reading vLLM for the decode/prefill threshold and FP8-only decode kernels.
 
+### Round 3 result (04:58): the MoE (ffn) FP8 path is required; o_proj is exonerated
+
+Report `~/tmp/fp8diag/bisect/results/r3.report.txt`. Decode probe counts (d2: top-20 / lp > -3 / argmax = glitch):
+
+| server | d2 | p1 (small tail prefill) |
+|---|---|---|
+| S1 FP8 production | 20 / 18 / 17 | 8 |
+| S4 FP8 + bf16 o_proj | 19 / 17 / 15 | 10 |
+| S5 attention-only FP8 (ffn bf16) | 0 / 0 / 0 | 0 |
+
+- S4 reproduces as strongly as production, so the o_proj path (`fused_inv_rope_fp8_quant` UE8M0 activation quant
+  plus the `wo_a` FP8 einsum, hypothesis 3) is not the mechanism.
+- S5 is clean at every position with the ordinary `.` / `,` argmax, so attention FP8 does not suffice and the ffn
+  FP8 path (DeepGEMM `m_grouped_fp8_gemm_nt_contiguous` for routed experts and/or plain `fp8_gemm_nt` for the shared
+  experts) is required.
+- Code reading: vLLM classifies decode as query_len <= 1 for attention, compressor and indexer, so the 111-vs-135
+  boundary is not an attention decode/prefill switch. No Python-level M branch exists in the FP8 linear or MoE
+  path; M-dependent kernel selection lives inside DeepGEMM's compiled library (BLOCK_M 64 vs 128, 1D1D vs 1D2D),
+  whose default contiguous-layout alignment is 128. The kernels exclusive to FP8 servers are the FP8 GEMMs and
+  their activation-quant kernels; none is decode-exclusive. In vLLM 0.29.0 the DSv4 indexer has no
+  `fp8_paged_mqa_logits` path; top-k comes from the compressor path.
+- Round 4 (05:00): slot 0 -> S7 routed-experts-only FP8; slot 1 -> S9 production FP8 with `VLLM_USE_DEEP_GEMM_E8M0=1`
+  (power-of-two scales). Hypothesis: the small-M DeepGEMM kernel misreads fp32 scales, which UE8M0 avoids.
+
 ### Glitch position structure in production traces (04:30; `~/tmp/mismatch_evidence/glitch_position_structure.md`)
 
 330 occurrences in 83 of 128 traces versus 200k ordinary sampled tokens.
@@ -96,7 +123,8 @@ g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real d
 - Production serving from the logs: vLLM 0.29.0, `FlashInferFp8DeepGEMMDynamicBlockScaledKernel` for dense FP8
   linears, DeepGEMM FP8 MoE, FP8 indexer cache, DSA indexer decode path `use_flattening=False supports_varlen=False
   next_n=1`. Warning `DeepseekV4ScalingRotaryEmbedding: Failed to load weights` on every weight reload (3531 times
-  on node 0); to check whether that is benign.
+  on node 0). Benign: `reload/layerwise.py:268` warns when a layer has buffers (the cos/sin cache) but the state
+  dict carries no weights for it, then restores the original kernel tensors.
 
 ## Track B: bf16 control (job 961) and weight drift
 
