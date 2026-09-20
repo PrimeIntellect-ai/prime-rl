@@ -37,7 +37,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 06:26 Job 991 step 1: mismatch KL 0.0015, max 1.48 (FP8 baseline 0.025 / 370; bf16 0.00054 / 0.77).
 - 06:58 Job 991 steps 1-7 mean 0.00176, max <= 3.4; trace scan: zero glitch tokens in 585k trained tokens.
 - 07:34 Job 991 step 20: 0.00315, climbing monotonically since step 12. Growth analysis started.
-- 08:05 Growth analysis done: lag plus an FP8-specific drift explained by sub-quantum weight updates never reaching
+- 07:48 Growth analysis done: lag plus an FP8-specific drift explained by sub-quantum weight updates never reaching
   the served FP8 weights (the served policy is pinned at step 0).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
@@ -57,7 +57,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 | Trainer bf16 logits before fp32 log-softmax (hypothesis 7) | code: `lm_head.py:177`; about 0.1 nat at logit 30 | part of the 5e-4 floor, cannot make a 44-nat gap | `torch.mm(..., out_dtype=float32)` | not run (node budget) |
 | Trainer bf16 RoPE tables (hypothesis 2) | PR 3584 applies cleanly | floor contributor | cherry-pick PR 3584 | not run (node budget) |
 
-Growth (resolved 08:05, see the job 991 growth analysis under Track C): what made the FP8 run's mismatch grow 5x after step 150 and collapse at 240. Grid drift is out. The
+Growth (resolved 07:48, see the job 991 growth analysis under Track C): what made the FP8 run's mismatch grow 5x after step 150 and collapse at 240. Grid drift is out. The
 glitch rate per token fell over the run (35.7 -> 19.1 per 100k), so the growth was in the diffuse bulk (tail-excluded
 KL 0.005 -> 0.056), i.e. the policy drifted into states where the misread-scale kernel error is larger, or another
 mechanism. Job 991 with the fix is the test: if its mismatch stays flat past step 150 the growth was FP8-kernel-driven.
@@ -307,7 +307,7 @@ sensitivity to small weight changes, or an episode-mix effect as longer episodes
 This is the late-growth question from the handoff showing up early without the glitch floor. Analysis of KL versus
 lag, episode length and think fraction on this run's traces started 07:36.
 
-### Growth analysis on job 991 (08:05; `~/tmp/mismatch_evidence/growth_analysis.md`)
+### Growth analysis on job 991 (07:48; `~/tmp/mismatch_evidence/growth_analysis.md`)
 
 Per-token lag from the `watcher/policy_version` gauge matched to each call's start time (lag = ship step - 1 -
 version). FP8 fix-test: steps 1-22, 11.2M trained tokens; bf16 control: steps 1-30, 15.2M tokens. Token-weighted
