@@ -616,6 +616,16 @@ Command: `uv run rl @ configs/advanced/deepseek-v4-flash/swe-bf16.toml`. Attempt
 FP8 run's set, so the DeepSeek checkpoint should be page-cache warm on most of them.
 Logs: `/home/garrett/prl_output_dir/dsv4-swe-131k-bf16/logs/attempt_4/`.
 
+#### Attempt 4 progress
+
+- 00:14:25 replica 0 `Loading weights took 417.75 seconds` (bf16, no quantization pass; nodes partly warm).
+  A `Using default MoE config` warning follows: no tuned fused-MoE kernel config for the bf16 shapes, so
+  throughput is sub-optimal but correct.
+- 00:16:31 **KV pool: `GPU KV cache size: 593,322 tokens, Maximum concurrency for 131,072 tokens per request:
+  4.53x`**, 48% of the FP8 run's 1.24M at the same 0.75 utilization. Above the 1.5x relaunch threshold; leaving
+  `gpu_memory_utilization` alone. Inflight will cap near 8 x 4.5 = 36 full-length episodes before the
+  concurrency controller adapts to the real episode lengths.
+
 ## Open questions for Garrett (bf16 control)
 
 - KV cache remains FP8 (`fp8_ds_mla`), per your call. A fully bf16 serving path exists via the FlashInfer DSv4
