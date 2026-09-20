@@ -11,9 +11,10 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
   exist (job runs off its pre-edit resolved config; `keep_last = 2`). Both to be deleted when 961 is killed.
 - 03:53 S0 (bf16, node 004, job 978) and S1 (FP8 production, node 007, job 979) healthy; scoring set built
   (50 items, 30 glitch prefixes from steps 1-10, 20 bulk sequences 3k-69k tokens, all glitch joins verified).
-- 04:05 B2 done (below). Round 1 scoring S0 vs S1 started.
-- 04:35 Round 1 done: glitch not reproduced in prefill on the FP8 server. Round 2 (decode path) started.
-- 05:05 Round 2 done: glitch REPRODUCED on the FP8 server's decode path, deterministic argmax, M = 1. Round 3 started.
+- 03:57 B2 done (below). Round 1 scoring S0 vs S1 started.
+- 04:12 Round 1 done: glitch not reproduced in prefill on the FP8 server. Round 2 (decode path) started.
+- 04:27 Round 2 done: glitch REPRODUCED on the FP8 server's decode path, deterministic argmax, M = 1. Round 3 started.
+- 04:30 Glitch position-structure analysis done (below). Control at step 92, steps 81-92 mean 0.00109.
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -27,17 +28,17 @@ about 11:26). Scripts under `~/tmp/fp8diag/bisect/`: `start_server.sh`, `stop_se
 
 | id | serving | env / ignore | status |
 |---|---|---|---|
-| S0 | bf16 | | up 03:53, stopped 05:10 (prefill results saved in r1.bf16.json) |
-| S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52, stopped 05:10 |
+| S0 | bf16 | | up 03:53, stopped 04:28 (prefill results saved in r1.bf16.json) |
+| S1 | FP8 production | ignore `.*indexer.*`, E8M0=0, deep_gemm | up 03:52, stopped 04:28 |
 | S2 | bf16 + fake-quant weights | `PRIME_DIAG_FAKE_QUANT_WEIGHTS=1 PRIME_DIAG_FAKE_QUANT_IGNORE=.*indexer.*` | queued |
 | S3 | S1 + power-of-two weight scales | `PRIME_DIAG_UE8M0_WEIGHTS=1` | queued |
-| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | starting 05:10, slot 0 |
-| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | starting 05:10, slot 1 |
+| S4 | S1 + bf16 o_proj | `PRIME_DIAG_BF16_OPROJ=1` | starting 04:28, slot 0 |
+| S5 | attention-only FP8 | `servers/s5-attn-only.toml` (ignore `.*ffn.*`) | starting 04:28, slot 1 |
 | S6 | ffn-only FP8 | `servers/s6-ffn-only.toml` (ignore `.*attn.*`) | queued |
 
 Round 1 (S0 vs S1, 50 items, 822k tokens): running since 04:05.
 
-### Round 1 result (04:35): static FP8 prefill does NOT produce the glitch
+### Round 1 result (04:12): static FP8 prefill does NOT produce the glitch
 
 Report `~/tmp/fp8diag/bisect/results/r1.report.txt`. 50/50 items scored on both servers, one request in flight.
 
@@ -57,7 +58,7 @@ Report `~/tmp/fp8diag/bisect/results/r1.report.txt`. 50/50 items scored on both 
   decode path (`fp8_paged_mqa_logits` plus decode top-k selectors), FlashMLA sparse decode, or batch composition.
   Round 2 tests decode at the glitch position, single request and under a 40-request decode load, on S0 and S1.
 
-### Round 2 result (05:05): the glitch reproduces on S1 through the DECODE path, single request
+### Round 2 result (04:27): the glitch reproduces on S1 through the DECODE path, single request
 
 Report `~/tmp/fp8diag/bisect/results/r2.report.txt`, script `decode_probe.py`. Probe: prompt = path tokens up to
 g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real decode step (M = 1).
@@ -75,8 +76,27 @@ g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real d
   prefill chunk, S1 reproduces 8/30, all with tails of 19-111 tokens; none of the 17 items with tails >= 135
   tokens reproduced. The trigger is a token-count branch somewhere near 128, not F4's M < 32.
 - S0 decode vs prefill self-consistency: argmax |dlp| p50 0.02 / p90 0.07 / max 0.13.
-- Round 3 (05:10): S0 and S1 stopped; slot 0 -> S4 (FP8 + `PRIME_DIAG_BF16_OPROJ=1`), slot 1 -> S5 (attention-only
+- Round 3 (04:28): S0 and S1 stopped; slot 0 -> S4 (FP8 + `PRIME_DIAG_BF16_OPROJ=1`), slot 1 -> S5 (attention-only
   FP8). Decode probe on both. Meanwhile reading vLLM for the decode/prefill threshold and FP8-only decode kernels.
+
+### Glitch position structure in production traces (04:30; `~/tmp/mismatch_evidence/glitch_position_structure.md`)
+
+330 occurrences in 83 of 128 traces versus 200k ordinary sampled tokens.
+- Context, not position: 95.5% inside `<think>` (baseline 48.5%); 51.5% immediately followed by `.` or `.\n\n`
+  (in-think baseline 4.8%), preceded by sentence closers (` pass`, ` complete`, ` works`, ` fine`). The token after
+  the glitch is scored consistently by both sides (2% with gap > 1), so only the glitch token is mis-scored and the
+  KV state after it is fine.
+- No alignment with `pos mod 256/128/4`, `(pos // 4) mod 512` or 2048-token windows (chi-square p 0.3-0.96).
+- Mild recency effect: offsets 4-10 tokens after the last prefill are 2.9x enriched relative to in-think tokens,
+  11-50 are 2x, but 64% of glitches occur past offset 50 and 14% past 1000. Zero at offset 0 (the first sampled
+  token, whose logits come from the prefill pass), consistent with decode-only.
+- No load effect: concurrent requests per server at glitch time equal the ordinary value (steps 1-10 median 16
+  vs 16; steps 100-110 52 vs 52). Not clustered: 248 of 282 glitch-holding nodes hold exactly one.
+- Rate per 100k trained tokens falls over the run: 35.7 (steps 1-10), 24.7 (100-110), 23.5 (180-190), 19.1 (230-239).
+- Production serving from the logs: vLLM 0.29.0, `FlashInferFp8DeepGEMMDynamicBlockScaledKernel` for dense FP8
+  linears, DeepGEMM FP8 MoE, FP8 indexer cache, DSA indexer decode path `use_flattening=False supports_varlen=False
+  next_n=1`. Warning `DeepseekV4ScalingRotaryEmbedding: Failed to load weights` on every weight reload (3531 times
+  on node 0); to check whether that is benign.
 
 ## Track B: bf16 control (job 961) and weight drift
 
@@ -86,9 +106,10 @@ g-1, two greedy tokens with `logprobs 20`, so position g is computed in a real d
 | 21-45 | 0.00052-0.00159 | <= 3.0 | <= 1.2e-4 | 0.02-0.13 | mean 0.00087, 1.4x steps 1-20 |
 | 46-60 | 0.00063-0.00128 | <= 3.9 | <= 4.9e-5 | 0.005-0.073 | mean 0.00090 |
 | 61-80 | 0.00058-0.00143 | <= 6.6 | <= 1.5e-5 | 0.02-0.09 | mean 0.00096 |
-| 81-84 | 0.00083-0.00143 | <= 2.5 | <= 8.7e-6 | 0.04-0.08 | mean 0.00105 (04:45); slow creep, about +0.0001 per 20 steps |
+| 81-84 | 0.00083-0.00143 | <= 2.5 | <= 8.7e-6 | 0.04-0.08 | mean 0.00105; slow creep, about +0.0001 per 20 steps |
+| 85-92 | 0.00062-0.00165 | <= 3.4 | <= 3.2e-5 | 0.02-0.07 | steps 81-92 mean 0.00109 (04:30) |
 
-### B2: e4m3 grid departure at step 40 (done 04:05; `~/tmp/mismatch_evidence/grid_drift.md`)
+### B2: e4m3 grid departure at step 40 (done 03:57; `~/tmp/mismatch_evidence/grid_drift.md`)
 
 Hypothesis 1 (weights leave the e4m3 grid, so online re-quantization error grows) is ruled out on timescale.
 
