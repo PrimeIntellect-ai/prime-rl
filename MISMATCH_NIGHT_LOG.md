@@ -30,6 +30,10 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 - 05:43 Submitted job 991: `swe-fp8-ue8m0.toml`, 16 nodes, FP8 with `VLLM_USE_DEEP_GEMM_E8M0=1` and
   `fp8_ue8m0_weight_scales = true`, checkpointing off, wandb `swe-scaleswe-131k-fp8-ue8m0-adamw1e-6-bs64g8-8t8i`.
   Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0` (attempt_2; attempt_1 was the dry run).
+- 05:50 Verified on inference node 007 that `PRIME_FP8_UE8M0_WEIGHT_SCALES=1`, `VLLM_USE_DEEP_GEMM_E8M0=1` and
+  `VLLM_USE_DEEP_GEMM=1` are in the EngineCore and worker process environments, and the log shows "DeepGEMM E8M0
+  enabled". The patch's own INFO line was swallowed by a non-`vllm.*` logger name; fixed in a follow-up commit
+  (does not affect the running job's behaviour, only its logging).
 - 03:25 Launched: A0 scoring-set builder, A1 server infrastructure (2 nodes: S0 bf16 reference, S1 FP8
   production), B2 e4m3 grid-departure analysis on `step_40`.
 
@@ -262,6 +266,7 @@ FP8 gap.
   `PRIME_DIAG_UE8M0_WEIGHTS` diagnostic to `inference.fp8_ue8m0_weight_scales` (env `PRIME_FP8_UE8M0_WEIGHT_SCALES`).
 - `feat(configs): test the FP8 SWE run with UE8M0 scales and exact weight scales` (05:42). Renames the run config
   to `swe-fp8-ue8m0.toml` and turns the new field on.
+- `fix(inference): log the UE8M0 weight-scale patch under the vllm logger namespace` (05:52).
 - `docs(mismatch): ...` log commits after each round.
 
 - `feat(inference): add PRIME_DIAG_FAKE_QUANT_IGNORE regex to the fake-quant diagnostic` (03:45). Needed so S2
