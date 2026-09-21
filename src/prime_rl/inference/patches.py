@@ -23,6 +23,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_diag_stash_bf16_o_proj_weight()
     monkey_patch_fp8_ue8m0_weight_scales()
+    monkey_patch_triton_moe_swiglu_clamp()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepseek_v4_attn_sink_loading()
 
@@ -127,6 +128,55 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+_DIAG_BF16_WEIGHT_ATTR = "_prime_diag_bf16_weight"
+
+# Under the `vllm` logger, whose handler and INFO level vLLM configures. A logger named
+# after this module would inherit the root level instead, which drops INFO on the floor.
+_DIAG_LOGGER_NAME = "vllm.prime_rl.diag"
+
+
+def monkey_patch_triton_moe_swiglu_clamp():
+    """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
+
+    ``TritonExperts.apply`` fuses SiLU-and-mul with the per-block fp8 quantization of the
+    second expert GEMM's input through ``ops.silu_and_mul_per_block_quant`` whenever the
+    activation is SiLU, the weights are fp8 w8a8 with 128x128 blocks, no LoRA is active and
+    DeepGEMM E8M0 is off. That op has no clamp argument, so a model's ``swiglu_limit``
+    (DeepSeek V4 Flash: 10.0) is dropped on that path while every other path applies it,
+    and tokens whose gate or up pre-activation exceeds the limit get a wrong expert output.
+    With ``VLLM_USE_DEEP_GEMM_E8M0=0`` this is the path taken for every batch below 128
+    tokens, i.e. every decode step.
+
+    The fast-path condition's only reference to ``is_deep_gemm_e8m0_used`` is the
+    module-level name in ``triton_moe``, so while an ``apply`` call runs with a clamp
+    configured that name is bound to return True, which routes the call to the clamped
+    branch (``self.activation`` followed by ``moe_kernel_quantize_input``). Calls without a
+    clamp keep the fused fast path. Redundant once upstream gates the fast path on the
+    clamp itself.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe.experts import triton_moe
+
+    logger = init_logger("vllm.prime_rl.fused_moe")
+    original_apply = triton_moe.TritonExperts.apply
+    if getattr(original_apply, "_prime_honours_swiglu_clamp", False):
+        return
+
+    def apply(self, *args, **kwargs):
+        if self.activation_config.clamp_limit is None:
+            return original_apply(self, *args, **kwargs)
+        saved = triton_moe.is_deep_gemm_e8m0_used
+        triton_moe.is_deep_gemm_e8m0_used = lambda: True
+        try:
+            return original_apply(self, *args, **kwargs)
+        finally:
+            triton_moe.is_deep_gemm_e8m0_used = saved
+
+    apply._prime_honours_swiglu_clamp = True
+    triton_moe.TritonExperts.apply = apply
+    logger.info("TritonExperts.apply takes the clamped activation path when a swiglu clamp is configured.")
 
 
 def monkey_patch_deepseek_v4_bf16_o_proj():
