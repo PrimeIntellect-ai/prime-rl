@@ -46,6 +46,15 @@ on 2026-09-21 by two independent code audits and a one-node kernel reproducer (`
   "1", which worked only by forcing the DeepGEMM path and also coarsens activation scales) and keep
   `fp8_ue8m0_weight_scales = true`, now also set in `swe.toml`. The upstream vLLM PR is being prepared in
   `/home/garrett/github/garrett361/vllm-fix-triton-moe-swiglu-clamp` (branch `fix/triton-moe-swiglu-clamp`).
+- 17:30 Round 6 (`~/tmp/fp8diag/bisect/results/r6.decode.report.txt`): on two real TP 8 + EP servers with
+  `VLLM_USE_DEEP_GEMM_E8M0 = "0"`, S12 (original production config plus the patch) and S11 (patch plus
+  `fp8_ue8m0_weight_scales = true`, the committed production config) both read 0 of 30 glitch positions on the
+  decode probe (baseline without the patch: 20 in the top-20, 17 argmax), with the ordinary `.` / `,` argmax at
+  every item. S11 bulk prefill versus the bf16 reference: KL 4.0e-3, IPO masked 0.0000, |lr| p90 0.0835, mean lr
+  +0.0008 (S3 with the same weights: 0.085 / +0.0009; production fp32-scale config: 0.116 / -0.0016). The
+  expert-parallel branch of the patched path is therefore validated too. Operational note: cold `/tmp/garrett`
+  JIT caches made the first server launch exceed the router's fixed 4200 s startup timeout (over 70 min versus
+  10 min warm); prime-rl exposes no knob for that timeout.
 
 ## Morning summary (final, 11:25; no jobs running)
 
