@@ -14,6 +14,16 @@ exclusive eight-GPU nodes: four trainer nodes, one prefill node and one decode
 node, with no job time limit. The router listens on port 8000 on the first
 inference node and accepts the alias `glm53` as well as the shared model path.
 
+Training stops after 1,000 optimizer steps. `clean=true` deletes this named
+run's directory before each fresh launch, including its previous logs and
+checkpoints; explicit `--resume` instead follows resume semantics. The run
+directory is `outputs/glm53-nvfp4-rl/scaleswe-nvfp4-4over6`.
+
+Trainer and orchestrator log to the shared W&B project `glm53-nvfp4-rl`, with
+the run name inherited from `[run]`. The Slurm launcher sources the repository's
+git-ignored `.env`; `pre_run_command` exports `WANDB_API_KEY` to its child
+processes. Keep the key in `.env`, outside the TOML and generated configs.
+
 | Trainer setting | Value |
 |---|---|
 | Nodes / GPUs | 4 / 32 |

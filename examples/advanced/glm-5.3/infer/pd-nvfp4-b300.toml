@@ -1,5 +1,7 @@
 # Four-node trainer plus 1P + 1D NVFP4 inference on B300.
 seq_len = 65536
+max_steps = 1000
+clean = true
 output_dir = "outputs/glm53-nvfp4-rl"
 
 [run]
@@ -21,6 +23,9 @@ port = 29502
 timeout = 7200
 
 [monitors.file]
+
+[monitors.wandb]
+project = "glm53-nvfp4-rl"
 
 [trainer]
 dist_timeout_seconds = 7200
@@ -165,6 +170,7 @@ kv_connector_extra_config.host_pool_gib = 300
 job_name = "glm53-nvfp4-rl"
 partition = "all"
 time = "0"
+pre_run_command = "export WANDB_API_KEY"
 
 [inference.env_vars]
 CUDA_HOME = "/usr/local/cuda-13.0"
