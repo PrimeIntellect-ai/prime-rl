@@ -118,6 +118,25 @@ masks, including with CP. Inference returns processed logprobs so rollout and
 trainer probabilities use the same truncated distribution. Router replay is
 disabled. This config does not launch an additional eval or profiler.
 
+## Two prefill replicas with filesystem offload
+
+For two independent EP8 prefill replicas, one EP8 decode replica, and fixed
+2,048 rollout concurrency, add the disk-tier overlay:
+
+```bash
+uv run --no-sync rl @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml \
+  @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300-2p1d-disk.toml
+```
+
+This uses seven nodes including the four trainer nodes. Each prefill node
+contributes 2,560 GiB DRAM and a 2 TB logical filesystem-offload budget, for
+4 TB total disk capacity. The filesystem tier uses shared Weka under
+`/home/matej/prime-rl/outputs/glm53-rl-disk/job_JOB_ID/node_RANK`; it does not
+measure local-NVMe performance. Separate directories isolate the storage clients.
+Mooncake's bucket limit controls logical occupancy, not a physical filesystem
+quota. Decode contributes no storage and retains access to both store tiers.
+The debug algorithm and trainer batch size 512 are inherited from the base config.
+
 ## Inference Grafana
 
 After Slurm starts the job, run the monitoring helper separately on the login node:
