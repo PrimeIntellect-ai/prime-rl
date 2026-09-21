@@ -154,7 +154,13 @@ weights off by one quantum, roughly 1e-4 KL, negligible against the 0.0015 floor
 
 ## Results
 
-(pending)
+| step | SR kl_mean | kl_max | is_masked | reward | control kl_mean (job 991) |
+|---|---|---|---|---|---|
+| 1 | 0.00130 | 1.24 | 8.6e-6 | 0.700 | 0.00149 |
+
+Step 1 at 17:44 after a 60 min first step (cold rollout pipeline). Floor unchanged versus the control, as predicted:
+on-grid weights round identically at step 0. The test is the slope over steps 20-60 (control 20-step means 0.0022,
+0.0033, 0.0043).
 
 
 ---
