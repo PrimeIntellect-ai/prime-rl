@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
@@ -157,8 +157,14 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
+
+    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
+    converts the trainer's ``[monitors.prime]`` into a
+    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
+    type would drop (or forbid) the prime block at the eval.json
+    dump/re-parse boundary."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):
