@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 import orjson
 import prime_runs as pr
@@ -29,17 +31,54 @@ FINISH_TIMEOUT = 60.0
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
     """Leave the run's platform identity in the run directory for the dashboard's
-    "view on platform" link (atomic replace: a reader never sees a torn file)."""
+    "view on platform" link (atomic replace: a reader never sees a torn file).
+    The tmp file is pid-suffixed: the trainer and the online-eval process
+    share the run directory, and two writers sharing one tmp path can tear
+    each other's staged file mid-write."""
     path = get_platform_run_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_bytes(orjson.dumps(record, option=orjson.OPT_INDENT_2))
-    tmp.replace(path)
+    tmp = path.with_suffix(f".json.tmp.{os.getpid()}")
+    try:
+        tmp.write_bytes(orjson.dumps(record, option=orjson.OPT_INDENT_2))
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def read_platform_record(output_dir: Path) -> dict[str, Any] | None:
     path = get_platform_run_path(output_dir)
     return orjson.loads(path.read_bytes()) if path.is_file() else None
+
+
+@contextmanager
+def _platform_record_lock(output_dir: Path) -> Iterator[None]:
+    """Cross-process read-modify-write lock for the platform record: the
+    trainer and the online-eval process merge into the SAME run.json, and an
+    unlocked read-modify-write lets one clobber the other's snapshot. POSIX
+    flock on a sibling .lock file; released (and the lockfile unlinked) on
+    exit. One writer per process at a time is plenty for this cadence."""
+    path = get_platform_run_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    lock_path.unlink(missing_ok=True)
+
+
+def update_platform_record(output_dir: Path, update: dict[str, Any]) -> dict[str, Any]:
+    """Locked read-modify-write of the platform record: `update` overlays the
+    current record (preserving keys it doesn't set). Use for every writer
+    that shares the file — a naive overwrite drops concurrent writers'
+    keys."""
+    with _platform_record_lock(output_dir):
+        record = read_platform_record(output_dir) or {}
+        record.update(update)
+        write_platform_record(output_dir, record)
+        return record
 
 
 def _base_url() -> str | None:
@@ -125,10 +164,11 @@ class PrimeTrainMonitor(Monitor):
             if output_dir is not None:
                 # Merge, not overwrite: a concurrent eval process (SFT
                 # online evals share the trainer's run dir) may already
-                # have written its evaluations record.
-                record = read_platform_record(output_dir) or {}
-                record.update({"kind": "train", "id": self.run.id, "url": self.run.url})
-                write_platform_record(output_dir, record)
+                # have written its evaluations record. Locked RMW: the
+                # eval process merges into the same file.
+                update_platform_record(
+                    output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url}
+                )
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
@@ -194,14 +234,17 @@ class PrimeEvalMonitor(Monitor):
                 # Merge, not overwrite: when the eval process shares the
                 # trainer's run dir (SFT online evals), the train record's
                 # platform link (kind/id/url) must survive; a standalone
-                # eval keeps the plain eval-shaped record.
-                record = read_platform_record(output_dir)
-                if record is not None and record.get("kind") == "train":
-                    record.setdefault("evaluations", {})
-                    record["run_id"] = self.run_id
-                else:
-                    record = {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
-                write_platform_record(output_dir, record)
+                # eval keeps the plain eval-shaped record. Locked RMW.
+                def _eval_init_update(record: dict[str, Any]) -> dict[str, Any]:
+                    if record.get("kind") == "train":
+                        record.setdefault("evaluations", {})
+                        record["run_id"] = self.run_id
+                        return record
+                    return {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
+
+                with _platform_record_lock(output_dir):
+                    record = read_platform_record(output_dir) or {}
+                    write_platform_record(output_dir, _eval_init_update(record))
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
@@ -260,15 +303,19 @@ class PrimeEvalMonitor(Monitor):
             attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
             if self.output_dir is not None:
-                record = read_platform_record(self.output_dir) or {}
-                record.setdefault("kind", "eval")
-                record.setdefault("run_id", self.run_id)
-                record.setdefault("evaluations", {})[env_name] = {
-                    "step": step,
-                    "id": run.id,
-                    "url": run.url,
-                }
-                write_platform_record(self.output_dir, record)
+                def _eval_epoch_update(record: dict[str, Any]) -> dict[str, Any]:
+                    record.setdefault("kind", "eval")
+                    record.setdefault("run_id", self.run_id)
+                    record.setdefault("evaluations", {})[env_name] = {
+                        "step": step,
+                        "id": run.id,
+                        "url": run.url,
+                    }
+                    return record
+
+                with _platform_record_lock(self.output_dir):
+                    record = read_platform_record(self.output_dir) or {}
+                    write_platform_record(self.output_dir, _eval_epoch_update(record))
         return run
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:

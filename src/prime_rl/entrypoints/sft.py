@@ -22,7 +22,6 @@ from prime_rl.utils.pathing import (
     format_log_message,
     get_broadcast_dir,
     get_ckpt_dir,
-    get_eval_dir,
     get_launcher_dir,
     get_launcher_log_dir,
     prepare_attempt_dirs,
