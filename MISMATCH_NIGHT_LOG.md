@@ -22,6 +22,9 @@ feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpo
 - 00:05 (approx) Job 1045 submitted, PENDING (Resources). Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-dither`
   (attempt_3; attempts 1-2 were dry runs). Expected trainer log lines at start: "Dithering FP8-scope master weights
   within their e4m3 bins" then "Dithered N elements across M FP8-scope parameters (mean |delta| / |w| = ~2.1e-02)".
+- 00:11 Job 1045 RUNNING on 16 nodes. 00:14:39 trainer log: "Dithered 247281353949 elements across 430 FP8-scope
+  parameters (mean |delta| / |w| = 2.2950e-02)". 247.3B of the model's roughly 284B parameters are FP8-scope, as
+  expected (attention projections, routed and shared experts).
 
 ## Results
 
