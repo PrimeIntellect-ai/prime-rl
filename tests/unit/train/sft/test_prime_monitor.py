@@ -5,8 +5,6 @@ training fields (no environments, no rollouts) and flow the trainer's metrics an
 finalize through the registered ``PrimeTrainMonitor`` like the RL orchestrator does.
 """
 
-import inspect
-
 import asyncio
 from types import SimpleNamespace
 
@@ -173,9 +171,9 @@ def test_online_eval_config_keeps_prime_monitor():
     # (src/prime_rl/eval/online.py) — same wiring as the standalone eval
     # entrypoint. Read the source text (importing the module pulls torch,
     # which this torch-free test env deliberately lacks).
-    import prime_rl
-
     from pathlib import Path
+
+    import prime_rl
 
     online_src = Path(prime_rl.__path__[0], "eval", "online.py").read_text()
     assert "prime=config.monitors.prime" in online_src
