@@ -125,7 +125,7 @@ weights off by one quantum, roughly 1e-4 KL, negligible against the 0.0015 floor
 
 ## Timeline (UTC)
 
-- 02:50 (approx) Job 1047 submitted, PENDING (Resources). Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-sr`
+- 02:32 Job 1047 submitted, PENDING (Resources); still pending at 04:27 with 9 idle nodes. Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-sr`
   (attempt_1 dry run; the real run is attempt_2). Inference log line to confirm:
   "PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically."
 
