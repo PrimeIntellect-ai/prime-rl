@@ -27,6 +27,8 @@ feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpo
   expected (attention projections, routed and shared experts).
 - 01:08 Step 1: 0.0025 (control 0.0015).
 - 02:05 Step 20: 0.031, climbing about 0.0025 per step; diffuse, no glitch ids. Lag decomposition started.
+- 02:15 Lag decomposition: trainer drift (B), 25x the control's per-step slope; served model changes at baseline rate.
+- 02:17 Killed job 1045 at step 26. No jobs running.
 
 ## Results
 
@@ -35,6 +37,7 @@ feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpo
 | 1 | 0.00250 | 2.05 | 3.6e-5 | 0.615 | 0.00149 |
 | 2-10 | 0.0049 -> 0.0247, roughly +0.0025 per step | up to 1225 (step 7) | 6e-4 -> 1.0e-2 | 0.36-0.71 | 0.0016-0.0022 |
 | 11-20 | 0.0220-0.0320, mean 0.0268 | 19-795 | 1.0e-2 -> 1.4e-2 | 0.39-0.69 | 0.0018-0.0031 |
+| 21-26 | 0.0300-0.0398, mean 0.0343 | 28-191 | 1.3e-2 -> 2.0e-2 | 0.26-0.74 | 0.0024-0.0038 |
 
 Step 1 landed at 01:08 after an 18 min 56 s first step. The floor rose 1.7x over the control, below the 0.004-0.008
 guess (a uniform within-bin offset has RMS about q / sqrt(12), smaller than the full rounding error the guess assumed).
@@ -56,6 +59,48 @@ every broadcast, i.e. dithered weights sitting near bin boundaries flip by a ful
 control (would show as lag-0 KL climbing with step). Either way the assumption behind the experiment, that a random
 within-bin offset leaves the served-versus-trainer difference bounded at half a quantum with GLM-like consequences,
 does not hold at this scale.
+
+### Lag decomposition (02:15; `~/tmp/mismatch_evidence/growth_analysis_dither.md`): verdict B, trainer drift
+
+Steps 1-24, 1536 traces, all with trainer annotations; token-weighted KL reproduces `mismatch_kl/all/mean` per step.
+
+| step bucket | dither lag-0 KL | control lag-0 KL | dither lag-1 KL | control lag-1 KL |
+|---|---|---|---|---|
+| 1-5 | 0.0044 | 0.0015 | 0.0091 | 0.0016 |
+| 6-10 | 0.0196 | 0.0018 | 0.0194 | 0.0019 |
+| 11-15 | 0.0260 | 0.0022 | 0.0225 | 0.0020 |
+| 16-20 | 0.0361 | 0.0024 | 0.0265 | 0.0023 |
+| 21-25 | 0.0406 | 0.0027 | 0.0362 | 0.0024 |
+
+- Within a step bucket, lag is nearly flat (steps 6-10: 0.0196, 0.0194, 0.0220, 0.0213, 0.0211 across lag 0 to 5-8), so
+  the served model does not change more per broadcast than the raised baseline predicts: the per-lag-step slope is 4%
+  of the mean KL in the dither run versus 6% in the control.
+- Joint fit KL = a * lag + b * step (units 1e-3): dither a = 0.89, b = 1.09; control a = 0.12, b = 0.044. The step
+  coefficient is 25x the control's. Over 24 steps the step term contributes 0.026 and the lag term 0.003.
+- Outside `<think>` (lag-insensitive in the control) lag-0 KL climbs 0.0028 -> 0.0343, 12x; the control 0.0009 -> 0.0017.
+- Metrics: `is_masked/mean` 0 -> 0.020 by step 24 (the old FP8 run's collapse level), grad norm 0.007-0.13 with no
+  trend, entropy 0.28-0.52 with no trend, reward 0.26-0.74 (measured on the served, pinned policy, so it says nothing
+  about the trainer's policy).
+
+### Conclusion (02:20)
+
+The served-side pinning picture is intact: the served FP8 model changed at the baseline (slow) rate in this run too.
+The remedy failed because it acts on the trainer, not the server. Offsetting 247B master weights by a random fraction
+of an e4m3 bin (2.3% relative on average) made the trainer's own optimization move away from the served model 25x
+faster per step than the control at the same learning rate, with no change in gradient norm, entropy or reward. The
+most economical reading: the offsets give nearly every weight a persistent gradient component (curvature times offset)
+that Adam's normalization turns into full-size steps, where the control's typical normalized update was 0.15 of lr
+(0.07 for routed experts); full-size steps in directions unrelated to the offsets grow the trainer-served distance
+quadratically, which matches the observed 25x. This is inferred from the drift rate, not measured on the optimizer
+state (no checkpoints).
+
+Killed job 1045 at step 26 (02:17) with `is_masked/mean` at 0.017-0.020; no jobs running, no checkpoints written.
+
+What this leaves for the pinning problem: server-side stochastic rounding is still untested and is a different
+intervention (the trainer stays exactly on the release weights; only the rounding of the broadcast becomes unbiased,
+so the served model tracks in expectation with about 0.05% of weights flipping per broadcast at this lr), as are bf16
+serving and trainer-side FP8 with a matched recipe. Trainer-side weight dither should not be used.
+
 
 ---
 
