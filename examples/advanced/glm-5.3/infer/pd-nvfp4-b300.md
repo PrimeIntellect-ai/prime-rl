@@ -19,6 +19,11 @@ The Slurm startup sync uses the frozen lockfile; component processes use
 on each process launch. The model checkpoint is already local; `HF_HOME` is
 not required to find its weights.
 
+Both the router and orchestrator allow 5,400 seconds for inference readiness.
+Cold FlashInfer compilation and autotuning can exceed the default 1,800-second
+orchestrator timeout. Compilation and autotune artifacts remain under the user's
+persistent cache directory across jobs.
+
 Training stops after 1,000 optimizer steps. `clean=true` deletes this named
 run's directory before each fresh launch, including its previous logs and
 checkpoints; explicit `--resume` instead follows resume semantics. The run
