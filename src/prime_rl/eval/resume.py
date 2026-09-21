@@ -40,7 +40,7 @@ RESUMABLE = (
     "log",
     "monitors",
     "source.*.num_examples",
-    "source.*.shuffle_seed",
+    "source.*.shuffle",
     "source.*.group_size",
     "source.*.serve",
 )
