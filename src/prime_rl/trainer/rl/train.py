@@ -40,9 +40,10 @@ from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    setup_model,
-    is_tt_moe_model,
     get_load_balance_stats,
+    is_tt_moe_model,
+    mark_cudagraph_step_begin,
+    setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -287,6 +288,7 @@ def train(config: TrainerConfig):
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
         batch_size = len(micro_batches)
+        mark_cudagraph_step_begin(config.model.compile)
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)

@@ -831,10 +831,29 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
     language_model = get_language_model(model)
+    mode = compile_config.mode
+    options = None
+    if compile_config.cudagraph_partition_ops:
+        mode_options = torch._inductor.list_mode_options().get(mode or "default", {})
+        options = {**mode_options, "custom_should_partition_ops": compile_config.cudagraph_partition_ops}
+        mode = None
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model.layers[layer_id].compile(
+            fullgraph=compile_config.fullgraph,
+            mode=mode,
+            options=options,
+        )
+    get_logger().info(
+        f"Compiled {len(language_model.layers)} layers "
+        f"(fullgraph={compile_config.fullgraph}, mode={compile_config.mode}, "
+        f"cudagraph_partition_ops={compile_config.cudagraph_partition_ops})"
+    )
+
+
+def mark_cudagraph_step_begin(compile_config: CompileConfig | None) -> None:
+    if compile_config is not None and compile_config.mode in {"reduce-overhead", "max-autotune"}:
+        torch.compiler.cudagraph_mark_step_begin()
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:

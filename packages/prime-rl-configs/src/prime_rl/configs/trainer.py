@@ -85,6 +85,18 @@ class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
+    mode: Literal["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"] | None = None
+    """Optimization mode passed to ``torch.compile``."""
+
+    cudagraph_partition_ops: list[str] = []
+    """Custom operators that run outside CUDA Graph capture while the surrounding compiled partitions remain captured."""
+
+    @model_validator(mode="after")
+    def partition_ops_require_cudagraphs(self):
+        if self.cudagraph_partition_ops and self.mode not in {"reduce-overhead", "max-autotune"}:
+            raise ValueError("cudagraph_partition_ops requires mode='reduce-overhead' or mode='max-autotune'")
+        return self
+
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]

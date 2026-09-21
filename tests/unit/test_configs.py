@@ -13,8 +13,8 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import CompileConfig, TrainerConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
@@ -162,6 +162,16 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
+
+
+def test_cudagraph_partition_ops_require_cudagraph_compile_mode():
+    partition_ops = ["prime_rl_qwen3_5::chunk_gated_delta_rule"]
+
+    config = CompileConfig(mode="reduce-overhead", cudagraph_partition_ops=partition_ops)
+    assert config.cudagraph_partition_ops == partition_ops
+
+    with pytest.raises(ValidationError, match="cudagraph_partition_ops requires"):
+        CompileConfig(cudagraph_partition_ops=partition_ops)
 
 
 def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():

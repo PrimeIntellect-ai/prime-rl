@@ -4,8 +4,8 @@ import pytest
 import torch
 from fla.modules import FusedRMSNormGated
 
-from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import resolve_auto_attn
+from prime_rl.configs.trainer import CompileConfig, ModelConfig
+from prime_rl.trainer.model import apply_compile, resolve_auto_attn
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
@@ -179,24 +179,38 @@ def test_forward_backward_and_packing(text_config):
 
 
 @pytest.mark.gpu
-def test_linear_attention_fullgraph_forward_backward():
+def test_linear_attention_fullgraph_cudagraph_forward_backward():
     config = get_text_config()
     config.num_hidden_layers = 2
     config.layer_types = ["linear_attention", "full_attention"]
     model = get_model(config)
-    for layer in model.model.layers:
-        layer.compile(fullgraph=True)
-
-    input_ids = torch.randint(0, config.vocab_size, (1, 64), device="cuda")
-    output = model(
-        input_ids,
-        position_ids=torch.arange(64, device="cuda").unsqueeze(0),
-        seq_lens=torch.tensor([64], device="cuda"),
+    apply_compile(
+        model,
+        CompileConfig(
+            fullgraph=True,
+            mode="reduce-overhead",
+            cudagraph_partition_ops=[
+                "prime_rl_qwen3_5::causal_conv1d",
+                "prime_rl_qwen3_5::causal_conv1d_backward",
+                "prime_rl_qwen3_5::chunk_gated_delta_rule",
+                "prime_rl_qwen3_5::chunk_gated_delta_rule_backward",
+            ],
+        ),
     )
-    output["logits"].sum().backward()
 
-    assert torch.isfinite(output["logits"]).all()
-    assert torch.isfinite(model.model.embed_tokens.weight.grad).all()
+    for _ in range(2):
+        torch.compiler.cudagraph_mark_step_begin()
+        model.zero_grad(set_to_none=True)
+        input_ids = torch.randint(0, config.vocab_size, (1, 64), device="cuda")
+        output = model(
+            input_ids,
+            position_ids=torch.arange(64, device="cuda").unsqueeze(0),
+            seq_lens=torch.tensor([64], device="cuda"),
+        )
+        output["logits"].sum().backward()
+
+        assert torch.isfinite(output["logits"]).all()
+        assert torch.isfinite(model.model.embed_tokens.weight.grad).all()
 
 
 @pytest.mark.gpu
