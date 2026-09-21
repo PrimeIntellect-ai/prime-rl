@@ -25,6 +25,7 @@ def apply_shared_vllm_patches():
     monkey_patch_diag_stash_bf16_o_proj_weight()
     monkey_patch_fp8_ue8m0_weight_scales()
     monkey_patch_triton_moe_swiglu_clamp()
+    monkey_patch_fp8_stochastic_weight_rounding()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepseek_v4_attn_sink_loading()
 
@@ -380,6 +381,85 @@ def monkey_patch_fp8_ue8m0_weight_scales():
     _per_block_cast_to_fp8._prime_forces_ue8m0 = True
     fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
     logger.info("PRIME_FP8_UE8M0_WEIGHT_SCALES=1: quantizing online FP8 weights with power-of-two block scales.")
+
+
+_STOCHASTIC_ROUNDING_ROW_CHUNK = 2048
+_E4M3_SIGN_BIT = 0x80
+_E4M3_MAGNITUDE_MASK = 0x7F
+_E4M3_MAX_FINITE_MAGNITUDE = 0x7E
+
+
+def _expand_block_scales(scales: torch.Tensor, block_size: list[int], rows: int, cols: int) -> torch.Tensor:
+    block_m, block_n = block_size
+    return scales.repeat_interleave(block_m, dim=0)[:rows].repeat_interleave(block_n, dim=1)[:, :cols]
+
+
+def stochastic_round_fp8(x_scaled: torch.Tensor, q_near: torch.Tensor) -> torch.Tensor:
+    """Move each round-to-nearest e4m3 value ``q_near`` to its neighbour on the far side of ``x_scaled`` with probability equal to the fractional distance, so the result equals ``x_scaled`` in expectation."""
+    q_near_float = q_near.float()
+    bits = q_near.contiguous().view(torch.uint8).to(torch.int16)
+    sign = bits & _E4M3_SIGN_BIT
+    magnitude = bits & _E4M3_MAGNITUDE_MASK
+    farther_from_zero = x_scaled.abs() > q_near_float.abs()
+    neighbour_magnitude = torch.where(farther_from_zero, magnitude + 1, magnitude - 1).clamp(
+        0, _E4M3_MAX_FINITE_MAGNITUDE
+    )
+    neighbour = (sign | neighbour_magnitude).to(torch.uint8).view(torch.float8_e4m3fn).float()
+    gap = neighbour - q_near_float
+    probability = torch.where(gap != 0, (x_scaled - q_near_float) / gap, torch.zeros_like(gap)).clamp(0, 1)
+    pick_neighbour = torch.rand_like(probability) < probability
+    return torch.where(pick_neighbour, neighbour, q_near_float).to(torch.float8_e4m3fn)
+
+
+def monkey_patch_fp8_stochastic_weight_rounding():
+    """Off unless ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` (``inference.fp8_stochastic_weight_rounding``): unbiased weight rounding.
+
+    ``per_block_cast_to_fp8`` rounds to nearest, so a weight that starts on the e4m3
+    grid keeps its served value until the trainer has moved it half a bin, about
+    1000 steps at lr 1e-6. Until then the served policy is pinned at step 0 while
+    the trainer drifts and the trainer-vs-inference mismatch grows. Rounding each
+    weight to the far neighbour with probability equal to its fractional distance
+    makes the served weight unbiased, so it tracks sub-bin updates in expectation.
+    On-grid input has zero fractional distance and rounds to nearest, so the
+    checkpoint itself quantizes to identical bytes.
+
+    Wraps whatever ``per_block_cast_to_fp8`` is installed when this runs, so it
+    composes with the UE8M0 wrapper registered just before it. The block scales
+    come back unchanged; only the e4m3 payload is re-rounded, in row chunks so
+    the fp32 temporaries stay bounded on large expert weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+    from vllm.utils.deep_gemm import DEFAULT_BLOCK_SIZE
+
+    logger = init_logger("vllm.prime_rl.fp8")
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_rounds_stochastically", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        quantized, scales = original_cast(x, *args, **kwargs)
+        block_size = kwargs.get("block_size", args[0] if args else DEFAULT_BLOCK_SIZE)
+        block_m = block_size[0]
+        rows, cols = quantized.shape
+        row_chunk = max(block_m, _STOCHASTIC_ROUNDING_ROW_CHUNK // block_m * block_m)
+        out = torch.empty_like(quantized)
+        for row_start in range(0, rows, row_chunk):
+            row_end = min(row_start + row_chunk, rows)
+            scale_rows = scales[row_start // block_m : -(-row_end // block_m)]
+            scale_per_element = _expand_block_scales(scale_rows, block_size, row_end - row_start, cols)
+            x_scaled = x[row_start:row_end].float() * (1.0 / scale_per_element)
+            out[row_start:row_end] = stochastic_round_fp8(x_scaled, quantized[row_start:row_end])
+        return out, scales
+
+    _per_block_cast_to_fp8._prime_rounds_stochastically = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically.")
 
 
 def monkey_patch_diag_stash_bf16_o_proj_weight():
