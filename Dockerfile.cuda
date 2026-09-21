@@ -94,11 +94,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 # Third-party deps only — source edits don't bust this layer. First-party
 # editables install in the source-layer sync below. No build-context bind
 # mount here: .git would bust the cache every commit.
-# `--extra dashboard` (fastapi/uvicorn, a few MB) is baked in so the
-# prime-rl-fft chart's dashboard pod can serve `uv run dashboard` straight
-# from the image — the runtime `uv sync --inexact` install it previously did
-# at pod start hung on some clusters and wedged the whole release's
-# helm-install readiness gate (prime-rl-fft #86).
+# `--extra dashboard` (fastapi/uvicorn) is baked in so the fft chart's dashboard pod needs no runtime uv sync (see PR body).
 COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra quack --extra kernels --group mamba-ssm --locked --no-dev \
