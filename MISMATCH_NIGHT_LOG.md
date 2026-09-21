@@ -151,6 +151,8 @@ weights off by one quantum, roughly 1e-4 KL, negligible against the 0.0015 floor
   (attempt_1 dry run; the real run is attempt_2). Inference log line to confirm:
   "PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically."
 - 16:44 Job 1047 RUNNING on 16 nodes after 14 h in the queue (attempt_2).
+- 20:44 Job 1047 killed at step 75 on Garrett's call: mismatch flat at 0.0021-0.0023 for steps 21-75 versus the control's
+  climb to 0.0066. Stochastic rounding flattens the drift.
 
 ## Results
 
@@ -165,6 +167,16 @@ At 19:56 (step 48) the stochastic-rounding run is FLAT after the lag ramp: 0.002
 41-48, where the control climbed 0.00220 -> 0.00327 -> 0.00432. This is the predicted signature of the served model
 tracking the trainer in expectation. Not yet decisive at 48 steps (the control's acceleration showed from about step 60);
 the run continues to 100.
+
+| 49-60 | 0.0020-0.0022 | <= 4.7 | <= 5e-5 | 0.34-0.78 | 0.0044-0.0049 |
+| 61-75 | 0.0020-0.0029, mean 0.00229 | <= 8.5 | <= 1.0e-4 | 0.40-0.79 | 0.0054-0.0071 |
+
+**Killed by Garrett's decision at step 75 (20:44), result in.** 20-step means 0.00178, 0.00212, 0.00215, 0.00229 (steps
+61-75) against the control's 0.00220, 0.00327, 0.00432, 0.00656. After the rollout-lag ramp the curve is flat to within
+noise for 55 steps while the control doubled per window; the masked fraction stayed at or below 1e-4 (control 2.5e-3 by
+step 80); reward 0.34-0.79 like the control. Server-side stochastic rounding of the broadcast weights removes the
+pinning-driven drift as predicted, at no visible cost to the step-1 floor (0.0013 vs 0.0015). Zero glitch tokens
+throughout (E8M0 workaround was on in this config).
 
 Step 1 at 17:44 after a 60 min first step (cold rollout pipeline). Floor unchanged versus the control, as predicted:
 on-grid weights round identically at step 0. The test is the slope over steps 20-60 (control 20-step means 0.0022,
