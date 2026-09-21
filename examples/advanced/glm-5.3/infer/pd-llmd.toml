@@ -60,5 +60,4 @@ reasoning_parser = "glm45"
 gpu_memory_utilization = 0.75
 enable_expert_parallel = true
 enable_eplb = false
-enable_ep_weight_filter = true
 safetensors_load_strategy = "prefetch"

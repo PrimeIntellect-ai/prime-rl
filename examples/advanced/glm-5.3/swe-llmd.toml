@@ -1,54 +1,25 @@
-max_steps = 10000000
-seq_len = 131072
-output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
-clean = true
+# llm-d append for swe.toml: fronts the P/D-disaggregated inference plane with
+# the llm-d router (Endpoint Picker + Envoy) and offloads KV to a Mooncake
+# distributed CPU pool. Everything else is inherited from the base config:
+#
+#   uv run rl @ examples/advanced/glm-5.3/swe.toml @ examples/advanced/glm-5.3/swe-llmd.toml
 
 [run]
 name = "glm5-llmd"
 
-[log]
-level = "debug"
-
 [monitors.wandb]
 project = "glm5-llmd"
-name = "base"
 
-[weight_broadcast]
-type = "nccl"
-port = 29502
-timeout = 12000
+[slurm]
+job_name = "glm5-llmd"
 
-[deployment]
-type = "multi_node"
-num_train_nodes = 16
-gpus_per_node = 8
-num_infer_replicas = 1
-
-[inference.deployment]
-type = "disaggregated"
-prefill_nodes_per_replica = 2
-num_prefill_replicas = 4
-decode_nodes_per_replica = 8
-num_decode_replicas = 1
-
-# skip warmup for faster start in cost of some jit overhead early
-# ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason
-[inference.deployment.prefill_env_vars]
-"VLLM_ENABLE_MOE_DP_CHUNK" = "0"
-"VLLM_DEEP_GEMM_WARMUP" = "skip"
-"UCX_RCACHE_MAX_UNRELEASED" = "1024"
-
-[inference.deployment.decode_env_vars]
-"VLLM_DEEP_GEMM_WARMUP" = "skip"
-"UCX_RCACHE_MAX_UNRELEASED" = "1024"
-
-# gives the most KV cache while keeping decent throughput, KV cache increase comes in from lower deep-ep LL static buffers
-[inference.deployment.prefill_vllm_overrides]
-"enable_dbo" = true
-
-[inference.deployment.decode_vllm_overrides]
-"max_num_batched_tokens" = 96
-"max_num_seqs" = 96
+# Overlays replace arrays of tables wholesale, so the train source is spelled
+# out again just to swap the sandbox runtime label.
+[[orchestrator.train.source]]
+name = "r2e"
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "rlm"
+env.agent.runtime.labels = ["glm5-llmd"]
 
 [inference.router]
 type = "llm-d"
@@ -66,86 +37,6 @@ non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 "active-request-scorer" = 5.0
 "kv-cache-utilization-scorer" = 4.0
 "queue-scorer" = 3.0
-
-[inference.vllm]
-# The trainer uses GLM-5.3-BF16; serve the official block-FP8 release.
-model = "zai-org/GLM-5.3"
-dtype = "bfloat16"
-quantization = "fp8_per_block"
-max_model_len = 131072
-tool_call_parser = "glm47"
-reasoning_parser = "glm45"
-gpu_memory_utilization = 0.75
-enable_expert_parallel = true
-enable_eplb = false
-enable_ep_weight_filter = true
-safetensors_load_strategy = "prefetch"
-[slurm]
-job_name = "glm5-llmd"
-partition = "all" # FILL IN: set to your cluster's partition
-
-[trainer]
-dist_timeout_seconds = 1800
-
-[trainer.model]
-name = "zai-org/GLM-5.3-BF16"
-impl = "custom"
-attn = "flash_attention_2" # ignored with GLM5
-fused_lm_head_token_chunk_size = 1024
-cp = 4 # context parallel for the 131K seq len
-ep = 8
-
-[trainer.model.quantization]
-type = "fp8"
-
-[trainer.model.moe.compute]
-type = "deepgemm_fp8"
-
-[trainer.model.ac]
-freq = 1
-
-[trainer.model.compile]
-
-[trainer.model.ac_offloading]
-max_inflight_activations = 1
-
-[trainer.optim]
-type = "adamw"
-lr = 1e-6
-weight_decay = 0.0
-
-[orchestrator]
-batch_size = 256
-group_size = 16
-max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
-
-[orchestrator.concurrency]
-initial_inflight = 256
-max_inflight = 512
-
-[orchestrator.model]
-name = "zai-org/GLM-5.3"
-
-[orchestrator.renderer]
-name = "glm-5.1"
-clear_thinking = false
-
-[orchestrator.train.sampling]
-temperature = 1.0
-
-[orchestrator.train.sampling.extra_body.chat_template_kwargs]
-clear_thinking = false
-
-[[orchestrator.train.source]]
-name = "r2e"
-env.taskset.id = "r2e-gym"
-env.agent.harness.id = "rlm"
-env.agent.runtime.labels = ["glm5-llmd"]
-
-[inference]
-# <0.80 because glm5 layers are too large for 0.85
-use_deep_gemm = true
-enable_fp32_lm_head = true
 
 [inference.kv_cache_offload]
 type = "mooncake"

@@ -15,7 +15,6 @@ def apply_shared_vllm_patches():
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
-    monkey_patch_qwen3_coder_param_newline_trim()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
@@ -246,57 +245,6 @@ def monkey_patch_nano_v3_reasoning_parser():
             return reasoning_content, final_content
 
     ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
-
-
-def monkey_patch_qwen3_coder_param_newline_trim():
-    """Restore vLLM 0.23's single-newline trim for qwen3_coder tool parameters.
-
-    vLLM 0.24's parser engine applies a full ``.strip()`` to every parameter
-    value in ``_qwen3_arg_converter``; 0.23's ``Qwen3CoderToolParser`` trimmed
-    exactly one leading and one trailing newline. A full strip corrupts
-    whitespace-significant string parameters (str_replace-style
-    ``old_str``/``new_str``, file content with an indented first line, values
-    with intentional trailing newlines), silently changing tool execution and
-    rewards for agentic runs. Copy of ``_qwen3_arg_converter`` with only the
-    trim changed. Also covers ``nemotron_v3``, which reuses ``qwen3_config``.
-    """
-    import json
-
-    from vllm.parser import qwen3
-
-    def _trim_one_newline(value: str) -> str:
-        if value.startswith("\n"):
-            value = value[1:]
-        if value.endswith("\n"):
-            value = value[:-1]
-        return value
-
-    def _patched_arg_converter(raw_args: str, partial: bool) -> str:
-        params: dict[str, object] = {}
-
-        for match in qwen3._PARAM_RE.finditer(raw_args):
-            name = match.group(1)
-            value = match.group(2)
-            ## START PATCHED CODE (upstream: value.strip())
-            params[name] = _trim_one_newline(value)
-            ## END PATCHED CODE
-
-        if partial:
-            remaining = qwen3._PARAM_RE.sub("", raw_args)
-            m = qwen3._PARTIAL_PARAM_RE.search(remaining)
-            if m:
-                name = m.group(1)
-                value = m.group(2)
-                if name:
-                    ## START PATCHED CODE (upstream: value.strip())
-                    params[name] = _trim_one_newline(value)
-                    ## END PATCHED CODE
-
-        return json.dumps(params, ensure_ascii=False)
-
-    qwen3._qwen3_arg_converter = _patched_arg_converter
-    # qwen3_config captures the converter when first built; drop any cached configs.
-    qwen3.qwen3_config.cache_clear()
 
 
 def monkey_patch_minimax_m2_think_end_passthrough():
@@ -757,68 +705,6 @@ def monkey_patch_no_moe_lora():
     FusedMoEConfig.__post_init__ = _patched__post_init__
 
 
-def monkey_patch_fp32_lm_head():
-    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
-
-    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
-    matmul accumulates and emits fp32 directly without zero-padding the bf16
-    operands or maintaining a separate fp32 weight copy. This avoids the
-    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
-    where lm_head precision actually leaks before the sampler's softmax.
-
-    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
-    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
-    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
-    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
-    instance — reading it from ``_get_logits`` during serving doesn't work
-    because vLLM doesn't keep the context set during forwards.
-
-    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
-    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
-    and just as correct.
-    """
-    import torch
-    from vllm.config import get_current_vllm_config
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.logits_processor import LogitsProcessor
-
-    logger = init_logger(__name__)
-
-    _original_init = LogitsProcessor.__init__
-    _original_get_logits = LogitsProcessor._get_logits
-
-    def _patched_init(self, *args, **kwargs):
-        _original_init(self, *args, **kwargs)
-        vllm_config = get_current_vllm_config()
-        additional_config = vllm_config.additional_config or {}
-        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
-        if self._fp32_lm_head_enabled:
-            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
-
-    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
-        if not getattr(self, "_fp32_lm_head_enabled", False):
-            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
-
-        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
-        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
-        # flatten defensively in case some future caller passes 3D.
-        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
-        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
-        if embedding_bias is not None:
-            logits = logits + embedding_bias.to(torch.float32)
-        if hidden_states.dim() > 2:
-            logits = logits.reshape(*hidden_states.shape[:-1], -1)
-
-        logits = self._gather_logits(logits)
-        if logits is not None:
-            logits = logits[..., : self.org_vocab_size]
-        return logits
-
-    LogitsProcessor.__init__ = _patched_init
-    LogitsProcessor._get_logits = _patched_get_logits
-    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
-
-
 def monkey_patch_dp_coordinator_startup_timeout():
     """Raise the DP coordinator startup timeout from vLLM's hard-coded 120s.
 
@@ -935,6 +821,8 @@ def monkey_patch_deepseek_v4_per_layer_rope():
     Note that nothing in vLLM's DeepSeek V4 calls the module's `forward`; every consumer reads
     `cos_sin_cache` and hands it to a fused kernel. The class choice is therefore about the
     cache's dtype and row count, not about which channels the module would rotate.
+
+    Remove this patch once the pin includes vllm-project/vllm#54815, which ships in 0.29.1.
     """
     from vllm.models.deepseek_v4.common import rope as dsv4_rope
 
