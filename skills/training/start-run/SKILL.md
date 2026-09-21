@@ -113,6 +113,13 @@ Standalone evals (`uv run eval`) are covered by the `eval` skill.
 
 ## Key paths
 
+For Mooncake, `kv_lease_ttl_ms` configures the master's hard KV lease, in
+milliseconds; every connected role must specify the same value. Unexpired
+leases can prevent eviction even when the DRAM pool is full. Router request
+duration is controlled separately by `router.request_timeout_seconds`, including
+streaming; increasing the environment rollout timeout does not increase this
+router limit. For RL configs these fields live under `inference`.
+
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs

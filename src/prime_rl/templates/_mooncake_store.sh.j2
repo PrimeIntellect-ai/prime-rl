@@ -1,7 +1,8 @@
 {# Shared job-scoped Mooncake pool. Zero-capacity clients receive a connector
    configuration without starting a process that contributes storage. #}
-{% set mc = namespace(disk_path="") %}
+{% set mc = namespace(disk_path="", kv_lease_ttl_ms=3600000) %}
 {% for offload in kv_offload_configs.values() if offload is not none and offload.type == "mooncake" %}
+{% set mc.kv_lease_ttl_ms = offload.kv_lease_ttl_ms %}
 {% if offload.disk is not none %}{% set mc.disk_path = offload.disk.path | string %}{% endif %}
 {% endfor %}
     MC_DIR="$OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}"
@@ -14,7 +15,7 @@
 {% if mc.disk_path %}
         mkdir -p "{{ mc.disk_path }}"
 {% endif %}
-        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000{% if mc.disk_path %} -enable_offload=true -root_fs_dir={{ mc.disk_path }}{% endif %} > "$MC_DIR/master.log" 2>&1 &
+        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl={{ mc.kv_lease_ttl_ms }}{% if mc.disk_path %} -enable_offload=true -root_fs_dir={{ mc.disk_path }}{% endif %} > "$MC_DIR/master.log" 2>&1 &
     fi
     MC_ROLE=all
 {% if is_disaggregated %}

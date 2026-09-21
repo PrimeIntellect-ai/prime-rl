@@ -135,7 +135,11 @@ contributes 2,560 GiB DRAM and a 2 TB logical filesystem-offload budget, for
 measure local-NVMe performance. Separate directories isolate the storage clients.
 Mooncake's bucket limit controls logical occupancy, not a physical filesystem
 quota. Decode contributes no storage and retains access to both store tiers.
-The debug algorithm and trainer batch size 512 are inherited from the base config.
+The overlay uses CP=8, EP=8, full activation checkpointing with activation
+offloading, and batch size 128 (eight groups of 16). Optimizer-state CPU offload
+stays enabled; full CPU offload stays disabled. The debug algorithm is inherited
+from the base config. The shared Mooncake master uses a 30-minute hard KV lease,
+and the router allows requests to run for 60 minutes.
 
 ## Inference Grafana
 

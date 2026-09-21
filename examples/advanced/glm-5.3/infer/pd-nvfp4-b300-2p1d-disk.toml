@@ -1,7 +1,25 @@
 # Layer on top of pd-nvfp4-b300.toml. The disk tier uses shared Weka storage.
+[trainer.model]
+cp = 8
+
+[trainer.model.ac]
+mode = "full"
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[inference.router]
+request_timeout_seconds = 3600
+
 [inference.deployment]
 num_prefill_replicas = 2
 num_decode_replicas = 1
+
+[inference.deployment.prefill_kv_cache_offload]
+kv_lease_ttl_ms = 1800000
+
+[inference.deployment.decode_kv_cache_offload]
+kv_lease_ttl_ms = 1800000
 
 [inference.deployment.prefill_kv_cache_offload.disk]
 path = "/home/matej/prime-rl/outputs/glm53-rl-disk/job_${SLURM_JOB_ID}/node_${INFER_NODE_RANK}"
@@ -15,6 +33,9 @@ MOONCAKE_OFFLOAD_STORAGE_BACKEND_DESCRIPTOR = "bucket_storage_backend"
 MOONCAKE_OFFLOAD_TOTAL_SIZE_LIMIT_BYTES = "2000000000000"
 MOONCAKE_OFFLOAD_BUCKET_MAX_TOTAL_SIZE = "2000000000000"
 MOONCAKE_OFFLOAD_BUCKET_EVICTION_POLICY = "fifo"
+
+[orchestrator]
+batch_size = 128
 
 [orchestrator.concurrency]
 initial_inflight = 2048

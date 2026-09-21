@@ -278,6 +278,9 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     device_name: str = ""
     """RDMA device name(s) for the store (empty = auto-detect)."""
 
+    kv_lease_ttl_ms: int = Field(3_600_000, gt=0)
+    """Hard KV lease duration in milliseconds. Roles sharing a master must agree."""
+
     local_buffer_bytes: int = Field(4 * 1024**3, gt=0)
     """Per-worker RDMA staging buffer. ``cpu.num_bytes=0`` connects to the shared pool without contributing storage."""
 
@@ -328,6 +331,9 @@ class VllmRouterConfig(BaseConfig):
 
     worker_startup_timeout_seconds: int = Field(4200, gt=0)
     """How long the router waits for workers to become ready."""
+
+    request_timeout_seconds: int = Field(1800, gt=0)
+    """Maximum duration of a routed request, including streaming."""
 
 
 class LlmdRouterConfig(BaseConfig):
@@ -578,6 +584,13 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_kv_cache_offload(self):
+        mooncake_lease_ttls = {
+            offload.kv_lease_ttl_ms
+            for offload in self.kv_cache_offload_by_role.values()
+            if offload is not None and offload.type == "mooncake"
+        }
+        if len(mooncake_lease_ttls) > 1:
+            raise ValueError("Mooncake roles share one master and must use the same KV lease TTL.")
         mooncake_disk_paths = {
             offload.disk.path
             for offload in self.kv_cache_offload_by_role.values()

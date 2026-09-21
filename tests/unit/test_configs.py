@@ -211,11 +211,12 @@ def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
     config = InferenceConfig.model_validate(
         {
             "slurm": {},
-            "kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 1024}},
+            "kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 1024}, "kv_lease_ttl_ms": 1800000},
+            "router": {"type": "vllm-router", "request_timeout_seconds": 3600},
             "env_vars": {"ROLE_SETTING": "common"},
             "deployment": {
                 "type": "disaggregated",
-                "decode_kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 0}},
+                "decode_kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 0}, "kv_lease_ttl_ms": 1800000},
                 "decode_env_vars": {"ROLE_SETTING": "decode"},
                 "decode_vllm_overrides": {"max_num_seqs": 320},
             },
@@ -224,6 +225,8 @@ def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
     prefill, decode = (config.for_pd_role(role) for role in ("prefill", "decode"))
     assert prefill.kv_cache_offload.cpu.num_bytes == 1024
     assert decode.kv_cache_offload.cpu.num_bytes == 0
+    assert prefill.kv_cache_offload.kv_lease_ttl_ms == decode.kv_cache_offload.kv_lease_ttl_ms == 1800000
+    assert config.router.request_timeout_seconds == 3600
     assert decode.env_vars["ROLE_SETTING"] == "decode"
     assert config.env_vars["ROLE_SETTING"] == "common"
     assert decode.vllm.max_num_seqs == 320
@@ -233,6 +236,10 @@ def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
     )
     with pytest.raises(ValidationError, match="positive CPU capacity"):
         InferenceConfig(kv_cache_offload={"type": "native", "cpu": {"num_bytes": 0}})
+    mismatched = dump_resolved_config(config)
+    mismatched["deployment"]["decode_kv_cache_offload"]["kv_lease_ttl_ms"] = 3600000
+    with pytest.raises(ValidationError, match="same KV lease TTL"):
+        InferenceConfig.model_validate(mismatched)
 
 
 def test_explicit_kv_connector_chain_is_preserved():
