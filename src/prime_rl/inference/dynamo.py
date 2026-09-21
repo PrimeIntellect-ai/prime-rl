@@ -81,10 +81,6 @@ def parse_dynamo_worker(
     return matching_workers[0]
 
 
-def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str, int]:
-    return worker.instance_id, str(httpx.URL(worker.admin_base_url)), worker.world_size
-
-
 def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
     env_headers = {
         name: value
@@ -221,7 +217,7 @@ class DynamoAdminPlane(AdminPlane):
             try:
                 async with asyncio.timeout(remaining):
                     worker = await self._discover()
-                fingerprint = topology_fingerprint(worker)
+                fingerprint = worker.instance_id, str(httpx.URL(worker.admin_base_url)), worker.world_size
                 if fingerprint == previous_fingerprint:
                     candidate_client = self._make_worker_client(worker)
                     try:
@@ -288,7 +284,7 @@ class DynamoAdminPlane(AdminPlane):
             try:
                 async with asyncio.timeout(remaining):
                     worker = await self._discover()
-                fingerprint = topology_fingerprint(worker)
+                fingerprint = worker.instance_id, str(httpx.URL(worker.admin_base_url)), worker.world_size
                 if fingerprint == self._fingerprint:
                     return
                 if fingerprint == previous_changed_fingerprint:

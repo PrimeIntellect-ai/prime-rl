@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 from prime_rl.configs.shared import ClientConfig
@@ -8,7 +9,6 @@ from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
     parse_dynamo_worker,
-    topology_fingerprint,
 )
 from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
 
@@ -50,7 +50,12 @@ def admin_for(*workers: dict) -> DynamoAdminPlane:
         dynamo=dynamo_config(),
     )
     admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
-    admin._fingerprint = topology_fingerprint(parsed(*workers))
+    discovered_worker = parsed(*workers)
+    admin._fingerprint = (
+        discovered_worker.instance_id,
+        str(httpx.URL(discovered_worker.admin_base_url)),
+        discovered_worker.world_size,
+    )
     admin.clients = [AsyncMock() for _ in workers]
     return admin
 
@@ -253,12 +258,6 @@ def test_dynamo_collective_rpc_rejects_huge_world_size_without_allocating():
         asyncio.run(admin._collective_rpc(client, method="init_broadcaster", timeout=10, args=[]))
 
     asyncio.run(admin.aclose())
-
-
-def test_dynamo_topology_fingerprint_includes_world_size():
-    assert topology_fingerprint(parsed(worker(1, world_size=2))) != topology_fingerprint(
-        parsed(worker(1, world_size=4))
-    )
 
 
 def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
