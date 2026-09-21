@@ -1,3 +1,34 @@
+# Grid-dither experiment, night of 2026-09-21 (branch `exp/ds-v4-fp8-dither`)
+
+Purpose: test the pinned-served-policy explanation for FP8 mismatch growth. Control: run `dsv4-swe-131k-fp8-ue8m0`
+(job 991, 2026-09-20, identical config, 20-step means 0.0022, 0.0033, 0.0043, 0.0066, 0.0119, 0.0184). Treatment:
+`trainer.model.fp8_grid_dither = true`, which once at start moves every attention-projection, routed-expert and
+shared-expert master weight to a random position inside its e4m3 bin (mean |delta|/|w| 0.021, max 0.0585), with
+elements at the top mantissa step dithered only toward zero so no block scale changes. CPU check on three tensors:
+100.000% identical FP8 bytes and 0 changed block scales after quantization with power-of-two scales, so the served
+FP8 model at step 0 is bit-identical to the control's.
+
+Prediction if the mechanism is right: a higher step-1 floor (about 0.004-0.008, the trainer now differs from the
+served grid points by up to half a quantum) that stays flat instead of doubling every 20 steps; on-policy (lag 0)
+KL flat across step buckets; zero glitch tokens; reward comparable to the control's 0.4-0.8. If it climbs like the
+control, the growth is activation-driven and the pinning explanation is wrong or incomplete.
+
+Commits: `a6dc380b0` feat(trainer) flag, `9bae3231a` fix(trainer) toward-zero for saturating mantissas, `b59bbc860`
+feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpointing off, wandb
+`swe-scaleswe-131k-fp8-ue8m0-dither-adamw1e-6-bs64g8-8t8i`). Check script `~/tmp/mismatch_evidence/dither_check.py`.
+
+## Timeline (UTC)
+
+- 00:05 (approx) Job 1045 submitted, PENDING (Resources). Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-dither`
+  (attempt_3; attempts 1-2 were dry runs). Expected trainer log lines at start: "Dithering FP8-scope master weights
+  within their e4m3 bins" then "Dithered N elements across M FP8-scope parameters (mean |delta| / |w| = ~2.1e-02)".
+
+## Results
+
+(pending)
+
+---
+
 # Mismatch investigation, night of 2026-09-20
 
 Plan: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse.md`. Background: `MISMATCH_HANDOFF.md`.
