@@ -123,7 +123,12 @@ class PrimeTrainMonitor(Monitor):
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to platform run {self.run.id} ({self.run.url}){attached}")
             if output_dir is not None:
-                write_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
+                # Merge, not overwrite: a concurrent eval process (SFT
+                # online evals share the trainer's run dir) may already
+                # have written its evaluations record.
+                record = read_platform_record(output_dir) or {}
+                record.update({"kind": "train", "id": self.run.id, "url": self.run.url})
+                write_platform_record(output_dir, record)
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
@@ -186,7 +191,17 @@ class PrimeEvalMonitor(Monitor):
         if self.mode == "online":
             self.logger.info("Streaming eval epochs to the Prime platform")
             if output_dir is not None:
-                write_platform_record(output_dir, {"kind": "eval", "run_id": self.run_id, "evaluations": {}})
+                # Merge, not overwrite: when the eval process shares the
+                # trainer's run dir (SFT online evals), the train record's
+                # platform link (kind/id/url) must survive; a standalone
+                # eval keeps the plain eval-shaped record.
+                record = read_platform_record(output_dir)
+                if record is not None and record.get("kind") == "train":
+                    record.setdefault("evaluations", {})
+                    record["run_id"] = self.run_id
+                else:
+                    record = {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
+                write_platform_record(output_dir, record)
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
@@ -245,12 +260,14 @@ class PrimeEvalMonitor(Monitor):
             attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
             if self.output_dir is not None:
-                record = read_platform_record(self.output_dir) or {
-                    "kind": "eval",
-                    "run_id": self.run_id,
-                    "evaluations": {},
+                record = read_platform_record(self.output_dir) or {}
+                record.setdefault("kind", "eval")
+                record.setdefault("run_id", self.run_id)
+                record.setdefault("evaluations", {})[env_name] = {
+                    "step": step,
+                    "id": run.id,
+                    "url": run.url,
                 }
-                record["evaluations"][env_name] = {"step": step, "id": run.id, "url": run.url}
                 write_platform_record(self.output_dir, record)
         return run
 

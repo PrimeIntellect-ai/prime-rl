@@ -179,12 +179,16 @@ def test_online_eval_config_keeps_prime_monitor():
     assert "prime=config.monitors.prime" in online_src
 
 
-def test_online_eval_output_dir_separate_from_trainer_run_dir():
-    """The online-eval process must not share the trainer's run dir: both
-    monitors write <output_dir>/monitors/prime/run.json and the eval record
-    would clobber the train record (see build_online_eval_config)."""
+def test_online_eval_shares_trainer_run_dir_and_merges_records(tmp_path):
+    """The online-eval process shares the trainer's run dir (the dashboard
+    reads its file-monitor artifacts from there), and the platform records
+    MERGE instead of clobbering each other: the trainer's kind="train"
+    link survives with the eval process's evaluations riding along."""
     from prime_rl.entrypoints.sft import build_online_eval_config
-    from prime_rl.utils.pathing import get_eval_dir
+    from prime_rl.monitors.prime import (
+        read_platform_record,
+        write_platform_record,
+    )
 
     config = _sft_config(
         {
@@ -201,5 +205,23 @@ def test_online_eval_output_dir_separate_from_trainer_run_dir():
         }
     )
     eval_config = build_online_eval_config(config)
-    assert eval_config.output_dir == get_eval_dir(config.run_dir)
+    # Same run dir: dashboard visibility for the eval artifacts.
+    assert eval_config.output_dir == config.run_dir
     assert eval_config.broadcasts_dir != eval_config.output_dir
+
+    # Simulate the trainer's record, then the eval process merging on top.
+    write_platform_record(
+        tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"}
+    )
+    record = read_platform_record(tmp_path) or {}
+    if record.get("kind") == "train":
+        record.setdefault("evaluations", {})
+        record["run_id"] = "run-1"
+    else:
+        record = {"kind": "eval", "run_id": "run-1", "evaluations": {}}
+    record.setdefault("evaluations", {})["rev"] = {"step": 5, "id": "ev-1", "url": "https://x/ev-1"}
+    write_platform_record(tmp_path, record)
+    merged = read_platform_record(tmp_path)
+    assert merged["kind"] == "train"  # the train link survives
+    assert merged["id"] == "run-1"
+    assert merged["evaluations"]["rev"]["id"] == "ev-1"
