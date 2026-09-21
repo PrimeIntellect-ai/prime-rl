@@ -1,11 +1,63 @@
-# RL fragment: 1P + 1D NVFP4 inference and the Scale-SWE training environment.
-# Add trainer, training deployment and weight-broadcast settings before launching RL.
-output_dir = "outputs/glm53-nvfp4-pd"
+# Four-node trainer plus 1P + 1D NVFP4 inference on B300.
+seq_len = 65536
+output_dir = "outputs/glm53-nvfp4-rl"
+
+[run]
+name = "scaleswe-nvfp4-4over6"
+
+[model]
+# zai-org/GLM-5.3-BF16, revision 9d2398f478cab2de883137db3a36ad2c96205e24.
+name = "/home/matej/prime-rl/outputs/glm53-rl/models/bf16/model"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_replicas = 1
+gpus_per_node = 8
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 7200
+
+[monitors.file]
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_4"
+ep = 8
+cp = 4
+optim_cpu_offload = true
+full_offload = false
+fused_lm_head_token_chunk_size = 512
+
+[trainer.model.moe.compute]
+type = "nvfp4"
+apply_to = "85%"
+four_over_six = true
+backward = "dequant_bf16"
+
+[trainer.model.ac]
+mode = "selective"
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.index_cache]
+topk_freq = 4
+
+[trainer.optim]
+type = "adamw"
 
 [inference]
 use_deep_gemm = false
 enable_fp32_lm_head = true
 enable_fp32_router_logits = true
+enable_return_sampling_mask = true
 
 [inference.server]
 host = "0.0.0.0"
@@ -74,7 +126,7 @@ kv_connector_extra_config.kv_lease_duration = 120
 kv_connector = "MooncakeStoreConnector"
 kv_role = "kv_both"
 kv_connector_extra_config.save_decode_cache = true
-kv_connector_extra_config.cache_prefix = "glm53-nvfp4-11af4cb-fp8kv-f7f56f0-prefill"
+kv_connector_extra_config.cache_prefix = "glm53-bf16-9d2398f-nvfp4-4over6-l0-65-fp8kv-prefill"
 
 [inference.deployment.decode_vllm_overrides]
 all2all_backend = "deepep_low_latency"
@@ -102,7 +154,7 @@ kv_connector_extra_config.kv_lease_duration = 120
 kv_connector = "MooncakeStoreConnector"
 kv_role = "kv_both"
 kv_connector_extra_config.save_decode_cache = true
-kv_connector_extra_config.cache_prefix = "glm53-nvfp4-11af4cb-fp8kv-f7f56f0-decode"
+kv_connector_extra_config.cache_prefix = "glm53-bf16-9d2398f-nvfp4-4over6-l0-65-fp8kv-decode"
 
 [[inference.deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
 kv_connector = "HiSparseConnector"
@@ -110,7 +162,7 @@ kv_role = "kv_both"
 kv_connector_extra_config.host_pool_gib = 300
 
 [slurm]
-job_name = "glm53-nvfp4-pd"
+job_name = "glm53-nvfp4-rl"
 partition = "all"
 time = "0"
 
@@ -120,6 +172,9 @@ TORCH_CUDA_ARCH_LIST = "10.3a"
 PYTHONHASHSEED = "0"
 VLLM_USE_V2_MODEL_RUNNER = "1"
 VLLM_USE_RUST_FRONTEND = "0"
+FLASHINFER_NVFP4_4OVER6 = "1"
+FLASHINFER_NVFP4_4OVER6_E4M3_USE_256 = "0"
+FLASHINFER_NVFP4_4OVER6_ERR_MODE = "MAE"
 VLLM_WORKER_MULTIPROC_METHOD = "spawn"
 VLLM_MOE_ROUTING_SIMULATION_STRATEGY = ""
 VLLM_ENFORCE_STRICT_TOOL_CALLING = "0"
@@ -132,14 +187,13 @@ MAX_JOBS = "2"
 OMP_NUM_THREADS = "1"
 
 [inference.vllm]
-# RadixArk/GLM-5.3-NVFP4; keep this checkpoint revision fixed.
-model = "/home/matej/prime-rl/outputs/glm53-b300/models/nvfp4/model"
-revision = "11af4cba759e6559eda70358a5778bd1bddddd78"
-served_model_name = ["glm53"]
+revision = "9d2398f478cab2de883137db3a36ad2c96205e24"
+served_model_name = ["glm53", "/home/matej/prime-rl/outputs/glm53-rl/models/bf16/model"]
+quantization = "online"
 dtype = "bfloat16"
 kv_cache_dtype = "fp8"
 block_size = 64
-max_model_len = 32768
+max_model_len = 65536
 tensor_parallel_size = 1
 data_parallel_size = 8
 data_parallel_rpc_port = 19345
@@ -156,9 +210,14 @@ tool_call_parser = "glm47"
 reasoning_parser = "glm45"
 enable_auto_tool_choice = true
 generation_config = "vllm"
-logprobs_mode = "raw_logprobs"
+logprobs_mode = "processed_logprobs"
 enable_prompt_tokens_details = true
 cudagraph_metrics = true
+
+# floor(78 * 0.85) = 66: routed experts in layers 3..65 use NVFP4;
+# the final 12 layers and dense/shared modules stay BF16.
+[inference.vllm.quantization_config.targets]
+'re:^model\.layers\.(?:[0-9]|[1-5][0-9]|6[0-5])\.mlp\.experts$' = "nvfp4_per_token"
 
 [inference.vllm.hf_overrides]
 use_index_cache = true
@@ -178,6 +237,11 @@ max_inflight = 2048
 [orchestrator.renderer]
 name = "glm-5.3"
 clear_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 512
 
 [orchestrator.train.sampling.extra_body.chat_template_kwargs]
 clear_thinking = false

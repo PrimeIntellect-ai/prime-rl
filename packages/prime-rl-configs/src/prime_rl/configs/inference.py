@@ -38,7 +38,7 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
-QuantizationType = Literal["fp8_per_block"]
+QuantizationType = Literal["fp8_per_block", "online"]
 
 
 class VllmConfig(BaseConfig):
