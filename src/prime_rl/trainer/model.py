@@ -18,6 +18,7 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.tensor import DTensor
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -857,6 +858,75 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
                 f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+
+
+FP8_GRID_DITHER_PARAMETER_SUBSTRINGS = (
+    ".self_attn.q_a_proj.weight",
+    ".self_attn.q_b_proj.weight",
+    ".self_attn.kv_proj.weight",
+    ".self_attn.o_a_proj.weight",
+    ".self_attn.o_b_proj.weight",
+    ".mlp.experts.gate_up_proj",
+    ".mlp.experts.gate_proj",
+    ".mlp.experts.up_proj",
+    ".mlp.experts.down_proj",
+    ".mlp.shared_expert.gate_proj.weight",
+    ".mlp.shared_expert.up_proj.weight",
+    ".mlp.shared_expert.down_proj.weight",
+)
+
+FP8_GRID_DITHER_CHUNK_NUMEL = 2**26
+
+
+def dither_fp8_grid(model: nn.Module, seed: int = 0) -> tuple[int, float]:
+    """Move every FP8-scope master weight to a uniformly random position strictly inside its e4m3 bin.
+
+    Operates in place on the local shard of each matched parameter in fp32 and leaves zeros
+    untouched, including the sign of negative zeros. An e4m3 bin spans half a quantum
+    (``2 ** (floor(log2|w|) - 3)``) on each side of ``w``, except toward zero from a power of two
+    where the neighbouring bin is half as wide. The offset is drawn over ``15/16`` of the bin so
+    the bf16 cast sent to inference, whose half ULP is ``1/16`` of the bin half-width, also stays
+    strictly inside. Returns the number of elements dithered and the mean of ``|delta| / |w|``
+    over them, summed across ranks when distributed.
+    """
+    logger = get_logger()
+    margin = 0.999 * 15 / 16
+    generators: dict[torch.device, torch.Generator] = {}
+    num_parameters = 0
+    num_dithered = torch.zeros((), dtype=torch.float64)
+    relative_offset_sum = torch.zeros((), dtype=torch.float64)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if not any(substring in name for substring in FP8_GRID_DITHER_PARAMETER_SUBSTRINGS):
+                continue
+            num_parameters += 1
+            local = param.to_local() if isinstance(param, DTensor) else param.data
+            if local.device not in generators:
+                generators[local.device] = torch.Generator(device=local.device).manual_seed(seed + get_world().rank)
+            generator = generators[local.device]
+            for chunk in local.view(-1).split(FP8_GRID_DITHER_CHUNK_NUMEL):
+                weight = chunk.float()
+                nonzero = weight != 0
+                mantissa, exponent = torch.frexp(weight)
+                quantum = torch.exp2(exponent.float() - 4)
+                half_width_away = quantum / 2
+                half_width_toward = torch.where(mantissa.abs() == 0.5, quantum / 4, quantum / 2)
+                uniform = torch.rand(weight.shape, generator=generator, device=weight.device)
+                offset = (uniform * (half_width_toward + half_width_away) - half_width_toward) * margin
+                delta = torch.sign(weight) * offset
+                num_dithered += nonzero.sum().double().cpu()
+                relative_offset_sum += (delta.abs() / weight.abs())[nonzero].sum().double().cpu()
+                chunk.copy_(torch.where(nonzero, weight + delta, weight).to(chunk.dtype))
+    if torch.distributed.is_initialized():
+        totals = torch.stack([num_dithered, relative_offset_sum]).cuda()
+        torch.distributed.all_reduce(totals)
+        num_dithered, relative_offset_sum = totals.cpu()
+    mean_relative_offset = (relative_offset_sum / num_dithered).item() if num_dithered > 0 else 0.0
+    logger.info(
+        f"Dithered {int(num_dithered.item())} elements across {num_parameters} FP8-scope parameters "
+        f"(mean |delta| / |w| = {mean_relative_offset:.4e})"
+    )
+    return int(num_dithered.item()), mean_relative_offset
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:

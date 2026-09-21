@@ -38,6 +38,7 @@ from prime_rl.trainer.rl.loss import (
 )
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
+    dither_fp8_grid,
     forward,
     get_full_offload_dtype_policy,
     setup_model,
@@ -148,6 +149,10 @@ def train(config: TrainerConfig):
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
+
+    if config.model.fp8_grid_dither and not loading_from_ckpt_later:
+        logger.info("Dithering FP8-scope master weights within their e4m3 bins")
+        dither_fp8_grid(model)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")

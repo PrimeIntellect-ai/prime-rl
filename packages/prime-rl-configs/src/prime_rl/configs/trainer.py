@@ -329,6 +329,9 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
+    fp8_grid_dither: bool = False
+    """Once at startup, move every attention-projection, routed-expert and shared-expert master weight to a uniformly random position inside its e4m3 bin, so weights of a checkpoint that is a dequantized FP8 release (all of them at bin centres) cross bin boundaries at a rate proportional to the update instead of never. Skipped when resuming from a checkpoint. Under power-of-two block scales the served FP8 weights at step 0 are unchanged."""
+
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
