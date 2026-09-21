@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 BASE_URL_VAR = "PRIME_API_BASE"
-EVALUATION_ID_VAR = "EVALUATION_ID"
+EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -161,10 +161,10 @@ class PrimeEvalMonitor(Monitor):
         # episodes do not retry the platform on every arrival
         self.runs: dict[tuple[str, int], pr.Run | None] = {}
         self._lock = asyncio.Lock()
-        self.evaluation_id = os.getenv(EVALUATION_ID_VAR)
+        self.evaluation_id = os.getenv(EVAL_ID_VAR)
         if self.evaluation_id and len(self.sources) != 1:
             raise ValueError(
-                f"${EVALUATION_ID_VAR} names one platform evaluation, so the run needs "
+                f"${EVAL_ID_VAR} names one platform evaluation, so the run needs "
                 f"exactly one eval source (got {len(self.sources)})"
             )
         if self.mode == "online":
@@ -184,7 +184,7 @@ class PrimeEvalMonitor(Monitor):
             # attach instead of registering a duplicate. The backend owns its failure
             # marking then; a clean finish still completes it.
             if self.runs:
-                raise RuntimeError(f"${EVALUATION_ID_VAR} holds one epoch, and it already took one")
+                raise RuntimeError(f"${EVAL_ID_VAR} holds one epoch, and it already took one")
             return pr.init(
                 kind="eval",
                 mode=self.mode,
@@ -226,7 +226,7 @@ class PrimeEvalMonitor(Monitor):
                 return None
             self.runs[key] = run
         if run.url:
-            attached = f" (attached via ${EVALUATION_ID_VAR})" if run.attached else ""
+            attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
             if self.output_dir is not None:
                 record = read_platform_record(self.output_dir) or {
