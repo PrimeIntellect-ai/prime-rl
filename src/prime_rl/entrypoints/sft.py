@@ -21,6 +21,7 @@ from prime_rl.utils.pathing import (
     format_config_message,
     format_log_message,
     get_broadcast_dir,
+    get_eval_dir,
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
@@ -96,7 +97,14 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
-        output_dir=config.run_dir,
+        # The online-eval process owns run_dir/eval, NOT the trainer's run
+        # dir: its PrimeEvalMonitor writes a kind="eval" platform record
+        # to <output_dir>/monitors/prime/run.json, which would clobber the
+        # trainer's kind="train" record (breaking the dashboard's
+        # "view on platform" link) and later KeyError when run_for reads
+        # the train-shaped record back. Mirrors the standalone eval
+        # entrypoint, which always runs in its own run dir.
+        output_dir=get_eval_dir(config.run_dir),
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=build_online_eval_monitors(config.monitors),
     )
