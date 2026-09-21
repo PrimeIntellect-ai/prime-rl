@@ -1,3 +1,9 @@
+> **Correction (2026-09-21 15:00):** the glitch-token root cause is a vLLM bug, not DeepGEMM. Below 128 tokens with
+> `VLLM_USE_DEEP_GEMM_E8M0=0`, vLLM 0.29.0 falls back to `TritonExperts`, whose fused `silu_and_mul_per_block_quant`
+> fast path (`fused_moe/experts/triton_moe.py:474-486`) drops DeepSeek V4's `swiglu_limit = 10.0`. E8M0=1 works by
+> forcing the DeepGEMM path. Confirmed by code audits and a kernel reproducer; the full write-up is the "Correction"
+> section of this file on branch `feat/ds-v4-fp8-rl` (commit c1dc38143). Statements below that blame DeepGEMM are stale.
+
 # Night of 2026-09-21 on branch `exp/ds-v4-fp8-dither`: status at 06:30
 
 1. **Grid dither (trainer-side): tested and rejected.** Job 1045 ran 26 steps. Mismatch KL went 0.0025 -> 0.031 by step 20
