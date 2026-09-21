@@ -142,8 +142,8 @@ use_deep_gemm = true
 fp8_ue8m0_weight_scales = true
 
 [inference.env_vars]
-# On: the FP8 mismatch bisection localized the glitch tokens to DeepGEMM's small-M grouped MoE GEMM
-# misreading fp32 activation scales in decode steps; UE8M0 activation scales avoid that path.
+# On: it forces the DeepGEMM experts path at every batch size. Below 128 tokens vLLM 0.29.0 otherwise falls
+# back to TritonExperts, whose fused SiLU-quant fast path drops this model's swiglu clamp (glitch tokens).
 VLLM_USE_DEEP_GEMM_E8M0 = "1"
 
 [inference.vllm]
