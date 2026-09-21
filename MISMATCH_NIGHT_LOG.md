@@ -101,6 +101,38 @@ intervention (the trainer stays exactly on the release weights; only the roundin
 so the served model tracks in expectation with about 0.05% of weights flipping per broadcast at this lr), as are bf16
 serving and trainer-side FP8 with a matched recipe. Trainer-side weight dither should not be used.
 
+# Stochastic-rounding experiment (same night, same branch)
+
+Server-side counterpart of the dither: `inference.fp8_stochastic_weight_rounding = true` makes vLLM's online FP8 weight
+quantization round each element to its upper or lower e4m3 neighbour with probability proportional to distance, at
+every load and reload. The trainer is untouched (exact release weights plus its own updates). On on-grid input it is
+round-to-nearest, so the served step-0 model is identical to the control's. Predictions: step-1 mismatch about 0.0015
+(same as control), and the 20-step means stay near the floor plus lag (bf16-control-like flatness) instead of the
+control's 0.0022, 0.0033, 0.0043, 0.0066, 0.0119; zero glitch ids; reward like the control.
+
+Commits: `1bc6e8d32` feat(inference) flag, env `PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING`, patch composing with the UE8M0
+weight-scale patch; `4b8ca3ad2` feat(configs) `swe-fp8-ue8m0-sr.toml` (`max_steps = 100`, no dither, checkpointing off,
+wandb `swe-scaleswe-131k-fp8-ue8m0-sr-adamw1e-6-bs64g8-8t8i`). CPU check `~/tmp/mismatch_evidence/stochastic_rounding_check.py`:
+on-grid identity 100.000000% on an expert and an attention tensor; flip fractions 7.08% (expert, delta 1e-4) and 0.23% /
+17.6% (attention, delta 1e-6 / 1e-4) against exact-gap predictions 7.08% / 0.23% / 17.6%; bias +0.00002 and -0.00014
+bins over 200 draws (round-to-nearest RMS 0.21-0.23 bins).
+
+Subtlety: a single lr 1e-6 update is below half a bf16 ULP for typical expert weights, so the bf16 broadcast itself only
+moves after several coherent steps; stochastic rounding then flips a served weight with probability 1/16 per bf16 ULP
+of movement. The served model therefore tracks the trainer's bf16 compute weights in expectation, which is the right
+target because those are the weights the trainer scores with. Expected noise from the flips by step 40: about 0.6% of
+weights off by one quantum, roughly 1e-4 KL, negligible against the 0.0015 floor.
+
+## Timeline (UTC)
+
+- 02:50 (approx) Job 1047 submitted, PENDING (Resources). Run dir `/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-sr`
+  (attempt_1 dry run; the real run is attempt_2). Inference log line to confirm:
+  "PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically."
+
+## Results
+
+(pending)
+
 
 ---
 
