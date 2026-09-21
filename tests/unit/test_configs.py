@@ -612,6 +612,45 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+@pytest.mark.parametrize("orchestrator_on_inference", [False, True])
+def test_trainer_mooncake_requires_shared_pool_and_eligible_nodes(orchestrator_on_inference):
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {
+            "deployment": {
+                "type": "disaggregated",
+                "prefill_kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 0}},
+            },
+        },
+        "deployment": {
+            "type": "multi_node",
+            "num_train_nodes": 1 if orchestrator_on_inference else 4,
+            "orchestrator_on_inference": orchestrator_on_inference,
+            "trainer_mooncake": {"num_bytes": 1024, "device_name": "mlx5_0"},
+        },
+        "slurm": {},
+    }
+    config = RLConfig.model_validate(data)
+    assert config.deployment.trainer_mooncake.num_bytes == 1024
+    assert config.deployment.trainer_mooncake.device_name == "mlx5_0"
+    assert config.inference.for_pd_role("prefill").kv_cache_offload.cpu.num_bytes == 0
+
+    with pytest.raises(ValidationError, match="SLURM"):
+        RLConfig.model_validate({**data, "slurm": None})
+    with pytest.raises(ValidationError, match="requires Mooncake offload"):
+        RLConfig.model_validate({**data, "inference": {}})
+    with pytest.raises(ValidationError, match="no eligible trainer nodes"):
+        RLConfig.model_validate(
+            {**data, "deployment": {**data["deployment"], "num_train_nodes": 1, "orchestrator_on_inference": False}}
+        )
+    for capacity in (0, -1):
+        with pytest.raises(ValidationError, match="greater than 0"):
+            RLConfig.model_validate(
+                {**data, "deployment": {**data["deployment"], "trainer_mooncake": {"num_bytes": capacity}}}
+            )
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(

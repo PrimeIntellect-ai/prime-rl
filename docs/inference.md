@@ -264,6 +264,24 @@ type = "native"
 num_bytes = 128_000_000_000
 ```
 
+Multi-node RL can also contribute trainer host RAM to the same Mooncake pool:
+
+```toml
+[deployment.trainer_mooncake]
+num_bytes = 536870912000 # 500 GiB per eligible trainer node
+# device_name = "mlx5_0" # optional; empty selects devices automatically
+```
+
+This requires SLURM and Mooncake offload on at least one inference role. It starts
+one DRAM-only storage client per trainer node, excluding the node hosting the
+orchestrator. With four trainer nodes and the default orchestrator placement,
+three nodes contribute 500 GiB each. If `deployment.orchestrator_on_inference`
+is enabled, all trainer nodes contribute. The size is independent of inference
+storage capacity; allow RAM for trainer activation and optimizer offloading when
+choosing it. Omit this section to disable trainer contributions. Clients share
+the inference master and its lease policy, stop with the Slurm job, and log to
+`<run_dir>/mooncake/trainer_<rank>/client.log`.
+
 For Mooncake, `cpu.num_bytes = 0` keeps a role connected to the shared pool
 without starting a storage client on its nodes. Staging buffers still consume
 RAM; `local_buffer_bytes` controls their per-worker size. Set positive capacity

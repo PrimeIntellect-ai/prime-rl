@@ -120,6 +120,14 @@ duration is controlled separately by `router.request_timeout_seconds`, including
 streaming; increasing the environment rollout timeout does not increase this
 router limit. For RL configs these fields live under `inference`.
 
+Multi-node Slurm RL can add DRAM to the inference Mooncake pool with
+`[deployment.trainer_mooncake] num_bytes = <bytes per trainer node>` and optional
+`device_name`. The launcher excludes the actual orchestrator node automatically;
+with `orchestrator_on_inference=true`, every trainer node is eligible. These are
+job-scoped DRAM-only clients with an independent capacity; reserve host RAM for
+trainer activation/optimizer offload. Omission disables trainer contributions.
+Logs live under `<run_dir>/mooncake/trainer_<rank>/client.log`.
+
 If trainer GPUs remain at 0% while peers stay at 100%, sample the idle rank and
 its compiler children before treating utilization as useful compute. In the
 GLM-5.3 PyTorch 2.13 runtime, compiler-pool quiesce/recreation reproduced a

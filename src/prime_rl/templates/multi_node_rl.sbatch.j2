@@ -500,6 +500,25 @@ else
     export {{ key }}="{{ value }}"
 {%- endfor %}
 
+{% if trainer_mooncake %}
+    if [ "$SLURM_PROCID" -ne "$ORCH_PROCID" ]; then
+        ulimit -l unlimited
+        MC_DIR="$OUTPUT_DIR/mooncake/trainer_${TRAIN_NODE_RANK}"
+        mkdir -p "$MC_DIR"
+        MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
+        LOCAL_IP=$(hostname -I | awk "{print \$1}")
+        for MC_PORT in 50051 8080; do
+            for _ in $(seq 1 120); do
+                timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/$MC_PORT" 2>/dev/null && break
+                sleep 1
+            done
+            timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/$MC_PORT" 2>/dev/null || exit 1
+        done
+        mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_HEAD:50051 -metadata_server=http://$MC_HEAD:8080/metadata -protocol=rdma -global_segment_size={{ trainer_mooncake.num_bytes }}{% if trainer_mooncake.device_name %} -device_names={{ trainer_mooncake.device_name }}{% endif %} > "$MC_DIR/client.log" 2>&1 &
+        echo "[mooncake] trainer $TRAIN_NODE_RANK master=$MC_HEAD:50051 contributed_bytes={{ trainer_mooncake.num_bytes }}"
+    fi
+{% endif %}
+
     echo $HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 
     (

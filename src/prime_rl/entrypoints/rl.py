@@ -441,6 +441,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         kv_offload=any(offload is not None for offload in offloads.values()),
         kv_offload_mooncake=any(offload is not None and offload.type == "mooncake" for offload in offloads.values()),
         kv_offload_configs=offloads,
+        trainer_mooncake=config.deployment.trainer_mooncake if config.deployment.type == "multi_node" else None,
     )
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the

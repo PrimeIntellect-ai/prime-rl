@@ -197,6 +197,14 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
+class TrainerMooncakeConfig(BaseConfig):
+    num_bytes: int = Field(..., gt=0)
+    """DRAM bytes contributed per trainer node, excluding the node hosting the orchestrator."""
+
+    device_name: str = ""
+    """RDMA device name(s) for trainer storage clients (empty = auto-detect)."""
+
+
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
@@ -214,6 +222,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
+
+    trainer_mooncake: TrainerMooncakeConfig | None = None
+    """Optional job-scoped DRAM storage clients on trainer nodes. Join the inference Mooncake pool and always exclude the orchestrator's node. Requires SLURM and inference Mooncake offload."""
 
     @property
     def infer_nodes_per_replica(self) -> int:
@@ -672,16 +683,21 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_mooncake_offload_requires_slurm(self):
-        if (
-            self.slurm is None
-            and self.inference is not None
-            and self.inference.kv_cache_offload is not None
-            and self.inference.kv_cache_offload.type == "mooncake"
-        ):
+        offloads = self.inference.kv_cache_offload_by_role.values() if self.inference is not None else ()
+        has_mooncake = any(offload is not None and offload.type == "mooncake" for offload in offloads)
+        trainer_mooncake = self.deployment.type == "multi_node" and self.deployment.trainer_mooncake is not None
+        if self.slurm is None and (has_mooncake or trainer_mooncake):
             raise ValueError(
                 "Mooncake KV offload requires SLURM — the per-node store is launched by the sbatch "
                 "template. Use inference.kv_cache_offload.type='native' for local runs."
             )
+        if trainer_mooncake:
+            if not has_mooncake or self.deployment.num_infer_nodes == 0:
+                raise ValueError("deployment.trainer_mooncake requires Mooncake offload on a launched inference role.")
+            if self.deployment.num_train_nodes < 2 and not self.deployment.orchestrator_on_inference:
+                raise ValueError(
+                    "deployment.trainer_mooncake has no eligible trainer nodes after excluding the orchestrator."
+                )
         return self
 
     @model_validator(mode="after")
