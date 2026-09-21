@@ -99,14 +99,16 @@ and `clear_thinking=false`. The static environment pool has 20 workers with 128
 concurrent slots each. Training sandboxes use `glm53-pd-train` and
 `int4-syn-gen-bash` labels.
 
-Rollout concurrency is fixed at 2,048 by setting initial, minimum and maximum
+Rollout concurrency is fixed at 1,536 by setting initial, minimum and maximum
 in-flight episodes to the same value. Episodes doing tool work also occupy slots,
-so this does not guarantee 2,048 simultaneous inference requests.
+so this does not guarantee 1,536 simultaneous inference requests.
 `orchestrator.batch_size=512` counts trainer-bound traces per optimizer step,
 independently of concurrency. The default `constant_trainer_batch_size=true`
 prunes zero-advantage RL samples before counting toward the batch and keeps
-collecting until 512 useful traces remain. Plain GRPO groups with identical
-rewards contribute no useful traces.
+collecting until 512 useful traces remain. The debug algorithm assigns advantage
+1 to every valid trainable rollout regardless of reward, so uniform-reward groups
+remain trainable. Errored rollouts are still excluded. This exercises the RL
+pipeline; the constant advantage is not a task-learning objective.
 
 Sampling uses temperature 1, top-p 0.95 and top-k 512, matching the prior sampling
 replay run. Top-p comes from the BF16 checkpoint's generation config; 512 is the

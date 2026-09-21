@@ -237,13 +237,16 @@ head_dtype = "float32"
 batch_size = 512
 group_size = 16
 
+[orchestrator.algo]
+type = "debug"
+
 [orchestrator.model.client]
 wait_for_ready_timeout = 5400
 
 [orchestrator.concurrency]
-initial_inflight = 2048
-min_inflight = 2048
-max_inflight = 2048
+initial_inflight = 1536
+min_inflight = 1536
+max_inflight = 1536
 
 [orchestrator.renderer]
 name = "glm-5.3"
