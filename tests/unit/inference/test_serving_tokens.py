@@ -4,7 +4,8 @@ The full happy-path is owned upstream by vLLM's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
     * ``serialize_routed_experts`` round-trips a compact raw-byte payload.
-    * The subclass attaches its overrides without monkey-patching the parent.
+    * The subclass overrides ``serve_tokens_full_generator`` without
+      monkey-patching the parent.
     * ``post_process`` swaps in the compact routed_experts while preserving
       the rest of the upstream response (``usage`` included).
 """
@@ -35,12 +36,9 @@ async def _empty_request_outputs():
         yield
 
 
-def test_subclass_only_overrides_serve_tokens():
-    assert PrimeRlServingTokens.serve_tokens is not PrimeRlServingTokens.__mro__[1].serve_tokens
-    assert (
-        PrimeRlServingTokens.serve_tokens_full_generator
-        is not PrimeRlServingTokens.__mro__[1].serve_tokens_full_generator
-    )
+def test_subclass_overrides_serve_tokens_full_generator():
+    upstream = PrimeRlServingTokens.__mro__[1]
+    assert PrimeRlServingTokens.serve_tokens_full_generator is not upstream.serve_tokens_full_generator
 
 
 def test_serialize_routed_experts_uses_compact_raw_payload():
