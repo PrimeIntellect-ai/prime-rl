@@ -176,6 +176,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "occurrence": n,
                 "status": "incomplete",
                 "reason": None,
+                "error": None,
                 "started_at": event.at,
                 "finished_at": None,
                 "tokens": accounting.executions[event.execution].tokens,
@@ -192,6 +193,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             executions[event.execution] = node
         elif kind in ("transition", "stopped", "cancelled") and (node := executions.get(event.execution)) is not None:
             node["finished_at"] = event.at
+            node["error"] = event.error.model_dump() if event.error is not None else None
             if kind in ("stopped", "cancelled"):
                 node["status"] = kind
                 continue

@@ -603,10 +603,11 @@ function renderFlowGraph() {
     const calls = node.calls?.length ? ` · ${node.calls.length} call${node.calls.length === 1 ? "" : "s"}` : "";
     const failed = node.calls.filter((call) => call.status === "failed").length;
     const held = node.outcome === "held" || node.unit_status === "held";
+    const bad = failed > 0 || node.error !== null;
     const outcome = outcomes.get(node.id);
     const statusClass = flowStatusClass(node.status);
-    return `<button class="fg-node ${held || failed ? "bad" : statusClass} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.reason || node.path)}">
-      ${outcome ? `<span class="fg-outcome ${held ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome)}</span>` : ""}
+    return `<button class="fg-node ${bad ? "bad" : held ? "stale" : statusClass} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.reason || node.path)}">
+      ${outcome ? `<span class="fg-outcome ${bad ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome)}</span>` : ""}
       ${!outcome && statusClass === "interrupted" ? `<span class="fg-outcome interrupted">${esc(node.status)}</span>` : ""}
       <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}<span data-flow-duration="${esc(node.id)}">${duration ? ` · ${esc(duration)}` : ""}</span>${calls}</small>
       ${failed ? `<span class="fg-failures">${failed} failed call${failed === 1 ? "" : "s"}</span>` : ""}
@@ -642,6 +643,7 @@ function renderFlowStageFacts(node) {
     ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
     ["tokens", fmtCompact(node.tokens)],
     ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
+    ["error", node.error && `${node.error.type}: ${node.error.message}`],
     ["unit after stage", node.unit_status], ["affected units", node.links.map((link) => `${link.unit} (${link.label})`).join(", ")],
   ].filter(([, value]) => value);
   $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");

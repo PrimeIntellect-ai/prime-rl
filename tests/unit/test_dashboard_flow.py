@@ -22,7 +22,7 @@ def root(tmp_path):
     events = [
         {"type": "run_started"},
         {"type": "steer", "sha": "initial", "action": {"note": "initial guidance"}},
-        {"type": "started", "execution": "first"},
+        {"type": "started", "execution": "first", "error": None},
         {"type": "steer", "sha": "hold", "action": {"status": "held", "note": "pause after review"}},
         {"type": "call", "execution": "first", "call": "producer", "status": "started"},
         *[
@@ -40,6 +40,7 @@ def root(tmp_path):
         {"type": "call", "execution": "first", "call": "producer", "status": "succeeded", "trace_id": "trace"},
         {
             "type": "transition",
+            "error": None,
             "execution": "first",
             "to": "evaluate",
             "outcome": "reviewed",
@@ -49,7 +50,7 @@ def root(tmp_path):
             "links": [{"unit": "coordinator", "label": "updated"}],
         },
         {"type": "steer", "sha": "control", "action": {"status": "ready", "note": "retry"}},
-        {"type": "started", "execution": "second"},
+        {"type": "started", "execution": "second", "error": None},
         {
             "type": "call",
             "execution": "second",
@@ -92,6 +93,7 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert result["status"] == "incomplete"
     first, second = result["nodes"]
     assert first["status"] == "completed" and first["unit_status"] == "held"
+    assert first["error"] is None
     assert first["outcome"] == "reviewed" and second["status"] == "incomplete"
     assert first["links"] == [{"unit": "coordinator", "label": "updated"}]
     (producer,) = first["calls"]
@@ -108,7 +110,10 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert '"note":"retry"' in resume["summary"]
     with (run / "transitions.jsonl").open("a") as file:
         for kind, execution in [("stopped", "second"), ("started", "third"), ("cancelled", "third")]:
-            file.write(json.dumps({"type": kind, "execution": execution, "unit": "t", "stage": "evaluate"}) + "\n")
+            file.write(
+                json.dumps({"type": kind, "execution": execution, "unit": "t", "stage": "evaluate", "error": None})
+                + "\n"
+            )
         file.write(
             json.dumps({"type": "run_finished", "reason": "quiescent", "at": "2026-01-01T00:00:00+00:00"}) + "\n"
         )

@@ -17,7 +17,8 @@ and transitions form edges. The inspector shows unit steering and affected-unit 
 inferring execution dependencies. Completed agent calls open the existing trace viewer.
 Explicit execution links draw green cross-unit arrows; dotted connections show subsequent
 executions with recorded steering controls. Outcomes without a connected transition stay on
-their node, and holds and failed calls receive red emphasis.
+their node. Recorded stage errors and failed calls receive red emphasis; ordinary holds
+are blue, and interruptions are grey and dashed. Stage details show the recorded error.
 Unit state is read from committed Git HEAD, including the pipeline's typed `data`.
 Stage and call IDs determine attribution; cache attachments keep producer provenance.
 Failed and uncached calls remain visible, and native retry traces open individually.
