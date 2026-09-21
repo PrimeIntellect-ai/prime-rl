@@ -34,6 +34,18 @@ on 2026-09-21 by two independent code audits and a one-node kernel reproducer (`
   config still works and its measured numbers stand; its mechanism was misdescribed.
 - Proper fix (one line, vLLM): gate the fast path on `self.activation_config.clamp_limit is None`. Patch and bug
   report under `~/tmp/vllm_fix/`. Alternatively give `silu_and_mul_per_block_quant` a clamp argument.
+- 15:30: prime-rl carries the fix as `monkey_patch_triton_moe_swiglu_clamp` (commit 7ee8090a5): when a clamp is
+  configured, `TritonExperts.apply` runs with the module-level `is_deep_gemm_e8m0_used` bound to True, which is
+  its only use inside `apply` and routes the call to the clamped `self.activation` branch. Validated on one H200
+  with the layer-15 reproducer (`~/tmp/fp8diag/deepgemm_repro/patch_validate.py`): at T = 64 the impl is still
+  `TritonExperts`, over-limit tokens go from 7.36 / 2.62 / 12-of-15 catastrophic (max / median / count) to
+  0.061 / 0.047 / 0, the fused op is not called; with no clamp the fused fast path is still taken and output is
+  bit-identical to unpatched. Not yet exercised under expert parallelism (`expert_map`), so a two-node decode probe
+  on a TP 8 + EP server is the remaining check before this is treated as fully validated.
+- Config decision: DeepSeek V4 runs go back to `VLLM_USE_DEEP_GEMM_E8M0 = "0"` (the patch removes the reason for
+  "1", which worked only by forcing the DeepGEMM path and also coarsens activation scales) and keep
+  `fp8_ue8m0_weight_scales = true`, now also set in `swe.toml`. The upstream vLLM PR is being prepared in
+  `/home/garrett/github/garrett361/vllm-fix-triton-moe-swiglu-clamp` (branch `fix/triton-moe-swiglu-clamp`).
 
 ## Morning summary (final, 11:25; no jobs running)
 

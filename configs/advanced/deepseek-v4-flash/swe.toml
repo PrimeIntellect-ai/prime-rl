@@ -137,6 +137,9 @@ env.agent.runtime.labels = ["dsv4-swe"]
 # DeepGEMM's grouped fp8_einsum, which needs the 3D layout only DeepGemmFp8BlockScaledMMKernel
 # builds, and that kernel is skipped unless VLLM_USE_DEEP_GEMM is on.
 use_deep_gemm = true
+# The bf16 release is a dequantized FP8 checkpoint whose weights sit on the e4m3 grid under power-of-two
+# block scales; quantizing with those scales round-trips them exactly instead of rotating the grid.
+fp8_ue8m0_weight_scales = true
 
 [inference.env_vars]
 # Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.

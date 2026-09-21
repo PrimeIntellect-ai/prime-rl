@@ -142,9 +142,10 @@ use_deep_gemm = true
 fp8_ue8m0_weight_scales = true
 
 [inference.env_vars]
-# On: it forces the DeepGEMM experts path at every batch size. Below 128 tokens vLLM 0.29.0 otherwise falls
-# back to TritonExperts, whose fused SiLU-quant fast path drops this model's swiglu clamp (glitch tokens).
-VLLM_USE_DEEP_GEMM_E8M0 = "1"
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`. The glitch
+# tokens seen with it off came from vLLM's TritonExperts fast path dropping the swiglu clamp below 128 tokens;
+# prime-rl's monkey_patch_triton_moe_swiglu_clamp fixes that, so forcing DeepGEMM via "1" is no longer needed.
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
 
 [inference.vllm]
 dtype = "bfloat16"
