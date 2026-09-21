@@ -5,11 +5,41 @@ Plan: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse
 Ground rules: one 16-node training run at a time (job 961, the bf16 control, until killed); under 20 nodes total;
 checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-flash`; one commit per logical change.
 
+## Correction (2026-09-21, 15:00): the glitch is a vLLM bug, not a DeepGEMM bug
+
+The night-1 attribution "DeepGEMM's small-M grouped FP8 GEMM misreads fp32 activation scales" was wrong. Root-caused
+on 2026-09-21 by two independent code audits and a one-node kernel reproducer (`~/tmp/fp8diag/deepgemm_repro/`,
+`~/tmp/mismatch_evidence/vllm_deepgemm_moe_caller.md`, `dsv4_vs_glm_moe_path.md`, `deepgemm_891d57b_audit.md`):
+
+- With `VLLM_USE_DEEP_GEMM_E8M0=0`, vLLM 0.29.0 does not call DeepGEMM for routed experts when the batch has fewer
+  than 128 tokens: `TritonOrDeepGemmExperts._select_experts_impl` (`fused_moe/experts/triton_deep_gemm_moe.py:83`)
+  falls back to `TritonExperts` unless `_valid_deep_gemm_shape` (`experts/deep_gemm_moe.py:53-55`, needs
+  `128 <= M` on SM90) passes. That is the 111-versus-135 boundary and why every decode step was affected.
+- Inside `TritonExperts.apply` (`experts/triton_moe.py:474-486`) the fused SiLU-and-quantize fast path
+  `ops.silu_and_mul_per_block_quant` has no clamp argument, so DeepSeek V4 Flash's `swiglu_limit = 10.0`
+  (`gate.clamp(max=10)`, `up.clamp(-10, 10)`, as the trainer applies in `deepseek_v4/moe.py:30-31`) is dropped. Every
+  other path honours it: the else branch (`self.activation`, `silu_and_mul_with_clamp`), DeepGEMM
+  (`silu_mul_per_token_group_quant_fp8_colmajor(clamp_limit=...)`), the E8M0 packed kernel, and bf16.
+- Reproducer at T = 64 with real layer-15 expert weights: the fast path's output matches the UNCLAMPED reference to
+  FP8 noise (0.045) and is off by up to 7.4x the token norm against the clamped reference on tokens whose gate or up
+  pre-activation exceeds 10 (12 of 15 such tokens catastrophic, error monotone in the peak); in-limit tokens 0.045.
+  Forcing the else branch, T = 256 (DeepGEMM), or E8M0=1 at T = 64 are all clean (0.06). DeepGEMM called directly at
+  every M from 1 to 256, with fp32 or power-of-two activation scales, NaN-filled or zeroed padding, and TMA-aligned
+  scale layouts, is clean; on SM90 `disable_ue8m0_cast` is a no-op inside DeepGEMM and the contiguous alignment is
+  fixed at 128, so tiles cannot straddle experts.
+- Why GLM-4.5-Air was immune: identical module class, quant method, kernel dispatch and CUDA-graph sizes; it has no
+  `swiglu_limit`, so the unclamped fast path is correct for it.
+- Why `VLLM_USE_DEEP_GEMM_E8M0=1` "fixed" it: it forces the DeepGEMM experts path at every M, routing around the
+  buggy Triton branch. The activation-scale-format story was a coincidence of that routing. The shipped fix-test
+  config still works and its measured numbers stand; its mechanism was misdescribed.
+- Proper fix (one line, vLLM): gate the fast path on `self.activation_config.clamp_limit is None`. Patch and bug
+  report under `~/tmp/vllm_fix/`. Alternatively give `silu_and_mul_per_block_quant` a clamp argument.
+
 ## Morning summary (final, 11:25; no jobs running)
 
-1. **The FP8 mismatch had two causes, both now attributed.** (a) A kernel fault: DeepGEMM's grouped FP8 GEMM for routed
-   experts misreads fp32 activation scales in its small-M path (decode steps and prefill tails under about 128
-   tokens), producing the glitch tokens (`)Skip` etc.) that carried 79% of the FP8 run's step-1 mismatch. Never
+1. **The FP8 mismatch had two causes, both now attributed.** (a) A vLLM bug (see the Correction above; the DeepGEMM
+   attribution written here on night 1 was wrong): below 128 tokens vLLM's Triton MoE fallback drops DeepSeek V4's
+   swiglu clamp, producing the glitch tokens (`)Skip` etc.) that carried 79% of the FP8 run's step-1 mismatch. Never
    visible in prefill scoring, which is why the trainer and FP8 prefill agreed. (b) A resolution floor: the bf16
    release is a dequantized FP8 checkpoint sitting exactly on the e4m3 grid, so at lr 1e-6 the weight updates are
    far below half an e4m3 quantum and the served FP8 weights stay pinned at step 0 while the trainer moves. The
@@ -77,7 +107,7 @@ checkpointing off in new launches; wandb project `primeintellect/deepseek-v4-fla
 
 | cause | evidence | magnitude | fix | status |
 |---|---|---|---|---|
-| DeepGEMM grouped FP8 MoE GEMM misreads fp32 activation scales at small M (decode steps, prefill tails < ~128 tokens) | rounds 2-5: glitch reproduces only in decode / short tails on FP8 servers; routed-experts-only FP8 reproduces; attention-only and E8M0=1 do not; power-of-two weight scales alone do not remove it | 79% of the FP8 run's step-1 mismatch KL (glitch tokens), 25% late; `mismatch_kl/all/max` 48-3851; the tokens are IPO-masked so they add no gradient but pollute trajectories | `VLLM_USE_DEEP_GEMM_E8M0=1` | validated on 30 positions; under training in job 991 |
+| vLLM `TritonExperts` fused SiLU-quant fast path drops the swiglu clamp; used below 128 tokens when E8M0 is off (night-1 text blamed DeepGEMM; corrected 2026-09-21) | rounds 2-5: glitch reproduces only in decode / short tails on FP8 servers; routed-experts-only FP8 reproduces; attention-only and E8M0=1 do not; power-of-two weight scales alone do not remove it | 79% of the FP8 run's step-1 mismatch KL (glitch tokens), 25% late; `mismatch_kl/all/max` 48-3851; the tokens are IPO-masked so they add no gradient but pollute trajectories | `VLLM_USE_DEEP_GEMM_E8M0=1` | validated on 30 positions; under training in job 991 |
 | Online FP8 weight rounding with `amax / 448` scales rotates the checkpoint's power-of-two e4m3 grid | F27/F28; round 5: S3/S10 halve p90 log-ratio vs fp32 scales | bulk prefill KL 5.6e-3 -> 3.5e-3, IPO masked 0.0002 -> 0.0000 | `inference.fp8_ue8m0_weight_scales = true` (new field) | in job 991 |
 | Residual FP8 activation quantization (UE8M0 per-128 groups) | S10 vs bf16 reference: KL 3.5e-3, p90 0.086 | about 4-6x the bf16 floor | none tonight; bf16 serving if unacceptable | measured |
 | Weight drift off the e4m3 grid (handoff hypothesis 1) | B2: 87-93% of FP8-scope weights bit-identical at step 40, rest one bf16 ULP; > 1000 coherent steps to move a quantum | cannot explain growth at step 150 | none needed | ruled out |
