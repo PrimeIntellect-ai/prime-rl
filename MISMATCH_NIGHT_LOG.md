@@ -1,3 +1,19 @@
+# Night of 2026-09-21 on branch `exp/ds-v4-fp8-dither`: status at 06:30
+
+1. **Grid dither (trainer-side): tested and rejected.** Job 1045 ran 26 steps. Mismatch KL went 0.0025 -> 0.031 by step 20
+   (control 0.0015 -> 0.0031), diffuse, no glitch tokens. Lag decomposition: the served model changed at the baseline
+   rate; the trainer drifted from it 25x faster per step than the control. Killed at step 26 (masked fraction 0.02).
+   Details in the first section below.
+2. **Stochastic rounding (server-side): implemented, verified on CPU, queued.** Job 1047 (`swe-fp8-ue8m0-sr.toml`, 100
+   steps) has been PENDING on resources since 02:32; the partition has had 9 idle nodes all night against the 16 needed.
+   If it is still pending when you read this, either leave it queued (it runs whatever is committed in this worktree)
+   or `scancel 1047`. Prediction and details in the second section below. When it runs, check the inference log for
+   "PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically." and compare the 20-step means
+   against the control's 0.0022, 0.0033, 0.0043, 0.0066, 0.0119 with
+   `MON_RUN=/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0-sr MON_CTRL=/home/garrett/prl_output_dir/dsv4-swe-131k-fp8-ue8m0 uv run python ~/tmp/mismatch_evidence/monitor_961.py 1`.
+3. No other jobs are held. Commits on this branch: `a6dc380b0`, `9bae3231a` (dither flag), `b59bbc860` (dither config),
+   `1bc6e8d32` (stochastic rounding flag), `4b8ca3ad2` (its config), plus docs commits. Nothing pushed.
+
 # Grid-dither experiment, night of 2026-09-21 (branch `exp/ds-v4-fp8-dither`)
 
 Purpose: test the pinned-served-policy explanation for FP8 mismatch growth. Control: run `dsv4-swe-131k-fp8-ue8m0`
