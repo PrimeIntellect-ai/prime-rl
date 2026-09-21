@@ -101,8 +101,6 @@ uv run eval gsm8k -n 32 -r 4 -c 8 --monitors.prime
 
 The monitor opens one platform evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per eval epoch), and the dashboard's top bar shows a `view on platform` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.
 
-A hosted launch creates the evaluation itself and injects its id as `$EVALUATION_ID`. The monitor then attaches to that evaluation instead of opening a new one. One evaluation holds one epoch, so an attached run takes exactly one source and refuses to start with more. The platform keeps the failure marking of an attached evaluation; a clean finish still completes it.
-
 ## Metrics
 
 Eval metrics mirror the training rollout hierarchy under the `eval/<env>` scope:
