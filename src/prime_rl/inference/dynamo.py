@@ -391,7 +391,6 @@ class DynamoAdminPlane(AdminPlane):
         port: int,
         timeout: int,
         inference_world_size: int,
-        quantize_in_weight_transfer: bool = False,
     ) -> None:
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
@@ -411,7 +410,6 @@ class DynamoAdminPlane(AdminPlane):
                         0,
                         1,
                         timeout,
-                        quantize_in_weight_transfer,
                         "default",
                     ],
                 )

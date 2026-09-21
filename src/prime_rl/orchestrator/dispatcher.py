@@ -92,8 +92,8 @@ class DispatcherMetrics:
 
     def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
         """Return per-tick counters and clear them. Emits the full pre-
-        registered key set every tick (zero when no activity) so the wandb
-        time axis stays dense and ``define_metric`` lines up."""
+        registered key set every tick (zero when no activity) so the
+        time-keyed series stay dense on every monitor."""
         out: dict[str, float] = {}
         for kind in ("train", "eval"):
             envs = train_envs if kind == "train" else eval_envs
@@ -111,21 +111,6 @@ class DispatcherMetrics:
         self.cancelled_by_kind_env.clear()
         self.errored_by_kind_env.clear()
         return out
-
-    @staticmethod
-    def drain_keys(*, train_envs: set[str], eval_envs: set[str]) -> list[str]:
-        """Full set of keys ``drained`` may emit; used by the periodic
-        logger for ``wandb.define_metric``."""
-        keys = [
-            "dispatcher/cancelled/train",
-            "dispatcher/cancelled/eval",
-            "dispatcher/errored/train",
-            "dispatcher/errored/eval",
-        ]
-        for env in train_envs | eval_envs:
-            keys.append(f"dispatcher/cancelled/{env}")
-            keys.append(f"dispatcher/errored/{env}")
-        return keys
 
 
 def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
@@ -593,7 +578,10 @@ class Dispatcher:
             started_at=time.monotonic(),
         )
 
+        session_ids: set[str] = set()
+
         def on_delta(delta: dict) -> None:
+            session_ids.add(delta["trace"])
             first = not meta.live
             live.apply(meta, delta)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
@@ -602,15 +590,26 @@ class Dispatcher:
             if first and meta.live:
                 self.live_events.append(live.dispatched_event(meta))
 
-        task = asyncio.create_task(
-            env.run(
-                client=client,
-                model_name=model_name,
-                cache_salt=cache_salt,
-                task_data=group.task.data.model_dump(mode="json"),
-                on_delta=on_delta,
-            )
-        )
+        async def run_episode() -> vf.WireEpisode:
+            try:
+                episode = await env.run(
+                    client=client,
+                    model_name=model_name,
+                    cache_salt=cache_salt,
+                    task_data=group.task.data.model_dump(mode="json"),
+                    on_delta=on_delta,
+                )
+                session_ids.update(trace.id for trace in episode.traces)
+                return episode
+            finally:
+                cleanup = asyncio.create_task(clients.finish_sessions(sorted(session_ids)))
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+
+        task = asyncio.create_task(run_episode())
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True

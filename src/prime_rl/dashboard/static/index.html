@@ -21,7 +21,8 @@
   </div>
   <nav id="tabs">
     <button data-tab="config">Config</button>
-    <button data-tab="metrics" class="active">Metrics</button>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="metrics">Metrics</button>
     <button data-tab="flow" id="flow-tab-button" hidden>Flow</button>
     <button data-tab="traces">Traces</button>
     <button data-tab="report">Report</button>
@@ -39,30 +40,39 @@
 <div id="run-overview"></div>
 
 <main>
-  <section id="tab-metrics">
+  <section id="tab-overview">
     <div class="controls">
-      <div id="metrics-filter-wrap" class="dd-wrap" hidden>
-        <button id="metrics-filter-btn" class="btn dd-btn" title="filter">
+      <div id="overview-filter-wrap" class="dd-wrap" hidden>
+        <button id="overview-filter-btn" class="btn dd-btn" title="filter">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
         </button>
-        <div class="dd-menu dd-filters" id="metrics-filter-menu" hidden>
+        <div class="dd-menu dd-filters" id="overview-filter-menu" hidden>
           <div class="dd-sec">filter</div>
-          <label class="dd-row" id="metrics-env-row"><span class="t-label">env</span>
-            <select id="metrics-env"></select>
+          <label class="dd-row" id="overview-env-row"><span class="t-label">env</span>
+            <select id="overview-env"></select>
           </label>
-          <label class="toggle dd-row"><input type="checkbox" id="metrics-errors"><span class="dot"></span>include errors</label>
+          <label class="toggle dd-row"><input type="checkbox" id="overview-errors"><span class="dot"></span>include errors</label>
         </div>
       </div>
-      <div class="seg" id="metrics-mode">
-        <button data-mode="overview" class="active">Overview</button>
-        <button data-mode="all">All</button>
-      </div>
+      <input id="overview-search" class="search" type="search" placeholder="regex filter, e.g. reward or ^inference/">
+      <label class="ctl">smooth <input id="overview-smooth" type="range" min="1" max="50" value="1"><span id="overview-smooth-val">off</span></label>
+      <span id="overview-status" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="overview-collapse" class="btn">collapse</button>
+      <button id="overview-expand" class="btn">expand</button>
+    </div>
+    <div id="overview-body"></div>
+    <div id="swarm-tip" hidden></div>
+  </section>
+
+  <section id="tab-metrics" hidden>
+    <div class="controls">
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
-      <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
+      <label class="ctl">smooth <input id="metrics-smooth" type="range" min="1" max="50" value="1"><span id="metrics-smooth-val">off</span></label>
       <span id="metrics-status" class="muted"></span>
       <div class="spacer"></div>
-      <div class="seg" id="all-layout" hidden>
+      <div class="seg" id="metrics-layout">
         <button data-layout="flat">Flat</button>
         <button data-layout="nested">Nested</button>
       </div>
@@ -70,7 +80,6 @@
       <button id="metrics-expand" class="btn">expand</button>
     </div>
     <div id="metrics-body"></div>
-    <div id="swarm-tip" hidden></div>
   </section>
 
   <section id="tab-config" hidden>

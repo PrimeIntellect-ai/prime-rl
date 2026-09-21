@@ -145,9 +145,6 @@ class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
-    quantize_in_weight_transfer: bool = False
-    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
-
 
 class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
@@ -368,22 +365,6 @@ class RLConfig(BaseConfig):
                     )
         return self
 
-    @model_validator(mode="after")
-    def validate_quantize_in_weight_transfer(self):
-        if not isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig):
-            return self
-
-        if not self.weight_broadcast.quantize_in_weight_transfer:
-            return self
-
-        if self.inference is None:
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires an inference config.")
-
-        if self.trainer.model.impl != "custom":
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
-
-        return self
-
     ### Auto-setup shared configs (before sub-config construction)
 
     @model_validator(mode="before")
@@ -487,9 +468,7 @@ class RLConfig(BaseConfig):
                 inference_world_size=inference_world_size,
             )
             if self.weight_broadcast.type == "nccl":
-                transport_config = dict(
-                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
-                )
+                transport_config = {}
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
             else:
@@ -538,18 +517,9 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_eplb_requires_quantized_weight_transfer(self):
-        if self.inference is None or not self.inference.vllm.enable_eplb:
-            return self
-
-        # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
-        trainer_weight_broadcast = self.trainer.weight_broadcast
-        if trainer_weight_broadcast.type != "nccl" or not trainer_weight_broadcast.quantize_in_weight_transfer:
-            raise ValueError(
-                "inference.vllm.enable_eplb requires weight_broadcast.type = 'nccl' and "
-                "weight_broadcast.quantize_in_weight_transfer = true."
-            )
-
+    def validate_eplb(self):
+        if self.inference is not None and self.inference.vllm.enable_eplb:
+            raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
         return self
 
     @model_validator(mode="after")

@@ -190,8 +190,10 @@ Both backends support the 2 most important things:
 - P/D disaggregation - handling the prefill and decode stages separately
 
 ### Routing policies
-The 2 policies you might want to configure are:
-- `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - it hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica.
+The policies you might want to configure are:
+- `sticky_least_loaded` - the default policy. A new `X-Session-ID` is assigned to the least-loaded replica, then every later turn in that rollout remains on the same replica for KV cache reuse. The orchestrator releases sessions when rollouts complete, fail, or are cancelled, including traces discarded during retries. Failed release requests are logged without disabling future cleanup.
+
+- `consistent_hash` - hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica, preserving KV cache reuse without considering current load.
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 

@@ -24,7 +24,7 @@ def resolve_api_key(api_key_var: str) -> str:
     CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
     api_key = os.environ.get(api_key_var)
     if not api_key and api_key_var == "PRIME_API_KEY":
-        from prime_cli.core.config import Config as PrimeConfig
+        from prime_sandboxes import Config as PrimeConfig
 
         api_key = PrimeConfig().api_key
     return api_key or "EMPTY"
@@ -39,7 +39,7 @@ def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
     }
     headers = {**client_config.headers, **env_headers}
     if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
-        from prime_cli.core.config import Config as PrimeConfig
+        from prime_sandboxes import Config as PrimeConfig
 
         if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
             headers["X-Prime-Team-ID"] = team_id
@@ -91,6 +91,13 @@ class InferenceClient:
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
         self._scorer = PrefillScorer()
+        # Managed routed deployments set admin_base_url so engine admin traffic
+        # bypasses the client-facing router. External and frozen clients do not.
+        self._session_client = (
+            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))[0]
+            if client_config.admin_base_url is not None
+            else None
+        )
         self.model_name = model_name
 
     async def score(self, token_ids: list[int]) -> list[float]:
@@ -100,6 +107,26 @@ class InferenceClient:
 
     async def aclose(self) -> None:
         await self._scorer.aclose()
+        if self._session_client is not None:
+            await self._session_client.aclose()
+
+    async def finish_sessions(self, session_ids: list[str]) -> None:
+        """Release completed sessions when the client-facing router supports it."""
+        if self._session_client is None or not session_ids:
+            return
+
+        async def finish_session(session_id: str) -> None:
+            try:
+                await _admin_post(
+                    self._session_client,
+                    "/finish_session",
+                    timeout_s=5.0,
+                    params={"session_id": session_id},
+                )
+            except Exception as error:
+                get_logger().debug(f"Failed to release inference session {session_id}: {error!r}")
+
+        await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
 
 
 class AdminPlane:
@@ -142,7 +169,6 @@ class AdminPlane:
         port: int,
         timeout: int,
         inference_world_size: int,
-        quantize_in_weight_transfer: bool = False,
     ) -> None:
         gpus_per_server = inference_world_size // len(self.clients)
         get_logger().info(
@@ -160,7 +186,6 @@ class AdminPlane:
                         "rank_offset": rank_offset,
                         "inference_world_size": inference_world_size,
                         "timeout": timeout,
-                        "quantize_in_weight_transfer": quantize_in_weight_transfer,
                     },
                 )
                 response.raise_for_status()
@@ -486,7 +511,6 @@ async def init_nixl_broadcast(
                 "rank_offset": rank_offset,
                 "inference_world_size": inference_world_size,
                 "timeout": timeout,
-                "quantize_in_weight_transfer": False,
                 "session_id": session_id,
             },
         )

@@ -306,12 +306,14 @@ main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; 
 
 /* --------------------------------------------------------------- metrics */
 /* stable gutter: no layout shift when collapsing sections hides the scrollbar */
-#metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
+#overview-body, #metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
 .chart-card.dragging { opacity: 0.45; }
 /* one 12px rhythm everywhere: section-to-section, header-to-panes, pane-to-pane */
 details.section { margin-bottom: 12px; }
 /* nested sections (all-mode key tree) indent one step */
 details.section details.section { margin-left: 14px; }
+/* a section's own panes keep the rhythm before the sections nested under them */
+details.section > .chart-grid:not(:last-child) { margin-bottom: 12px; }
 details.section:not([open]) > summary { margin-bottom: 0; }
 /* section headers are full-width bars so the clickable region is obvious */
 details.section > summary {
@@ -360,7 +362,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .ep-cell.live { border-color: var(--accent); background: rgba(182, 255, 60, 0.18); animation: live-pulse 1.6s ease-in-out infinite; cursor: pointer; }
 
 /* distributions: a beeswarm per metric, a faint boxplot behind it, stats on hover */
-#tab-metrics { position: relative; }
+#tab-overview { position: relative; }
 .swarm-card .chart-head { cursor: default; }
 .swarm-host { height: var(--pane-h, 150px); margin-top: 6px; }
 .swarm { display: block; }
@@ -528,7 +530,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 
 
 /* metrics regex filter (overview + all) */
-#metrics-search, #config-search, #log-search { flex: 1; max-width: 460px; }
+#overview-search, #metrics-search, #config-search, #log-search { flex: 1; max-width: 460px; }
 
 /* wandb-style resize handles on every chart card: right edge = width, bottom
    edge = height, corner = both. Resizing one pane resizes all of them. */

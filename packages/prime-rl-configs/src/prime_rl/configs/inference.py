@@ -38,6 +38,8 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
+QuantizationType = Literal["fp8_per_block"]
+
 
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
@@ -105,7 +107,7 @@ class VllmConfig(BaseConfig):
     enable_prefix_caching: bool | None = None
     """Enable prefix caching."""
 
-    quantization: str | None = None
+    quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
     enable_lora: bool = False
@@ -129,6 +131,12 @@ class VllmConfig(BaseConfig):
 
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
+
+    enable_ep_weight_filter: bool = True
+    """Skip non-local expert weights at load time under expert parallelism, so each
+    rank reads only its own expert shard from disk. No-op for non-MoE models, when
+    expert parallelism is disabled, or under EPLB (redundant expert slots need all
+    logical expert weights)."""
 
     enable_dbo: bool = False
     """Enable dual batch overlap (DBO)."""
@@ -303,8 +311,8 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    policy: str = "consistent_hash"
-    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+    policy: str = "sticky_least_loaded"
+    """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 
 
 class LlmdRouterConfig(BaseConfig):

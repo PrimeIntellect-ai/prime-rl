@@ -38,7 +38,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm and Kubernetes support.
 6. Multimodal support for VLMs such as Qwen3-VL.
 7. Hackable, modular, and extensible by design.
-8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.2/).
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
 
 
 ## Models support
@@ -204,7 +204,7 @@ These guides are designed to be run from a Slurm cluster but can also be adapted
 
 1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
 2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` training with P/D disaggregation, the `llm-d` router, and FP8.
+3. [**GLM-5**](examples/advanced/glm-5.3/): Large-scale `GLM-5`/`GLM-5.3` training with P/D disaggregation, the `llm-d` router, and FP8.
 
 ## Docs
 

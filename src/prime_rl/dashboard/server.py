@@ -41,6 +41,7 @@ from prime_rl.utils.process import set_proc_title
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
+    from fastapi.middleware.gzip import GZipMiddleware
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
@@ -51,6 +52,7 @@ MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=1)
 output_dirs: list[Path] = [default_output_dir()]
 
 # run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
@@ -584,7 +586,7 @@ def read_report(run: str, file: str) -> dict:
 # ------------------------------------------------------------------------- metrics
 
 
-MAX_METRICS_CHUNK = 4 * 1024 * 1024
+MAX_METRICS_CHUNK = 16 * 1024 * 1024
 """Per-response cap on /metrics: huge runs stream in chunks the client loops over,
 so the first charts paint long before a 100MB metrics.jsonl finishes loading."""
 
@@ -600,7 +602,9 @@ def read_metrics(run: str, offset: int = 0) -> dict:
     rows = []
     with path.open("rb") as f:
         f.seek(offset)
-        data = f.read(MAX_METRICS_CHUNK)
+        # Keep the first response small for quick initial chart rendering.
+        chunk_size = 4 * 1024 * 1024 if offset == 0 else MAX_METRICS_CHUNK
+        data = f.read(chunk_size)
         if data and b"\n" not in data:  # a single line larger than the chunk
             data += f.readline()
     consumed = data.rfind(b"\n") + 1  # leave a partially-written last line for the next poll

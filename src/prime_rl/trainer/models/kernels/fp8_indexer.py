@@ -22,9 +22,9 @@ def _per_token_group_quant_fp8(
     group_size,
     y_num_columns,
     y_row_stride,
-    eps,
-    fp8_min,
-    fp8_max,
+    eps: tl.constexpr,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
     use_ue8m0: tl.constexpr,
     BLOCK: tl.constexpr,
 ):

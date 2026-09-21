@@ -28,7 +28,7 @@ from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
+from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -79,7 +79,6 @@ class EvalRunner:
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         self.run_name = os.environ.get("PRL_RUN_NAME")
-        wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
@@ -153,13 +152,7 @@ class EvalRunner:
         self.periodic_logger = PeriodicLogger(
             name="Eval",
             collect=self.collect_pipeline_view,
-            metric_keys=[
-                *list(self.dispatcher.gauges().keys()),
-                *list(self.concurrency.gauges().keys()),
-                *DispatcherMetrics.drain_keys(train_envs=set(), eval_envs={env.name for env in self.eval_envs}),
-            ],
             interval=config.log.interval,
-            wandb_enabled=wandb_enabled,
         )
 
     async def start(self) -> None:
