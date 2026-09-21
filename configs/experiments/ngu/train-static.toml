@@ -8,6 +8,7 @@ name = "glm45air-swe-baseline-frontier800-lp01"
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/mika-ngu-train/triton"
+HF_HUB_OFFLINE = "1"
 
 [slurm]
 job_name = "glm45air-swe-baseline-frontier800-lp01"
