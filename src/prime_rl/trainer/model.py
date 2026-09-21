@@ -886,8 +886,10 @@ def dither_fp8_grid(model: nn.Module, seed: int = 0) -> tuple[int, float]:
     (``2 ** (floor(log2|w|) - 3)``) on each side of ``w``, except toward zero from a power of two
     where the neighbouring bin is half as wide. The offset is drawn over ``15/16`` of the bin so
     the bf16 cast sent to inference, whose half ULP is ``1/16`` of the bin half-width, also stays
-    strictly inside. Returns the number of elements dithered and the mean of ``|delta| / |w|``
-    over them, summed across ranks when distributed.
+    strictly inside. Elements at the top e4m3 step of a binade (mantissa ``1.75``) are only moved
+    toward zero, because a saturated block maximum dithered upward would double the block scale
+    and regrid the whole block. Returns the number of elements dithered and the mean of
+    ``|delta| / |w|`` over them, summed across ranks when distributed.
     """
     logger = get_logger()
     margin = 0.999 * 15 / 16
@@ -909,7 +911,7 @@ def dither_fp8_grid(model: nn.Module, seed: int = 0) -> tuple[int, float]:
                 nonzero = weight != 0
                 mantissa, exponent = torch.frexp(weight)
                 quantum = torch.exp2(exponent.float() - 4)
-                half_width_away = quantum / 2
+                half_width_away = torch.where(mantissa.abs() == 0.875, torch.zeros_like(quantum), quantum / 2)
                 half_width_toward = torch.where(mantissa.abs() == 0.5, quantum / 4, quantum / 2)
                 uniform = torch.rand(weight.shape, generator=generator, device=weight.device)
                 offset = (uniform * (half_width_toward + half_width_away) - half_width_toward) * margin
