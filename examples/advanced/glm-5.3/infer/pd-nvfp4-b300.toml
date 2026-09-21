@@ -1,5 +1,5 @@
 # RL fragment: 1P + 1D NVFP4 inference and the Scale-SWE training environment.
-# Add trainer, training deployment, batching and weight-broadcast settings before launching RL.
+# Add trainer, training deployment and weight-broadcast settings before launching RL.
 output_dir = "outputs/glm53-nvfp4-pd"
 
 [inference]
@@ -167,6 +167,7 @@ moe_router_dtype = "float32"
 head_dtype = "float32"
 
 [orchestrator]
+batch_size = 512
 group_size = 16
 
 [orchestrator.concurrency]

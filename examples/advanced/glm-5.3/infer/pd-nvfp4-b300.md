@@ -1,7 +1,7 @@
 # GLM-5.3 NVFP4 P/D and Scale-SWE training on B300
 
 This RL config fragment contains `[inference]` and the Scale-SWE training source
-under `[orchestrator.train.source]`. Add trainer, training deployment, batching,
+under `[orchestrator.train.source]`. Add trainer, training deployment,
 model/tokenizer and weight-broadcast settings before launching a full RL run.
 The inference checkpoint is prequantized; training also needs an explicit choice
 of trainer checkpoint and inference weight-reload/quantization settings.
@@ -67,9 +67,8 @@ maximum in-flight episodes to the same value. Episodes doing tool work also
 occupy slots, so this does not guarantee 2,048 simultaneous inference requests.
 
 `orchestrator.batch_size` counts trainer-bound traces per optimizer step,
-independently of concurrency. It is omitted here and resolves to 128 by default;
-choose the training batch size when adding the trainer. With `group_size=16`,
-it must be a multiple of 16. The default `constant_trainer_batch_size=true`
+independently of concurrency. It is set to 512, with `group_size=16` rollouts
+per task. The default `constant_trainer_batch_size=true`
 prunes zero-advantage RL samples before counting toward the batch and keeps
 collecting until enough useful traces remain. For plain GRPO, groups with
 identical rewards have zero advantage and do not fill that batch. Setting
