@@ -129,6 +129,12 @@ with `orchestrator_on_inference=true`, every trainer node is eligible. These are
 job-scoped DRAM-only clients with an independent capacity; reserve host RAM for
 trainer activation/optimizer offload. Omission disables trainer contributions.
 Logs live under `<run_dir>/mooncake/trainer_<rank>/client.log`.
+On hosts exposing multiple RDMA fabrics, set trainer `device_name` explicitly
+to NICs reachable from inference. Auto-discovery includes every active HCA; on
+the B300 deployment, this included `mlx5_5`–`mlx5_8` (100 Gb/s) and caused
+`TRANSFER_FAIL` / RDMA retry exhaustion. The configured 800 Gb/s NIC list is
+`mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13` on these nodes.
+Verify local device mappings before reusing that list on another cluster.
 
 If trainer GPUs remain at 0% while peers stay at 100%, sample the idle rank and
 its compiler children before treating utilization as useful compute. In the

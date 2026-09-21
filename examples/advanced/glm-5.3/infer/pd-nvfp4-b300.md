@@ -138,6 +138,8 @@ quota. Decode contributes no storage and retains access to both store tiers.
 The three trainer nodes without the orchestrator each contribute an additional
 1 TB (1,000,000,000,000 bytes) of DRAM to the same pool, configured separately
 under `deployment.trainer_mooncake.num_bytes`. Trainer storage is DRAM-only.
+Trainer storage explicitly uses the same eight 800 Gb/s NICs as inference;
+auto-discovery also selects incompatible interfaces on these hosts.
 Trainer and orchestrator logging use DEBUG; router logging uses INFO.
 The overlay uses CP=8, EP=8, full activation checkpointing with activation
 offloading, and batch size 128 (eight groups of 16). It uses stateless SignSGD,
