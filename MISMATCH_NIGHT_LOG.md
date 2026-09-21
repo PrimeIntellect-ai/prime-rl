@@ -522,3 +522,18 @@ versus the trainer's DeepGEMM contiguous kernel (decode-heavy reverse-text), the
 the parity fix addresses, and the indexer's top-k discontinuity amplifying any kernel difference. Rank 0 logged a CUDA
 allocator mapping failure with 5 MB free (the 4-trainer-node lr = 0 configs are memory-tight; steps continued). This
 is the "before" for `fix/fp8-quant-parity`; re-run the same config after the fix for the "after".
+
+### fp8/fp8 16-node run (job 1115, `swe-fp8-fp8.toml`, started 22:34)
+
+Startup: "Replaced 301 linear layers with FP8 blockwise linear (skipped 253 by name, 0 by 128-divisibility)",
+"Configured 43/43 MoE layers with compute=deepgemm_fp8"; inference `fp8_per_block`, E8M0 off, no power-of-two
+weight-scale patch (both sides on `amax / 448`), clamp patch active, `wo_a` FP8 on the server only (the TODO).
+
+| step | fp8/fp8 kl_mean | kl_max | is_masked | reward | peak mem | control (job 991) | bf16 control |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.00212 | 1.22 | 2.1e-5 | 0.580 | 74.0 GiB | 0.00149 | 0.00054 |
+
+Step 1 at 23:13 after a 20 min first step. Grad norm 0.006 (control 0.04 at step 1); worth watching. Comparison targets:
+job 991's 20-step means 0.0022, 0.0033, 0.0043, 0.0066, 0.0119 (pinned served weights, growth) and job 1047's
+0.0018, 0.0021, 0.0022, 0.0023 (stochastic rounding, flat). Prediction for fp8/fp8: flat, since both sides quantize
+the same bf16 weights with the same recipe and the rotated `amax / 448` grid lets both track the masters.
