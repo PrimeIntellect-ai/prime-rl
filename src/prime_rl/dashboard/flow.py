@@ -12,10 +12,10 @@ from typing import Any
 
 import orjson
 from verifiers.v1.flow.calls import Record
-from verifiers.v1.flow.events import CallEvent, EventRecord, LinkEvent, RunEvent, StageEvent, SteerEvent, event_adapter
+from verifiers.v1.flow.events import CallEvent, Event, LinkEvent, RunEvent, StageEvent, SteerEvent, event_adapter
 from verifiers.v1.flow.stats import Stats, summarize
-from verifiers.v1.flow.traces import Traces
 from verifiers.v1.flow.unit import UnitState
+from verifiers.v1.utils.trace_store import TraceStore
 
 TRANSITIONS = "transitions.jsonl"
 
@@ -94,7 +94,7 @@ def call_records(run_dir: Path) -> list[Record]:
     ]
 
 
-def read_events(run_dir: Path) -> list[EventRecord]:
+def read_events(run_dir: Path) -> list[Event]:
     return [event_adapter.validate_python(row) for row in read_complete_jsonl(run_dir / TRANSITIONS)]
 
 
@@ -109,7 +109,7 @@ def _running(run_dir: Path) -> bool:
     return False
 
 
-def run_status(run_dir: Path, events: list[EventRecord]) -> str:
+def run_status(run_dir: Path, events: list[Event]) -> str:
     boundary = next(
         (e for e in reversed(events) if isinstance(e, RunEvent) and e.type in ("run_started", "run_finished")), None
     )
@@ -133,8 +133,8 @@ def _payload(value: Any) -> Any:
 
 
 @lru_cache(maxsize=16)
-def _traces(run_dir: Path) -> Traces:
-    return Traces(run_dir)
+def _traces(run_dir: Path) -> TraceStore:
+    return TraceStore(run_dir)
 
 
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:

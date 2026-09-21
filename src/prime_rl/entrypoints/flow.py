@@ -1,26 +1,24 @@
-"""Launch, inspect and steer pipelines: `uv run flow {run,inspect,steer,drain} --help`."""
+"""Launch a configured Flow: `flow @ run.toml`; inspect, steer and drain control its boundaries."""
 
-import argparse
 import asyncio
 import json
 import logging
+import sys
 from pathlib import Path
-from typing import Any, TypeVar, get_args
+from typing import Any
 
 from pydantic import BaseModel
-from verifiers.v1.flow import FlowConfig, FlowEntrypoint
-from verifiers.v1.flow.events import Status
+from verifiers.v1.flow import drain_on_interrupt
 from verifiers.v1.flow.flow import DRAIN_FILE, TRANSITIONS, UNITS, unit_path
 from verifiers.v1.flow.unit import Unit, UnitInspection
+from verifiers.v1.utils.loaders import load_flow
 
+from prime_rl.configs.flow import DrainConfig, FlowConfig, InspectConfig, SteerConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 
-C = TypeVar("C", bound=FlowConfig)
 
-
-def launch(entrypoint: FlowEntrypoint[C], root: Path, args: list[str], *, dashboard: bool) -> int:
-    config = cli(entrypoint.config_type, args=args, prog="flow run")
-
+def launch(config: FlowConfig) -> int:
+    root = config.run_dir
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
     from prime_rl.utils.logger import InterceptHandler, setup_logger
     from prime_rl.utils.pathing import prepare_attempt_dirs, write_launch_artifacts
@@ -29,13 +27,22 @@ def launch(entrypoint: FlowEntrypoint[C], root: Path, args: list[str], *, dashbo
     write_launch_artifacts(config_dir, "flow")
     (config_dir / "flow.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     log_file = log_dir / "flow.log"
-    logger = setup_logger(log_file=log_file)
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
     logging.basicConfig(level=logging.INFO, handlers=[InterceptHandler(prefix=None)], force=True)
+    logging.getLogger("verifiers").setLevel(config.log.vf_level.upper())
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    if dashboard:
+    if config.dashboard:
         log_dashboard_url(logger, ensure_dashboard(root.parent, logger))
-    setup_logger(log_file=log_file, console_level="ERROR")
-    return asyncio.run(entrypoint.run(root, config))
+    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
+
+    async def run() -> int:
+        flow = load_flow(config.flow, root=root)
+        with drain_on_interrupt(flow):
+            result = await flow.run()
+        logger.info("Flow finished: {} {}", result.reason, result.counts)
+        return flow.exit_code(result)
+
+    return asyncio.run(run())
 
 
 class Inspection(BaseModel):
@@ -59,48 +66,26 @@ def inspect(root: Path, name: str | None = None) -> Inspection:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="Launch an installed FlowEntrypoint")
-    run.add_argument("--no-dashboard", action="store_true", help="Skip dashboard registration and startup")
-    run.add_argument("entrypoint", help="Dotted import path, e.g. repoforge.launch.entrypoint")
-    run.add_argument("root", type=Path)
-    run.add_argument("config_args", nargs=argparse.REMAINDER, help="@ config.toml and typed pipeline overrides")
-    view = commands.add_parser("inspect", help="Committed states and executing stages as JSON")
-    view.add_argument("root", type=Path)
-    view.add_argument("unit", nargs="?")
-    steer = commands.add_parser("steer", help="Publish boundary controls or settled data updates")
-    steer.add_argument("root", type=Path)
-    steer.add_argument("unit")
-    steer.add_argument("--stage")
-    steer.add_argument("--status", choices=get_args(Status))
-    steer.add_argument("--reason")
-    steer.add_argument("--note")
-    steer.add_argument("--data", type=Path, help="JSON object of pipeline data fields to update")
-    steer.add_argument("--expected", help="Workflow revision; required for data updates")
-    drain = commands.add_parser("drain", help="Finish running calls and stop admission")
-    drain.add_argument("root", type=Path)
-    options = parser.parse_args(argv)
-    if options.command == "run":
-        from prime_rl.utils.utils import import_object
-
-        entrypoint = import_object(options.entrypoint)
-        if not isinstance(entrypoint, FlowEntrypoint):
-            raise TypeError(f"{options.entrypoint} must be a FlowEntrypoint")
-        raise SystemExit(launch(entrypoint, options.root, options.config_args, dashboard=not options.no_dashboard))
-    elif options.command == "inspect":
-        print(inspect(options.root, options.unit).model_dump_json(indent=2))
-    elif options.command == "drain":
-        (options.root / DRAIN_FILE).touch()
+    args = list(sys.argv[1:] if argv is None else argv)
+    command = args.pop(0) if args and args[0] in ("inspect", "steer", "drain") else "run"
+    if command == "run":
+        raise SystemExit(launch(cli(FlowConfig, args=args, prog="flow")))
+    if command == "inspect":
+        config = cli(InspectConfig, args=args, prog="flow inspect")
+        print(inspect(config.root, config.unit).model_dump_json(indent=2))
+    elif command == "drain":
+        config = cli(DrainConfig, args=args, prog="flow drain")
+        (config.root / DRAIN_FILE).touch()
     else:
-        unit = Unit(unit_path(options.root, options.unit))
+        config = cli(SteerConfig, args=args, prog="flow steer")
+        unit = Unit(unit_path(config.root, config.unit))
         revision = unit.steer(
-            stage=options.stage,
-            status=options.status,
-            reason=options.reason,
-            note=options.note,
-            expected=options.expected,
-            data=json.loads(options.data.read_text()) if options.data else None,
+            stage=config.stage,
+            status=config.status,
+            reason=config.reason,
+            note=config.note,
+            expected=config.expected,
+            data=json.loads(config.data.read_text()) if config.data else None,
         )
         print(json.dumps({"revision": revision}))
 
