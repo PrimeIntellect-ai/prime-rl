@@ -43,19 +43,6 @@ def prepare_mega_moe_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor
     return MegaMoeExpertWeights(l1=l1, l2=l2)
 
 
-def uninterleave_mega_moe_l1_grad(dw1: torch.Tensor) -> torch.Tensor:
-    num_experts, two_i, hidden = dw1.shape
-    intermediate = two_i // 2
-    grouped = dw1.view(num_experts, intermediate // 8, 2, 8, hidden)
-    return torch.cat(
-        [
-            grouped[:, :, 0].reshape(num_experts, intermediate, hidden),
-            grouped[:, :, 1].reshape(num_experts, intermediate, hidden),
-        ],
-        dim=1,
-    )
-
-
 def reserve_sms_for_comm(num_reserved_sms: int) -> None:
     import deep_gemm
 
@@ -119,14 +106,15 @@ def mega_moe_backward(
     topk_weights: torch.Tensor,
     weights: MegaMoeExpertWeights,
     buffer,
+    dw_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     import deep_gemm
 
     num_tokens, hidden = x.shape
     _stage_inputs(buffer, x, topk_idx, topk_weights)
     dx = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
-    dw1 = torch.zeros(weights.l1.shape, dtype=torch.float32, device=x.device)
-    dw2 = torch.zeros(weights.l2.shape, dtype=torch.float32, device=x.device)
-    dtopk = torch.zeros((num_tokens, buffer.num_topk), dtype=torch.float32, device=x.device)
-    deep_gemm.bf16_mega_moe_backward(dx, dw1, dw2, dtopk, dy, weights.l1, weights.l2, buffer)
-    return dx, uninterleave_mega_moe_l1_grad(dw1), dw2, dtopk
+    dw1 = torch.empty(weights.l1.shape, dtype=dw_dtype, device=x.device)
+    dw2 = torch.empty(weights.l2.shape, dtype=dw_dtype, device=x.device)
+    dtopk = torch.empty((num_tokens, buffer.num_topk), dtype=torch.float32, device=x.device)
+    deep_gemm.bf16_mega_moe_backward(dx, dw1, dw2, dtopk, dy, weights.l1, weights.l2, buffer, dw_natural_layout=True)
+    return dx, dw1, dw2, dtopk

@@ -30,28 +30,27 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
         topk_weights = top_scores.to(torch.float32)
         weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
         y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer)
-        ctx.save_for_backward(x_bf16, topk_idx, topk_weights, gate_up_proj, down_proj)
+        ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
         ctx.buffer = buffer
+        ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
         ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
         return y.to(x.dtype)
 
     @staticmethod
     def backward(ctx, grad_y: torch.Tensor):
-        from prime_rl.trainer.models.layers.mega_moe import mega_moe_backward, prepare_mega_moe_weights
+        from prime_rl.trainer.models.layers.mega_moe import MegaMoeExpertWeights, mega_moe_backward
 
-        x_bf16, topk_idx, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
-        weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
+        x_bf16, topk_idx, topk_weights, l1, l2 = ctx.saved_tensors
         dx, dl1, dl2, dtopk = mega_moe_backward(
-            grad_y.to(torch.bfloat16).contiguous(), x_bf16, topk_idx, topk_weights, weights, ctx.buffer
+            grad_y.to(torch.bfloat16).contiguous(),
+            x_bf16,
+            topk_idx,
+            topk_weights,
+            MegaMoeExpertWeights(l1=l1, l2=l2),
+            ctx.buffer,
+            ctx.dw_dtype,
         )
-        return (
-            dx.to(ctx.x_dtype),
-            dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype),
-            None,
-            dl1.to(gate_up_proj.dtype),
-            dl2.to(down_proj.dtype),
-            None,
-        )
+        return dx.to(ctx.x_dtype), dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype), None, dl1, dl2, None
 
 
 class MegaMoeTokenDispatcher(TokenDispatcher):
