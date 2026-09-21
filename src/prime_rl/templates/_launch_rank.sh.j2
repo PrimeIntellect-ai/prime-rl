@@ -15,6 +15,13 @@ rank_log() {
 # launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
 launch_inference_rank() {
     local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
+{% if local_rank_numa_nodes | default([]) or local_rank_ucx_devices | default([]) %}
+    local local_rank=$(( ${gpus%%,*} / (GPUS_PER_NODE / {{ dp_per_node }}) ))
+    local UCX_NET_DEVICES="${UCX_NET_DEVICES:-all}"
+{% for device in local_rank_ucx_devices | default([]) %}
+    if [ "$local_rank" -eq {{ loop.index0 }} ]; then export UCX_NET_DEVICES="{{ device }}"; fi
+{% endfor %}
+{% endif %}
     # Per-rank dir for the mooncake-store lookup ipc socket. It must be unique per process:
     # external-LB runs one engine per process, all with data_parallel_rank_local 0, so the
     # lookup socket name collides on bind if the dir is shared node-wide. $port is unique per
@@ -31,6 +38,9 @@ launch_inference_rank() {
         printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
+{% for node in local_rank_numa_nodes | default([]) %}
+    if [ "$local_rank" -eq {{ loop.index0 }} ]; then cmd=(numactl --cpunodebind={{ node }} --membind={{ node }} "${cmd[@]}"); fi
+{% endfor %}
     if [ -n "$nixl" ]; then
         CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
     else

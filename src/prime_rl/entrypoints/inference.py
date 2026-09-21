@@ -57,6 +57,17 @@ def write_config(
     return config_path
 
 
+def write_pd_configs(config: InferenceConfig, output_dir: Path) -> None:
+    if config.deployment.type != "disaggregated":
+        return
+    for role in ("prefill", "decode"):
+        role_config = dump_resolved_config(
+            config.for_pd_role(role), exclude={"deployment", "slurm", "output_dir", "dry_run"}
+        )
+        role_config["router"] = None
+        (output_dir / f"inference-{role}.json").write_text(json.dumps(role_config, indent=2))
+
+
 def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path, script_path: Path) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
@@ -70,8 +81,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
 
-    offload = config.kv_cache_offload
-    is_mooncake = offload is not None and offload.type == "mooncake"
+    offloads = config.kv_cache_offload_by_role
 
     template_vars = dict(
         **config.slurm.template_vars,
@@ -82,16 +92,16 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,
+        local_rank_numa_nodes=config.deployment.local_rank_numa_nodes,
+        local_rank_ucx_devices=config.deployment.local_rank_ucx_devices,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         router=config.router,
         router_port=config.server.port,
         is_disaggregated=is_disaggregated,
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
+        kv_offload=any(offload is not None for offload in offloads.values()),
+        kv_offload_mooncake=any(offload is not None and offload.type == "mooncake" for offload in offloads.values()),
+        kv_offload_configs=offloads,
         inference_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars},
     )
 
@@ -140,6 +150,7 @@ def inference_slurm(config: InferenceConfig):
     is_multi_node = config.deployment.type in ("multi_node", "disaggregated")
     exclude = {"deployment", "slurm", "dry_run"} if is_multi_node else {"slurm", "dry_run"}
     config_path = write_config(config, config_dir, exclude=exclude, engine_only=is_multi_node)
+    write_pd_configs(config, config_dir)
     logger.info(f"Wrote config to {config_path}")
 
     script_path = get_launcher_dir(config.output_dir) / INFERENCE_SBATCH
@@ -182,10 +193,12 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--request-id-headers",
         "x-session-id",
         "--worker-startup-timeout-secs",
-        "4200",
+        str(config.router.worker_startup_timeout_seconds),
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
+    if config.router.disable_retries:
+        cmd.append("--disable-retries")
     return subprocess.Popen(cmd)
 
 

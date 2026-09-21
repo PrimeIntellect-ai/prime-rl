@@ -1,0 +1,274 @@
+# Four-node trainer plus 1P + 1D NVFP4 inference on B300.
+seq_len = 65536
+max_steps = 1000
+clean = true
+dashboard = false
+output_dir = "outputs/glm53-nvfp4-rl"
+
+[run]
+name = "scaleswe-nvfp4-4over6"
+
+[model]
+# zai-org/GLM-5.3-BF16, revision 9d2398f478cab2de883137db3a36ad2c96205e24.
+name = "/home/matej/prime-rl/outputs/glm53-rl/models/bf16/model"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_replicas = 1
+gpus_per_node = 8
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 7200
+
+[monitors.file]
+
+[monitors.wandb]
+project = "glm53-nvfp4-rl"
+
+[env_vars]
+UV_NO_SYNC = "1"
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_4"
+ep = 8
+cp = 4
+optim_cpu_offload = true
+full_offload = false
+fused_lm_head_token_chunk_size = 512
+
+[trainer.model.moe.compute]
+type = "nvfp4"
+apply_to = "85%"
+four_over_six = true
+backward = "dequant_bf16"
+
+[trainer.model.ac]
+mode = "selective"
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.optim]
+type = "adamw"
+
+[inference]
+use_deep_gemm = false
+enable_fp32_lm_head = true
+enable_fp32_router_logits = true
+enable_return_sampling_mask = true
+
+[inference.server]
+host = "0.0.0.0"
+port = 8000
+
+[inference.router]
+type = "vllm-router"
+policy = "sticky_least_loaded"
+disable_retries = true
+worker_startup_timeout_seconds = 5400
+
+[inference.deployment]
+type = "disaggregated"
+prefill_nodes_per_replica = 1
+decode_nodes_per_replica = 1
+num_prefill_replicas = 1
+num_decode_replicas = 1
+gpus_per_node = 8
+local_rank_numa_nodes = [0, 0, 1, 1, 2, 2, 3, 3]
+local_rank_ucx_devices = ["mlx5_0:1", "mlx5_1:1", "mlx5_2:1", "mlx5_3:1", "mlx5_4:1", "mlx5_9:1", "mlx5_12:1", "mlx5_13:1"]
+prefill_port = 18100
+decode_port = 18200
+
+# One shared store, with all capacity on P; D retains a client connection.
+[inference.deployment.prefill_kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13"
+local_buffer_bytes = 536870912
+
+[inference.deployment.prefill_kv_cache_offload.cpu]
+num_bytes = 2748779069440 # 2560 GiB per prefill node
+
+[inference.deployment.decode_kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13"
+local_buffer_bytes = 536870912
+
+[inference.deployment.decode_kv_cache_offload.cpu]
+num_bytes = 0
+
+[inference.deployment.decode_env_vars]
+VLLM_USE_BREAKABLE_CUDAGRAPH = "1"
+
+[inference.deployment.prefill_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+max_num_batched_tokens = 32768
+max_num_seqs = 256
+gpu_memory_utilization = 0.90
+
+[inference.deployment.prefill_vllm_overrides.compilation_config]
+cudagraph_mode = "NONE"
+
+[inference.deployment.prefill_vllm_overrides.kv_transfer_config]
+kv_connector = "MultiConnector"
+kv_role = "kv_both"
+kv_load_failure_policy = "fail"
+
+[[inference.deployment.prefill_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "NixlConnector"
+kv_role = "kv_producer"
+kv_load_failure_policy = "fail"
+kv_connector_extra_config.num_threads = 1
+kv_connector_extra_config.kv_lease_duration = 120
+
+[[inference.deployment.prefill_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "MooncakeStoreConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.save_decode_cache = true
+kv_connector_extra_config.cache_prefix = "glm53-bf16-9d2398f-nvfp4-4over6-l0-65-fp8kv-prefill"
+
+[inference.deployment.decode_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+max_num_batched_tokens = 320
+max_num_seqs = 320
+gpu_memory_utilization = 0.90
+
+[inference.deployment.decode_vllm_overrides.compilation_config]
+cudagraph_mode = "FULL_AND_PIECEWISE"
+cudagraph_capture_sizes = [1, 2, 4, 8, 16, 32, 64, 96, 128, 192, 256, 320]
+
+[inference.deployment.decode_vllm_overrides.kv_transfer_config]
+kv_connector = "MultiConnector"
+kv_role = "kv_both"
+kv_load_failure_policy = "fail"
+
+[[inference.deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "NixlConnector"
+kv_role = "kv_consumer"
+kv_load_failure_policy = "fail"
+kv_connector_extra_config.num_threads = 1
+kv_connector_extra_config.kv_lease_duration = 120
+
+[[inference.deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "MooncakeStoreConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.save_decode_cache = true
+kv_connector_extra_config.cache_prefix = "glm53-bf16-9d2398f-nvfp4-4over6-l0-65-fp8kv-decode"
+
+[[inference.deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "HiSparseConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.host_pool_gib = 300
+
+[slurm]
+job_name = "glm53-nvfp4-rl"
+partition = "all"
+time = "0"
+pre_run_command = "export WANDB_API_KEY"
+
+[inference.env_vars]
+UCX_RCACHE_MAX_UNRELEASED = "1024"
+CUDA_HOME = "/usr/local/cuda-13.0"
+TORCH_CUDA_ARCH_LIST = "10.3a"
+PYTHONHASHSEED = "0"
+VLLM_USE_V2_MODEL_RUNNER = "1"
+VLLM_USE_RUST_FRONTEND = "0"
+FLASHINFER_NVFP4_4OVER6 = "1"
+FLASHINFER_NVFP4_4OVER6_E4M3_USE_256 = "0"
+FLASHINFER_NVFP4_4OVER6_ERR_MODE = "MAE"
+VLLM_WORKER_MULTIPROC_METHOD = "spawn"
+VLLM_MOE_ROUTING_SIMULATION_STRATEGY = ""
+VLLM_ENFORCE_STRICT_TOOL_CALLING = "0"
+VLLM_DEEP_GEMM_WARMUP = "full"
+VLLM_LOG_STATS_INTERVAL = "5"
+VLLM_MOONCAKE_STORE_TIER_LOG = "1"
+MC_MS_AUTO_DISC = "0"
+NCCL_DEBUG = "WARN"
+MAX_JOBS = "2"
+OMP_NUM_THREADS = "1"
+
+[inference.vllm]
+revision = "9d2398f478cab2de883137db3a36ad2c96205e24"
+served_model_name = ["glm53", "/home/matej/prime-rl/outputs/glm53-rl/models/bf16/model"]
+quantization = "online"
+dtype = "bfloat16"
+kv_cache_dtype = "fp8"
+block_size = 64
+max_model_len = 65536
+tensor_parallel_size = 1
+data_parallel_size = 8
+data_parallel_rpc_port = 19345
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+enable_dbo = false
+enable_prefix_caching = true
+enable_chunked_prefill = true
+enforce_eager = false
+safetensors_load_strategy = "prefetch"
+seed = 42
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+enable_auto_tool_choice = true
+generation_config = "vllm"
+logprobs_mode = "processed_logprobs"
+enable_prompt_tokens_details = true
+cudagraph_metrics = true
+
+# floor(78 * 0.85) = 66: routed experts in layers 3..65 use NVFP4;
+# the final 12 layers and dense/shared modules stay BF16.
+[inference.vllm.quantization_config.targets]
+'re:^model\.layers\.(?:[0-9]|[1-5][0-9]|6[0-5])\.mlp\.experts$' = "nvfp4_per_token"
+
+[inference.vllm.hf_overrides]
+use_index_cache = true
+index_topk_freq = 4
+moe_router_dtype = "float32"
+head_dtype = "float32"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[orchestrator.algo]
+type = "debug"
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 5400
+
+[orchestrator.concurrency]
+initial_inflight = 1536
+min_inflight = 1536
+max_inflight = 1536
+
+[orchestrator.renderer]
+name = "glm-5.3"
+clear_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 512
+
+[orchestrator.train.sampling.extra_body.chat_template_kwargs]
+clear_thinking = false
+
+[[orchestrator.train.source]]
+name = "scaleswe-q0"
+env.taskset.id = "scaleswe"
+env.taskset.filter_fn = "lambda row: sum(row['instance_id'].encode()) % 4 == 0"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"
+env.agent.runtime.labels = ["glm53-pd-train", "int4-syn-gen-bash"]
+env.agent.runtime.creates_per_min = 720
+env.agent.timeout.rollout = 21600
+serve.pool.type = "static"
+serve.pool.num_workers = 20
+serve.max_concurrent = 128

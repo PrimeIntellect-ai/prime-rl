@@ -1,0 +1,22 @@
+# Layer on top of pd-nvfp4-b300.toml. The disk tier uses shared Weka storage.
+[inference.deployment]
+num_prefill_replicas = 2
+num_decode_replicas = 1
+
+[inference.deployment.prefill_kv_cache_offload.disk]
+path = "/home/matej/prime-rl/outputs/glm53-rl-disk/job_${SLURM_JOB_ID}/node_${INFER_NODE_RANK}"
+
+[inference.deployment.decode_kv_cache_offload.disk]
+path = "/home/matej/prime-rl/outputs/glm53-rl-disk/job_${SLURM_JOB_ID}/node_${INFER_NODE_RANK}"
+
+[inference.env_vars]
+# Two prefill storage clients, each with a 2 TB logical disk budget.
+MOONCAKE_OFFLOAD_STORAGE_BACKEND_DESCRIPTOR = "bucket_storage_backend"
+MOONCAKE_OFFLOAD_TOTAL_SIZE_LIMIT_BYTES = "2000000000000"
+MOONCAKE_OFFLOAD_BUCKET_MAX_TOTAL_SIZE = "2000000000000"
+MOONCAKE_OFFLOAD_BUCKET_EVICTION_POLICY = "fifo"
+
+[orchestrator.concurrency]
+initial_inflight = 2048
+min_inflight = 2048
+max_inflight = 2048

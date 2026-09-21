@@ -15,7 +15,7 @@ from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
-from prime_rl.entrypoints.inference import vllm_overrides_fragment
+from prime_rl.entrypoints.inference import vllm_overrides_fragment, write_pd_configs
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -105,6 +105,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             inference_dict["router"] = None
         with open(output_dir / INFERENCE_CONFIG, "w") as f:
             json.dump(inference_dict, f, indent=2)
+        write_pd_configs(config.inference, output_dir)
 
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
@@ -433,14 +434,13 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    offload = config.inference.kv_cache_offload if config.inference is not None else None
-    is_mooncake = offload is not None and offload.type == "mooncake"
+    offloads = config.inference.kv_cache_offload_by_role if config.inference is not None else {}
     mooncake_vars = dict(
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
+        local_rank_numa_nodes=config.inference.deployment.local_rank_numa_nodes if config.inference else [],
+        local_rank_ucx_devices=config.inference.deployment.local_rank_ucx_devices if config.inference else [],
+        kv_offload=any(offload is not None for offload in offloads.values()),
+        kv_offload_mooncake=any(offload is not None and offload.type == "mooncake" for offload in offloads.values()),
+        kv_offload_configs=offloads,
     )
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the

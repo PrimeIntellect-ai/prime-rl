@@ -273,6 +273,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
+    CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 

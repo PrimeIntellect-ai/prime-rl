@@ -38,7 +38,7 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
-QuantizationType = Literal["fp8_per_block"]
+QuantizationType = Literal["fp8_per_block", "online"]
 
 
 class VllmConfig(BaseConfig):
@@ -222,7 +222,7 @@ class WeightBroadcastConfig(BaseConfig):
 
 
 class CPUOffloadTier(BaseConfig):
-    num_bytes: int = Field(..., gt=0)
+    num_bytes: int = Field(..., ge=0)
     """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
 
 
@@ -252,6 +252,12 @@ class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
     """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs`` disk secondary). Fully self-contained — no external processes."""
 
+    @model_validator(mode="after")
+    def positive_cpu_capacity(self):
+        if self.cpu is not None and self.cpu.num_bytes == 0:
+            raise ValueError("Native KV offloading requires a positive CPU capacity.")
+        return self
+
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
         extra: dict[str, Any] = {"cpu_bytes_to_use": int(self.cpu.num_bytes)}
@@ -267,10 +273,13 @@ class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 
 class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["mooncake"] = "mooncake"
-    """Mooncake distributed store offloading (SLURM only). One ``mooncake_master`` + metadata server runs on the head inference node; every node runs a ``mooncake_client`` contributing its segment to the single shared pool, so prefixes cached on any node are reusable by all. The cpu tier sizes each node's DRAM segment; the optional disk tier adds an SSD tier."""
+    """Mooncake distributed store offloading (SLURM only). One ``mooncake_master`` + metadata server runs on the head inference node. Nodes with positive CPU capacity run a storage client contributing to the shared pool; zero-capacity nodes connect without contributing storage. The optional disk tier adds an SSD tier."""
 
     device_name: str = ""
     """RDMA device name(s) for the store (empty = auto-detect)."""
+
+    local_buffer_bytes: int = Field(4 * 1024**3, gt=0)
+    """Per-worker RDMA staging buffer. ``cpu.num_bytes=0`` connects to the shared pool without contributing storage."""
 
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
@@ -313,6 +322,12 @@ class VllmRouterConfig(BaseConfig):
 
     policy: str = "sticky_least_loaded"
     """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
+
+    disable_retries: bool = False
+    """Return failed requests without retrying another worker."""
+
+    worker_startup_timeout_seconds: int = Field(4200, gt=0)
+    """How long the router waits for workers to become ready."""
 
 
 class LlmdRouterConfig(BaseConfig):
@@ -366,6 +381,12 @@ RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(d
 
 
 class BaseInferenceDeploymentConfig(BaseConfig):
+    local_rank_numa_nodes: list[int] = Field(default_factory=list)
+    """Optional NUMA node per local DP rank, used for CPU and memory binding on SLURM."""
+
+    local_rank_ucx_devices: list[str] = Field(default_factory=list)
+    """Optional UCX device per local DP rank, overriding node-level NIC selection on SLURM."""
+
     gpus_per_node: int = 8
     """GPUs per node."""
 
@@ -417,6 +438,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     decode_vllm_overrides: dict[str, Any] = {}
     """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
+
+    prefill_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """Prefill offload override: omitted inherits the common config; explicit None disables it."""
+
+    decode_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """Decode offload override: omitted inherits the common config; explicit None disables it."""
 
     @property
     def num_prefill_nodes(self) -> int:
@@ -535,7 +562,29 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_local_rank_placement(self):
+        if self.deployment.type == "single_node" and (
+            self.deployment.local_rank_numa_nodes or self.deployment.local_rank_ucx_devices
+        ):
+            raise ValueError("Local rank placement requires a multi_node or disaggregated SLURM deployment.")
+        ranks = self.deployment.gpus_per_node // self.vllm.tensor_parallel_size
+        for name in ("local_rank_numa_nodes", "local_rank_ucx_devices"):
+            values = getattr(self.deployment, name)
+            if values and len(values) != ranks:
+                raise ValueError(f"deployment.{name} must have one entry per local DP rank ({ranks}).")
+        if any(node < 0 for node in self.deployment.local_rank_numa_nodes):
+            raise ValueError("NUMA node indices must be non-negative.")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_kv_cache_offload(self):
+        mooncake_disk_paths = {
+            offload.disk.path
+            for offload in self.kv_cache_offload_by_role.values()
+            if offload is not None and offload.type == "mooncake" and offload.disk is not None
+        }
+        if len(mooncake_disk_paths) > 1:
+            raise ValueError("Mooncake roles share one master and must use the same disk path.")
         if self.kv_cache_offload is not None:
             if self.vllm.enable_prefix_caching is False:
                 raise ValueError("KV cache offloading requires inference.vllm.enable_prefix_caching to be true.")
@@ -572,6 +621,28 @@ class InferenceConfig(BaseConfig):
                 self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
+    @property
+    def kv_cache_offload_by_role(self) -> dict[str, KVCacheOffloadConfig | None]:
+        if self.deployment.type != "disaggregated":
+            return {"all": self.kv_cache_offload}
+        return {
+            role: self.kv_cache_offload
+            if getattr(self.deployment, f"{role}_kv_cache_offload") == "inherit"
+            else getattr(self.deployment, f"{role}_kv_cache_offload")
+            for role in ("prefill", "decode")
+        }
+
+    def for_pd_role(self, role: Literal["prefill", "decode"]) -> "InferenceConfig":
+        assert self.deployment.type == "disaggregated"
+        config = self.model_copy(deep=True)
+        offload = self.kv_cache_offload_by_role[role]
+        config.kv_cache_offload = offload.model_copy(deep=True) if offload is not None else None
+        config.env_vars = {**self.env_vars, **getattr(self.deployment, f"{role}_env_vars")}
+        config.vllm = VllmConfig.model_validate(
+            {**self.vllm.model_dump(), **getattr(self.deployment, f"{role}_vllm_overrides")}
+        )
+        return config
+
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
         """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
 
@@ -579,6 +650,9 @@ class InferenceConfig(BaseConfig):
         configured) contributes its own connector. When both are present they are composed via
         ``MultiConnector``. Returns None when neither applies.
         """
+        explicit = (self.vllm.model_extra or {}).get("kv_transfer_config")
+        if explicit is not None:
+            return explicit
         connectors: list[dict[str, Any]] = []
         if self.use_pd_kv_transfer:
             connectors.append(
