@@ -115,3 +115,35 @@ Sampling-mask capture is enabled on inference, and the trainer replays those
 masks, including with CP. Inference returns processed logprobs so rollout and
 trainer probabilities use the same truncated distribution. Router replay is
 disabled. This config does not launch an additional eval or profiler.
+
+## Inference Grafana
+
+After Slurm starts the job, run the monitoring helper separately on the login node:
+
+```bash
+uv run --no-sync tools/inference_monitoring.py \
+  outputs/glm53-nvfp4-rl/scaleswe-nvfp4-4over6 JOB_ID
+```
+
+The helper uses the installed Prometheus/Grafana binaries under
+`~/.local/share/glm-monitoring` (override with `--binaries`). It discovers role
+hosts from the job's launch log, reads ports and GPU counts from the generated
+Slurm script, and scrapes every engine plus the router every 15 seconds. The
+dashboard includes per-role and per-rank throughput, latency, queues, KV usage,
+HiSparse reloads, Mooncake operations and NIXL transfers. Per-GPU rates use the
+allocated GPU count. This is independent of the disabled Prime-RL dashboard.
+
+On your laptop:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 nebius
+```
+
+Open <http://localhost:3000/d/inference-live>. Grafana is a read-only view bound
+to loopback; Prometheus also binds to loopback. The helper stays in the foreground
+and stops its processes when the Slurm job ends or when interrupted. It does not
+install a system service or control the RL job. Its data and logs live under
+the run's `monitoring/job_JOB_ID/` directory; `clean=true` removes them on a fresh
+run. Retention is limited to seven days or 5 GB, whichever limit is reached first.
+Use a new job ID to monitor another deployment; `--grafana-port`,
+`--prometheus-port`, and `--router-port` allow multiple monitors concurrently.
