@@ -128,6 +128,11 @@ collectives. The selected workaround is trainer-only
 `TORCHINDUCTOR_COMPILE_THREADS="1"` under `[trainer.env_vars]`, preserving compile
 and cache use. Do not patch Torch or change inference compiler settings for it.
 
+Validate startup through an optimizer step: the GLM-5.3 run passed forward and
+backward but exhausted GPU memory when AdamW lazily allocated `exp_avg_sq`, even
+with optimizer-state CPU offload enabled. SignSGD avoids those moment tensors;
+change the optimizer only when the user selects it, since it changes training.
+
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs

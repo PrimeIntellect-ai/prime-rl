@@ -136,9 +136,10 @@ measure local-NVMe performance. Separate directories isolate the storage clients
 Mooncake's bucket limit controls logical occupancy, not a physical filesystem
 quota. Decode contributes no storage and retains access to both store tiers.
 The overlay uses CP=8, EP=8, full activation checkpointing with activation
-offloading, and batch size 128 (eight groups of 16). Optimizer-state CPU offload
-stays enabled; full CPU offload stays disabled. The debug algorithm is inherited
-from the base config. The shared Mooncake master uses a 30-minute hard KV lease,
+offloading, and batch size 128 (eight groups of 16). It uses stateless SignSGD,
+retaining the optimizer CPU-offload setting and disabling full CPU offload.
+The debug algorithm is inherited from the base config. The shared Mooncake master
+uses a 20-minute hard KV lease,
 and the router allows requests to run for 60 minutes.
 Trainer compilation uses `TORCHINDUCTOR_COMPILE_THREADS=1` to avoid a compiler
 pool shutdown deadlock in the installed PyTorch runtime. Compilation and caches

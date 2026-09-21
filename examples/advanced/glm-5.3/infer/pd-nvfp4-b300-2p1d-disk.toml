@@ -2,6 +2,9 @@
 [trainer.env_vars]
 TORCHINDUCTOR_COMPILE_THREADS = "1"
 
+[trainer.optim]
+type = "sign_sgd"
+
 [trainer.model]
 cp = 8
 
@@ -19,10 +22,10 @@ num_prefill_replicas = 2
 num_decode_replicas = 1
 
 [inference.deployment.prefill_kv_cache_offload]
-kv_lease_ttl_ms = 1800000
+kv_lease_ttl_ms = 1200000
 
 [inference.deployment.decode_kv_cache_offload]
-kv_lease_ttl_ms = 1800000
+kv_lease_ttl_ms = 1200000
 
 [inference.deployment.prefill_kv_cache_offload.disk]
 path = "/home/matej/prime-rl/outputs/glm53-rl-disk/job_${SLURM_JOB_ID}/node_${INFER_NODE_RANK}"
