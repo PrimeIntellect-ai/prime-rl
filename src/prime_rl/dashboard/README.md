@@ -11,6 +11,14 @@ the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 skips the registry. See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
+`uv run flow run package.launch.entrypoint ROOT @ config.toml` launches an installed
+pipeline's typed `FlowEntrypoint`. The pipeline supplies its config class and an async
+`run(root, config) -> int`; it owns preparation, initial units, and the exit code.
+The launcher records config/log attempts and registers the run with the dashboard.
+Use `flow run --no-dashboard ...` to skip registration, and `flow inspect ROOT`,
+`flow steer ROOT UNIT ...`, or `flow drain ROOT` for controls. The pipeline package
+must be installed in the launcher's environment. Existing roots resume through Flow.
+
 A verifiers flow run directory opens a **Flow** tab following `transitions.jsonl`,
 `calls/`, and `traces.jsonl`. Units under `units/<id>/` form equal lanes; stage executions form nodes
 and transitions form edges. The inspector shows unit steering and affected-unit links without
