@@ -166,9 +166,7 @@ class PrimeTrainMonitor(Monitor):
                 # online evals share the trainer's run dir) may already
                 # have written its evaluations record. Locked RMW: the
                 # eval process merges into the same file.
-                update_platform_record(
-                    output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url}
-                )
+                update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
@@ -303,6 +301,7 @@ class PrimeEvalMonitor(Monitor):
             attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
             self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
             if self.output_dir is not None:
+
                 def _eval_epoch_update(record: dict[str, Any]) -> dict[str, Any]:
                     record.setdefault("kind", "eval")
                     record.setdefault("run_id", self.run_id)

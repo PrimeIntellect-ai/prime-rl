@@ -210,9 +210,7 @@ def test_online_eval_shares_trainer_run_dir_and_merges_records(tmp_path):
     assert eval_config.broadcasts_dir != eval_config.output_dir
 
     # Simulate the trainer's record, then the eval process merging on top.
-    write_platform_record(
-        tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"}
-    )
+    write_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
     record = read_platform_record(tmp_path) or {}
     if record.get("kind") == "train":
         record.setdefault("evaluations", {})
