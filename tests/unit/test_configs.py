@@ -212,7 +212,7 @@ def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
         {
             "slurm": {},
             "kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 1024}, "kv_lease_ttl_ms": 1800000},
-            "router": {"type": "vllm-router", "request_timeout_seconds": 3600},
+            "router": {"type": "vllm-router", "request_timeout_seconds": 3600, "log_level": "warning"},
             "env_vars": {"ROLE_SETTING": "common"},
             "deployment": {
                 "type": "disaggregated",
@@ -227,6 +227,8 @@ def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
     assert decode.kv_cache_offload.cpu.num_bytes == 0
     assert prefill.kv_cache_offload.kv_lease_ttl_ms == decode.kv_cache_offload.kv_lease_ttl_ms == 1800000
     assert config.router.request_timeout_seconds == 3600
+    assert config.router.log_level == "warning"
+    assert InferenceConfig().router.log_level == "info"
     assert decode.env_vars["ROLE_SETTING"] == "decode"
     assert config.env_vars["ROLE_SETTING"] == "common"
     assert decode.vllm.max_num_seqs == 320

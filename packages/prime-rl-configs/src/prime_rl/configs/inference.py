@@ -335,6 +335,9 @@ class VllmRouterConfig(BaseConfig):
     request_timeout_seconds: int = Field(1800, gt=0)
     """Maximum duration of a routed request, including streaming."""
 
+    log_level: str = "info"
+    """Router logging level, independent of inference and trainer logging."""
+
 
 class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""

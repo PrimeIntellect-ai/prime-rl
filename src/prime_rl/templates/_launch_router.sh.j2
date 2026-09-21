@@ -75,7 +75,7 @@ LLMD_EOF
         --request-id-headers x-session-id
         --prometheus-port "$((port + 21000))"
         --request-timeout-secs {{ router.request_timeout_seconds }}
-        --worker-startup-timeout-secs {{ router.worker_startup_timeout_seconds }} --log-level debug)
+        --worker-startup-timeout-secs {{ router.worker_startup_timeout_seconds }} --log-level "{{ router.log_level }}")
 {%- if router.disable_retries %}
     cmd+=(--disable-retries)
 {%- endif %}

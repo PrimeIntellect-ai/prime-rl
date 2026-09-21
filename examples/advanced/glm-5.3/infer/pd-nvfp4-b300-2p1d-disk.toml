@@ -1,4 +1,10 @@
 # Layer on top of pd-nvfp4-b300.toml. The disk tier uses shared Weka storage.
+[deployment.trainer_mooncake]
+num_bytes = 1000000000000 # 1 TB per trainer node, excluding the orchestrator host.
+
+[trainer.log]
+level = "debug"
+
 [trainer.env_vars]
 TORCHINDUCTOR_COMPILE_THREADS = "1"
 
@@ -16,6 +22,7 @@ max_inflight_activations = 1
 
 [inference.router]
 request_timeout_seconds = 3600
+log_level = "info"
 
 [inference.deployment]
 num_prefill_replicas = 2
@@ -42,6 +49,9 @@ MOONCAKE_OFFLOAD_BUCKET_EVICTION_POLICY = "fifo"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.log]
+level = "debug"
 
 [orchestrator.concurrency]
 initial_inflight = 2048

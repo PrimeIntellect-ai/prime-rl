@@ -135,6 +135,10 @@ contributes 2,560 GiB DRAM and a 2 TB logical filesystem-offload budget, for
 measure local-NVMe performance. Separate directories isolate the storage clients.
 Mooncake's bucket limit controls logical occupancy, not a physical filesystem
 quota. Decode contributes no storage and retains access to both store tiers.
+The three trainer nodes without the orchestrator each contribute an additional
+1 TB (1,000,000,000,000 bytes) of DRAM to the same pool, configured separately
+under `deployment.trainer_mooncake.num_bytes`. Trainer storage is DRAM-only.
+Trainer and orchestrator logging use DEBUG; router logging uses INFO.
 The overlay uses CP=8, EP=8, full activation checkpointing with activation
 offloading, and batch size 128 (eight groups of 16). It uses stateless SignSGD,
 retaining the optimizer CPU-offload setting and disabling full CPU offload.

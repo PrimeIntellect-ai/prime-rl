@@ -119,6 +119,8 @@ leases can prevent eviction even when the DRAM pool is full. Router request
 duration is controlled separately by `router.request_timeout_seconds`, including
 streaming; increasing the environment rollout timeout does not increase this
 router limit. For RL configs these fields live under `inference`.
+`inference.router.log_level` independently controls vllm-router logging (default
+`info`); use `trainer.log.level` and `orchestrator.log.level` for those components.
 
 Multi-node Slurm RL can add DRAM to the inference Mooncake pool with
 `[deployment.trainer_mooncake] num_bytes = <bytes per trainer node>` and optional
