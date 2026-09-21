@@ -821,6 +821,8 @@ def monkey_patch_deepseek_v4_per_layer_rope():
     Note that nothing in vLLM's DeepSeek V4 calls the module's `forward`; every consumer reads
     `cos_sin_cache` and hands it to a fused kernel. The class choice is therefore about the
     cache's dtype and row count, not about which channels the module would rotate.
+
+    Remove this patch once the pin includes vllm-project/vllm#54815, which ships in 0.29.1.
     """
     from vllm.models.deepseek_v4.common import rope as dsv4_rope
 

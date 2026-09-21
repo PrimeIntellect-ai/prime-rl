@@ -26,7 +26,7 @@ from prime_rl.inference.patches import (
 )
 
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.28 — upstream rejects prompt_len > max_model_len - max_tokens
+# Still needed in vLLM 0.29 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
 # NOTE: Register Nano V3 reasoning parser so configs can use
 # `reasoning_parser = "nano_v3"` without a vLLM plugin file.
