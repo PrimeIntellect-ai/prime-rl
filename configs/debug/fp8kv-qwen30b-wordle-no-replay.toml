@@ -1,0 +1,5 @@
+# Control for fp8kv-qwen30b-wordle.toml: preserve FP8 inference KV storage
+# while leaving trainer attention at its native numerics.
+
+[trainer.model]
+kv_cache_dtype = "auto"

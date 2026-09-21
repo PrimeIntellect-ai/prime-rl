@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.fusions import apply_model_fusions, get_model_packed_parameters
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, simulate_kv_cache_dtype
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 NUM_EXPERTS, DIM, HIDDEN = 4, 16, 24
@@ -96,6 +96,33 @@ def test_qkv_projections_match_the_unpacked_ones():
         fused.project_qkv(hidden_states), unfused.project_qkv(hidden_states)
     ):
         assert torch.equal(fused_projection, unfused_projection)
+
+
+def test_kv_cache_replay_quantizes_only_kv_before_bf16_attention():
+    attention = build_attention()
+    attention.kv_cache_dtype = "fp8"
+    captured = {}
+
+    def fake_attention(q, k, v, *args, **kwargs):
+        captured.update(q=q, k=k, v=v)
+        return q
+
+    attention.func = fake_attention
+    q = torch.tensor([[[1.1, 2.2]]], dtype=torch.bfloat16)
+    k = torch.tensor([[[1.1, 2.2]]], dtype=torch.bfloat16, requires_grad=True)
+    v = torch.tensor([[[3.3, 4.4]]], dtype=torch.bfloat16, requires_grad=True)
+
+    attention._compute_attention(q, k, v, torch.tensor([0, 1], dtype=torch.int32), 1)
+
+    assert captured["q"] is q
+    assert captured["k"].dtype == torch.bfloat16
+    assert captured["v"].dtype == torch.bfloat16
+    assert torch.equal(captured["k"], k.to(torch.float8_e4m3fn).to(torch.bfloat16))
+    assert torch.equal(captured["v"], v.to(torch.float8_e4m3fn).to(torch.bfloat16))
+
+    replayed = simulate_kv_cache_dtype(k, "fp8")
+    replayed.sum().backward()
+    assert torch.equal(k.grad, torch.ones_like(k))
 
 
 def test_unsupported_fusion_fails_loudly():

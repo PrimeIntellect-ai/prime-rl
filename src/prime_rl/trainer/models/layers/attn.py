@@ -38,119 +38,14 @@ _KV_CACHE_DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
-# vLLM's vendored FA (3+), whose fp8 path the inference engines run. Imported eagerly
-# at module load: a lazy import inside the forward would land after the trainer's
-# process-group init, and importing vLLM mid-run tears down torch.distributed's
-# default PG (vLLM's platform setup), breaking everything that follows.
-try:
-    from vllm.vllm_flash_attn.flash_attn_interface import flash_attn_varlen_func as _vllm_flash_attn_varlen_func
-except ImportError:
-    _vllm_flash_attn_varlen_func = None
-
-
-class Fp8KVKernelAttention(torch.autograd.Function):
-    """Attention through the engine's fp8 flash-attn kernel, with a bf16 straight-through backward.
-
-    The forward quantizes Q/K/V to e4m3 (unit scale, matching vLLM's uncalibrated fp8
-    cache and its per-tensor query quantization) and calls the same vendored FA3 entry
-    point the engines call with descales of 1.0 — reproducing not just the quantized
-    inputs but the kernel's own arithmetic (fp8 tensor-core matmuls, the in-kernel e4m3
-    quantization of the attention probabilities). The fp8 kernel has no backward, so
-    gradients re-run the standard bf16 kernel on the unquantized values: the forward
-    matches the engine exactly (which is what the mismatch KL measures), while the
-    backward treats the quantization as identity, like the value-level replay.
-    """
-
-    @staticmethod
-    @torch._dynamo.disable(recursive=True)
-    def forward(
-        ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
-        fp8_dtype = torch.float8_e4m3fn
-        q8, k8, v8 = (t.to(fp8_dtype).contiguous() for t in (q, k, v))
-        num_seqs = cu_seqlens.numel() - 1
-        num_kv_heads = k.shape[1]
-        descale = torch.ones((num_seqs, num_kv_heads), device=q.device, dtype=torch.float32)
-        softmax_scale = q.shape[-1] ** (-0.5)
-        out, _, _, _ = torch.ops._vllm_fa3_C.fwd.default(
-            q=q8,
-            k=k8,
-            v=v8,
-            k_new=None,
-            v_new=None,
-            q_v=None,
-            out=None,
-            cu_seqlens_q=cu_seqlens,
-            cu_seqlens_k=cu_seqlens,
-            cu_seqlens_k_new=None,
-            seqused_q=None,
-            seqused_k=None,
-            max_seqlen_q=max_seqlen,
-            max_seqlen_k=max_seqlen,
-            page_table=None,
-            kv_batch_idx=None,
-            leftpad_k=None,
-            rotary_cos=None,
-            rotary_sin=None,
-            seqlens_rotary=None,
-            q_descale=descale,
-            k_descale=descale,
-            v_descale=descale,
-            softmax_scale=softmax_scale,
-            is_causal=True,
-            window_size_left=-1,
-            window_size_right=-1,
-            softcap=0.0,
-            is_rotary_interleaved=True,
-            scheduler_metadata=None,
-            num_splits=0,
-            pack_gqa=None,
-            sm_margin=0,
-            s_aux=None,
-            cp_world_size=1,
-            cp_rank=0,
-            cp_tot_seqused_k=None,
-        )
-        ctx.save_for_backward(q, k, v)
-        ctx.cu_seqlens = cu_seqlens
-        ctx.max_seqlen = max_seqlen
-        return out
-
-    @staticmethod
-    @torch._dynamo.disable(recursive=True)
-    def backward(ctx, dout: torch.Tensor):
-        from prime_rl.trainer.models.layers.attn import FlashAttention
-
-        q, k, v = ctx.saved_tensors
-        q = q.detach().requires_grad_(True)
-        k = k.detach().requires_grad_(True)
-        v = v.detach().requires_grad_(True)
-        with torch.enable_grad():
-            out = FlashAttention._funcs[3](
-                q,
-                k,
-                v,
-                ctx.cu_seqlens,
-                ctx.cu_seqlens,
-                ctx.max_seqlen,
-                ctx.max_seqlen,
-                causal=True,
-            )
-            out.backward(dout)
-        return q.grad, k.grad, v.grad, None, None
-
-
 def simulate_kv_cache_dtype(x: torch.Tensor, kv_cache_dtype: str | None) -> torch.Tensor:
-    """Round-trip Q/K/V through the simulated KV-cache storage dtype.
+    """Round-trip a cached K or V tensor through its simulated storage dtype.
 
-    Quantized KV caches store K (post-RoPE) and V in 8 bits at unit scale, and
-    vLLM additionally quantizes Q (per-tensor static scale) on the fp8 attention
-    path; dequantizing all three back to the compute dtype reproduces the
-    engine's quantization error in the trainer forward, keeping its logprobs
-    aligned with the inference server's (the KV-cache analogue of router
-    replay). The
-    straight-through formulation keeps the backward exact: forward sees the
-    quantized value, the gradient flows as if the cast were identity.
+    FP8 KV caches store post-RoPE K and V at unit scale. The trainer immediately
+    dequantizes the replayed values back to the model compute dtype, so attention
+    itself still runs through the normal bf16 kernel. The straight-through
+    formulation keeps the backward exact: forward sees the quantized value while
+    the gradient flows as if the cast were identity.
     """
     dtype = _KV_CACHE_DTYPE_MAP.get(kv_cache_dtype or "auto")
     if dtype is None or dtype == x.dtype:
@@ -234,15 +129,9 @@ class FlashAttention(nn.Module):
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
-        if kv_cache_dtype == "fp8_kernel":
-            # Kernel-level replay: run the engine's own fp8 flash-attn kernel on
-            # unit-scale e4m3 Q/K/V, matching its forward numerics exactly.
-            return _fp8kv_kernel_replay(q, k, v, cu_seqlens, max_seqlen)
         if kv_cache_dtype is not None:
-            # Value-level replay: K is post-RoPE here, matching what vLLM quantizes
-            # at cache-write time. Only K/V are replayed: although vLLM also quantizes
-            # the query on the fp8 path, replaying Q adds uncorrelated bucket noise
-            # against the engine's own Q values and measurably widens the mismatch.
+            # K is post-RoPE here, matching what vLLM quantizes at cache-write time.
+            # Dequantize back to bf16 before calling the normal attention kernel.
             k = simulate_kv_cache_dtype(k, kv_cache_dtype)
             v = simulate_kv_cache_dtype(v, kv_cache_dtype)
         kwargs: dict = {"causal": True}
@@ -300,18 +189,6 @@ class FlashAttention(nn.Module):
         attn_output = out.contiguous().view(1, out.shape[0], -1)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
-
-
-@torch._dynamo.disable
-def _fp8kv_kernel_replay(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
-    """Run Fp8KVKernelAttention outside dynamo.
-
-    The engine's fp8 flash-attn op declares mutating tensor args in its schema, which
-    dynamo/AOT's functionalization cannot trace (it mangles the call into a pybind
-    type error). Disabling this wrapper forces a clean graph break so the op always
-    runs eagerly — inside compiled models too.
-    """
-    return Fp8KVKernelAttention.apply(q, k, v, cu_seqlens, max_seqlen)
 
 
 def setup_kv_cache_replay(model: nn.Module, kv_cache_dtype: str | None) -> None:
