@@ -216,6 +216,9 @@ class NGUAlgoConfig(BaseAlgoConfig):
     continuation_probability: float = Field(0.875, ge=0, lt=1)
     """Probability of another independent group after an all-failure round."""
 
+    length_penalty: LengthPenaltyConfig | None = None
+    """Linear length penalty applied to retained cohort advantages using the historical pass rate. None disables it."""
+
     seed: int = 42
     """Seed for this source's checkpointed continuation RNG."""
 

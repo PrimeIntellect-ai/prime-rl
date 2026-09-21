@@ -4,22 +4,28 @@ import pytest
 import torch
 import verifiers.v1 as vf
 
-from prime_rl.configs.algorithm import NGUAlgoConfig
-from prime_rl.orchestrator.algo.ngu import anchored_advantages
+from prime_rl.configs.algorithm import LinearLengthPenaltyConfig, NGUAlgoConfig
+from prime_rl.orchestrator.algo.ngu import anchored_advantages, length_penalized_advantages
 from prime_rl.orchestrator.ngu import NGUController
 
 
-def episodes(task, rewards, version=0):
+def episodes(task, rewards, version=0, lengths=None):
     result = []
-    for reward in rewards:
+    lengths = lengths or [1] * len(rewards)
+    for reward, length in zip(rewards, lengths, strict=True):
         trace = vf.Trace(
             task=vf.TraceTask(type="Task", data=task.data, key=task.key, hash=task.hash),
             agent=vf.AgentInfo(config=vf.AgentConfig()),
             nodes=[
                 vf.MessageNode(
-                    message=vf.AssistantMessage(content="x"), token_ids=[1], mask=[True], sampled=True, logprobs=[-0.1]
+                    message=vf.AssistantMessage(content="x"),
+                    token_ids=[1] * length,
+                    mask=[True] * length,
+                    sampled=True,
+                    logprobs=[-0.1] * length,
                 )
             ],
+            calls=[vf.ModelCall(node=0, usage=vf.Usage(prompt_tokens=0, completion_tokens=length))],
             rewards={"solved": vf.Reward(score=reward)},
             ok=True,
         )
@@ -50,6 +56,22 @@ def test_ngu_anchor_uses_expired_rewards_and_balances_negatives():
         anchored_advantages([0.5, 1], 2, 1)
     with pytest.raises(ValueError, match="exceed"):
         anchored_advantages([1, 1], 3, 1)
+
+
+def test_ngu_length_penalty_preserves_anchor_and_penalizes_longer_traces():
+    task = vf.Task(vf.TaskData(idx=0, prompt="x"))
+    group = episodes(task, [0, 0, 1], lengths=[1, 2, 3])
+    traces = [episode.traces[0] for episode in group]
+    config = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.1,
+        num_input_tokens_weight=0.0,
+        num_turns_weight=0.0,
+    )
+    plain = anchored_advantages([0, 0, 1], attempts=8, successes=1)
+    penalized = length_penalized_advantages(traces, attempts=8, successes=1, length_penalty=config)
+    assert sum(penalized) == pytest.approx(0.0)
+    assert penalized[0] > plain[0]
+    assert penalized[2] < plain[2]
 
 
 def test_ngu_retry_new_group_same_task_and_expiry():

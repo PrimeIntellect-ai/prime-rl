@@ -17,36 +17,36 @@ env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-balanced800-easy"
+name = "swerebench-frontier800-easy"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/balanced-easy.json"
+env.taskset.manifest = "tools/ngu/frontier-easy.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-balanced800-medium"
+name = "swerebench-frontier800-medium"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/balanced-medium.json"
+env.taskset.manifest = "tools/ngu/frontier-medium.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-balanced800-hard"
+name = "swerebench-frontier800-hard"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/balanced-hard.json"
+env.taskset.manifest = "tools/ngu/frontier-hard.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
 env.agent.timeout.scoring = 3600
 
 [[orchestrator.eval.source]]
-name = "swerebench-balanced800-extra-hard"
+name = "swerebench-frontier800-extra-hard"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/balanced-extra-hard.json"
+env.taskset.manifest = "tools/ngu/frontier-extra-hard.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600

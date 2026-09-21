@@ -1,16 +1,16 @@
-# NGU on the balanced 800-task set; eight H200 nodes.
+# NGU on the frontier-conditioned 800-task set; eight H200 nodes.
 max_steps = 10000
 seq_len = 131072
 output_dir = "outputs/ngu-swe"
 
 [run]
-name = "glm45air-swe-ngu-balanced800"
+name = "glm45air-swe-ngu-frontier800-lp01"
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/mika-ngu-train/triton"
 
 [slurm]
-job_name = "glm45air-swe-ngu-balanced800"
+job_name = "glm45air-swe-ngu-frontier800-lp01"
 partition = "all"
 
 [deployment]
@@ -22,7 +22,7 @@ num_infer_replicas = 6
 
 [monitors.wandb]
 project = "ngu-ablations"
-name = "glm45air-swerebench-ngu-balanced800"
+name = "glm45air-swerebench-ngu-frontier800-lp01"
 
 [weight_broadcast]
 type = "nccl"
@@ -71,14 +71,20 @@ max_inflight = 1536
 type = "ngu"
 continuation_probability = 0.8
 
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.1
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
 [orchestrator.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
 
 [[orchestrator.train.source]]
-name = "swerebench-balanced800"
+name = "swerebench-frontier800"
 env.taskset.id = "ngu-swe"
-env.taskset.manifest = "tools/ngu/balanced-800.json"
+env.taskset.manifest = "tools/ngu/frontier-800.json"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 3600
