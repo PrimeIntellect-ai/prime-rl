@@ -2,6 +2,7 @@
 seq_len = 65536
 max_steps = 1000
 clean = true
+dashboard = false
 output_dir = "outputs/glm53-nvfp4-rl"
 
 [run]
