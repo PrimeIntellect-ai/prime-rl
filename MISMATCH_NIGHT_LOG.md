@@ -491,3 +491,20 @@ FP8 gap.
 
 - `feat(inference): add PRIME_DIAG_FAKE_QUANT_IGNORE regex to the fake-quant diagnostic` (03:45). Needed so S2
   can skip `.*indexer.*` like production, and so weight-only rounding can be bisected by module family.
+
+## fp8/fp8 (trainer FP8 too) preparation, 2026-09-21 evening
+
+- Configs committed on `feat/ds-v4-fp8-rl`: `rl_fp8_fp8.toml` (5-node lr = 0 probe, o_a bf16 on both sides) `0c62bfec7`
+  and `swe-fp8-fp8.toml` (16-node run) `36092f0c1`; trainer `quantization.type = "fp8"` with eleven ignore patterns
+  (defaults plus `o_a_proj`, `indexer\.`, `compressor\.`) and `moe.compute.type = "deepgemm_fp8"`; inference
+  `fp8_ue8m0_weight_scales = false`, E8M0 off. Plan of record: `~/.claude/plans/read-mismatch-handoff-md-and-summarize-radiant-lighthouse.md`.
+- Quantizer parity measurement (`~/tmp/mismatch_evidence/fp8_parity/results.md`, one GPU, 4 min): weights are already
+  bit-identical between the trainer's `per_block_cast_to_fp8_triton` and vLLM's `per_block_cast_to_fp8` on four real
+  tensors (100% scales and bytes; minimum block amax 0.0625, so the 1e-4 floor placement never triggers). Activations:
+  the trainer matches vLLM's Triton kernel exactly in the normal regime, but production uses the CUDA op
+  `torch.ops._C.per_token_group_fp8_quant`, which computes the scale with correctly rounded IEEE division; the trainer
+  (and vLLM's own Triton kernel, and torch eager) compute `amax * (1/448)`, 1 fp32 ULP off in about 59% of groups,
+  flipping about 0.1% of activation elements by one e4m3 step. Dequantization error is identical to 1e-6 between
+  recipes. Consequence for the `fix/fp8-quant-parity` branch: leave the weight kernels alone (they already match);
+  in the two per-token activation kernels clamp amax at 1e-4 like vLLM, compute the scale with correctly rounded
+  division (`tl.math.div_rn`), and clamp the output to [-448, 448], so the trainer matches the production CUDA op.
