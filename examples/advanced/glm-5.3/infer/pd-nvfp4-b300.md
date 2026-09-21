@@ -62,7 +62,19 @@ per minute, a six-hour rollout timeout, and no agentic judge. It retains 16
 rollouts per task, `clear_thinking=false`, and a static environment pool of 20
 workers with 128 concurrent slots each. Training sandboxes use the distinct
 `glm53-pd-train` label alongside `int4-syn-gen-bash`. Pool capacity is 2,560;
-training concurrency and batch size remain to be configured.
+the rollout concurrency cap is fixed at 2,048 by setting initial, minimum and
+maximum in-flight episodes to the same value. Episodes doing tool work also
+occupy slots, so this does not guarantee 2,048 simultaneous inference requests.
+
+`orchestrator.batch_size` counts trainer-bound traces per optimizer step,
+independently of concurrency. It is omitted here and resolves to 128 by default;
+choose the training batch size when adding the trainer. With `group_size=16`,
+it must be a multiple of 16. The default `constant_trainer_batch_size=true`
+prunes zero-advantage RL samples before counting toward the batch and keeps
+collecting until enough useful traces remain. For plain GRPO, groups with
+identical rewards have zero advantage and do not fill that batch. Setting
+`constant_trainer_batch_size=false` still prunes zero-advantage samples, but
+after selecting the batch, so fewer useful traces can reach the trainer.
 
 The inference-only command above does not start environments, training, evals,
 persistent supervisors or profiling. The RL launcher uses the same role-resolution

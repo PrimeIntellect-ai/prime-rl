@@ -169,6 +169,11 @@ head_dtype = "float32"
 [orchestrator]
 group_size = 16
 
+[orchestrator.concurrency]
+initial_inflight = 2048
+min_inflight = 2048
+max_inflight = 2048
+
 [orchestrator.renderer]
 name = "glm-5.3"
 clear_thinking = false
