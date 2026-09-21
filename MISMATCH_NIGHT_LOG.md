@@ -157,6 +157,14 @@ weights off by one quantum, roughly 1e-4 KL, negligible against the 0.0015 floor
 | step | SR kl_mean | kl_max | is_masked | reward | control kl_mean (job 991) |
 |---|---|---|---|---|---|
 | 1 | 0.00130 | 1.24 | 8.6e-6 | 0.700 | 0.00149 |
+| 2-20 | 0.0015-0.0021, mean 0.00178 | <= 4.5 | <= 3.2e-5 | 0.34-0.75 | mean 0.00220 |
+| 21-40 | 0.0017-0.0029, mean 0.00212 | <= 8.7 | <= 5.8e-5 | 0.33-0.74 | mean 0.00327 |
+| 41-48 | 0.0020-0.0024, mean 0.00213 | <= 26 (one spike at 45) | <= 5.2e-5 | 0.38-0.78 | 0.00432 (41-60) |
+
+At 19:56 (step 48) the stochastic-rounding run is FLAT after the lag ramp: 0.00212 for steps 21-40 and 0.00213 for
+41-48, where the control climbed 0.00220 -> 0.00327 -> 0.00432. This is the predicted signature of the served model
+tracking the trainer in expectation. Not yet decisive at 48 steps (the control's acceleration showed from about step 60);
+the run continues to 100.
 
 Step 1 at 17:44 after a 60 min first step (cold rollout pipeline). Floor unchanged versus the control, as predicted:
 on-grid weights round identically at step 0. The test is the slope over steps 20-60 (control 20-step means 0.0022,
