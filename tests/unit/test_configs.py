@@ -181,6 +181,79 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+@pytest.mark.parametrize("backend", ["native", "mooncake"])
+@pytest.mark.parametrize("disabled_role", ["prefill", "decode"])
+def test_pd_offload_role_overrides_roundtrip(backend, disabled_role):
+    config = InferenceConfig.model_validate(
+        {
+            "slurm": {},
+            "deployment": {"type": "disaggregated", f"{disabled_role}_kv_cache_offload": None},
+            "kv_cache_offload": {"type": backend, "cpu": {"num_bytes": 1024}},
+        }
+    )
+    config = InferenceConfig.model_validate(dump_resolved_config(config))
+    for role in ("prefill", "decode"):
+        worker = InferenceConfig.model_validate(
+            dump_resolved_config(config.for_pd_role(role), exclude={"deployment", "slurm"})
+        )
+        connector = worker.to_namespace().kv_transfer_config
+        if role == disabled_role:
+            assert worker.kv_cache_offload is None
+            assert connector["kv_connector"] == "NixlConnector"
+        else:
+            assert worker.kv_cache_offload.type == backend
+            assert worker.kv_cache_offload.cpu.num_bytes == 1024
+            assert connector["kv_connector"] == "MultiConnector"
+            assert len(connector["kv_connector_extra_config"]["connectors"]) == 2
+
+
+def test_pd_mooncake_zero_capacity_keeps_connector_and_role_settings():
+    config = InferenceConfig.model_validate(
+        {
+            "slurm": {},
+            "kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 1024}},
+            "env_vars": {"ROLE_SETTING": "common"},
+            "deployment": {
+                "type": "disaggregated",
+                "decode_kv_cache_offload": {"type": "mooncake", "cpu": {"num_bytes": 0}},
+                "decode_env_vars": {"ROLE_SETTING": "decode"},
+                "decode_vllm_overrides": {"max_num_seqs": 320},
+            },
+        }
+    )
+    prefill, decode = (config.for_pd_role(role) for role in ("prefill", "decode"))
+    assert prefill.kv_cache_offload.cpu.num_bytes == 1024
+    assert decode.kv_cache_offload.cpu.num_bytes == 0
+    assert decode.env_vars["ROLE_SETTING"] == "decode"
+    assert config.env_vars["ROLE_SETTING"] == "common"
+    assert decode.vllm.max_num_seqs == 320
+    assert (
+        decode.to_namespace().kv_transfer_config["kv_connector_extra_config"]["connectors"][1]["kv_connector"]
+        == "MooncakeStoreConnector"
+    )
+    with pytest.raises(ValidationError, match="positive CPU capacity"):
+        InferenceConfig(kv_cache_offload={"type": "native", "cpu": {"num_bytes": 0}})
+
+
+def test_explicit_kv_connector_chain_is_preserved():
+    chain = {
+        "kv_connector": "MultiConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "connectors": [
+                {"kv_connector": name, "kv_role": "kv_both"}
+                for name in ("NixlConnector", "MooncakeStoreConnector", "HiSparseConnector")
+            ]
+        },
+    }
+    config = InferenceConfig(
+        use_pd_kv_transfer=True,
+        kv_cache_offload={"type": "mooncake", "cpu": {"num_bytes": 0}},
+        vllm={"kv_transfer_config": chain},
+    )
+    assert config.to_namespace().kv_transfer_config == chain
+
+
 def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     default_config = TrainerConfig()
     assert default_config.loss.type == "ipo"

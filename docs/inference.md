@@ -219,7 +219,7 @@ Maximizing KV-Cache space is crucial to support high-concurrency workloads. You 
 The `type` field selects the backend:
 
 - `native` — vLLM's built-in offloading. CPU-only uses `OffloadingConnector`; CPU+disk uses `TieringOffloadingSpec` (a CPU primary tier with a filesystem secondary tier). Fully self-contained — no extra processes.
-- `mooncake` — a [Mooncake](https://github.com/kvcache-ai/Mooncake) **shared distributed store** (SLURM only). One `mooncake_master` + metadata server runs on the head inference node; every inference node runs a `mooncake_client` that contributes its DRAM (and, with `disk`, SSD) segment to that *single* pool. Because blocks are keyed by model + parallel rank + content hash (no instance id), a prefix cached by one node/replica is reusable by all of them over RDMA — pooling every node's CPU RAM into one KV cache. Use `native` for local/single-process runs.
+- `mooncake` — a [Mooncake](https://github.com/kvcache-ai/Mooncake) **shared distributed store** (SLURM only). One `mooncake_master` + metadata server runs on the head inference node. Nodes configured with positive CPU capacity run a `mooncake_client` contributing DRAM (and, with `disk`, SSD) to that pool. Other Mooncake-connected nodes can reuse cached blocks over RDMA when their cache keys and layouts match. Use `native` for local/single-process runs.
 
 ```toml
 # Native CPU offload (reserves 128GB of CPU KV cache for this instance)
@@ -245,12 +245,49 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool; the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+
+P/D deployments can override either backend separately with
+`inference.deployment.prefill_kv_cache_offload` and
+`inference.deployment.decode_kv_cache_offload`. An omitted override inherits
+`inference.kv_cache_offload`; `"None"` disables it for that role. For example,
+native offloading on prefill only:
+
+```toml
+[inference.deployment]
+type = "disaggregated"
+decode_kv_cache_offload = "None"
+
+[inference.deployment.prefill_kv_cache_offload]
+type = "native"
+[inference.deployment.prefill_kv_cache_offload.cpu]
+num_bytes = 128_000_000_000
+```
+
+For Mooncake, `cpu.num_bytes = 0` keeps a role connected to the shared pool
+without starting a storage client on its nodes. Staging buffers still consume
+RAM; `local_buffer_bytes` controls their per-worker size. Set positive capacity
+on the storage-owning role. Native offloading requires positive CPU capacity.
+The launcher starts one job-scoped Mooncake master and storage clients only on
+nodes contributing capacity. Both the standalone inference and RL launchers
+write separate resolved role configs. Mooncake disk tiers share the master's
+disk path across roles.
+
+An explicit `vllm.kv_transfer_config`, including one supplied through a role's
+`*_vllm_overrides`, takes precedence over automatic connector composition. Include
+all required connectors in that chain. The typed offload config still controls
+Mooncake service provisioning. This permits composing NIXL, Mooncake and
+HiSparse without replacing their connector-specific settings.
+
+For external-DP Slurm deployments, `deployment.local_rank_numa_nodes` and
+`deployment.local_rank_ucx_devices` optionally set NUMA binding and UCX NIC
+selection per local DP rank. Each list must have one entry per local rank;
+omit them to retain automatic placement.
 
 
 ### Optimized P/D disaggregation deployment
 
-For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
+P/D disaggregation defaults to `deepep_low_latency` for decode and `deepep_high_throughput` for prefill. Set `all2all_backend` in `deployment.prefill_vllm_overrides` or `deployment.decode_vllm_overrides` to select another backend for either role.
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 

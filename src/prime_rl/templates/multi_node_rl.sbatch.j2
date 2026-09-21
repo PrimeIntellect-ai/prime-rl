@@ -416,6 +416,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
+    CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 

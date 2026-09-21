@@ -1,0 +1,165 @@
+# 1P + 1D on B300: EP8 per role, natural routing, FP8 KV.
+# Run from the repository root with the HiSparse/NVFP4 wheel pinned in uv.lock.
+output_dir = "outputs/glm53-nvfp4-pd"
+use_deep_gemm = false
+enable_fp32_lm_head = true
+enable_fp32_router_logits = true
+
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[router]
+type = "vllm-router"
+policy = "sticky_least_loaded"
+disable_retries = true
+worker_startup_timeout_seconds = 5400
+
+[deployment]
+type = "disaggregated"
+prefill_nodes_per_replica = 1
+decode_nodes_per_replica = 1
+num_prefill_replicas = 1
+num_decode_replicas = 1
+gpus_per_node = 8
+local_rank_numa_nodes = [0, 0, 1, 1, 2, 2, 3, 3]
+local_rank_ucx_devices = ["mlx5_0:1", "mlx5_1:1", "mlx5_2:1", "mlx5_3:1", "mlx5_4:1", "mlx5_9:1", "mlx5_12:1", "mlx5_13:1"]
+prefill_port = 18100
+decode_port = 18200
+
+# One shared store, with all capacity on P; D retains a client connection.
+[deployment.prefill_kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13"
+local_buffer_bytes = 536870912
+
+[deployment.prefill_kv_cache_offload.cpu]
+num_bytes = 2748779069440 # 2560 GiB per prefill node
+
+[deployment.decode_kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13"
+local_buffer_bytes = 536870912
+
+[deployment.decode_kv_cache_offload.cpu]
+num_bytes = 0
+
+[deployment.decode_env_vars]
+VLLM_USE_BREAKABLE_CUDAGRAPH = "1"
+
+[deployment.prefill_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+max_num_batched_tokens = 32768
+max_num_seqs = 256
+gpu_memory_utilization = 0.75
+
+[deployment.prefill_vllm_overrides.compilation_config]
+cudagraph_mode = "NONE"
+
+[deployment.prefill_vllm_overrides.kv_transfer_config]
+kv_connector = "MultiConnector"
+kv_role = "kv_both"
+kv_load_failure_policy = "fail"
+
+[[deployment.prefill_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "NixlConnector"
+kv_role = "kv_producer"
+kv_load_failure_policy = "fail"
+kv_connector_extra_config.num_threads = 1
+kv_connector_extra_config.kv_lease_duration = 120
+
+[[deployment.prefill_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "MooncakeStoreConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.save_decode_cache = true
+kv_connector_extra_config.cache_prefix = "glm53-nvfp4-11af4cb-fp8kv-f7f56f0-prefill"
+
+[deployment.decode_vllm_overrides]
+all2all_backend = "deepep_low_latency"
+max_num_batched_tokens = 320
+max_num_seqs = 320
+gpu_memory_utilization = 0.90
+
+[deployment.decode_vllm_overrides.compilation_config]
+cudagraph_mode = "FULL_AND_PIECEWISE"
+cudagraph_capture_sizes = [1, 2, 4, 8, 16, 32, 64, 96, 128, 192, 256, 320]
+
+[deployment.decode_vllm_overrides.kv_transfer_config]
+kv_connector = "MultiConnector"
+kv_role = "kv_both"
+kv_load_failure_policy = "fail"
+
+[[deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "NixlConnector"
+kv_role = "kv_consumer"
+kv_load_failure_policy = "fail"
+kv_connector_extra_config.num_threads = 1
+kv_connector_extra_config.kv_lease_duration = 120
+
+[[deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "MooncakeStoreConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.save_decode_cache = true
+kv_connector_extra_config.cache_prefix = "glm53-nvfp4-11af4cb-fp8kv-f7f56f0-decode"
+
+[[deployment.decode_vllm_overrides.kv_transfer_config.kv_connector_extra_config.connectors]]
+kv_connector = "HiSparseConnector"
+kv_role = "kv_both"
+kv_connector_extra_config.host_pool_gib = 300
+
+[slurm]
+job_name = "glm53-nvfp4-pd"
+partition = "all"
+time = "0"
+
+[env_vars]
+CUDA_HOME = "/usr/local/cuda-13.0"
+TORCH_CUDA_ARCH_LIST = "10.3a"
+PYTHONHASHSEED = "0"
+VLLM_USE_V2_MODEL_RUNNER = "1"
+VLLM_USE_RUST_FRONTEND = "0"
+VLLM_WORKER_MULTIPROC_METHOD = "spawn"
+VLLM_MOE_ROUTING_SIMULATION_STRATEGY = ""
+VLLM_ENFORCE_STRICT_TOOL_CALLING = "0"
+VLLM_DEEP_GEMM_WARMUP = "full"
+VLLM_LOG_STATS_INTERVAL = "5"
+VLLM_MOONCAKE_STORE_TIER_LOG = "1"
+MC_MS_AUTO_DISC = "0"
+NCCL_DEBUG = "WARN"
+MAX_JOBS = "2"
+OMP_NUM_THREADS = "1"
+
+[vllm]
+# RadixArk/GLM-5.3-NVFP4; keep this checkpoint revision fixed.
+model = "/home/matej/prime-rl/outputs/glm53-b300/models/nvfp4/model"
+revision = "11af4cba759e6559eda70358a5778bd1bddddd78"
+served_model_name = ["glm53"]
+dtype = "bfloat16"
+kv_cache_dtype = "fp8"
+block_size = 64
+max_model_len = 32768
+tensor_parallel_size = 1
+data_parallel_size = 8
+data_parallel_rpc_port = 19345
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+enable_dbo = false
+enable_prefix_caching = true
+enable_chunked_prefill = true
+enforce_eager = false
+safetensors_load_strategy = "prefetch"
+seed = 42
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+enable_auto_tool_choice = true
+generation_config = "vllm"
+logprobs_mode = "raw_logprobs"
+enable_prompt_tokens_details = true
+cudagraph_metrics = true
+
+[vllm.hf_overrides]
+use_index_cache = true
+index_topk_freq = 4
+moe_router_dtype = "float32"
+head_dtype = "float32"
