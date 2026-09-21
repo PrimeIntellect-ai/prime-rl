@@ -22,6 +22,7 @@ cp = 8
 # Freezing the router keeps this measuring the data rather than expert drift onto one domain.
 freeze_moe_router = true
 
+optim_cpu_offload = false
 ac_offloading = "None"
 
 # DeepEP dies on the first backward, inside `DeepEPTokenDispatcher.combine`.
