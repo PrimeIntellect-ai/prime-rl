@@ -24,6 +24,12 @@ run's directory before each fresh launch, including its previous logs and
 checkpoints; explicit `--resume` instead follows resume semantics. The run
 directory is `outputs/glm53-nvfp4-rl/scaleswe-nvfp4-4over6`.
 
+Before a restart, preserve any needed logs outside that directory and wait for
+the previous Slurm allocation to finish cleanup. Check `nvidia-smi` and process
+start times on its hosts for leftover GPU allocations and job-owned Mooncake
+processes before launching the replacement. Clean up confirmed orphaned processes
+from the stopped job; keep the kernel compilation caches for reuse.
+
 Trainer and orchestrator log to the shared W&B project `glm53-nvfp4-rl`, with
 the run name inherited from `[run]`. The Slurm launcher sources the repository's
 git-ignored `.env`; `pre_run_command` exports `WANDB_API_KEY` to its child
@@ -40,7 +46,7 @@ processes. Keep the key in `.env`, outside the TOML and generated configs.
 | Activation checkpointing | Selective, every layer, default retained operations |
 | Activation offloading | Enabled, one activation in flight |
 | Expert compute | NVFP4 4over6 for the first 85% of layers; BF16 elsewhere |
-| Index cache | Recompute every 4 layers, matching inference |
+| Index cache | Native checkpoint IndexShare schedule, matching inference |
 | Weight transfer | NCCL, BF16 weights quantized online by inference |
 
 Both sides start from the existing local `zai-org/GLM-5.3-BF16` download at
@@ -56,16 +62,21 @@ retain their model defaults.
 | Inference setting | Prefill | Decode |
 |---|---|---|
 | Parallelism | DPEP8, TP1 | DPEP8, TP1 |
-| All-to-all backend | FlashInfer NVLink one-sided | DeepEP low latency |
+| All-to-all backend | FlashInfer NVLink one-sided | FlashInfer NVLink one-sided |
 | Batched tokens | 32,768 | 320 |
 | Maximum sequences per GPU | 256 | 320 |
-| GPU memory utilization | 0.75 | 0.90 |
+| GPU memory utilization | 0.90 | 0.90 |
 | Graphs | None | Full + piecewise, breakable |
 | Mooncake store RAM per node | 2,560 GiB | 0 |
 | HiSparse host RAM per GPU | Disabled | 300 GiB |
 
-Both roles use FP8 KV, a 65,536-token context limit, index cache with frequency
-4, natural expert routing, and no EPLB, DBO or MTP. Routing is sticky least
+Both roles use FP8 KV, a 65,536-token context limit, the checkpoint's native
+IndexShare schedule, natural expert routing, and no EPLB, DBO or MTP. The
+schedule has 21 full-indexer layers and 57 layers that reuse indices. A trainer
+frequency override would replace this schedule and request weights absent from
+the checkpoint, so `trainer.model.index_cache` is omitted. The pinned wheel's
+DeepEP low-latency expert backend does not support online per-token NVFP4;
+both inference roles use FlashInfer one-sided. Routing is sticky least
 loaded with retries disabled. Each rank binds to its configured NUMA node and
 UCX NIC. These mappings and host-memory capacities target this B300 cluster;
 adjust them for a different machine topology.

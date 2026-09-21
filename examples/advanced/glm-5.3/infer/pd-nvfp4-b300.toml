@@ -55,9 +55,6 @@ freq = 1
 [trainer.model.ac_offloading]
 max_inflight_activations = 1
 
-[trainer.model.index_cache]
-topk_freq = 4
-
 [trainer.optim]
 type = "adamw"
 
@@ -113,7 +110,7 @@ VLLM_USE_BREAKABLE_CUDAGRAPH = "1"
 all2all_backend = "flashinfer_nvlink_one_sided"
 max_num_batched_tokens = 32768
 max_num_seqs = 256
-gpu_memory_utilization = 0.75
+gpu_memory_utilization = 0.90
 
 [inference.deployment.prefill_vllm_overrides.compilation_config]
 cudagraph_mode = "NONE"
@@ -137,7 +134,7 @@ kv_connector_extra_config.save_decode_cache = true
 kv_connector_extra_config.cache_prefix = "glm53-bf16-9d2398f-nvfp4-4over6-l0-65-fp8kv-prefill"
 
 [inference.deployment.decode_vllm_overrides]
-all2all_backend = "deepep_low_latency"
+all2all_backend = "flashinfer_nvlink_one_sided"
 max_num_batched_tokens = 320
 max_num_seqs = 320
 gpu_memory_utilization = 0.90
@@ -176,6 +173,7 @@ time = "0"
 pre_run_command = "export WANDB_API_KEY"
 
 [inference.env_vars]
+UCX_RCACHE_MAX_UNRELEASED = "1024"
 CUDA_HOME = "/usr/local/cuda-13.0"
 TORCH_CUDA_ARCH_LIST = "10.3a"
 PYTHONHASHSEED = "0"
