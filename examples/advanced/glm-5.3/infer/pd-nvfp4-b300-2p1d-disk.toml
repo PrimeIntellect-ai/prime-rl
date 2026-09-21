@@ -1,4 +1,7 @@
 # Layer on top of pd-nvfp4-b300.toml. The disk tier uses shared Weka storage.
+[trainer.env_vars]
+TORCHINDUCTOR_COMPILE_THREADS = "1"
+
 [trainer.model]
 cp = 8
 

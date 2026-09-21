@@ -140,6 +140,9 @@ offloading, and batch size 128 (eight groups of 16). Optimizer-state CPU offload
 stays enabled; full CPU offload stays disabled. The debug algorithm is inherited
 from the base config. The shared Mooncake master uses a 30-minute hard KV lease,
 and the router allows requests to run for 60 minutes.
+Trainer compilation uses `TORCHINDUCTOR_COMPILE_THREADS=1` to avoid a compiler
+pool shutdown deadlock in the installed PyTorch runtime. Compilation and caches
+remain enabled; inference keeps its own compiler settings.
 
 ## Inference Grafana
 

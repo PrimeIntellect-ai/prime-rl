@@ -120,6 +120,14 @@ duration is controlled separately by `router.request_timeout_seconds`, including
 streaming; increasing the environment rollout timeout does not increase this
 router limit. For RL configs these fields live under `inference`.
 
+If trainer GPUs remain at 0% while peers stay at 100%, sample the idle rank and
+its compiler children before treating utilization as useful compute. In the
+GLM-5.3 PyTorch 2.13 runtime, compiler-pool quiesce/recreation reproduced a
+`ProcessPoolExecutor.weakref_cb` shutdown-lock deadlock; peers then timed out in
+collectives. The selected workaround is trainer-only
+`TORCHINDUCTOR_COMPILE_THREADS="1"` under `[trainer.env_vars]`, preserving compile
+and cache use. Do not patch Torch or change inference compiler settings for it.
+
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
