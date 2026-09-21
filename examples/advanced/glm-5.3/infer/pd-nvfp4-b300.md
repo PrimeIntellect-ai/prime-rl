@@ -1,11 +1,26 @@
-# GLM-5.3 NVFP4 P/D on B300
+# GLM-5.3 NVFP4 P/D and Scale-SWE training on B300
 
-From the repository root:
+This RL config fragment contains `[inference]` and the Scale-SWE training source
+under `[orchestrator.train.source]`. Add trainer, training deployment, batching,
+model/tokenizer and weight-broadcast settings before launching a full RL run.
+The inference checkpoint is prequantized; training also needs an explicit choice
+of trainer checkpoint and inference weight-reload/quantization settings.
+
+To run only the inference portion from the repository root:
 
 ```bash
 uv sync --all-extras --all-packages
-uv run inference @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml --dry-run
-uv run inference @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml
+uv run python - <<'PY'
+import json
+import tomllib
+from pathlib import Path
+
+config = tomllib.loads(Path("examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml").read_text())
+inference = config["inference"] | {key: config[key] for key in ("slurm", "output_dir")}
+Path("/tmp/glm53-pd-inference.json").write_text(json.dumps(inference))
+PY
+uv run inference @ /tmp/glm53-pd-inference.json --dry-run
+uv run inference @ /tmp/glm53-pd-inference.json
 ```
 
 The dry run writes resolved prefill/decode configs and the Slurm script without
@@ -41,7 +56,14 @@ releases their memory. Both roles connect to the same store pool with separate
 role cache-key prefixes; shared capacity does not imply cross-role key reuse.
 Each connector also uses a 512 MiB RDMA staging buffer.
 
-This is inference-only: it does not start an eval, trainer, persistent supervisor,
-or profiler. For RL, use these settings under `[inference]` and add the trainer,
-orchestrator, weight-broadcast and root deployment settings. The RL launcher uses
-the same role-resolution and Mooncake provisioning paths.
+The training source matches the Scale-SWE eval: quarter-zero tasks selected by
+the instance-ID filter, bash harness, automatic compaction, 720 sandbox creates
+per minute, a six-hour rollout timeout, and no agentic judge. It retains 16
+rollouts per task, `clear_thinking=false`, and a static environment pool of 20
+workers with 128 concurrent slots each. Training sandboxes use the distinct
+`glm53-pd-train` label alongside `int4-syn-gen-bash`. Pool capacity is 2,560;
+training concurrency and batch size remain to be configured.
+
+The inference-only command above does not start environments, training, evals,
+persistent supervisors or profiling. The RL launcher uses the same role-resolution
+and Mooncake provisioning paths.
