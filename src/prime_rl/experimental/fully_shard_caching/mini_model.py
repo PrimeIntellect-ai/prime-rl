@@ -65,7 +65,9 @@ GLM_4_5_AIR_CONFIG = dict(
     pad_token_id=151329,
 )
 
-WRAP_MODES = ("none", "fp8", "fp8_wire_both", "fp8_wire_one", "toy")
+WRAP_MODES = ("none", "bf16", "fp8", "fp8_wire_both", "fp8_wire_one", "toy")
+
+STOCK_WRAP_MODES = ("none", "bf16")
 
 DEFAULT_NUM_EXPERTS = GLM_4_5_AIR_CONFIG["n_routed_experts"]
 
@@ -120,13 +122,13 @@ def build_op(wrap: str, activation):
 
 def build_model_config(wrap: str) -> ModelConfig:
     """Pick the MoE compute whose kernels the wrap mode's op reproduces."""
-    compute = BF16MoEComputeConfig() if wrap == "toy" else DeepGemmFP8MoEComputeConfig()
+    compute = BF16MoEComputeConfig() if wrap in ("toy", "bf16") else DeepGemmFP8MoEComputeConfig()
     return ModelConfig(moe=MoERuntimeConfig(compute=compute))
 
 
 def replace_experts(model: nn.Module, spec: MiniModelSpec) -> list[GroupedExperts]:
     config = model.config
-    op = build_op(spec.wrap, ActivationDispatch[config.hidden_act]) if spec.wrap != "none" else None
+    op = None if spec.wrap in STOCK_WRAP_MODES else build_op(spec.wrap, ActivationDispatch[config.hidden_act])
     experts_modules = []
     for moe in (module for module in model.modules() if isinstance(module, MoE)):
         experts_cls = GroupedExperts if op is None else PreparedGroupedExperts
@@ -198,7 +200,7 @@ def build_mini_model(
     apply_fp32_moe_router(model)
     if force_balanced_routing:
         apply_force_balanced_routing(model)
-    if spec.wrap != "none" and install_prepared:
+    if spec.wrap not in STOCK_WRAP_MODES and install_prepared:
         install_expert_preparation(experts_modules)
     configure_moe_runtime(model, model_config, parallel_dims)
     if activation_checkpointing:
