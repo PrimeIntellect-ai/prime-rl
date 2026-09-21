@@ -508,3 +508,17 @@ FP8 gap.
   recipes. Consequence for the `fix/fp8-quant-parity` branch: leave the weight kernels alone (they already match);
   in the two per-token activation kernels clamp amax at 1e-4 like vLLM, compute the scale with correctly rounded
   division (`tl.math.div_rn`), and clamp the output to [-448, 448], so the trainer matches the production CUDA op.
+
+### fp8/fp8 probe (job 1103, `rl_fp8_fp8.toml`, 5 nodes, 21:17-22:19), BEFORE the quantizer-parity fix
+
+Trainer FP8 on DeepSeek V4 Flash works: "Replaced 301 linear layers with FP8 blockwise linear (skipped 253 by name,
+0 by 128-divisibility)" and "Configured 43/43 MoE layers with compute=deepgemm_fp8", first forward clean (both sides
+bf16 for o_a in this probe). 20 lr = 0 steps on reverse-text at 2048 tokens: mismatch KL per step 0.0054, 0.0095,
+0.0053, 0.0107, 0.0097, 0.0078, 0.0081, 0.0072, 0.0061, 0.0056, 0.0091, 0.0126, 0.0062, 0.0105, 0.0103, 0.0114, 0.0138,
+0.0103, 0.0098, 0.0096; mean 0.0089, median 0.0096. Baselines on the same profile (`FP8_MISMATCH_RESULTS.md`): FP8
+serving with a bf16 trainer 0.0307, bf16 on both sides 0.0015. So fp8/fp8 removes about 70% of the old FP8 gap but
+sits about 6x above the bf16 floor; candidates for the residual are the server's Triton FP8 experts below 128 tokens
+versus the trainer's DeepGEMM contiguous kernel (decode-heavy reverse-text), the 0.1% one-step activation-scale flips
+the parity fix addresses, and the indexer's top-k discontinuity amplifying any kernel difference. Rank 0 logged a CUDA
+allocator mapping failure with 5 MB free (the 4-trainer-node lr = 0 configs are memory-tight; steps continued). This
+is the "before" for `fix/fp8-quant-parity`; re-run the same config after the fix for the "after".
