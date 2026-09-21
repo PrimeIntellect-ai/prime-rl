@@ -14,10 +14,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
-from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
-    conversion_chain,
-    convert_tt_layer_to_vllm_kernel,
-)
+from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -152,12 +149,6 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config):
         return conversion_chain(config)
-
-    @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
-    ) -> dict[str, Tensor]:
-        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
 
 
 @auto_docstring

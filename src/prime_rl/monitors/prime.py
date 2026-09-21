@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 import prime_runs as pr
-from prime_cli.core.config import Config as PrimeConfig
+from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 BASE_URL_VAR = "PRIME_API_BASE"
+EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -160,6 +161,12 @@ class PrimeEvalMonitor(Monitor):
         # episodes do not retry the platform on every arrival
         self.runs: dict[tuple[str, int], pr.Run | None] = {}
         self._lock = asyncio.Lock()
+        self.evaluation_id = os.getenv(EVAL_ID_VAR)
+        if self.evaluation_id and len(self.sources) != 1:
+            raise ValueError(
+                f"${EVAL_ID_VAR} names one platform evaluation, so the run needs "
+                f"exactly one eval source (got {len(self.sources)})"
+            )
         if self.mode == "online":
             self.logger.info("Streaming eval epochs to the Prime platform")
             if output_dir is not None:
@@ -172,6 +179,19 @@ class PrimeEvalMonitor(Monitor):
 
     def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
+        if self.evaluation_id:
+            # A hosted launch pre-created the platform evaluation and injected its id -
+            # attach instead of registering a duplicate. The backend owns its failure
+            # marking then; a clean finish still completes it.
+            if self.runs:
+                raise RuntimeError(f"${EVAL_ID_VAR} holds one epoch, and it already took one")
+            return pr.init(
+                kind="eval",
+                mode=self.mode,
+                base_url=_base_url(),
+                id=self.evaluation_id,
+                finish_timeout=FINISH_TIMEOUT,
+            )
         source = self.sources[env_name]
         name = self.config.name if len(self.sources) == 1 else f"{self.config.name}--{env_name}"
         return pr.init(
@@ -206,7 +226,8 @@ class PrimeEvalMonitor(Monitor):
                 return None
             self.runs[key] = run
         if run.url:
-            self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}")
+            attached = f" (attached via ${EVAL_ID_VAR})" if run.attached else ""
+            self.logger.info(f"Streaming {env_name} (Step {step}) evaluation - {run.url}{attached}")
             if self.output_dir is not None:
                 record = read_platform_record(self.output_dir) or {
                     "kind": "eval",

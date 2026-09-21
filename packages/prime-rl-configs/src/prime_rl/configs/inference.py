@@ -38,6 +38,8 @@ All2AllBackend = Literal[
     "flashinfer_nvlink_two_sided",
 ]
 
+QuantizationType = Literal["fp8_per_block"]
+
 
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
@@ -105,7 +107,7 @@ class VllmConfig(BaseConfig):
     enable_prefix_caching: bool | None = None
     """Enable prefix caching."""
 
-    quantization: str | None = None
+    quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
     enable_lora: bool = False
@@ -129,6 +131,12 @@ class VllmConfig(BaseConfig):
 
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
+
+    enable_ep_weight_filter: bool = True
+    """Skip non-local expert weights at load time under expert parallelism, so each
+    rank reads only its own expert shard from disk. No-op for non-MoE models, when
+    expert parallelism is disabled, or under EPLB (redundant expert slots need all
+    logical expert weights)."""
 
     enable_dbo: bool = False
     """Enable dual batch overlap (DBO)."""
@@ -303,8 +311,8 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    policy: str = "consistent_hash"
-    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+    policy: str = "sticky_least_loaded"
+    """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 
 
 class LlmdRouterConfig(BaseConfig):
@@ -462,7 +470,7 @@ class InferenceConfig(BaseConfig):
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
 
     enable_fp32_lm_head: bool = True
-    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
+    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
     enable_fp32_router_logits: bool = True
     """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
@@ -636,19 +644,18 @@ class InferenceConfig(BaseConfig):
             hf_overrides.setdefault("moe_router_dtype", "float32")
             namespace.hf_overrides = hf_overrides
 
+        # vLLM's LogitsProcessor reads `head_dtype` off the HF config to pick the
+        # lm_head projection dtype (fp32 runs as a native bf16xbf16 -> fp32 GEMM).
+        if self.enable_fp32_lm_head:
+            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
+            hf_overrides.setdefault("head_dtype", "float32")
+            namespace.hf_overrides = hf_overrides
+
         if self.enable_return_sampling_mask:
             namespace.return_sampling_mask = True
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
-
-        # Pass prime-rl-specific flags through vLLM's additional_config dict;
-        # workers read these via get_current_vllm_config().additional_config.
-        additional_config = getattr(namespace, "additional_config", None) or {}
-        if self.enable_fp32_lm_head:
-            additional_config["fp32_lm_head"] = True
-        if additional_config:
-            namespace.additional_config = additional_config
 
         return namespace

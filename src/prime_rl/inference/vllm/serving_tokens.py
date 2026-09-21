@@ -12,14 +12,9 @@ still missing from the upstream handler:
    objects (the form the PD router can merge and the renderers parse) instead
    of upstream's single ``.npy`` base64 string.
 
-2. ``kv_transfer_params`` bridging — upstream ``ServingTokens.serve_tokens``
-   parses ``request.kv_transfer_params`` but never threads it into the engine.
-   Fixed upstream by https://github.com/vllm-project/vllm/pull/42644, which
-   missed the 0.28.0 cut.
-
-3. Prompt metadata — return the effective engine prompt and authoritative
-   multimodal placeholder ranges after expansion. Drop this once
-   https://github.com/vllm-project/vllm/pull/53187 is available in a release.
+2. Prompt metadata — return the effective engine prompt and authoritative
+   multimodal placeholder ranges after expansion. Drop this once upstream's
+   response includes these fields.
 
 Everything else delegates to upstream so we track future vLLM changes for free.
 """
@@ -30,8 +25,7 @@ from collections.abc import AsyncGenerator, AsyncIterable
 from contextvars import ContextVar
 from typing import Any
 
-from fastapi import Request
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
+from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
@@ -39,6 +33,7 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     PlaceholderRangeInfo,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
@@ -110,19 +105,6 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> None:
         _response_mm_placeholders.set(_extract_mm_placeholders(inputs))
         super()._log_inputs(request_id, inputs, params, lora_request)
-
-    async def serve_tokens(
-        self,
-        request: GenerateRequest,
-        raw_request: Request | None = None,
-    ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
-        # Fixed upstream by vllm#42644; drop once it is included in the pin.
-        if request.kv_transfer_params is not None:
-            extra = request.sampling_params.extra_args or {}
-            extra["kv_transfer_params"] = request.kv_transfer_params
-            request.sampling_params.extra_args = extra
-
-        return await super().serve_tokens(request, raw_request)
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,

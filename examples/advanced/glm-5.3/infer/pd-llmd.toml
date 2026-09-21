@@ -2,7 +2,7 @@
 # Step 3 / goal target. Topology mirrors the proven original glm5.1_llmd_inference
 # (job 348 succeeded): 8 prefill nodes (4 replicas x 2) + 8 decode nodes (1 replica).
 #
-# Launch:  uv run inference @ examples/advanced/glm-5.2/infer/pd-llmd.toml
+# Launch:  uv run inference @ examples/advanced/glm-5.3/infer/pd-llmd.toml
 
 output_dir = "/shared/outputs/glm5.2-16node-llmd"
 
@@ -60,5 +60,4 @@ reasoning_parser = "glm45"
 gpu_memory_utilization = 0.75
 enable_expert_parallel = true
 enable_eplb = false
-enable_ep_weight_filter = true
 safetensors_load_strategy = "prefetch"

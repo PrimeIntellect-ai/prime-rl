@@ -26,13 +26,13 @@ const state = {
   runs: [],
   run: null,
   meta: null,
-  tab: "metrics",
+  tab: "overview",
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(),
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
-    mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
+    searches: { overview: prefs.overviewSearch ?? "", metrics: prefs.metricsSearch ?? "" },
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150, includeErrors: prefs.includeErrors ?? false,
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
@@ -177,16 +177,15 @@ async function toggleCompare(name, on) {
   renderMetricsBody();
 }
 
-/* eval runs have one env and no steps: the step bar, kind/subset toggles, chart
-   mode, and smoothing make no sense there */
+/* eval runs have one env and no steps: the step bar, kind/subset toggles and
+   smoothing make no sense there, and the overview is the episode pane */
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
-  $("#metrics-mode").hidden = isEval;
-  $("#metrics-filter-wrap").hidden = !isEval;
-  $("#metrics-search").hidden = isEval;
-  $("#metrics-collapse").hidden = isEval;
-  $("#metrics-expand").hidden = isEval;
-  $("#smooth-range").closest(".ctl").hidden = isEval;
+  $("#overview-filter-wrap").hidden = !isEval;
+  $("#overview-search").hidden = isEval;
+  $("#overview-collapse").hidden = isEval;
+  $("#overview-expand").hidden = isEval;
+  $("#overview-smooth").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
   $("#trace-mode").hidden = isEval;
@@ -332,7 +331,7 @@ function renderOverview() {
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
     meta.type === "eval"
-      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
+      ? ["episodes", `<span class="val">${state.metrics.evalCount.toLocaleString()}</span>`]
       : ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "n/a")}</span>`],
     ...(meta.type === "eval"
@@ -372,9 +371,12 @@ async function activateTab(tab, force = false) {
   setActive("#tabs", "tab", tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
-  if (tab === "metrics") {
+  if (isChartTab(tab)) {
     if (!state.metrics.loaded) await initMetrics();
-    else if (state.live) await fetchMetrics();
+    else {
+      renderMetricsBody();
+      if (state.live) await fetchMetrics();
+    }
   }
   if (tab === "config" && !state.config.loaded) await initConfig();
   if (tab === "logs" && !state.logs.loaded) await initLogs();
@@ -389,6 +391,36 @@ async function activateTab(tab, force = false) {
 }
 
 /* ---------------------------------------------------------------- metrics */
+
+/* the overview and metrics tabs read one metric store and share one chart
+   registry: the open tab owns the charts, so switching re-renders into its body.
+   The overview is the curated view (for an eval run, the episode pane); metrics
+   is every key in the file, sectioned by family */
+const CHART_VIEWS = {
+  overview: { body: "#overview-body", status: "#overview-status", search: "#overview-search", mode: "overview" },
+  metrics: { body: "#metrics-body", status: "#metrics-status", search: "#metrics-search", mode: "all" },
+};
+
+function isChartTab(tab = state.tab) {
+  return tab in CHART_VIEWS;
+}
+
+function chartBodies() {
+  return Object.values(CHART_VIEWS).map((view) => $(view.body));
+}
+
+function chartView() {
+  return CHART_VIEWS[state.tab] ?? CHART_VIEWS.overview;
+}
+
+function metricsMode() {
+  return chartView().mode;
+}
+
+/* the eval overview is built from the episode series, not the metric rows */
+function rowsChartHere() {
+  return isChartTab() && !(state.tab === "overview" && state.meta?.type === "eval");
+}
 
 const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
 const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/has_error/mean"];
@@ -406,8 +438,9 @@ const INFERENCE_PANELS = [
   ["inference/agg/num_requests_running/mean", "inference/agg/num_requests_running/min", "inference/agg/num_requests_running/max"],
   ["inference/agg/num_requests_waiting/mean", "inference/agg/num_requests_waiting/min", "inference/agg/num_requests_waiting/max"],
   ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
-  ["inference/agg/generation_tokens_total:rate/sum", "inference/agg/generation_tokens_total:rate/min"],
-  ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
+  ["inference/agg/generation_tokens_total:rate/sum"],
+  ["inference/agg/prompt_tokens_total:rate/sum"],
+  ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"],
 ];
 
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
@@ -461,46 +494,52 @@ function ingestInto(store, rows, meta) {
    first charts paint immediately and a progress readout ticks up while the rest
    loads, with the main thread yielding between chunks */
 async function fetchMetrics() {
-  if (state.meta?.type === "eval") return fetchEvalSeries();
   const m = state.metrics;
   if (m.fetching) return 0;
   m.fetching = true;
-  let total = 0;
-  let showedProgress = false;
   try {
-    for (let first = true; ; first = false) {
-      const requestedOffset = m.offset;
-      const [data, compared] = await Promise.all([
-        api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
-        first ? fetchCompares() : false,
-      ]);
-      if (state.metrics !== m) return total; // the run changed mid-load
-      m.offset = data.offset;
-      total += data.rows.length;
-      let touched = null;
-      if (data.rows.length) {
-        touched = ingestInto(m, data.rows, state.meta);
-        renderOverview();
-      }
-      if (data.rows.length || compared) {
-        if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
-        else updateCharts(compared ? null : touched); // compares may touch any panel
-      }
-      // A writer can leave one incomplete JSONL record at EOF. Wait for the
-      // next poll instead of repeatedly requesting the same partial record.
-      if (data.offset >= (data.size ?? data.offset) || data.offset === requestedOffset) break;
-      showedProgress = true;
-      $("#metrics-status").textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
-    }
-    if (showedProgress && m.mode === "overview") $("#metrics-status").textContent = "";
+    if (state.meta?.type === "eval") await fetchEvalSeries();
+    if (state.metrics !== m) return 0;
+    return await fetchMetricRows(m);
   } finally {
     m.fetching = false;
   }
+}
+
+async function fetchMetricRows(m) {
+  let total = 0;
+  let showedProgress = false;
+  for (let first = true; ; first = false) {
+    const requestedOffset = m.offset;
+    const [data, compared] = await Promise.all([
+      api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
+      first ? fetchCompares() : false,
+    ]);
+    if (state.metrics !== m) return total; // the run changed mid-load
+    m.offset = data.offset;
+    total += data.rows.length;
+    let touched = null;
+    if (data.rows.length) {
+      touched = ingestInto(m, data.rows, state.meta);
+      renderOverview();
+    }
+    if ((data.rows.length || compared) && rowsChartHere()) {
+      if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
+      else updateCharts(compared ? null : touched); // compares may touch any panel
+    }
+    // A writer can leave one incomplete JSONL record at EOF. Wait for the
+    // next poll instead of repeatedly requesting the same partial record.
+    if (data.offset >= (data.size ?? data.offset) || data.offset === requestedOffset) break;
+    if (!rowsChartHere()) continue;
+    showedProgress = true;
+    $(chartView().status).textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
+  }
+  if (showedProgress && metricsMode() === "overview") $(chartView().status).textContent = "";
   return total;
 }
 
-/* eval runs have no metrics.jsonl and no step axis — their metrics view is a
-   grid of stat cards showing the running average over the episodes so far */
+/* an eval run's overview reads the episode series: the running distributions
+   over the episodes so far */
 async function fetchEvalSeries() {
   const m = state.metrics;
   const liveChanged = await loadLive({ render: state.tab === "traces" });
@@ -514,7 +553,7 @@ async function fetchEvalSeries() {
     data = { unchanged: true };
   }
   if (data.unchanged) {
-    if (liveChanged && m.loaded && state.tab === "metrics") renderMetricsBody();
+    if (liveChanged && m.loaded && state.tab === "overview") renderMetricsBody();
     return 0;
   }
   m.evalEtag = data.etag;
@@ -527,11 +566,10 @@ async function fetchEvalSeries() {
     m.evalSeries[key] = existing;
   }
   m.evalCount = data.count;
-  m.maxStep = data.count; // the overview's episode count
   const costs = (m.evalSeries.cost || []).filter((v) => v != null); // merged, not just the increment
   m.evalCost = costs.length ? costs.reduce((a, b) => a + b, 0) : null;
   renderOverview();
-  if (m.loaded) renderMetricsBody();
+  if (m.loaded && state.tab === "overview") renderMetricsBody();
   return data.count;
 }
 
@@ -556,8 +594,8 @@ function evalEnv() {
 function renderEvalEnvs() {
   const envs = evalEnvs();
   const current = evalEnv();
-  $("#metrics-env-row").hidden = !envs.length;
-  $("#metrics-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
+  $("#overview-env-row").hidden = !envs.length;
+  $("#overview-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
   syncDressedSelects();
 }
 
@@ -615,7 +653,7 @@ function evalProgressHtml(env, idx, live) {
       `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
   }
   // the toolbar line reads like the traces tab's
-  $("#metrics-status").textContent = [...(live.length ? [`${live.length} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
+  $("#overview-status").textContent = [...(live.length ? [`${live.length} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
   return (
     `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span></div>` +
     `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
@@ -820,7 +858,7 @@ function swarmSvg(entry, W, H) {
 
 /* swarms are drawn to their host's pixel size, so they redraw with the panes */
 function drawSwarms() {
-  for (const card of document.querySelectorAll("#metrics-body .swarm-card")) {
+  for (const card of document.querySelectorAll("#overview-body .swarm-card")) {
     const entry = swarmRegistry.get(card.dataset.key);
     const host = card.querySelector(".swarm-host");
     if (!entry || !host?.clientWidth) continue;
@@ -1016,8 +1054,8 @@ function tokensPaneHtml(idx) {
 const TM_MAX_STRIPS = 40;
 
 function drawTiming() {
-  drawComposition(document.querySelector("#metrics-body .timing-pane"), timingModel, { kind: "timing", fmt: fmtDuration, time: true, color: phaseColor });
-  drawComposition(document.querySelector("#metrics-body .tokens-pane"), tokensModel, { kind: "tokens", fmt: (v) => fmtCompact(Math.round(v)), time: false, color: (n) => TOKEN_COLORS[n] || "#3a3a3a" });
+  drawComposition(document.querySelector("#overview-body .timing-pane"), timingModel, { kind: "timing", fmt: fmtDuration, time: true, color: phaseColor });
+  drawComposition(document.querySelector("#overview-body .tokens-pane"), tokensModel, { kind: "tokens", fmt: (v) => fmtCompact(Math.round(v)), time: false, color: (n) => TOKEN_COLORS[n] || "#3a3a3a" });
 }
 
 /* an icicle of the mean composition above one strip per episode; every segment
@@ -1173,12 +1211,12 @@ function summaryTilesHtml(idx, all, scoreEntries) {
 function renderEvalPane(body) {
   const m = state.metrics;
   const series = m.evalSeries || {};
-  const filter = makeFilter(m.search.trim());
+  const filter = makeFilter(m.searches.overview.trim());
   renderEvalEnvs();
   const env = evalEnv();
-  $("#metrics-status").textContent = "";
-  $("#metrics-errors").checked = !!m.includeErrors;
-  $("#metrics-filter-btn").classList.toggle("active", !!m.includeErrors);
+  $("#overview-status").textContent = "";
+  $("#overview-errors").checked = !!m.includeErrors;
+  $("#overview-filter-btn").classList.toggle("active", !!m.includeErrors);
   swarmRegistry.clear();
   if (!env) {
     body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
@@ -1250,19 +1288,19 @@ function renderEvalPane(body) {
   drawTiming();
 }
 
-$("#metrics-errors").addEventListener("change", (e) => {
+$("#overview-errors").addEventListener("change", (e) => {
   state.metrics.includeErrors = e.target.checked;
   savePrefs();
   renderMetricsBody();
 });
 
-$("#metrics-body").addEventListener("mousemove", (e) => {
+$("#overview-body").addEventListener("mousemove", (e) => {
   const tip = $("#swarm-tip");
   const timed = e.target.closest("[data-tip]");
   const pane = e.target.closest(".comp-pane");
   const rowEl = e.target.closest("[data-row]");
   const part = rowEl ? null : e.target.closest("[data-part]");
-  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => {
+  document.querySelectorAll("#overview-body .comp-pane").forEach((p) => {
     if (p === pane && rowEl) highlightRow(p, rowEl.dataset.row);
     else highlightPart(p, p === pane && part ? part.dataset.part : null);
   });
@@ -1278,22 +1316,22 @@ $("#metrics-body").addEventListener("mousemove", (e) => {
     tip.innerHTML = swarmTipHtml(entry, dot ? entry.points[+dot.dataset.i] : null);
   }
   tip.hidden = false;
-  const host = $("#tab-metrics").getBoundingClientRect();
+  const host = $("#tab-overview").getBoundingClientRect();
   const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
   tip.style.left = `${Math.max(4, left)}px`;
   tip.style.top = `${e.clientY - host.top + 14}px`;
 });
-$("#metrics-body").addEventListener("mouseleave", () => {
+$("#overview-body").addEventListener("mouseleave", () => {
   $("#swarm-tip").hidden = true;
-  document.querySelectorAll("#metrics-body .comp-pane").forEach((p) => highlightPart(p, null));
+  document.querySelectorAll("#overview-body .comp-pane").forEach((p) => highlightPart(p, null));
 });
 
-$("#metrics-env").addEventListener("change", (e) => {
+$("#overview-env").addEventListener("change", (e) => {
   state.metrics.evalEnv = e.target.value;
   renderMetricsBody();
 });
 
-$("#metrics-body").addEventListener("click", (e) => {
+$("#overview-body").addEventListener("click", (e) => {
   const strip = e.target.closest(".tm-strip-seg[data-line], .tm-row-hit[data-line]");
   if (strip) {
     openEpisode(+strip.dataset.line);
@@ -1804,7 +1842,7 @@ function panelTitle(panel, series, sectionName) {
   }
   if (sectionName && title.startsWith(`${sectionName}/`)) title = title.slice(sectionName.length + 1);
   // overview: a lone mean is implied - all mode keeps the stat next to its /min//p10 siblings
-  if (state.metrics.mode === "overview" && title.endsWith("/mean")) title = title.slice(0, -"/mean".length);
+  if (metricsMode() === "overview" && title.endsWith("/mean")) title = title.slice(0, -"/mean".length);
   return title;
 }
 
@@ -1850,7 +1888,7 @@ function renderPanelCard(grid, panel, lazy = false) {
 }
 
 function paneOrderKey(sectionName) {
-  return `${state.metrics.mode}:${sectionName ?? ""}`;
+  return `${metricsMode()}:${sectionName ?? ""}`;
 }
 
 function persistPaneOrder(grid) {
@@ -1910,33 +1948,39 @@ function addSection(body, name, count, display = name) {
 /* all-mode: fully recursive sections along family path segments (train → agg →
    all → agent → …). Every logged key gets its own pane — stats are never
    overlaid, so min/p10/median/... show as raw separate plots. */
-function renderKeyTree(parent, name, families, depth) {
+/* one section per path prefix: the keys right under it are its panes, the deeper
+   ones nest as sections of their own */
+function renderKeyTree(parent, name, keys, depth) {
   const display = depth === 1 ? name : name.split("/").pop();
-  const { div, grid } = addSection(parent, name, families.length, display);
+  const { div, grid } = addSection(parent, name, keys.length, display);
   const children = new Map();
-  const leaves = [];
-  for (const f of families) {
-    const segments = f.family.split("/");
-    if (segments.length <= depth + 1) leaves.push(f);
+  for (const key of keys) {
+    const segments = key.split("/");
+    // a bare key (no path) is a pane of its own top-level section
+    if (segments.length <= depth + 1) renderPanelCard(grid, { metric: key }, true);
     else {
       const segment = segments[depth];
       if (!children.has(segment)) children.set(segment, []);
-      children.get(segment).push(f);
+      children.get(segment).push(key);
     }
   }
-  for (const f of leaves) for (const key of f.keys) renderPanelCard(grid, { metric: key }, true);
   if (grid.children.length) applyPaneOrder(grid);
   else grid.remove();
-  for (const [segment, childFamilies] of children) renderKeyTree(div, `${name}/${segment}`, childFamilies, depth + 1);
+  for (const [segment, childKeys] of children) renderKeyTree(div, `${name}/${segment}`, childKeys, depth + 1);
 }
 
 function renderMetricsBody() {
   const m = state.metrics;
   for (const entry of m.charts) entry.u?.destroy();
   m.charts = [];
+  if (!isChartTab()) {
+    m.renderedKeys = -1; // nothing on screen: the next chart tab renders afresh
+    return;
+  }
   m.renderedKeys = m.byKey.size;
-  const body = $("#metrics-body");
-  body.innerHTML = "";
+  const view = chartView();
+  const body = $(view.body);
+  for (const other of chartBodies()) other.innerHTML = ""; // the other tab's panes lost their charts above
   lazyObserver?.disconnect();
   lazyObserver = new IntersectionObserver(
     (entries) => {
@@ -1948,15 +1992,15 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.meta?.type === "eval") return renderEvalPane(body);
-  activeFilter = makeFilter(state.metrics.search.trim());
+  if (state.tab === "overview" && state.meta?.type === "eval") return renderEvalPane(body);
+  activeFilter = makeFilter(m.searches[state.tab].trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");
-    $("#metrics-status").textContent = "";
+    $(view.status).textContent = "";
     return;
   }
-  if (m.mode === "overview") {
-    $("#metrics-status").textContent = "";
+  if (view.mode === "overview") {
+    $(view.status).textContent = "";
     for (const section of buildSections(state.meta)) {
       const { div, grid } = addSection(body, section.name);
       for (const panel of section.panels) {
@@ -1973,38 +2017,36 @@ function renderMetricsBody() {
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
     return;
   }
-  // all: one card per metric family - flat lists a section per family with a
-  // pane per stat, nested groups families recursively along path segments
-  const familyKeys = new Map();
-  let shown = 0;
-  for (const key of [...m.byKey.keys()].sort()) {
-    if (activeFilter && !activeFilter.test(key)) continue;
-    shown++;
-    const family = familyOf(key);
-    if (!familyKeys.has(family)) familyKeys.set(family, []);
-    familyKeys.get(family).push(key);
-  }
-  $("#metrics-status").textContent = activeFilter ? `${shown} / ${m.byKey.size} keys` : "";
-  if (!familyKeys.size) {
+  // all: one pane per key - flat lists a section per parent path, nested walks
+  // the path segments as a tree of sections
+  const keys = [...m.byKey.keys()].filter((key) => !activeFilter || activeFilter.test(key)).sort();
+  $(view.status).textContent = activeFilter ? `${keys.length} / ${m.byKey.size} keys` : "";
+  if (!keys.length) {
     body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
     return;
   }
+  const bySegment = (keys, at) => {
+    const groups = new Map();
+    for (const key of keys) {
+      const segments = key.split("/");
+      const group = at(segments);
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(key);
+    }
+    return groups;
+  };
   if (m.allLayout === "flat") {
-    for (const [family, keys] of familyKeys) {
-      const { div, grid } = addSection(body, family, keys.length);
-      for (const key of keys) renderPanelCard(grid, { metric: key }, true);
+    // a bare key with no path is its own section
+    const sections = [...bySegment(keys, (segments) => segments.slice(0, -1).join("/") || segments[0])].sort(([a], [b]) => a.localeCompare(b));
+    for (const [parent, group] of sections) {
+      const { div, grid } = addSection(body, parent, group.length);
+      for (const key of group) renderPanelCard(grid, { metric: key }, true);
       if (!grid.children.length) div.remove();
       else applyPaneOrder(grid);
     }
     return;
   }
-  const groups = new Map();
-  for (const [family, keys] of familyKeys) {
-    const group = family.split("/")[0];
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push({ family, keys });
-  }
-  for (const [group, families] of groups) renderKeyTree(body, group, families, 1);
+  for (const [group, groupKeys] of bySegment(keys, (segments) => segments[0])) renderKeyTree(body, group, groupKeys, 1);
 }
 
 async function initMetrics() {
@@ -6253,15 +6295,6 @@ function syncTraceFilterControls() {
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
 
-document.querySelectorAll("#metrics-mode button").forEach((b) =>
-  b.addEventListener("click", () => {
-    state.metrics.mode = b.dataset.mode;
-    setActive("#metrics-mode", "mode", b.dataset.mode);
-    $("#all-layout").hidden = b.dataset.mode !== "all";
-    renderMetricsBody();
-    savePrefs();
-  })
-);
 $("#config-format").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-fmt]");
   if (!btn || btn.disabled || btn.dataset.fmt === state.config.fmt) return;
@@ -6281,49 +6314,57 @@ $("#config-search").addEventListener(
     savePrefs();
   })
 );
-document.querySelectorAll("#all-layout button").forEach((b) =>
+document.querySelectorAll("#metrics-layout button").forEach((b) =>
   b.addEventListener("click", () => {
     state.metrics.allLayout = b.dataset.layout;
-    setActive("#all-layout", "layout", b.dataset.layout);
+    setActive("#metrics-layout", "layout", b.dataset.layout);
     renderMetricsBody();
     savePrefs();
   })
 );
-$("#metrics-search").addEventListener(
-  "input",
-  debounce(() => {
-    state.metrics.search = $("#metrics-search").value;
-    renderMetricsBody();
+for (const [tab, view] of Object.entries(CHART_VIEWS)) {
+  $(view.search).addEventListener(
+    "input",
+    debounce(() => {
+      state.metrics.searches[tab] = $(view.search).value;
+      renderMetricsBody();
+      savePrefs();
+    }, 250)
+  );
+  $(`#${tab}-collapse`).addEventListener("click", () =>
+    document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = false))
+  );
+  $(`#${tab}-expand`).addEventListener("click", () =>
+    document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = true))
+  );
+  $(`#${tab}-smooth`).addEventListener("input", (e) => {
+    state.metrics.smooth = +e.target.value;
+    syncSmoothControls();
+    updateCharts();
     savePrefs();
-  }, 250)
-);
+  });
+}
 
 // remember collapsed sections across re-renders; charts created while hidden
 // have zero width, so resize on expand ("toggle" doesn't bubble → capture)
-$("#metrics-body").addEventListener(
-  "toggle",
-  (e) => {
-    const section = e.target;
-    if (!section.matches?.("details.section")) return;
-    if (section.open) resizeCharts();
-    // a search force-opens sections - don't let that overwrite the saved state
-    if (activeFilter) return;
-    if (section.open) state.metrics.collapsedSections.delete(section.dataset.name);
-    else state.metrics.collapsedSections.add(section.dataset.name);
-    savePrefs();
-  },
-  true
-);
-
-$("#metrics-collapse").addEventListener("click", () =>
-  document.querySelectorAll("#metrics-body details.section").forEach((s) => (s.open = false))
-);
-$("#metrics-expand").addEventListener("click", () =>
-  document.querySelectorAll("#metrics-body details.section").forEach((s) => (s.open = true))
-);
+for (const body of chartBodies())
+  body.addEventListener(
+    "toggle",
+    (e) => {
+      const section = e.target;
+      if (!section.matches?.("details.section")) return;
+      if (section.open) resizeCharts();
+      // a search force-opens sections - don't let that overwrite the saved state
+      if (activeFilter) return;
+      if (section.open) state.metrics.collapsedSections.delete(section.dataset.name);
+      else state.metrics.collapsedSections.add(section.dataset.name);
+      savePrefs();
+    },
+    true
+  );
 
 // drag a pane header to reorder within its section (order persisted by title)
-$("#metrics-body").addEventListener("dragover", (e) => {
+for (const body of chartBodies()) body.addEventListener("dragover", (e) => {
   if (!dragCard) return;
   const grid = e.target.closest(".chart-grid");
   if (!grid || grid !== dragCard.parentElement) return;
@@ -6336,7 +6377,7 @@ $("#metrics-body").addEventListener("dragover", (e) => {
 });
 
 /* wandb-style resize handles: resizing one pane resizes all of them */
-$("#metrics-body").addEventListener("pointerdown", (e) => {
+for (const body of chartBodies()) body.addEventListener("pointerdown", (e) => {
   const grip = e.target.closest("[data-rz]");
   if (!grip) return;
   e.preventDefault();
@@ -6982,7 +7023,7 @@ $("#tm-meta").addEventListener("click", (e) => {
 });
 
 function resizeCharts() {
-  $("#metrics-body").style.setProperty("--pane-h", `${chartHeight()}px`);
+  for (const body of chartBodies()) body.style.setProperty("--pane-h", `${chartHeight()}px`);
   drawSwarms();
   drawTiming();
   for (const entry of state.metrics.charts) {
@@ -7011,8 +7052,8 @@ function savePrefs() {
       paneH: state.metrics.paneH,
       includeErrors: state.metrics.includeErrors,
       paneOrder: state.metrics.paneOrder,
-      metricsMode: state.metrics.mode,
-      metricsSearch: state.metrics.search,
+      overviewSearch: state.metrics.searches.overview,
+      metricsSearch: state.metrics.searches.metrics,
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceStatus: state.traces.status,
@@ -7033,16 +7074,17 @@ function savePrefs() {
 }
 
 function applyPaneSize() {
-  $("#metrics-body").style.setProperty("--pane-min", `${state.metrics.paneMin}px`);
+  for (const body of chartBodies()) body.style.setProperty("--pane-min", `${state.metrics.paneMin}px`);
   resizeCharts();
 }
 
-$("#smooth-range").addEventListener("input", (e) => {
-  state.metrics.smooth = +e.target.value;
-  $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
-  updateCharts();
-  savePrefs();
-});
+/* one smoothing window, shown on both chart tabs */
+function syncSmoothControls() {
+  for (const tab of Object.keys(CHART_VIEWS)) {
+    $(`#${tab}-smooth`).value = state.metrics.smooth;
+    $(`#${tab}-smooth-val`).textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
+  }
+}
 
 let ticking = false;
 async function pollDashboard() {
@@ -7060,7 +7102,7 @@ async function pollDashboard() {
     }
     renderOverview(); // keeps the duration field ticking
     syncDressedSelects();
-    if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
+    if (isChartTab() && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
     else if (state.tab === "traces" && state.traces.loaded) await refreshTraces();
     else if (state.tab === "report" && state.report.loaded) await refreshReport();
@@ -7088,9 +7130,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 (async function init() {
-  $("#smooth-range").value = state.metrics.smooth;
-  $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
-  $("#metrics-search").value = state.metrics.search;
+  syncSmoothControls();
+  for (const [tab, view] of Object.entries(CHART_VIEWS)) $(view.search).value = state.metrics.searches[tab];
   state.logs.level = LOG_LEVELS.some(([level]) => level === prefs.logLevel) ? prefs.logLevel : "DEBUG";
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
@@ -7098,16 +7139,14 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#metrics-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#trace-env", "#overview-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
-  setActive("#metrics-mode", "mode", state.metrics.mode);
-  setActive("#all-layout", "layout", state.metrics.allLayout);
-  $("#all-layout").hidden = state.metrics.mode !== "all";
+  setActive("#metrics-layout", "layout", state.metrics.allLayout);
   setActive("#log-view", "view", state.logs.view);
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
-  state.tab = params.get("tab") || "metrics";
+  state.tab = params.get("tab") || "overview";
   state.report.wanted = params.get("report");
   hadHashRun = !!params.get("run");
   setActive("#tabs", "tab", state.tab);
@@ -7116,6 +7155,6 @@ document.addEventListener("visibilitychange", () => {
   const wanted = params.get("run");
   const run = state.runs.find((r) => r.name === wanted)?.name ?? state.runs[0]?.name;
   if (run) await selectRun(run);
-  else $("#metrics-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
+  else $("#overview-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
   connectViewEvents();
 })();

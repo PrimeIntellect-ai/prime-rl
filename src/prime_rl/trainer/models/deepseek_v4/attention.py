@@ -713,8 +713,9 @@ class DeepseekV4Attention(nn.Module):
         cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
-        q = self.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)  # (b, h, t, d)
-        q = apply_rotary_pos_emb_interleaved(self.q_b_norm(q), cos, sin)
+        # Normalizing before the transpose keeps the input contiguous for the quack kernel.
+        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape)).transpose(1, 2)  # (b, h, t, d)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin)
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
