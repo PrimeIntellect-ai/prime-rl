@@ -10,6 +10,7 @@ import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.pathing import get_platform_run_path
@@ -72,6 +73,21 @@ class PrimeTrainMonitor(Monitor):
             # attach instead of registering a duplicate. The backend owns the run's
             # failure marking then; a clean finish() still marks it completed.
             init_kwargs = {"id": run_id}
+        elif isinstance(config, SFTConfig):
+            # SFT trains on a dataset, not on environments, and has no rollouts - the
+            # platform run is registered without both.
+            init_kwargs = dict(
+                name=self.config.name,
+                model=config.model.name,
+                environments=[],
+                training=pr.TrainingSpec(
+                    max_steps=config.max_steps or 0,
+                    batch_size=config.data.batch_size,
+                    seq_len=config.data.seq_len,
+                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
+                ),
+                config=config.model_dump(exclude_none=True, mode="json"),
+            )
         elif config is not None:
             init_kwargs = dict(
                 name=self.config.name,
