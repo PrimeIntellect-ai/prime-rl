@@ -142,7 +142,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
     events = read_events(run_dir)
     traces = _traces(run_dir)
     traces.index()
-    accounting = summarize(events, traces.usage)
+    accounting = summarize(events, traces.tokens)
     trace_lines = trace_lines or {}
     row = run_dir.name
     states = unit_states(run_dir)

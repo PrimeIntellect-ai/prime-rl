@@ -353,7 +353,7 @@ function renderOverview() {
       ? [
           ["traces", `<span class="val">${state.flow.data?.stats.traces ?? "–"}</span>`],
           ["routes", `<span class="val">${state.flow.data?.stats.routes ?? "–"}</span>`],
-          ["tokens", `<span class="val" title="Recorded provider usage, including extra usage; cached results counted once">${fmtCompact(state.flow.data?.stats.tokens)}</span>`],
+          ["tokens", `<span class="val" title="Saved trace totals; repeated history and judge usage excluded; reused traces counted once">${fmtCompact(state.flow.data?.stats.tokens)}</span>`],
         ]
       : meta.type === "eval"
         ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
@@ -4585,6 +4585,7 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("branches", branches.length));
+    if (trace.num_total_tokens != null) parts.push(metaRow("trace tokens", fmtCompact(trace.num_total_tokens)));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
     const judgeRecords = Array.isArray(trace.info?.judge_calls) ? trace.info.judge_calls : [];
     if (judgeRecords.length) parts.push(metaRow("judge calls", judgeRecords.length));
@@ -4617,7 +4618,7 @@ function renderMeta(ep, trace, branches) {
       if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
       if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
       if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
-      if (totalTokens != null) parts.push(metaRow("total tokens", fmtCompact(totalTokens)));
+      if (totalTokens != null) parts.push(metaRow("provider tokens", fmtCompact(totalTokens)));
     }
 
     parts.push(`<div class="meta-sec">state</div>`);

@@ -26,6 +26,7 @@ from pathlib import Path
 import orjson
 from verifiers.v1.flow.events import StageEvent
 from verifiers.v1.flow.stats import Stats, summarize
+from verifiers.v1.trace import WireTrace
 
 from prime_rl.dashboard.flow import flow_etag, is_flow_run, project_flow, read_events, run_status
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -1933,6 +1934,8 @@ def get_episode(
     rec = read_episode_at(path, line, episode_at(run_dir, line))
     # only the opened episode's streams are read, by seeking to each of its records
     for trace in rec.get("traces") or []:
+        if is_flow_run(run_dir):
+            trace["num_total_tokens"] = WireTrace.model_validate(trace).num_total_tokens
         updates = trace_updates(run_dir, trace.get("id") or "")
         if not updates:
             continue
