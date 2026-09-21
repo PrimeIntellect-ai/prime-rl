@@ -25,17 +25,37 @@ feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpo
 - 00:11 Job 1045 RUNNING on 16 nodes. 00:14:39 trainer log: "Dithered 247281353949 elements across 430 FP8-scope
   parameters (mean |delta| / |w| = 2.2950e-02)". 247.3B of the model's roughly 284B parameters are FP8-scope, as
   expected (attention projections, routed and shared experts).
+- 01:08 Step 1: 0.0025 (control 0.0015).
+- 02:05 Step 20: 0.031, climbing about 0.0025 per step; diffuse, no glitch ids. Lag decomposition started.
 
 ## Results
 
 | step | dither kl_mean | kl_max | is_masked | reward | control kl_mean (job 991) |
 |---|---|---|---|---|---|
 | 1 | 0.00250 | 2.05 | 3.6e-5 | 0.615 | 0.00149 |
+| 2-10 | 0.0049 -> 0.0247, roughly +0.0025 per step | up to 1225 (step 7) | 6e-4 -> 1.0e-2 | 0.36-0.71 | 0.0016-0.0022 |
+| 11-20 | 0.0220-0.0320, mean 0.0268 | 19-795 | 1.0e-2 -> 1.4e-2 | 0.39-0.69 | 0.0018-0.0031 |
 
 Step 1 landed at 01:08 after an 18 min 56 s first step. The floor rose 1.7x over the control, below the 0.004-0.008
 guess (a uniform within-bin offset has RMS about q / sqrt(12), smaller than the full rounding error the guess assumed).
 Reward is in the control's range (0.69 at step 1). Readout that matters: the 20-step means versus the control's
 0.0022, 0.0033, 0.0043, 0.0066, 0.0119.
+
+**Steps 2-20 (02:05): the prediction failed, and in the opposite direction.** The dither run's mismatch climbs about
+0.0025 per step from step 2, reaching 0.031 at step 20 (control 0.0031), with `is_masked/mean` at 0.013 by step 20 (the
+old FP8 run collapsed near 0.02) and single-step maxima of 19-1225. Reward 0.36-0.71 and entropy 0.28-0.52 are still in
+the control's range. Trace scan (120 traces, 957k trained tokens, steps 1-30): zero glitch ids, zero gaps over 20 nats,
+16 gaps over 5 (1.7 per 100k), so the kernel fault is not back; the growth is diffuse. Mean |lr| 0.055 (steps 1-10) ->
+0.081 (11-20) -> 0.107 (21-30); inside `<think>` the median |lr| went 0.013 -> 0.024 -> 0.038. Inference side verified:
+"DeepGEMM E8M0 enabled", the power-of-two weight-scale patch active in the engine and worker environments, 8096
+"Receiving state dict" lines (reloads happening), no inference tracebacks.
+
+Two candidate explanations, separable by the lag decomposition (running): (A) the served model changes a lot at
+every broadcast, i.e. dithered weights sitting near bin boundaries flip by a full quantum in large numbers each step
+(would show as a steep KL-vs-lag slope); (B) the trainer drifts away from a stable served model much faster than the
+control (would show as lag-0 KL climbing with step). Either way the assumption behind the experiment, that a random
+within-bin offset leaves the served-versus-trainer difference bounded at half a quantum with GLM-like consequences,
+does not hold at this scale.
 
 ---
 
