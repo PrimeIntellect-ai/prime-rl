@@ -28,7 +28,14 @@ feat(configs) run config `swe-fp8-ue8m0-dither.toml` (`max_steps = 100`, checkpo
 
 ## Results
 
-(pending)
+| step | dither kl_mean | kl_max | is_masked | reward | control kl_mean (job 991) |
+|---|---|---|---|---|---|
+| 1 | 0.00250 | 2.05 | 3.6e-5 | 0.615 | 0.00149 |
+
+Step 1 landed at 01:08 after an 18 min 56 s first step. The floor rose 1.7x over the control, below the 0.004-0.008
+guess (a uniform within-bin offset has RMS about q / sqrt(12), smaller than the full rounding error the guess assumed).
+Reward is in the control's range (0.69 at step 1). Readout that matters: the 20-step means versus the control's
+0.0022, 0.0033, 0.0043, 0.0066, 0.0119.
 
 ---
 
