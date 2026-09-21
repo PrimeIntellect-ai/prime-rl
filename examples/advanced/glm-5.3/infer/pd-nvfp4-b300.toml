@@ -27,6 +27,9 @@ timeout = 7200
 [monitors.wandb]
 project = "glm53-nvfp4-rl"
 
+[env_vars]
+UV_NO_SYNC = "1"
+
 [trainer]
 dist_timeout_seconds = 7200
 

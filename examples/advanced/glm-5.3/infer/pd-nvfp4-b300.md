@@ -3,9 +3,9 @@
 From the repository root:
 
 ```bash
-uv sync --all-extras --all-packages
-uv run rl @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml --dry-run
-uv run rl @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml
+uv sync --frozen --all-extras --all-packages
+uv run --no-sync rl @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml --dry-run
+uv run --no-sync rl @ examples/advanced/glm-5.3/infer/pd-nvfp4-b300.toml
 ```
 
 The dry run writes resolved trainer, orchestrator, prefill/decode and environment
@@ -13,6 +13,11 @@ configs plus the Slurm script without allocating nodes. The launch requests six
 exclusive eight-GPU nodes: four trainer nodes, one prefill node and one decode
 node, with no job time limit. The router listens on port 8000 on the first
 inference node and accepts the alias `glm53` as well as the shared model path.
+
+The Slurm startup sync uses the frozen lockfile; component processes use
+`UV_NO_SYNC=1` after that sync. This avoids re-resolving remote wheel metadata
+on each process launch. The model checkpoint is already local; `HF_HOME` is
+not required to find its weights.
 
 Training stops after 1,000 optimizer steps. `clean=true` deletes this named
 run's directory before each fresh launch, including its previous logs and
