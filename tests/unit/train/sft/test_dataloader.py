@@ -181,7 +181,7 @@ def test_dataloader_shards_across_ranks_and_workers(
             )
             dataset = SFTDataset(
                 raw_dataset,
-                dummy_renderer,
+                lambda _: dummy_renderer,
                 shuffle=False,
                 seq_len=config.seq_len,
                 non_dp_size=non_dp_size,
