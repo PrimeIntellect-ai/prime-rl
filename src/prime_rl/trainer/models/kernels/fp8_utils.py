@@ -6,7 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
-FP8_MAX = 448.0
+FP8_MAX = tl.constexpr(448.0)
+FP8_MIN = tl.constexpr(-448.0)
 MIN_SCALE = 1e-4
 GROUP_ALIGNMENT = 128
 
@@ -188,11 +189,11 @@ def _per_token_fp8_kernel(
         mask=mask,
         other=0.0,
     ).to(tl.float32)
-    amax = tl.max(tl.abs(x), axis=1)
-    scale = tl.maximum(amax / 448.0, 1e-4)
+    amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
+    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale[:, None]
+    y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -242,11 +243,11 @@ def _grouped_per_token_fp8_kernel(
         mask=valid_rows[:, None] & valid_cols[None, :],
         other=0.0,
     ).to(tl.float32)
-    amax = tl.max(tl.abs(x), axis=1)
-    scale = tl.maximum(amax / 448.0, 1e-4)
+    amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
+    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale[:, None]
+    y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -295,11 +296,11 @@ def _grouped_per_channel_fp8_kernel(
         mask=valid_rows[:, None] & valid_cols[None, :],
         other=0.0,
     ).to(tl.float32)
-    amax = tl.max(tl.abs(x), axis=0)
-    scale = tl.maximum(amax / 448.0, 1e-4)
+    amax = tl.maximum(tl.max(tl.abs(x), axis=0), 1e-10)
+    scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale[None, :]
+    y = tl.clamp(tl.math.div_rn(x, scale[None, :]), FP8_MIN, FP8_MAX)
     flat_base = block_start.to(tl.int64) * BLOCK_K * cols
     if K_MAJOR:
         out_ptrs = out_ptr + flat_base + col_offsets_i64[:, None] * aligned_m + row_offsets_i64[None, :]
@@ -355,7 +356,7 @@ def _grouped_per_block_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.max(tl.abs(x))
-    scale = tl.maximum(amax / 448.0, 1e-4)
+    scale = tl.maximum(amax / FP8_MAX, 1e-4)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = x / scale
