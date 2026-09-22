@@ -534,6 +534,7 @@ weight-scale patch (both sides on `amax / 448`), clamp patch active, `wo_a` FP8 
 | 1 | 0.00212 | 1.22 | 2.1e-5 | 0.580 | 74.0 GiB | 0.00149 | 0.00054 |
 | 2-20 | 0.0021-0.0038, mean 0.00266 (1-20) | <= 22.7 (15), else <= 8.9 | <= 3.0e-5 | 0.32-0.84 | | 0.00220 (1-20) | 0.00061 (1-20) |
 | 21-40 | 0.0023-0.0032, mean 0.00265 | <= 12.2 (36), else <= 4.3 | <= 2.3e-5 | 0.30-0.74 | | 0.00327 (21-40) | 0.00084 (21-40) |
+| 41-60 | 0.0023-0.0030, mean 0.00263 | <= 20.1 | | | | 0.00432 (41-60) | 0.00090 (41-60) |
 
 Steps 2-20 (00:08): flat within noise; steps 17-20 read 0.0026-0.0028 where the control read 0.0027-0.0031 and
 then kept climbing. Anomaly to investigate separately: the trainer's `optim/grad_norm` is 0.004-0.018 in this run
