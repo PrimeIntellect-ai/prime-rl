@@ -427,7 +427,7 @@ def per_token_cast_to_fp8_triton(
         sf.stride(0),
         sf.stride(1),
         USE_UE8M0=use_ue8m0,
-        BLOCK_M=8,
+        BLOCK_M=32,
         BLOCK_K=gran_k,
         num_warps=4,
     )
@@ -454,7 +454,7 @@ def grouped_per_token_cast_to_fp8_triton(
     )
     if block_to_group.numel() == 0:
         return out, sf
-    grid = (block_to_group.numel(), GROUP_ALIGNMENT // 8, ceil_div(x.size(1), gran_k))
+    grid = (block_to_group.numel(), GROUP_ALIGNMENT // 32, ceil_div(x.size(1), gran_k))
     _grouped_per_token_fp8_kernel[grid](
         x,
         block_to_group,
@@ -471,7 +471,7 @@ def grouped_per_token_cast_to_fp8_triton(
         sf.stride(0),
         sf.stride(1),
         USE_UE8M0=use_ue8m0,
-        BLOCK_M=8,
+        BLOCK_M=32,
         BLOCK_K=gran_k,
         GROUP_BLOCK_M=GROUP_ALIGNMENT,
         num_warps=4,
@@ -497,7 +497,8 @@ def grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
     sf = torch.empty((total_blocks, x.size(1)), device=x.device, dtype=torch.float32)
     if block_to_group.numel() == 0:
         return out, sf.T
-    grid = (block_to_group.numel(), ceil_div(x.size(1), 128))
+    block_n = 16
+    grid = (block_to_group.numel(), ceil_div(x.size(1), block_n))
     _grouped_per_channel_fp8_kernel[grid](
         x,
         block_to_group,
@@ -515,8 +516,8 @@ def grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
         USE_UE8M0=use_ue8m0,
         K_MAJOR=True,
         BLOCK_K=gran_k,
-        BLOCK_N=128,
-        num_warps=4,
+        BLOCK_N=block_n,
+        num_warps=2,
     )
     return out, sf.T
 
@@ -539,7 +540,8 @@ def grouped_per_channel_cast_to_fp8_rowmajor_triton(
     sf = torch.empty((total_blocks, x.size(1)), device=x.device, dtype=torch.float32)
     if block_to_group.numel() == 0:
         return out, sf
-    grid = (block_to_group.numel(), ceil_div(x.size(1), 128))
+    block_n = 64
+    grid = (block_to_group.numel(), ceil_div(x.size(1), block_n))
     _grouped_per_channel_fp8_kernel[grid](
         x,
         block_to_group,
@@ -557,7 +559,7 @@ def grouped_per_channel_cast_to_fp8_rowmajor_triton(
         USE_UE8M0=use_ue8m0,
         K_MAJOR=False,
         BLOCK_K=gran_k,
-        BLOCK_N=128,
+        BLOCK_N=block_n,
         num_warps=4,
     )
     return out, sf
@@ -673,7 +675,7 @@ def per_token_cast_to_fp8_tp_triton(
         sf.stride(0),
         sf.stride(1),
         USE_UE8M0=use_ue8m0,
-        BLOCK_M=8,
+        BLOCK_M=32,
         BLOCK_K=gran_k,
         num_warps=4,
     )
