@@ -141,6 +141,44 @@ def test_mx_update_resumes_only_after_every_engine_succeeds(failure_path, timed)
         assert timer.marks["admin_initial_verification_enabled"] == 0
 
 
+def test_mx_update_waits_for_every_replica_before_propagating():
+    """A failing replica must not release the caller while siblings still read.
+
+    asyncio.gather raises the first exception without cancelling its siblings.
+    Those siblings are still pulling the trainer's registered buffers over RDMA,
+    so returning early lets the caller retire the version, satisfy the release
+    wait and publish the next step over memory that is still being read.
+    """
+    events = []
+
+    async def handle(request):
+        if request.url.path != "/update_weights":
+            return httpx.Response(200, json={"status": "ok"})
+        worker = request.url.host
+        events.append((worker, "start"))
+        if worker == "worker-0":
+            return httpx.Response(500, json={"status": "error"})
+        await asyncio.sleep(0.05)
+        events.append((worker, "finish"))
+        return httpx.Response(200, json={"status": "ok"})
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [
+            httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url=f"http://worker-{rank}")
+            for rank in range(2)
+        ]
+        try:
+            await admin.update_weights(None, transport="mx_refit", step=1, version_uid="test:1")
+        finally:
+            await admin.aclose()
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(run())
+    assert ("worker-1", "finish") in events, "returned while a replica was still updating"
+
+
 @pytest.mark.parametrize("changed", [False, True])
 def test_mx_initial_verification_spans_preserve_recovery_pause(changed, monkeypatch):
     monkeypatch.setenv("MX_VERIFY_INITIAL_REFIT", "1")

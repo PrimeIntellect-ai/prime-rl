@@ -184,8 +184,8 @@ class AdminPlane:
                     on_paused()
             if verify_initial:
                 with span("admin_initial_prepare"):
-                    await asyncio.gather(
-                        *[
+                    await _gather_every_replica(
+                        [
                             _admin_post(
                                 client,
                                 "/mx_prepare_initial_refit",
@@ -193,11 +193,12 @@ class AdminPlane:
                                 retry_errors=False,
                             )
                             for client in self.clients
-                        ]
+                        ],
+                        operation="initial refit preparation",
                     )
             with span("admin_update"):
-                await asyncio.gather(
-                    *[
+                await _gather_every_replica(
+                    [
                         _admin_post(
                             admin_client,
                             "/update_weights",
@@ -206,7 +207,8 @@ class AdminPlane:
                             retry_errors=transport != "mx_refit",
                         )
                         for admin_client in self.clients
-                    ]
+                    ],
+                    operation="weight update",
                 )
             updated = True
         finally:
@@ -442,6 +444,26 @@ async def _admin_post(
                 **kwargs,
             )
             response.raise_for_status()
+
+
+async def _gather_every_replica(coroutines: list, *, operation: str) -> None:
+    """Await every replica before propagating, so none is still in flight.
+
+    ``asyncio.gather`` raises the first exception but does not cancel its
+    siblings, so the caller resumes while other replicas are still updating.
+    For a weight update those replicas are still reading the trainer's
+    registered buffers over RDMA, and returning early lets the caller retire
+    the version, satisfy the release wait, and publish the next step over
+    memory that is still being read. Every replica must therefore reach a
+    terminal state before the first failure is allowed out.
+    """
+    results = await asyncio.gather(*coroutines, return_exceptions=True)
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if not failures:
+        return
+    for extra in failures[1:]:
+        get_logger().error(f"{operation} also failed on another replica: {extra!r}")
+    raise failures[0]
 
 
 async def _pause_engines(
