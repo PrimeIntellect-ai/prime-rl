@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from prime_rl.trainer.models.layers.matmul import matmul_to_float32
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_final_logit_softcapping
 
@@ -35,9 +36,10 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
 
 
 class FusedOutputLinear(torch.nn.Linear):
-    def __init__(self, in_features: int, out_features: int, chunk_size: int):
+    def __init__(self, in_features: int, out_features: int, chunk_size: int, fp32_logits: bool = False):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
+        self.fp32_logits = fp32_logits
 
     def forward(
         self,
@@ -57,7 +59,7 @@ class FusedOutputLinear(torch.nn.Linear):
             sampling_mask = sampling_mask.reshape(b * s, sampling_mask.shape[-1]).contiguous()
 
         logprobs, entropy = _SequenceChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask
+            hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask, self.fp32_logits
         )
 
         logprobs = logprobs.reshape(b, s)
@@ -66,8 +68,9 @@ class FusedOutputLinear(torch.nn.Linear):
 
 
 class VanillaOutputLinear(torch.nn.Linear):
-    def __init__(self, in_features: int, out_features: int):
+    def __init__(self, in_features: int, out_features: int, fp32_logits: bool = False):
         super().__init__(in_features, out_features, bias=False)
+        self.fp32_logits = fp32_logits
 
     def forward(
         self,
@@ -78,7 +81,11 @@ class VanillaOutputLinear(torch.nn.Linear):
     ) -> PrimeLmOutput:
         # VanillaOutputLinear just returns logits. train.py applies temperature
         # scaling and sampling-mask replay.
-        return PrimeLmOutput(logits=super().forward(hidden_states))
+        if not self.fp32_logits:
+            return PrimeLmOutput(logits=super().forward(hidden_states))
+        flat_hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
+        flat_logits = matmul_to_float32(flat_hidden_states, self.weight.t())
+        return PrimeLmOutput(logits=flat_logits.reshape(*hidden_states.shape[:-1], -1))
 
 
 def _online_logsumexp_and_weighted_update(
@@ -121,6 +128,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         inv_temperature: torch.Tensor,  # [N]
         chunk_size: int,
         sampling_mask: torch.Tensor | None = None,  # [N, K] int32, -1-padded
+        fp32_logits: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
@@ -174,8 +182,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
+                logits_chunk = (
+                    matmul_to_float32(hidden_chunk, weight_chunk.t())
+                    if fp32_logits
+                    else (hidden_chunk @ weight_chunk.t()).to(torch.float32)
+                )
+                scaled_logits = logits_chunk * inv_t_chunk
 
                 m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
@@ -204,6 +216,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, sampling_mask, replay)
         ctx.chunk_size = chunk_size
+        ctx.fp32_logits = fp32_logits
 
         return logprobs, entropy
 
@@ -215,6 +228,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
         hidden, weight, labels, inv_temperature, logz, sampling_mask, replay = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
+        fp32_logits: bool = ctx.fp32_logits
 
         n, _ = hidden.shape
         vocab = weight.shape[0]
@@ -237,8 +251,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
+                logits_chunk = (
+                    matmul_to_float32(hidden_chunk, weight_chunk.t())
+                    if fp32_logits
+                    else (hidden_chunk @ weight_chunk.t()).to(torch.float32)
+                )
+                scaled_logits = logits_chunk * inv_t_chunk
 
                 if mask_chunk is not None:
                     # Replayed rows get softmax gradient only on mask ids. Set masked-out
@@ -263,7 +281,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if needs_weight:
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
-        return grad_hidden, grad_weight, None, None, None, None
+        return grad_hidden, grad_weight, None, None, None, None, None
 
 
 def inject_prime_lm_head(
@@ -292,6 +310,8 @@ def inject_prime_lm_head(
 
     logger = get_logger()
 
+    fp32_logits = bool(getattr(model.config, "fp32_lm_head_logits", False))
+
     # Check for Gemma-style softcapping - dispatch to specialized implementation.
     final_logit_softcapping = get_final_logit_softcapping(model.config)
     if final_logit_softcapping:
@@ -303,13 +323,18 @@ def inject_prime_lm_head(
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
     if isinstance(chunk_size, int):
-        logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
+        logger.info(f"Injecting chunked LM head with chunk size {chunk_size} (fp32_logits={fp32_logits})")
         model.lm_head = FusedOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+            in_features=old_lm_head.in_features,
+            out_features=old_lm_head.out_features,
+            chunk_size=chunk_size,
+            fp32_logits=fp32_logits,
         )
     else:
-        logger.info("Injecting vanilla LM head")
-        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+        logger.info(f"Injecting vanilla LM head (fp32_logits={fp32_logits})")
+        model.lm_head = VanillaOutputLinear(
+            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, fp32_logits=fp32_logits
+        )
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
