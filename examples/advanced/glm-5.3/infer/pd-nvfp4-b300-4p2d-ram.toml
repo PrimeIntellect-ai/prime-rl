@@ -58,7 +58,7 @@ max_inflight = 3600
 name = "scaleswe-q0"
 env.taskset.id = "scaleswe"
 env.taskset.filter_fn = "lambda row: sum(row['instance_id'].encode()) % 4 == 0"
-env.agent.harness.id = "rlm"
+env.agent.harness.id = "bash"
 env.agent.harness.compaction.summarize_at_tokens = "None"
 env.agent.runtime.labels = ["glm53-pd-train", "int4-syn-gen-bash"]
 env.agent.runtime.creates_per_min = 720
