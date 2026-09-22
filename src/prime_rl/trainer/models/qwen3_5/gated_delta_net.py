@@ -55,6 +55,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        chunk_indices: torch.LongTensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         mixed_qkv = self.in_proj_qkv(hidden_states)
@@ -77,6 +78,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 mixed_qkv,
                 self.conv1d.weight.squeeze(1),
                 cu_seqlens,
+                chunk_indices,
                 self.activation,
             )
         else:
@@ -100,7 +102,15 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             key = key.repeat_interleave(heads_per_key, dim=2)
 
         if context is None:
-            core_output = chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens)
+            core_output = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                decay,
+                beta,
+                cu_seqlens,
+                chunk_indices,
+            )
         else:
             core_output, _ = fla_chunk_gated_delta_rule(
                 q=query,

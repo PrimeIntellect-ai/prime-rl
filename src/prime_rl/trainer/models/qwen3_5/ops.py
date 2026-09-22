@@ -1,9 +1,7 @@
 import torch
-from fla.modules.conv import causal_conv1d as fla_causal_conv1d
-from fla.modules.conv.triton.ops import _has_non_standard_layout, causal_conv1d_bwd
+from fla.modules.conv.triton.ops import _has_non_standard_layout, causal_conv1d_bwd, causal_conv1d_fwd
 from fla.modules.l2norm import l2norm_bwd, l2norm_fwd
 from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_bwd, chunk_gated_delta_rule_fwd
-from fla.ops.utils.index import prepare_chunk_indices
 
 
 @torch.library.custom_op("prime_rl_qwen3_5::causal_conv1d", mutates_args=())
@@ -11,13 +9,19 @@ def _causal_conv1d(
     x: torch.Tensor,
     weight: torch.Tensor,
     cu_seqlens: torch.Tensor,
-    activation: str,
+    chunk_indices: torch.Tensor,
 ) -> torch.Tensor:
-    output, _ = fla_causal_conv1d(
+    output, _ = causal_conv1d_fwd(
         x=x,
         weight=weight,
-        activation=activation,
+        bias=None,
+        residual=None,
+        initial_state=None,
+        output_final_state=False,
+        activation=None,
         cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
+        layout_fallback=_has_non_standard_layout(x),
     )
     return output
 
@@ -27,7 +31,7 @@ def _causal_conv1d_fake(
     x: torch.Tensor,
     weight: torch.Tensor,
     cu_seqlens: torch.Tensor,
-    activation: str,
+    chunk_indices: torch.Tensor,
 ) -> torch.Tensor:
     return torch.empty_like(x, memory_format=torch.contiguous_format)
 
@@ -37,16 +41,17 @@ def _causal_conv1d_backward(
     x: torch.Tensor,
     weight: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     grad_output: torch.Tensor,
-    activation: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     grad_x, grad_weight, _, _, _ = causal_conv1d_bwd(
         x=x,
         dy=grad_output,
         dht=None,
         weight=weight,
-        activation=activation,
+        activation=None,
         cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
         layout_fallback=_has_non_standard_layout(x),
     )
     return grad_x, grad_weight
@@ -57,21 +62,20 @@ def _causal_conv1d_backward_fake(
     x: torch.Tensor,
     weight: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     grad_output: torch.Tensor,
-    activation: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(x), torch.empty_like(weight)
 
 
 def _causal_conv1d_setup_context(ctx, inputs, output) -> None:
-    x, weight, cu_seqlens, activation = inputs
-    ctx.save_for_backward(x, weight, cu_seqlens)
-    ctx.activation = activation
+    x, weight, cu_seqlens, chunk_indices = inputs
+    ctx.save_for_backward(x, weight, cu_seqlens, chunk_indices)
 
 
 def _causal_conv1d_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight, cu_seqlens = ctx.saved_tensors
-    grad_x, grad_weight = _causal_conv1d_backward(x, weight, cu_seqlens, grad_output, ctx.activation)
+    x, weight, cu_seqlens, chunk_indices = ctx.saved_tensors
+    grad_x, grad_weight = _causal_conv1d_backward(x, weight, cu_seqlens, chunk_indices, grad_output)
     return grad_x, grad_weight, None, None
 
 
@@ -89,16 +93,9 @@ def _chunk_gated_delta_rule(
     decay: torch.Tensor,
     beta: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     scale: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> torch.Tensor:
     # The low-level FLA kernels require the layout enforced by their public wrapper's input_guard.
     query = query.contiguous()
     key = key.contiguous()
@@ -107,7 +104,6 @@ def _chunk_gated_delta_rule(
     beta = beta.contiguous()
     normalized_query, query_rstd = l2norm_fwd(query)
     normalized_key, key_rstd = l2norm_fwd(key)
-    chunk_indices = prepare_chunk_indices(cu_seqlens, 64)
     cumulative_decay, output, matrix, _, _, _ = chunk_gated_delta_rule_fwd(
         q=normalized_query,
         k=normalized_key,
@@ -121,15 +117,7 @@ def _chunk_gated_delta_rule(
         chunk_indices=chunk_indices,
         chunk_size=64,
     )
-    return (
-        output.to(query.dtype),
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
-        cumulative_decay,
-        matrix,
-    )
+    return output.to(query.dtype)
 
 
 @_chunk_gated_delta_rule.register_fake
@@ -140,44 +128,45 @@ def _chunk_gated_delta_rule_fake(
     decay: torch.Tensor,
     beta: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     scale: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
-    matrix_shape = (*key.shape[:2], value.shape[2], 64)
-    return (
-        torch.empty_like(value),
-        torch.empty_like(query),
-        query.new_empty(query.shape[:-1], dtype=torch.float32),
-        torch.empty_like(key),
-        key.new_empty(key.shape[:-1], dtype=torch.float32),
-        torch.empty_like(decay),
-        key.new_empty(matrix_shape),
-    )
+) -> torch.Tensor:
+    return torch.empty_like(value)
 
 
 @torch.library.custom_op("prime_rl_qwen3_5::chunk_gated_delta_rule_backward", mutates_args=())
 def _chunk_gated_delta_rule_backward(
-    normalized_query: torch.Tensor,
-    query_rstd: torch.Tensor,
-    normalized_key: torch.Tensor,
-    key_rstd: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
     value: torch.Tensor,
-    cumulative_decay: torch.Tensor,
+    decay: torch.Tensor,
     beta: torch.Tensor,
-    matrix: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     grad_output: torch.Tensor,
     scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    query = query.contiguous()
+    key = key.contiguous()
+    value = value.contiguous()
+    decay = decay.contiguous()
+    beta = beta.contiguous()
     grad_output = grad_output.contiguous()
-    chunk_indices = prepare_chunk_indices(cu_seqlens, 64)
+    normalized_query, query_rstd = l2norm_fwd(query)
+    normalized_key, key_rstd = l2norm_fwd(key)
+    cumulative_decay, _, matrix, _, _, _ = chunk_gated_delta_rule_fwd(
+        q=normalized_query,
+        k=normalized_key,
+        v=value,
+        g=decay,
+        beta=beta,
+        scale=scale,
+        initial_state=None,
+        output_final_state=False,
+        cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
+        chunk_size=64,
+    )
     grad_query, grad_key, grad_value, grad_beta, grad_decay, _, _, _ = chunk_gated_delta_rule_bwd(
         q=normalized_query,
         k=normalized_key,
@@ -200,95 +189,48 @@ def _chunk_gated_delta_rule_backward(
 
 @_chunk_gated_delta_rule_backward.register_fake
 def _chunk_gated_delta_rule_backward_fake(
-    normalized_query: torch.Tensor,
-    query_rstd: torch.Tensor,
-    normalized_key: torch.Tensor,
-    key_rstd: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
     value: torch.Tensor,
-    cumulative_decay: torch.Tensor,
+    decay: torch.Tensor,
     beta: torch.Tensor,
-    matrix: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     grad_output: torch.Tensor,
     scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
-        torch.empty_like(normalized_query),
-        torch.empty_like(normalized_key),
+        torch.empty_like(query),
+        torch.empty_like(key),
         torch.empty_like(value),
-        torch.empty_like(cumulative_decay),
+        torch.empty_like(decay),
         torch.empty_like(beta),
     )
 
 
 def _chunk_gated_delta_rule_setup_context(ctx, inputs, output) -> None:
-    _, _, value, _, beta, cu_seqlens, scale = inputs
-    (
-        _,
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
-        cumulative_decay,
-        matrix,
-    ) = output
-    ctx.save_for_backward(
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
-        value,
-        cumulative_decay,
-        beta,
-        matrix,
-        cu_seqlens,
-    )
+    query, key, value, decay, beta, cu_seqlens, chunk_indices, scale = inputs
+    ctx.save_for_backward(query, key, value, decay, beta, cu_seqlens, chunk_indices)
     ctx.scale = scale
-    ctx.mark_non_differentiable(
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
-        cumulative_decay,
-        matrix,
-    )
 
 
 def _chunk_gated_delta_rule_autograd_backward(
     ctx,
     grad_output: torch.Tensor,
-    _grad_normalized_query: torch.Tensor | None,
-    _grad_query_rstd: torch.Tensor | None,
-    _grad_normalized_key: torch.Tensor | None,
-    _grad_key_rstd: torch.Tensor | None,
-    _grad_cumulative_decay: torch.Tensor | None,
-    _grad_matrix: torch.Tensor | None,
 ):
-    (
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
-        value,
-        cumulative_decay,
-        beta,
-        matrix,
-        cu_seqlens,
-    ) = ctx.saved_tensors
+    query, key, value, decay, beta, cu_seqlens, chunk_indices = ctx.saved_tensors
     gradients = _chunk_gated_delta_rule_backward(
-        normalized_query,
-        query_rstd,
-        normalized_key,
-        key_rstd,
+        query,
+        key,
         value,
-        cumulative_decay,
+        decay,
         beta,
-        matrix,
         cu_seqlens,
+        chunk_indices,
         grad_output,
         ctx.scale,
     )
-    return *gradients, None, None
+    return *gradients, None, None, None
 
 
 _chunk_gated_delta_rule.register_autograd(
@@ -301,9 +243,15 @@ def causal_conv1d(
     x: torch.Tensor,
     weight: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
     activation: str,
 ) -> torch.Tensor:
-    return _causal_conv1d(x, weight, cu_seqlens, activation)
+    output = _causal_conv1d(x, weight, cu_seqlens, chunk_indices)
+    if activation in ("silu", "swish"):
+        return torch.nn.functional.silu(output)
+    if activation is not None:
+        raise ValueError(f"Unsupported activation: {activation}")
+    return output
 
 
 def chunk_gated_delta_rule(
@@ -313,10 +261,19 @@ def chunk_gated_delta_rule(
     decay: torch.Tensor,
     beta: torch.Tensor,
     cu_seqlens: torch.Tensor,
+    chunk_indices: torch.Tensor,
 ) -> torch.Tensor:
     scale = query.shape[-1] ** -0.5
-    output, *_ = _chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens, scale)
-    return output
+    return _chunk_gated_delta_rule(
+        query,
+        key,
+        value,
+        decay,
+        beta,
+        cu_seqlens,
+        chunk_indices,
+        scale,
+    )
 
 
 __all__ = ["causal_conv1d", "chunk_gated_delta_rule"]

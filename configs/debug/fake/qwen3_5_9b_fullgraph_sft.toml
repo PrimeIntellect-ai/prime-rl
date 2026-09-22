@@ -7,6 +7,7 @@ impl = "custom"
 seq_len = 8192
 optim_cpu_offload = false
 fsdp_cpu_offload = false
+reshard_after_forward = false
 ac_offloading = "None"
 
 [model.debug]
@@ -15,12 +16,7 @@ random_init = true
 [model.compile]
 fullgraph = true
 mode = "reduce-overhead"
-cudagraph_partition_ops = [
-  "prime_rl_qwen3_5::causal_conv1d",
-  "prime_rl_qwen3_5::causal_conv1d_backward",
-  "prime_rl_qwen3_5::chunk_gated_delta_rule",
-  "prime_rl_qwen3_5::chunk_gated_delta_rule_backward",
-]
+cudagraph_copy_static_inputs = true
 
 [data]
 type = "fake"
@@ -36,7 +32,8 @@ gpus_per_node = 8
 num_train_gpus = 8
 
 [env_vars]
-TORCH_LOGS = "perf_hints,cudagraphs"
+TORCH_LOGS = "perf_hints"
+FLA_DISABLE_TENSOR_CACHE = "1"
 
 [slurm]
 job_name = "qwen3-5-9b-fullgraph"

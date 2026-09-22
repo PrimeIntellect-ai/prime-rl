@@ -189,12 +189,7 @@ def test_linear_attention_fullgraph_cudagraph_forward_backward():
         CompileConfig(
             fullgraph=True,
             mode="reduce-overhead",
-            cudagraph_partition_ops=[
-                "prime_rl_qwen3_5::causal_conv1d",
-                "prime_rl_qwen3_5::causal_conv1d_backward",
-                "prime_rl_qwen3_5::chunk_gated_delta_rule",
-                "prime_rl_qwen3_5::chunk_gated_delta_rule_backward",
-            ],
+            cudagraph_copy_static_inputs=True,
         ),
     )
 

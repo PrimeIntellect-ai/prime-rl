@@ -164,14 +164,27 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_cudagraph_partition_ops_require_cudagraph_compile_mode():
+def test_cudagraph_options_require_cudagraph_compile_mode():
     partition_ops = ["prime_rl_qwen3_5::chunk_gated_delta_rule"]
 
     config = CompileConfig(mode="reduce-overhead", cudagraph_partition_ops=partition_ops)
     assert config.cudagraph_partition_ops == partition_ops
 
+    config = CompileConfig(mode="reduce-overhead", cudagraph_copy_static_inputs=True)
+    assert config.cudagraph_copy_static_inputs
+
     with pytest.raises(ValidationError, match="cudagraph_partition_ops requires"):
         CompileConfig(cudagraph_partition_ops=partition_ops)
+
+    with pytest.raises(ValidationError, match="cudagraph_copy_static_inputs requires"):
+        CompileConfig(cudagraph_copy_static_inputs=True)
+
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        CompileConfig(
+            mode="reduce-overhead",
+            cudagraph_partition_ops=partition_ops,
+            cudagraph_copy_static_inputs=True,
+        )
 
 
 def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():

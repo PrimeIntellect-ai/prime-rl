@@ -14,6 +14,7 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch._inductor.cudagraph_utils import CUDAGraphPolicy
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
@@ -828,8 +829,15 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     )
 
 
+class _CopyStaticInputsCUDAGraphPolicy(CUDAGraphPolicy):
+    def cudagraphify(self, model, example_inputs, static_input_idxs, **kwargs):
+        return super().cudagraphify(model, example_inputs, (), **kwargs)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    if compile_config.cudagraph_copy_static_inputs:
+        torch._inductor.config.cudagraph_policy = _CopyStaticInputsCUDAGraphPolicy()
     language_model = get_language_model(model)
     mode = compile_config.mode
     options = None
@@ -847,7 +855,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers "
         f"(fullgraph={compile_config.fullgraph}, mode={compile_config.mode}, "
-        f"cudagraph_partition_ops={compile_config.cudagraph_partition_ops})"
+        f"cudagraph_partition_ops={compile_config.cudagraph_partition_ops}, "
+        f"cudagraph_copy_static_inputs={compile_config.cudagraph_copy_static_inputs})"
     )
 
 
