@@ -58,3 +58,36 @@ def test_init_with_invalid_local_rank(local_rank_world_size: tuple[int, int]):
     os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
     with pytest.raises(AssertionError):
         get_world()
+
+
+def test_default_torchrun_env_defaults_single_process(monkeypatch):
+    """Outside torchrun, the rendezvous env defaults to a single-process group."""
+    from prime_rl.trainer.utils import default_torchrun_env
+
+    for var in ("RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    default_torchrun_env()
+    assert os.environ["RANK"] == "0"
+    assert os.environ["WORLD_SIZE"] == "1"
+    assert os.environ["LOCAL_RANK"] == "0"
+    assert os.environ["MASTER_ADDR"] == "127.0.0.1"
+    assert int(os.environ["MASTER_PORT"]) > 0
+
+    # The defaulted env satisfies the env:// rendezvous (CPU backend).
+    import torch.distributed as dist
+
+    dist.init_process_group(backend="gloo")
+    assert dist.get_world_size() == 1
+    assert dist.get_rank() == 0
+    dist.destroy_process_group()
+
+
+def test_default_torchrun_env_noop_under_torchrun(monkeypatch):
+    """Under torchrun the env is already set and stays untouched."""
+    from prime_rl.trainer.utils import default_torchrun_env
+
+    monkeypatch.setenv("RANK", "3")
+    monkeypatch.setenv("MASTER_ADDR", "10.0.0.1")
+    default_torchrun_env()
+    assert os.environ["RANK"] == "3"
+    assert os.environ["MASTER_ADDR"] == "10.0.0.1"

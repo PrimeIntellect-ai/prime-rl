@@ -1,3 +1,7 @@
+# Trainer-only debug config: fake data, no inference or orchestrator.
+# Run it with the `trainer` entrypoint (README "validate your environment setup"):
+#   uv run trainer @ configs/debug/fake/rl.toml
+
 max_steps = 5
 
 [data.fake]

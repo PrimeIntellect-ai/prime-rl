@@ -170,9 +170,32 @@ def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig")
     configure_cpu_optimizer_threads()
 
 
+def default_torchrun_env() -> None:
+    """Default the torchrun rendezvous env when the trainer runs outside torchrun.
+
+    `uv run trainer @ ...` (the README "validate your setup" step) and
+    `python -m prime_rl.trainer.rl.train` launch without torchrun, so RANK & co.
+    are unset and `init_process_group`'s env:// rendezvous fails with
+    "environment variable RANK expected". Default to a single-process group.
+    No-op under torchrun, which always sets RANK.
+    """
+    if "RANK" in os.environ:
+        return
+    from prime_rl.utils.utils import get_free_port
+
+    os.environ.update(
+        RANK="0",
+        WORLD_SIZE="1",
+        LOCAL_RANK="0",
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT=str(get_free_port()),
+    )
+
+
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
+    default_torchrun_env()
     device_id = get_world().local_rank
     torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
