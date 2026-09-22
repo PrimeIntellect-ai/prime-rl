@@ -123,7 +123,9 @@ uv run torchrun \
   ' bash \
   @ examples/advanced/nemotron-3.5-super/trainer.toml \
   --output-dir "$RUN_DIR" \
-  --model.conversion-dir "$MODEL_DIR"
+  --model.conversion-dir "$MODEL_DIR" \
+  --model.name "$MODEL_DIR" \
+  --tokenizer.name "$MODEL_DIR"
 ```
 
 ## 5. Start the orchestrator
