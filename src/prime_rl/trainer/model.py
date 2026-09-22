@@ -18,6 +18,7 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.tensor import Shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -30,6 +31,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
+from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -471,15 +473,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
-    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
+    fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
+    shard_size = hsdp_mesh.size(mesh_dim=hsdp_mesh.ndim - 1)
+
+    def shard_placement_fn(parameter: nn.Parameter) -> Shard | None:
+        # Qwen's single-row shared-expert gates need equal shards for Muon's all-to-all.
+        if parameter.ndim == 2 and parameter.shape[0] == 1 and parameter.shape[1] % shard_size == 0:
+            return Shard(1)
+        return fused_shard_placement_fn(parameter) if fused_shard_placement_fn is not None else None
+
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
         "shard_placement_fn": shard_placement_fn,
     }
-
-    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -1051,12 +1060,8 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
-    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
-    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
-    # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it comes from the renderer rather than the processor.
     mm_kwargs: dict[str, Tensor] | None = None,
+    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -1074,13 +1079,15 @@ def forward(
         kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
-        # Forward the per-model multimodal tensors verbatim, plus the
-        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
-        # token→modality mapping via ``mm_token_type_id_map``).
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        if "image_grid_thw" not in mm_kwargs:
+        # SFT still uses its existing eager processor path and does not provide
+        # an adapter policy yet, so preserve its current kwargs-based behavior.
+        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
+        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
+            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
+        if policy.pass_position_ids:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids

@@ -1,5 +1,6 @@
 """Whole-block activation checkpointing with an operator-based policy."""
 
+import os
 from collections.abc import Callable
 from functools import partial
 
@@ -86,7 +87,9 @@ def _mandatory_checkpoint_policy(
     if operation.namespace in MANDATORY_SAVE_NAMESPACES or operation.name() in MANDATORY_SAVE_OPERATIONS:
         return CheckpointPolicy.MUST_SAVE
 
-    if operation.name() == "aten::_to_copy":
+    # FLA's cached sequence metadata changes copy order during Qwen recompute.
+    # Replaying saved CPU copies can return integer metadata for a float cast.
+    if operation.name() == "aten::_to_copy" and os.environ.get("PRIME_RL_AC_SAVE_CPU_COPIES", "1") == "1":
         device = kwargs.get("device")
         if isinstance(device, torch.device) and device.type == "cpu":
             return CheckpointPolicy.MUST_SAVE

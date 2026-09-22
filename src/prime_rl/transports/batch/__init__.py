@@ -6,8 +6,11 @@ from prime_rl.transports.batch.filesystem import (
     FileSystemBatchReceiver,
     FileSystemBatchSender,
 )
+from prime_rl.transports.batch.mmap import MMapBatchReceiver, MMapBatchSender
 from prime_rl.transports.batch.types import (
     MicroBatch,
+    MMImageRef,
+    MMRefs,
     RoutedExperts,
     SamplingMask,
     TrainingSample,
@@ -23,6 +26,8 @@ def setup_batch_sender(
 ) -> BatchSender:
     if transport.type == "filesystem":
         return FileSystemBatchSender(output_dir, data_world_size, current_step)
+    elif transport.type == "mmap":
+        return MMapBatchSender(output_dir, data_world_size, current_step, transport)
     elif transport.type == "zmq":
         return ZMQBatchSender(output_dir, data_world_size, current_step, transport)
     else:
@@ -34,6 +39,8 @@ def setup_batch_receiver(
 ) -> BatchReceiver:
     if transport.type == "filesystem":
         return FileSystemBatchReceiver(output_dir, data_rank, current_step)
+    elif transport.type == "mmap":
+        return MMapBatchReceiver(output_dir, data_rank, current_step, transport.prefetch_batches)
     elif transport.type == "zmq":
         return ZMQBatchReceiver(output_dir, data_rank, current_step, transport)
     else:
@@ -47,6 +54,8 @@ __all__ = [
     "ZMQBatchReceiver",
     "BatchReceiver",
     "BatchSender",
+    "MMImageRef",
+    "MMRefs",
     "TrainingSample",
     "MicroBatch",
     "SamplingMask",

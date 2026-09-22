@@ -3,6 +3,7 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 from contextlib import nullcontext
 import time
 import asyncio
+import resource
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -18,6 +19,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.transports.batch.mmap import MMapMicroBatches, loss_token_counts
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -36,13 +38,16 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.multimodal import get_multimodal_adapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    setup_model,
-    is_tt_moe_model,
     get_load_balance_stats,
+    is_tt_moe_model,
+    setup_model,
+    setup_processor,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -142,12 +147,20 @@ def train(config: TrainerConfig):
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
-    # Initialize the model and tokenizer
+    # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
+
+    processor = None
+    mm_adapter = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+        mm_adapter = get_multimodal_adapter(model.config.model_type)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -285,6 +298,10 @@ def train(config: TrainerConfig):
         micro_batches = dataloader.get_batch()
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
+        logger.info(
+            f"Loaded batch metadata: {len(micro_batches)} microbatches; "
+            f"host peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2:.2f} GiB"
+        )
 
         batch_size = len(micro_batches)
         memory_profiler = None
@@ -292,7 +309,11 @@ def train(config: TrainerConfig):
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        seq_len = micro_batches[0]["input_ids"].shape[1]
+        seq_len = (
+            micro_batches.seq_len
+            if isinstance(micro_batches, MMapMicroBatches)
+            else micro_batches[0]["input_ids"].shape[1]
+        )
 
         # Normalize each loss component by its own global (dp_cp) token count, so every rank
         # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
@@ -300,17 +321,12 @@ def train(config: TrainerConfig):
         # FSDP's per-rank divide is undone after the microbatch loop via
         # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
         # op regardless of which components its samples carry.
-        local_rl_scale = 0
-        local_ce_scale = 0
-        local_ref_kl_scale = 0
-        for micro_batch in micro_batches:
-            mask = micro_batch["loss_mask"]
-            rl_w = micro_batch["rl_weights"]
-            local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
-            if micro_batch["ce_weights"] is not None:
-                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
-            if micro_batch["ref_kl_weights"] is not None:
-                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
+        if isinstance(micro_batches, MMapMicroBatches):
+            local_rl_scale, local_ce_scale, local_ref_kl_scale = micro_batches.loss_counts
+        else:
+            local_rl_scale, local_ce_scale, local_ref_kl_scale = (
+                sum(values) for values in zip(*(loss_token_counts(batch) for batch in micro_batches))
+            )
         global_scales = torch.tensor(
             [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
         )
@@ -343,7 +359,9 @@ def train(config: TrainerConfig):
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
             routed_experts = (
-                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
+                micro_batch["routed_experts"].to(device="cuda", dtype=torch.int32)
+                if micro_batch["routed_experts"] is not None
+                else None
             )
 
             if routed_experts is None and config.enable_router_replay:
@@ -359,17 +377,17 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            # Multimodal kwargs are an opaque per-model dict (e.g.
-            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
-            # just {"pixel_values": ...} for Gemma3-VL) — we move every
-            # tensor to CUDA and let the model's forward sort them.
-            mm_kwargs_raw = micro_batch.get("mm_kwargs")
-            mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
-            if mm_kwargs is not None and config.model.vlm is None:
-                raise ValueError(
-                    "Received multimodal samples but [model.vlm] is not set. "
-                    "Set [model.vlm] to train on multimodal samples."
-                )
+            mm_kwargs = None
+            mm_forward_policy = None
+            mm_refs = micro_batch.get("mm_refs")
+            if mm_refs is not None:
+                if processor is None or mm_adapter is None:
+                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
+                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
+                mm_forward_policy = materialized.forward_policy
+                micro_batch["mm_refs"] = None
+                del materialized, mm_refs
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -387,8 +405,9 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                # MRoPE batches must merge image embeddings before sharding.
-                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                defer_vlm_cp_to_model = bool(
+                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
+                )
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,
@@ -441,6 +460,7 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
+                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -496,6 +516,8 @@ def train(config: TrainerConfig):
                 begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
                 finish_backward(gradient_manager)
+
+            mm_kwargs = None
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
@@ -558,7 +580,14 @@ def train(config: TrainerConfig):
             if "routing_confidence" in tensors:
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+            # This microbatch has finished backward and annotation export. Drop its
+            # CPU tensors now, instead of retaining the entire step until replacement.
+            micro_batch.clear()
 
+        del micro_batch
+        if isinstance(micro_batches, MMapMicroBatches):
+            micro_batches.close()
+        del micro_batches
         annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -656,6 +685,7 @@ def train(config: TrainerConfig):
 
         # Log performance metrics
         perf_metrics = {
+            "perf/host_peak_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2,
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,

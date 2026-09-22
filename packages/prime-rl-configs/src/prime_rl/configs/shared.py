@@ -239,6 +239,26 @@ class FileSystemTransportConfig(BaseTransportConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
+class MMapTransportConfig(BaseTransportConfig):
+    type: Literal["mmap"] = "mmap"
+    readers_per_rank: int = Field(default=1, ge=1)
+    """Number of CP/PP processes reading each data rank's shared files."""
+    write_workers: int = Field(default=1, ge=1)
+    """Concurrent rank writers; each worker converts and saves one microbatch at a time."""
+    prefetch_batches: int = Field(default=0, ge=0)
+    """Microbatches to load into CPU RAM ahead of each reader during iteration; zero uses lazy mmap."""
+    max_batch_bytes: int = Field(default=512 * 1024**3, ge=1)
+    """Maximum serialized bytes in one training batch, across all data ranks."""
+    max_pending_bytes: int = Field(default=1024 * 1024**3, ge=1)
+    """Disk spool budget, including one reserved max_batch_bytes write slot."""
+
+    @model_validator(mode="after")
+    def validate_budget(self):
+        if self.max_pending_bytes < self.max_batch_bytes:
+            raise ValueError("mmap max_pending_bytes must be at least max_batch_bytes")
+        return self
+
+
 class ZMQTransportConfig(BaseTransportConfig):
     type: Literal["zmq"] = "zmq"
 
@@ -252,4 +272,4 @@ class ZMQTransportConfig(BaseTransportConfig):
     """High-water mark (max in-flight messages per ZMQ socket)."""
 
 
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig | MMapTransportConfig, Field(discriminator="type")]

@@ -1,0 +1,8 @@
+# Merge this transport block into an RL config for your model and environment.
+[rollout_transport]
+type = "mmap"
+readers_per_rank = 1
+write_workers = 1
+prefetch_batches = 0
+max_batch_bytes = 549755813888
+max_pending_bytes = 1099511627776
