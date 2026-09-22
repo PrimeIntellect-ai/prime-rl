@@ -125,11 +125,11 @@ class GroupedExperts(nn.Module):
         self,
         x: torch.Tensor,
         num_tokens_per_expert: torch.Tensor | None,
-        fused: Callable[["GroupedExperts"], torch.Tensor] | None = None,
+        fused: Callable[["GroupedExperts", torch.Tensor], torch.Tensor] | None = None,
     ) -> torch.Tensor:
 
         if fused is not None:
-            return fused(self)
+            return fused(self, x)
         assert x.dim() == 2 and num_tokens_per_expert is not None
 
         def to_local(tensor: torch.Tensor) -> torch.Tensor:

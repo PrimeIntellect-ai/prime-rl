@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -41,6 +42,75 @@ def prepare_mega_moe_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor
         gate_up_proj.to(torch.bfloat16).contiguous(), down_proj.to(torch.bfloat16).contiguous()
     )
     return MegaMoeExpertWeights(l1=l1, l2=l2)
+
+
+# Mega MoE's BF16 L1 layout interleaves gate/up rows in groups of 8 ([g0..7, u0..7, g8..15, ...])
+# instead of [gate | up]; L2 is used as is. Storing the fused `gate_up_proj` parameter in that
+# layout makes the weight transform a no-op, so the kernels read the (FSDP-unsharded) parameter
+# directly instead of a per-layer ~1.5 GiB copy, and the backward writes dW1 in the same layout.
+MEGA_MOE_INTERLEAVE_GRAN = 8
+
+
+def _interleave_gate_up(t: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+    num_experts, n, *rest = t.shape
+    half = n // 2
+    grouped = t.view(num_experts, half // MEGA_MOE_INTERLEAVE_GRAN, 2, MEGA_MOE_INTERLEAVE_GRAN, *rest)
+    natural = t.view(num_experts, 2, half // MEGA_MOE_INTERLEAVE_GRAN, MEGA_MOE_INTERLEAVE_GRAN, *rest)
+    return (natural.transpose(1, 2) if not inverse else grouped.transpose(1, 2)).reshape(t.shape)
+
+
+def _reorder_gate_up_(tensor: torch.Tensor, inverse: bool) -> None:
+    from torch.distributed.tensor import DTensor, Shard
+
+    if isinstance(tensor, DTensor):
+        if any(isinstance(p, Shard) and p.dim == 1 for p in tensor.placements):
+            raise ValueError(
+                "Mega MoE's interleaved gate_up layout requires expert weights sharded on dim 0 "
+                "(disable `model.fusions.shard_fused_on_dim1`)."
+            )
+        tensor = tensor.to_local()
+    if tensor.numel() == 0:
+        return
+    tensor.copy_(_interleave_gate_up(tensor, inverse=inverse))
+
+
+def _mega_moe_experts(model: torch.nn.Module):
+    from prime_rl.trainer.distributed.mega_moe_dispatcher import MegaMoeTokenDispatcher
+    from prime_rl.trainer.models.layers.moe import MoE
+
+    for module in model.modules():
+        if isinstance(module, MoE) and isinstance(module.token_dispatcher, MegaMoeTokenDispatcher):
+            if module.experts.gate_up_proj is not None:
+                yield module.experts
+
+
+@torch.no_grad()
+def set_mega_moe_weight_layout(
+    model: torch.nn.Module, optimizers: list[torch.optim.Optimizer], interleaved: bool
+) -> None:
+    """Reorder every Mega MoE layer's fused `gate_up_proj` (and its same-shaped optimizer state)
+    between the natural [gate | up] layout used by checkpoints/weight broadcasts and the kernel's
+    interleaved layout used during training. Idempotent per layer."""
+    for experts in _mega_moe_experts(model):
+        if getattr(experts, "mega_moe_interleaved", False) == interleaved:
+            continue
+        param = experts.gate_up_proj
+        _reorder_gate_up_(param, inverse=not interleaved)
+        for optimizer in optimizers:
+            for value in getattr(optimizer, "state", {}).get(param, {}).values():
+                if isinstance(value, torch.Tensor) and value.shape == param.shape:
+                    _reorder_gate_up_(value, inverse=not interleaved)
+        experts.mega_moe_interleaved = interleaved
+
+
+@contextmanager
+def natural_mega_moe_weight_layout(model: torch.nn.Module, optimizers: list[torch.optim.Optimizer]):
+    """Temporarily restore the natural [gate | up] layout (for checkpoint saves and weight broadcasts)."""
+    set_mega_moe_weight_layout(model, optimizers, interleaved=False)
+    try:
+        yield
+    finally:
+        set_mega_moe_weight_layout(model, optimizers, interleaved=True)
 
 
 def reserve_sms_for_comm(num_reserved_sms: int) -> None:
@@ -107,6 +177,7 @@ def mega_moe_backward(
     weights: MegaMoeExpertWeights,
     buffer,
     dw_dtype: torch.dtype,
+    dw_natural_layout: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     import deep_gemm
 
@@ -116,5 +187,7 @@ def mega_moe_backward(
     dw1 = torch.empty(weights.l1.shape, dtype=dw_dtype, device=x.device)
     dw2 = torch.empty(weights.l2.shape, dtype=dw_dtype, device=x.device)
     dtopk = torch.empty((num_tokens, buffer.num_topk), dtype=torch.float32, device=x.device)
-    deep_gemm.bf16_mega_moe_backward(dx, dw1, dw2, dtopk, dy, weights.l1, weights.l2, buffer, dw_natural_layout=True)
+    deep_gemm.bf16_mega_moe_backward(
+        dx, dw1, dw2, dtopk, dy, weights.l1, weights.l2, buffer, dw_natural_layout=dw_natural_layout
+    )
     return dx, dw1, dw2, dtopk

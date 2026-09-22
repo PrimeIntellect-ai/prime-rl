@@ -22,16 +22,27 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
         gate_up_proj: torch.Tensor,
         down_proj: torch.Tensor,
         buffer,
+        interleaved: bool,
     ) -> torch.Tensor:
-        from prime_rl.trainer.models.layers.mega_moe import mega_moe_forward, prepare_mega_moe_weights
+        from prime_rl.trainer.models.layers.mega_moe import (
+            MegaMoeExpertWeights,
+            mega_moe_forward,
+            prepare_mega_moe_weights,
+        )
 
         x_bf16 = x.to(torch.bfloat16).contiguous()
         topk_idx = selected_experts_indices.to(torch.int64)
         topk_weights = top_scores.to(torch.float32)
-        weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
+        if interleaved:
+            weights = MegaMoeExpertWeights(
+                l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
+            )
+        else:
+            weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
         y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer)
         ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
         ctx.buffer = buffer
+        ctx.interleaved = interleaved
         ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
         ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
         return y.to(x.dtype)
@@ -49,8 +60,9 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             MegaMoeExpertWeights(l1=l1, l2=l2),
             ctx.buffer,
             ctx.dw_dtype,
+            dw_natural_layout=not ctx.interleaved,
         )
-        return dx.to(ctx.x_dtype), dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype), None, dl1, dl2, None
+        return dx.to(ctx.x_dtype), dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype), None, dl1, dl2, None, None
 
 
 class MegaMoeTokenDispatcher(TokenDispatcher):
@@ -117,15 +129,22 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
         if experts.gate_up_proj is None and experts.gate_proj is None:
             raise ValueError("Mega MoE dispatch requires gated experts (SwiGLU gate+up), got non-gated experts.")
 
-        def fused(module) -> torch.Tensor:
+        def fused(module, x: torch.Tensor) -> torch.Tensor:
             # Runs inside `experts.forward`, i.e. inside FSDP's pre/post-forward hooks: the weights are
-            # unsharded here and the post-backward gradient reduce/scale gets registered on the output.
+            interleaved = False
             if module.gate_up_proj is not None:
                 gate_up_proj = _to_local(module.gate_up_proj)
+                interleaved = getattr(module, "mega_moe_interleaved", False)
             else:
                 gate_up_proj = torch.cat([_to_local(module.gate_proj), _to_local(module.up_proj)], dim=1)
             return _MegaMoeRoutedExperts.apply(
-                x, top_scores, selected_experts_indices, gate_up_proj, _to_local(module.down_proj), self.buffer
+                x,
+                top_scores,
+                selected_experts_indices,
+                gate_up_proj,
+                _to_local(module.down_proj),
+                self.buffer,
+                interleaved,
             )
 
         return experts(x, None, fused=fused)
