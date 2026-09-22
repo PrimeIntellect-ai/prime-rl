@@ -309,6 +309,7 @@ Report `~/tmp/fp8diag/bisect/results/r5.decode.report.txt`, `r5.*.prefill.report
 | 21-45 | 0.00052-0.00159 | <= 3.0 | <= 1.2e-4 | 0.02-0.13 | mean 0.00087, 1.4x steps 1-20 |
 | 46-60 | 0.00063-0.00128 | <= 3.9 | <= 4.9e-5 | 0.005-0.073 | mean 0.00090 |
 | 61-80 | 0.00058-0.00143 | <= 6.6 | <= 1.5e-5 | 0.02-0.09 | mean 0.00096 |
+| 81-100 | 0.0023-0.0031, mean 0.00261 | <= 7.7 | | | | 0.01187 (81-100) | 0.00101 (81-100) |
 | 81-84 | 0.00083-0.00143 | <= 2.5 | <= 8.7e-6 | 0.04-0.08 | mean 0.00105; slow creep, about +0.0001 per 20 steps |
 | 81-100 | 0.00062-0.00165 | <= 9.8 | <= 3.2e-5 | 0.02-0.09 | mean 0.00101 |
 | 101-106 | 0.00074-0.00117 | <= 4.7 | <= 5.0e-6 | 0.004-0.045 | mean 0.00095; killed at step 106 (05:15) |
@@ -562,3 +563,13 @@ because that job runs from this worktree and the fix changes a Triton kernel sou
 frozen). The "after" lr = 0 probe (`rl_fp8_fp8.toml`, expect the 0.0089 "before" to move by the 0.1% one-step
 activation flips at most) runs from this worktree once rebased. Separate branches `feat/fp8-grouped-linear` and
 `feat/fp8-ue8m0-weight-scales` off main have appeared from other sessions and are not touched here.
+
+**fp8/fp8 result (job 1115 completed 100 steps, 03:22).** 20-step means 0.00266, 0.00265, 0.00263, 0.00278, 0.00261: flat
+to three digits for 100 steps, versus 0.00220 -> 0.01187 for the FP8-serving / bf16-trainer control (job 991) and the
+bf16 control's 0.00061 -> 0.00101. With both sides quantizing the same bf16 weights with the same `amax / 448` recipe,
+the served and trained forwards agree to a constant floor and track together as the masters move; the pinning-driven
+growth is gone, as with stochastic rounding (job 1047: 0.0018, 0.0021, 0.0022, 0.0023). Floor about 1.2x the control's
+step-1 value (kernel differences: Triton experts below 128 tokens on the server, `wo_a` FP8 on the server only, the
+0.1% activation-scale flips the parity fix addresses). Reward 0.30-0.84 and entropy 0.28-0.47 like the controls; the
+trainer's gradient norm stayed 3-5x below the bf16-trainer runs throughout (open item). Peak trainer memory 74 GiB
+versus about 90 GiB in bf16.
