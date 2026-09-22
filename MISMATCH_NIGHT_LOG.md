@@ -551,3 +551,14 @@ Step 1 at 23:13 after a 20 min first step. Grad norm 0.006 (control 0.04 at step
 job 991's 20-step means 0.0022, 0.0033, 0.0043, 0.0066, 0.0119 (pinned served weights, growth) and job 1047's
 0.0018, 0.0021, 0.0022, 0.0023 (stochastic rounding, flat). Prediction for fp8/fp8: flat, since both sides quantize
 the same bf16 weights with the same recipe and the rotated `amax / 448` grid lets both track the masters.
+
+### Quantizer-parity fix landed (02:30, `fix/fp8-quant-parity` 4dc088220)
+
+`fix(trainer): match vLLM's per-token FP8 activation quantization bit for bit` (23 lines in
+`src/prime_rl/trainer/models/kernels/fp8_utils.py`, 22 in `tests/unit/train/models/test_fp8_utils.py`), implemented in
+Garrett's `git-tree-plan-impl` session from the worktree's `PLAN.md`. Stack now: `main` -> `fix/fp8-quant-parity` ->
+`feat/ds-v4-bf16-rl` (rebased onto it 02:35, clean) -> `feat/ds-v4-fp8-rl` (rebase deferred until job 1115 ends,
+because that job runs from this worktree and the fix changes a Triton kernel source) -> `exp/ds-v4-fp8-dither` (still
+frozen). The "after" lr = 0 probe (`rl_fp8_fp8.toml`, expect the 0.0089 "before" to move by the 0.1% one-step
+activation flips at most) runs from this worktree once rebased. Separate branches `feat/fp8-grouped-linear` and
+`feat/fp8-ue8m0-weight-scales` off main have appeared from other sessions and are not touched here.
