@@ -1,0 +1,52 @@
+# DeepSeek V4 Flash served prefill/decode disaggregated, one node per phase:
+#
+#   PRL_OUTPUT_DIR=$HOME/prl_output_dir uv run inference @ configs/advanced/deepseek-v4-flash/pd.toml
+#
+# Serving settings follow swe.toml. Requires the source-built NIXL from
+# scripts/install_nixl_from_source.sh; the stock wheel's bundled UCX cannot do the transfer.
+
+# Mandatory with online FP8: DeepSeek V4's o_proj needs DeepGEMM's grouped fp8_einsum, which is
+# skipped unless VLLM_USE_DEEP_GEMM is on.
+use_deep_gemm = true
+# The bf16 release is a dequantized FP8 checkpoint already on the e4m3 grid, so power-of-two
+# scales round-trip it exactly.
+fp8_ue8m0_weight_scales = true
+
+# JIT caches on node-local /tmp so ranks do not contend on shared /home.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/garrett/.triton-cache"
+DG_JIT_CACHE_DIR = "/tmp/garrett/.research_deep_gemm"
+TILELANG_CACHE_DIR = "/tmp/garrett/.tilelang-cache"
+VLLM_CACHE_ROOT = "/tmp/garrett/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/garrett/.flashinfer-cache"
+HF_HOME = "/home/garrett/.cache/huggingface"
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[deployment]
+type = "disaggregated"
+gpus_per_node = 8
+prefill_nodes_per_replica = 1
+num_prefill_replicas = 1
+decode_nodes_per_replica = 1
+num_decode_replicas = 1
+
+[slurm]
+job_name = "dsv4-pd"
+partition = "all"
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+# Quantizing indexer.wq_b flips the top-512 key selection above 2048 tokens, so it stays bf16.
+quantization_config = { ignore = ["re:.*indexer.*"] }
+# Pinned, not derived, so each phase matches a single-node aggregated replica.
+tensor_parallel_size = 8
+data_parallel_size = 1
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
