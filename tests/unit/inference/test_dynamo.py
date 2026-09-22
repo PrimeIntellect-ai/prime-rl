@@ -9,7 +9,6 @@ from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
     parse_dynamo_worker,
-    topology_fingerprint,
 )
 from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
 
@@ -76,7 +75,17 @@ def admin_for(*workers: dict) -> DynamoAdminPlane:
     )
     admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
     discovered = parsed(*workers)
-    admin._bind(discovered, topology_fingerprint(discovered), AsyncMock())
+    admin._bind(
+        discovered,
+        (
+            discovered.instance_id,
+            str(httpx.URL(discovered.admin_base_url)),
+            discovered.world_size,
+            discovered.admin_contract,
+            tuple(sorted(discovered.routes)),
+        ),
+        AsyncMock(),
+    )
     return admin
 
 
@@ -89,7 +98,17 @@ def python_admin() -> DynamoAdminPlane:
     )
     discovered = parse_dynamo_worker(snapshot(python_worker()), MODEL, expected_admin_host="frontend")
     admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
-    admin._bind(discovered, topology_fingerprint(discovered), AsyncMock())
+    admin._bind(
+        discovered,
+        (
+            discovered.instance_id,
+            str(httpx.URL(discovered.admin_base_url)),
+            discovered.world_size,
+            discovered.admin_contract,
+            tuple(sorted(discovered.routes)),
+        ),
+        AsyncMock(),
+    )
     return admin
 
 
@@ -452,7 +471,17 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
 def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
     discovered = parse_dynamo_worker(snapshot(python_worker(enable_lora=True)), MODEL, expected_admin_host="frontend")
     admin = python_admin()
-    admin._bind(discovered, topology_fingerprint(discovered), admin.clients[0])
+    admin._bind(
+        discovered,
+        (
+            discovered.instance_id,
+            str(httpx.URL(discovered.admin_base_url)),
+            discovered.world_size,
+            discovered.admin_contract,
+            tuple(sorted(discovered.routes)),
+        ),
+        admin.clients[0],
+    )
     response = AsyncMock()
     response.raise_for_status = lambda: None
     response.json = lambda: {
