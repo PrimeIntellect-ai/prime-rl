@@ -1,0 +1,62 @@
+# Layer on top of pd-nvfp4-b300.toml: 4P + 2D, DRAM-only Mooncake.
+[deployment.trainer_mooncake]
+num_bytes = 1000000000000 # 1 TB per trainer node, excluding the orchestrator host.
+device_name = "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_9,mlx5_12,mlx5_13"
+
+[trainer.log]
+level = "debug"
+
+[trainer.env_vars]
+TORCHINDUCTOR_COMPILE_THREADS = "1"
+
+[trainer.optim]
+type = "sign_sgd"
+
+[trainer.model]
+cp = 8
+
+[trainer.model.ac]
+mode = "full"
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[inference.router]
+request_timeout_seconds = 7200
+log_level = "info"
+
+[inference.deployment]
+num_prefill_replicas = 4
+num_decode_replicas = 2
+
+[inference.deployment.prefill_kv_cache_offload]
+kv_lease_ttl_ms = 1200000
+
+[inference.deployment.decode_kv_cache_offload]
+kv_lease_ttl_ms = 1200000
+
+[orchestrator]
+batch_size = 256
+max_off_policy_steps = 32
+
+[orchestrator.log]
+level = "debug"
+
+[orchestrator.concurrency]
+initial_inflight = 3600
+min_inflight = 3600
+max_inflight = 3600
+
+# 32 workers x 128 slots provide capacity for 3,600 fixed inflight rollouts.
+[[orchestrator.train.source]]
+name = "scaleswe-q0"
+env.taskset.id = "scaleswe"
+env.taskset.filter_fn = "lambda row: sum(row['instance_id'].encode()) % 4 == 0"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"
+env.agent.runtime.labels = ["glm53-pd-train", "int4-syn-gen-bash"]
+env.agent.runtime.creates_per_min = 720
+env.agent.timeout.rollout = 21600
+serve.pool.type = "static"
+serve.pool.num_workers = 32
+serve.max_concurrent = 128

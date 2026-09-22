@@ -237,9 +237,6 @@ head_dtype = "float32"
 batch_size = 512
 group_size = 16
 
-[orchestrator.algo]
-type = "debug"
-
 [orchestrator.model.client]
 wait_for_ready_timeout = 5400
 
