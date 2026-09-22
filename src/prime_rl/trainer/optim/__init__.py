@@ -3,6 +3,7 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
@@ -155,6 +156,43 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
+    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
+        distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
+    else:
+        distributed_mesh = parallel_dims.world_mesh
+
+    experts_mesh = parallel_dims.get_mesh("dp_shard_mod_ep") if parallel_dims.ep_enabled else distributed_mesh
+    fsdp_mesh_dim = 1 if parallel_dims.dp_replicate_enabled else 0
+
+    def muon_shard_is_compatible(p: nn.Parameter, mesh: DeviceMesh) -> bool:
+        """Whether Dion can redistribute this FSDP shard for Muon.
+
+        Dion's FSDP Muon path splits each local parameter shard evenly across
+        the optimizer process group before its all-to-all. Some small matrices
+        have valid uneven FSDP shards but cannot satisfy that stronger
+        divisibility constraint. Those parameters use Muon's existing AdamW
+        fallback instead.
+        """
+        if not isinstance(p, DTensor):
+            return True
+
+        shard_placements = [
+            (mesh_dim, placement)
+            for mesh_dim, placement in enumerate(p.placements)
+            if placement.is_shard() and p.device_mesh.size(mesh_dim) > 1
+        ]
+        if not shard_placements:
+            return True
+        if len(shard_placements) == 1:
+            _, shard_placement = shard_placements[0]
+        else:
+            match = next((item for item in shard_placements if item[0] == fsdp_mesh_dim), None)
+            if match is None:
+                return False
+            _, shard_placement = match
+
+        return p.size(shard_placement.dim) % mesh.size() == 0
+
     def muon_enabled(n, p):
         if p.ndim < 2:
             return False
@@ -168,18 +206,39 @@ def _create_muon_optimizer(
     expert_params = []
     router_params = []
     adamw_params = []
+    incompatible_muon_params = []
     for n, p in named_params:
         if p.requires_grad and muon_enabled(n, p):
             if "mlp.experts" in n:
-                expert_params.append(p)
+                if muon_shard_is_compatible(p, experts_mesh):
+                    expert_params.append(p)
+                else:
+                    adamw_params.append(p)
+                    incompatible_muon_params.append(n)
             elif "mlp.router" in n:
-                router_params.append(p)
+                if muon_shard_is_compatible(p, distributed_mesh):
+                    router_params.append(p)
+                else:
+                    adamw_params.append(p)
+                    incompatible_muon_params.append(n)
             else:
-                muon_params.append(p)
+                if muon_shard_is_compatible(p, distributed_mesh):
+                    muon_params.append(p)
+                else:
+                    adamw_params.append(p)
+                    incompatible_muon_params.append(n)
         elif p.requires_grad:
             adamw_params.append(p)
         else:
             pass
+
+    if incompatible_muon_params:
+        sample = ", ".join(incompatible_muon_params[:10])
+        remainder = len(incompatible_muon_params) - 10
+        get_logger().warning(
+            f"Using AdamW fallback for {len(incompatible_muon_params)} Muon-incompatible FSDP shards: {sample}"
+            + (f", ... and {remainder} more" if remainder > 0 else "")
+        )
 
     param_groups = []
 
@@ -213,11 +272,6 @@ def _create_muon_optimizer(
 
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
 
-    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
-        distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
-    else:
-        distributed_mesh = parallel_dims.world_mesh
-
     # Runtime fusions pack several logical matrices into one physical parameter. Muon
     # orthogonalizes each of them separately, so a packed parameter trains exactly as the
     # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
@@ -239,7 +293,7 @@ def _create_muon_optimizer(
         adjust_lr="rms_norm",
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
-        fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        fsdp_mesh_dim=fsdp_mesh_dim,
     )
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.
