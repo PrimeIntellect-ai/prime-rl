@@ -39,7 +39,9 @@ def launch(config: FlowConfig) -> int:
         flow = load_flow(config.flow, root=root)
         with drain_on_interrupt(flow):
             result = await flow.run()
-        logger.info("Flow finished: {} {}", result.reason, result.counts)
+        setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).info(
+            "Flow finished: {} {}", result.reason, result.counts
+        )
         return flow.exit_code(result)
 
     return asyncio.run(run())
