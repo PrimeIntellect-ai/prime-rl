@@ -25,8 +25,9 @@ fi
 
 WORKSPACE="$PROJECT_DIR/nixl_workspace"
 mkdir -p "$WORKSPACE"
-UCX_SRC="$WORKSPACE/ucx_source"
 UCX_INSTALL="$PROJECT_DIR/third_party/ucx"
+UCX_VERSION="${UCX_VERSION:-1.19.1}"
+UCX_SRC="$WORKSPACE/ucx-$UCX_VERSION"
 NIXL_SRC="$WORKSPACE/nixl_source"
 NIXL_VERSION="${NIXL_VERSION:-0.10.1}"
 CUDA_PATH="${CUDA_HOME:-/usr/local/cuda}"
@@ -34,15 +35,15 @@ NPROC=$(nproc)
 
 export PATH="$VENV_BIN:$PATH"
 
-echo "=== Building UCX 1.19.x with CUDA + IB ==="
+# The release tarball ships a pre-generated configure; a git clone would need autotools.
+echo "=== Building UCX $UCX_VERSION with CUDA + IB ==="
 if [ ! -d "$UCX_SRC" ]; then
-    git clone https://github.com/openucx/ucx.git "$UCX_SRC"
+    curl -fsSL "https://github.com/openucx/ucx/releases/download/v$UCX_VERSION/ucx-$UCX_VERSION.tar.gz" \
+        | tar xz -C "$WORKSPACE"
 fi
 cd "$UCX_SRC"
-git checkout v1.19.x
 
 if [ ! -f "$UCX_INSTALL/lib/libucs.so" ]; then
-    ./autogen.sh
     ./configure \
         --prefix="$UCX_INSTALL" \
         --enable-shared \
