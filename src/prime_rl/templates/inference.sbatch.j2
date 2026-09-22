@@ -309,8 +309,14 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     for k in $(seq 0 $((DP_PER_NODE - 1))); do
         GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
         RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        # vLLM rejects an external-LB rank when data_parallel_size is 1, which is the case for
+        # a role one engine wide. The router still balances across the role endpoints.
+        if [ "$DP" -gt 1 ]; then
+            RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+            launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        else
+            launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "" "{$ROLE_EXTRA}" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        fi
     done
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
