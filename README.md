@@ -148,19 +148,13 @@ uv run python -c "import flash_attn"
 uv run sft @ configs/debug/fake/sft.toml
 ```
 
-4. Check that you can run the RL trainer (*this requires 1 GPU*)
-
-```bash
-uv run trainer @ configs/debug/fake/rl.toml
-```
-
-5. Check that you can run the inference server (*this requires 1 GPU*)
+4. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
-6. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
+5. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
 
 ```bash
 uv run rl @ configs/basic/reverse-text/rl.toml
