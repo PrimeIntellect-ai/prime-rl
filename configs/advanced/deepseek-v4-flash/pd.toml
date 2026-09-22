@@ -38,6 +38,10 @@ partition = "all"
 [vllm]
 model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 dtype = "bfloat16"
+# Explicit because both resolvers key on the deepseek-ai repo id, not this bf16 re-export, so
+# "auto" leaves them unset and agentic tool calls fail with a 400.
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
 quantization = "fp8_per_block"
 # Quantizing indexer.wq_b flips the top-512 key selection above 2048 tokens, so it stays bf16.
 quantization_config = { ignore = ["re:.*indexer.*"] }
