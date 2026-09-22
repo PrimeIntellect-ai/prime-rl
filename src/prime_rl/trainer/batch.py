@@ -495,9 +495,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
-        sampling_versions=[
-            training_example.sampling_version if training_example.sampling_version is not None else -1
-        ],
+        sampling_versions=[training_example.sampling_version if training_example.sampling_version is not None else -1],
     )
 
 

@@ -164,8 +164,8 @@ class IPOLoss:
         advantages = inputs.advantages
         loss_mask = inputs.loss_mask
 
-        log_importance_ratio, importance_ratio, mismatch_kl, engine_mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            trainer_logprobs, inference_logprobs, inputs.on_policy_mask
+        log_importance_ratio, importance_ratio, mismatch_kl, engine_mismatch_kl = (
+            compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs, inputs.on_policy_mask)
         )
 
         abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
