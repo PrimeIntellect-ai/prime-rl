@@ -573,3 +573,14 @@ step-1 value (kernel differences: Triton experts below 128 tokens on the server,
 0.1% activation-scale flips the parity fix addresses). Reward 0.30-0.84 and entropy 0.28-0.47 like the controls; the
 trainer's gradient norm stayed 3-5x below the bf16-trainer runs throughout (open item). Peak trainer memory 74 GiB
 versus about 90 GiB in bf16.
+
+### fp8/fp8 probe AFTER the parity fix (job 1181, `rl_fp8_fp8.toml`, 03:26-03:56)
+
+Same config and code as the "before" probe plus `fix/fp8-quant-parity` 4dc088220. 20 lr = 0 steps: 0.0045, 0.0109,
+0.0093, 0.0098, 0.0073, 0.0170, 0.0055, 0.0072, 0.0084, 0.0061, 0.0080, 0.0095, 0.0092, 0.0063, 0.0165, 0.0101, 0.0105,
+0.0058, 0.0101, 0.0093; mean 0.0091 (before 0.0089), median about 0.0093 (before 0.0096). No measurable change, as
+expected: the fix moves about 0.1% of activation elements by one e4m3 step, well below this profile's per-step noise.
+The fix's value is bit-level agreement with vLLM's production per-token quantizer (verified by byte identity in the
+fix session), not a KL shift; the 0.009 fp8/fp8 floor on this profile is dominated by kernel-level differences
+(Triton experts below 128 tokens on the server versus DeepGEMM contiguous in the trainer, and whatever the indexer's
+top-k discontinuity amplifies), not by quantizer arithmetic.
