@@ -248,7 +248,8 @@ def monkey_patch_deepseek_v4_attn_sink_loading():
     it an ordinary whole-parameter load.
 
     Remove this patch once the pinned vLLM loads ``attn_sink`` through a weight loader; as of
-    0.29.0 the same fix exists only in vllm-project/vllm#54955, an open draft.
+    0.29.0 the same fix exists only as open drafts in vllm-project/vllm#57798, which covers the
+    DeepSeek V4 target models on top of the shared helper in #57797.
     """
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
     from vllm.models.deepseek_v4.nvidia import model as dsv4_model
