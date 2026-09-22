@@ -146,6 +146,10 @@ class DebugModelConfig(BaseConfig):
 
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
+# KV-cache storage dtypes the trainer can replay in its attention forward, matching
+# the inference-side ``kv_cache_dtype`` choices it can simulate (unit-scale 8-bit).
+SimulatedKVCacheDType: TypeAlias = Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+
 _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
     "router",
@@ -328,6 +332,16 @@ class ModelConfig(BaseModelConfig):
     """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
 
     quantization: QuantizationConfig | None = None
+
+    kv_cache_dtype: SimulatedKVCacheDType = "auto"
+    """Inference KV-cache storage dtype to replay in the trainer's attention forward.
+    When inference serves rollouts with a quantized KV cache (``inference.vllm.kv_cache_dtype``),
+    the trainer's full-precision forward disagrees with the engine's sampling distribution
+    on exactly the tokens the importance ratios compare. ``fp8`` replays by quantizing
+    post-RoPE K and V through the same 8-bit storage round-trip, then dequantizing them
+    back to bf16 before normal attention. Auto-set from the inference side by the rl
+    entrypoint; ``"auto"`` disables the replay. Only the standard GQA/FlashAttention
+    path is replayed — MLA and linear-attention layers keep their native numerics."""
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
