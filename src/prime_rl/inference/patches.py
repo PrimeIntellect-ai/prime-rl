@@ -130,7 +130,6 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
 
 
-
 def monkey_patch_triton_moe_swiglu_clamp():
     """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
 
