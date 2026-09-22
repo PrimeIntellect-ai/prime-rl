@@ -9,9 +9,7 @@ from prime_rl.dashboard.flow import flow_etag, project_flow
 
 def publish(unit, state):
     unit.mkdir(parents=True, exist_ok=True)
-    checkpoint = UnitState(
-        data_type="verifiers.v1.flow:UnitData", stages=[state["stage"]], events="../../transitions.jsonl", **state
-    )
+    checkpoint = UnitState(data_type="verifiers.v1.flow:UnitData", stages=[state["stage"]], **state)
     (unit / "state.json").write_text(checkpoint.model_dump_json())
 
 
