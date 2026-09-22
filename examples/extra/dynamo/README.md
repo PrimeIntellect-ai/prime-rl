@@ -9,7 +9,8 @@ Prime-RL does not launch Dynamo from this configuration. Run the frontend, worke
 Install Dynamo with its vLLM backend and activate its environment. Then start the RL-enabled frontend in the first terminal:
 
 ```bash
-DYN_HTTP_HOST=127.0.0.1 DYN_ENABLE_RL=true DYN_RL_PORT=8001 python -m dynamo.frontend
+DYN_HTTP_HOST=127.0.0.1 DYN_ENABLE_RL=true DYN_RL_PORT=8001 \
+  DYN_VLLM_ENABLE_INFERENCE_V1_GENERATE=true python -m dynamo.frontend
 ```
 
 Start the RL-enabled vLLM worker on GPU 1 in a second terminal:
@@ -17,10 +18,11 @@ Start the RL-enabled vLLM worker on GPU 1 in a second terminal:
 ```bash
 CUDA_VISIBLE_DEVICES=1 DYN_SYSTEM_HOST=127.0.0.1 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm \
   --model Qwen/Qwen3-0.6B \
-  --enable-rl
+  --enable-rl \
+  --worker-extension-cls prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker
 ```
 
-The `--enable-rl` flag enables worker discovery and the administration routes used for NCCL weight updates. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` for this process so it remains available to the Prime-RL trainer.
+The `--enable-rl` flag enables worker discovery and the administration routes used for NCCL weight updates. The worker extension supplies the Prime-RL `init_broadcaster` and `update_weights_from_path` engine RPC methods behind those routes. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` for this process so it remains available to the Prime-RL trainer.
 
 These commands bind the HTTP, discovery, and worker administration endpoints to loopback. If Prime-RL and Dynamo run on different hosts, expose these endpoints only on a trusted control network; configured client headers are also sent to the discovery endpoint.
 
