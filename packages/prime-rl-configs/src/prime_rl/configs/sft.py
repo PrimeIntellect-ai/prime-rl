@@ -408,9 +408,10 @@ class SFTConfig(BaseConfig):
                     "router in front of the per-rank engines. Remove inference.router = 'None'."
                 )
             if self.inference.vllm.model != self.model.name:
-                raise ValueError(
-                    f"inference.vllm.model ({self.inference.vllm.model}) does not match model.name "
-                    f"({self.model.name}). Remove inference.vllm.model to inherit it."
+                warnings.warn(
+                    f"Inference boots from {self.inference.vllm.model!r} while the trainer loads "
+                    f"{self.model.name!r}. Weight broadcast requires matching tensor names and shapes.",
+                    stacklevel=2,
                 )
             if self.deployment.gpus_per_node % self.inference.vllm.tensor_parallel_size != 0:
                 raise ValueError(
@@ -453,9 +454,10 @@ class SFTConfig(BaseConfig):
             )
 
         if self.inference.vllm.model != self.model.name:
-            raise ValueError(
-                f"inference.vllm.model ({self.inference.vllm.model}) does not match model.name "
-                f"({self.model.name}). Remove inference.vllm.model to inherit it."
+            warnings.warn(
+                f"Inference boots from {self.inference.vllm.model!r} while the trainer loads "
+                f"{self.model.name!r}. Weight broadcast requires matching tensor names and shapes.",
+                stacklevel=2,
             )
 
         # Fill inference capacity with DP ranks (mirrors RLConfig.auto_setup_deployment).
