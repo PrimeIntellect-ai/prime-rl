@@ -6,8 +6,8 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.generation_source.GenerationSource`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
-  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``) — each named class owns
-  its scoring hooks
+  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
+  class owns its scoring hooks
   (``score_episode`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
   :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
+from prime_rl.orchestrator.algo.debug import DebugAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
@@ -48,6 +49,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
+    "debug": DebugAlgorithm,
 }
 
 
@@ -64,6 +66,7 @@ def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
 
 __all__ = [
     "Algorithm",
+    "DebugAlgorithm",
     "EchoAlgorithm",
     "GRPOAlgorithm",
     "HierarchicalGRPOAlgorithm",

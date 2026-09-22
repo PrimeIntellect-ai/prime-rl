@@ -15,9 +15,8 @@ Ulysses is the simpler alternative to ring attention for context parallelism:
     [S/cp, H,    D]  ◀── all-to-all ──   [S, H/cp, D]
                          (seq ↔ heads)
 
-Key benefit: the attention kernel itself does not need to be CP-aware. The
-all-to-all is purely on Q/K/V tensors, so this works out of the box with
-softmax flash-attn, linear attention, mamba, etc., without rewriting kernels.
+The softmax-attention kernel itself does not need to be CP-aware. Hybrid models
+use the same sequence/head redistribution in their owned recurrent modules.
 
 GQA models with fewer KV heads than cp_size (e.g. NemotronH: 32 query heads, 2
 KV heads) are handled by replicating each KV head cp_size / num_key_value_heads
@@ -223,14 +222,6 @@ def substitute_ulysses_attn(
     from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
 
     AfmoeFlashAttention._compute_attention = _ulysses_compute_attention
-
-    from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
-
-    Qwen3_5MoeGatedFlashAttention._compute_attention = _ulysses_compute_attention
-
-    from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
-
-    Qwen3_5GatedFlashAttention._compute_attention = _ulysses_compute_attention
 
     from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ulysses_attention
 

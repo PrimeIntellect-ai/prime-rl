@@ -6,7 +6,6 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
 from prime_rl.utils.weights import resolve_wire_dtype
 
 
@@ -31,7 +30,7 @@ def test_resolve_wire_dtype():
     [
         (NemotronHForCausalLM, "model.layers.0.mamba.A_log", "model.layers.0.mamba.in_proj.weight"),
         (Qwen3_5ForCausalLM, "model.layers.0.linear_attn.A_log", "model.layers.0.self_attn.q_proj.weight"),
-        (Qwen3_5MoeForCausalLM, "model.layers.0.linear_attn.norm.weight", "model.layers.0.mlp.experts.gate_proj"),
+        (Qwen3_5ForCausalLM, "model.layers.0.linear_attn.norm.weight", "model.layers.0.mlp.experts.gate_proj"),
         (Glm4MoeForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (GlmMoeDsaForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (DeepseekV4ForCausalLM, "model.layers.0.attn_hc.fn", "model.layers.0.self_attn.q_b_proj.weight"),

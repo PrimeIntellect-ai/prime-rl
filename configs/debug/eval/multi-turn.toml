@@ -1,0 +1,12 @@
+# Single env, multi turn: 16 terminal-bench-2 tasks with the bash harness in
+# prime sandboxes (PRIME_API_KEY authenticates sandbox creation), one rollout
+# each, against Prime Inference on the default model.
+#
+#   uv run eval @ configs/debug/eval/multi-turn.toml
+
+num_examples = 16
+
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600

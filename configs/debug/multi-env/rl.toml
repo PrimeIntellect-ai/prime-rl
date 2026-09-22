@@ -1,6 +1,6 @@
 # Minimal multi-env debug run: two reverse-text train sources + one eval source.
 # The launcher spawns one env server per source at its derived address
-# (tcp://127.0.0.1:5000-5002); the orchestrator connects to each.
+# (each on an OS-assigned loopback port it publishes); the orchestrator connects to each.
 max_steps = 10
 seq_len = 2048
 
