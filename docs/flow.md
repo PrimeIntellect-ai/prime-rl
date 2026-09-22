@@ -43,3 +43,10 @@ limits from `pools.json` about every two seconds; replace that file atomically t
 
 `flow.json`, `transitions.jsonl`, saved traces, call records and reports use Verifiers'
 contracts. The dashboard reads these files; it does not schedule or recover the pipeline.
+
+The Traces tab shows live agent work using the same delta reader and viewer as served
+episodes. A retry replaces the live attempt; completion opens the saved trace. Flow's
+`live/<trace_id>.jsonl` files carry the unit, stage, execution and call identity.
+Monitors can query `GET /api/runs/{run}/live`, then `/api/runs/{run}/live/{trace_id}`
+for an assembled trace, or read locally with
+`uv run python -m prime_rl.monitors.file.traces.live <run_dir> [trace_id]`.

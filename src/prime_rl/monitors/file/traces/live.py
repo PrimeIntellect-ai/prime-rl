@@ -34,6 +34,8 @@ SNIPPET_CHARS = 160
 
 
 def get_live_dir(output_dir: Path) -> Path:
+    if (output_dir / "flow.json").is_file():
+        return output_dir / "live"
     return get_trace_dir(output_dir) / "live"
 
 

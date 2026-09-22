@@ -118,7 +118,7 @@ def test_fingerprint_tracks_workflow_and_calls(tmp_path):
     assert flow_etag(run) != changed
     changed = flow_etag(run)
     (run / "live").mkdir()
-    (run / "live/t--call.json").write_text("{}")
+    (run / "live/trace.jsonl").write_text("{}\n")
     assert flow_etag(run) == changed
     publish(run / "units/t", {"stage": "evaluate", "status": "ready", "data": {}})
     assert flow_etag(run) != changed

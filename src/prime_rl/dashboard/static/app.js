@@ -198,12 +198,12 @@ function applyRunTypeControls() {
   $("#overview-expand").hidden = isEval;
   $("#overview-smooth").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
-  // an eval run has no steps to switch between, so it is stream-only
-  $("#trace-mode").hidden = isEval;
-  $("#tm-mode-row").hidden = isEval;
-  $("#tm-step-prev").hidden = isEval;
-  $("#tm-step-next").hidden = isEval;
-  if (isEval) state.traces.mode = "stream";
+  // Eval and Flow runs have no training steps to switch between.
+  $("#trace-mode").hidden = isEval || isFlow;
+  $("#tm-mode-row").hidden = isEval || isFlow;
+  $("#tm-step-prev").hidden = isEval || isFlow;
+  $("#tm-step-next").hidden = isEval || isFlow;
+  if (isEval || isFlow) state.traces.mode = "stream";
 }
 
 async function selectRun(name, deferTab = false) {
@@ -676,6 +676,12 @@ function closeFlowStage() {
 }
 
 async function openFlowTrace(node) {
+  await loadLive({ render: false });
+  const live = state.traces.live.find((row) => row.invocation?.call === node.id);
+  if (live) {
+    await activateTab("traces");
+    return openLiveTrace(live.trace);
+  }
   if (node?.episode_line == null) return toastMsg("trace not yet recorded");
   await applyViewCommand({ run: state.run, tab: "traces", episode: node.episode_id, line: node.episode_line, trace: 0 });
 }
@@ -3342,7 +3348,7 @@ function liveRowHtml(r) {
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
         <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
-        <td>${esc(r.env ?? "?")}</td>
+        <td>${esc(r.env ?? r.invocation?.unit ?? "?")}</td>
         <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : ""}</td>
         <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
         <td>${r.turns ?? ""}</td>
@@ -3450,8 +3456,10 @@ const LANDING_MS = 15000;
 function landingRows() {
   const t = state.traces;
   const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
+  const activeCalls = new Set((t.live || []).map((r) => r.invocation?.call).filter(Boolean));
   const now = Date.now();
-  for (const [trace, row] of t.landing) if (loaded.has(trace) || now - row.landedAt > LANDING_MS) t.landing.delete(trace);
+  for (const [trace, row] of t.landing)
+    if (loaded.has(trace) || activeCalls.has(row.invocation?.call) || now - row.landedAt > LANDING_MS) t.landing.delete(trace);
   return [...t.landing.values()];
 }
 
@@ -3469,9 +3477,12 @@ function renderLiveRows() {
   if (currentLive && !$("#trace-modal").hidden) {
     if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
     else {
+      const call = currentEpisode?.live?.invocation?.call;
+      const replacement = call && (state.traces.live || []).find((r) => r.invocation?.call === call);
+      if (replacement) return openLiveTrace(replacement.trace);
       const landed = (state.traces.episodes || []).find((ep) => (ep.trace_ids || []).includes(currentLive));
       if (landed) openEpisode(landed.line);
-      else $("#tm-live-label").textContent = "finished · now in the stream";
+      else $("#tm-live-label").textContent = "no longer live";
     }
   }
 }
@@ -3510,7 +3521,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     const qs = refresh && currentLiveEtag ? `?etag=${encodeURIComponent(currentLiveEtag)}` : "";
     episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}${qs}`);
   } catch {
-    if (currentLive === traceId) $("#tm-live-label").textContent = "finished · now in the stream";
+    if (currentLive === traceId) $("#tm-live-label").textContent = "no longer live";
     return;
   }
   if (currentLive !== traceId || requestVersion !== episodeOpenVersion || episode.unchanged) return;
