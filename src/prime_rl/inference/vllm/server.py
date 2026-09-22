@@ -65,8 +65,12 @@ WORKER_EXTENSION_CLS = {
 
 @router.post("/pause")
 async def pause(request: Request):
-    logger.debug("Received /pause request (mode=keep, clear_cache=False)")
-    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    mode = request.query_params.get("mode", "abort")
+    if mode not in {"abort", "wait", "keep"}:
+        return JSONResponse({"error": f"Invalid pause mode: {mode}"}, status_code=400)
+    clear_cache = request.query_params.get("clear_cache", "true").lower() == "true"
+    logger.debug(f"Received /pause request (mode={mode}, clear_cache={clear_cache})")
+    await engine_client(request).pause_generation(mode=mode, clear_cache=clear_cache)
     return {"status": "paused"}
 
 
