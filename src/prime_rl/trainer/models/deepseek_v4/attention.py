@@ -132,6 +132,7 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
+from prime_rl.trainer.models.deepseek_v4.kv_quant import fake_quantize_kv_cache
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
@@ -690,6 +691,8 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
+        self.simulate_fp8_kv_cache = getattr(config, "simulate_fp8_kv_cache", False)
+
         self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
@@ -719,6 +722,8 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+        if self.simulate_fp8_kv_cache:
+            kv = fake_quantize_kv_cache(kv, rope_dim=2 * cos.shape[-1])
         if self.cp_context.cp_enabled:
             kv = gather_for_cp(kv, self.cp_context.cp_group)  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
