@@ -9,6 +9,7 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
+    _pause_engines,
     check_health,
     load_lora_adapter,
     setup_client,
@@ -84,6 +85,19 @@ def test_admin_plane_initializes_nccl():
         },
     )
     asyncio.run(admin_plane.aclose())
+
+
+def test_pause_engines_aborts_stale_requests():
+    client = AsyncMock()
+
+    with patch("prime_rl.orchestrator.clients._admin_post", new=AsyncMock()) as post:
+        asyncio.run(_pause_engines([client], step=200))
+
+    post.assert_awaited_once_with(
+        client,
+        "/pause",
+        params={"mode": "abort", "clear_cache": "false"},
+    )
 
 
 def test_setup_client_creates_renderer_client():
