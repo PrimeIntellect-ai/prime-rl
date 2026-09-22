@@ -359,7 +359,7 @@ def run_meta(run_dir: Path) -> dict:
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
     if run_type == "flow":
-        finished = flow_status in ("quiescent", "draining")
+        finished = flow_status in ("idle", "draining")
     else:
         finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
 

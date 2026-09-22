@@ -100,10 +100,10 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
                 + "\n"
             )
         file.write(
-            json.dumps({"type": "run_finished", "reason": "quiescent", "at": "2026-01-01T00:00:00+00:00"}) + "\n"
+            json.dumps({"type": "run_finished", "reason": "idle", "at": "2026-01-01T00:00:00+00:00"}) + "\n"
         )
     result = project_flow(run)
-    assert result["status"] == "quiescent"
+    assert result["status"] == "idle"
     assert [n["status"] for n in result["nodes"]] == ["completed", "stopped", "cancelled"]
 
 

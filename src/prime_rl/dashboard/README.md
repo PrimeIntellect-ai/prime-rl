@@ -30,8 +30,8 @@ are blue, and interruptions are grey and dashed. Stage details show the recorded
 Unit state is read from committed Git HEAD, including the pipeline's typed `data`.
 Stage and call IDs determine attribution; cache attachments keep producer provenance.
 Failed and uncached calls remain visible, and native retry traces open individually.
-Unfinished starts after a process exits remain incomplete. Run status reports quiescence
-or draining without deciding whether pipeline outcomes constitute success.
+Unfinished starts after a process exits remain incomplete. Run status reports `idle`
+or `draining` without deciding whether pipeline outcomes constitute success.
 Workflow updates, new call events/results, and process exit invalidate the view cache.
 Flow reports are ordinary Markdown files under `reports/`; only filenames referenced by
 recorded transitions appear in the Report tab. Pipelines write each report once using a
