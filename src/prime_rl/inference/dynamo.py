@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from collections.abc import Callable
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 
@@ -16,16 +18,33 @@ from prime_rl.orchestrator.clients import (
     UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
     _admin_post,
+    _is_retryable_admin_error,
     check_health,
     maybe_check_has_model,
     setup_admin_clients,
 )
 from prime_rl.utils.logger import get_logger
 
+_PYTHON_ENGINE_ROUTES = frozenset(
+    {
+        "init_weights_update_group",
+        "pause_generation",
+        "resume_generation",
+        "update_weights_from_distributed",
+    }
+)
+_PYTHON_LORA_ROUTES = frozenset({"load_lora", "unload_lora"})
+_DYNAMO_LORA_RESIDENT_VERSIONS = 2
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_WILDCARD_HOSTS = {"0.0.0.0", "::"}
+
 
 class DynamoWorker(BaseModel):
     admin_base_url: str
     instance_id: int = Field(ge=0, strict=True)
+    world_size: int = Field(gt=0, strict=True)
+    admin_contract: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
+    routes: tuple[str, ...] = ()
 
 
 class DynamoSnapshot(BaseModel):
@@ -50,11 +69,33 @@ def parse_dynamo_worker(
             continue
         if raw_worker.get("error") is not None:
             raise DynamoDiscoveryPending("Dynamo worker is not ready")
-        if raw_worker.get("admin_base_url") is None:
-            raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url")
-        if type(raw_worker.get("world_size")) is not int or raw_worker["world_size"] != 1:
-            raise ValueError("Dynamo RL currently supports exactly one inference rank")
-        worker = DynamoWorker.model_validate(raw_worker)
+        admin_base_url = raw_worker.get("admin_base_url")
+        admin_contract: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
+        routes: tuple[str, ...] = ()
+        if admin_base_url is None:
+            admin_base_url = raw_worker.get("system_url")
+            if admin_base_url is None:
+                raise DynamoDiscoveryPending("Dynamo worker is missing admin_base_url or system_url")
+            raw_routes = raw_worker.get("routes")
+            if not isinstance(raw_routes, list) or not all(isinstance(route, str) for route in raw_routes):
+                raise TypeError("Dynamo worker routes must be a list of strings")
+            routes = tuple(raw_routes)
+            missing_routes = _PYTHON_ENGINE_ROUTES.difference(routes)
+            if missing_routes:
+                raise DynamoDiscoveryPending(
+                    "Dynamo worker is missing required admin routes: " + ", ".join(sorted(missing_routes))
+                )
+            admin_contract = "engine_routes"
+        worker = DynamoWorker.model_validate(
+            {
+                **raw_worker,
+                "admin_base_url": admin_base_url,
+                "admin_contract": admin_contract,
+                "routes": routes,
+            }
+        )
+        if worker.admin_contract == "collective_rpc" and worker.world_size != 1:
+            raise ValueError("Dynamo sidecar currently supports exactly one inference rank")
         try:
             admin_url = httpx.URL(worker.admin_base_url)
         except httpx.InvalidURL as error:
@@ -69,10 +110,25 @@ def parse_dynamo_worker(
             or admin_url.path != "/"
         ):
             raise ValueError("admin_base_url must be an http(s) origin")
-        if expected_admin_host is not None and admin_url.host != expected_admin_host:
-            raise ValueError(
-                f"Dynamo worker admin host {admin_url.host!r} does not match discovery host {expected_admin_host!r}"
-            )
+        if admin_url.host in _WILDCARD_HOSTS:
+            raise ValueError("Dynamo worker admin origin must not use a wildcard host")
+        if expected_admin_host is not None:
+            if worker.admin_contract == "collective_rpc" and admin_url.host != expected_admin_host:
+                raise ValueError(
+                    f"Dynamo worker admin host {admin_url.host!r} does not match discovery host {expected_admin_host!r}"
+                )
+            if worker.admin_contract == "engine_routes":
+                try:
+                    admin_ip = ip_address(admin_url.host)
+                except ValueError as error:
+                    raise ValueError("Dynamo Python worker system_url must use an IP address") from error
+                admin_ip = getattr(admin_ip, "ipv4_mapped", None) or admin_ip
+                if admin_ip.is_unspecified:
+                    raise ValueError("Dynamo worker admin origin must not use a wildcard host")
+                if admin_ip.is_loopback and expected_admin_host not in _LOOPBACK_HOSTS:
+                    raise ValueError("Remote Dynamo discovery must not redirect administration to loopback")
+                if admin_ip.is_link_local or admin_ip.is_multicast or admin_ip.is_reserved:
+                    raise ValueError("Dynamo Python worker system_url uses an unsafe IP address")
         matching_workers.append(worker)
 
     if not matching_workers:
@@ -82,8 +138,15 @@ def parse_dynamo_worker(
     return matching_workers[0]
 
 
-def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str]:
-    return worker.instance_id, str(httpx.URL(worker.admin_base_url))
+def topology_fingerprint(worker: DynamoWorker) -> tuple[int, str, int, str, tuple[str, ...]]:
+    capabilities = tuple(sorted((_PYTHON_ENGINE_ROUTES | _PYTHON_LORA_ROUTES).intersection(worker.routes)))
+    return (
+        worker.instance_id,
+        str(httpx.URL(worker.admin_base_url)),
+        worker.world_size,
+        worker.admin_contract,
+        capabilities,
+    )
 
 
 def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
@@ -171,7 +234,12 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
-        self._fingerprint: tuple[int, str] | None = None
+        self._fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
+        self._admin_contract: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
+        self._inference_world_size = 1
+        self._worker_routes: frozenset[str] = frozenset()
+        self._lora_names_by_step: dict[int, str] = {}
+        self._loaded_loras: list[str] = []
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()
 
@@ -211,7 +279,7 @@ class DynamoAdminPlane(AdminPlane):
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
-        previous_fingerprint: tuple[int, str] | None = None
+        previous_fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
         last_error: Exception | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             try:
@@ -254,7 +322,7 @@ class DynamoAdminPlane(AdminPlane):
         worker_timeout = min(30.0, max(1.0, float(self._timeout)))
         return httpx.AsyncClient(
             base_url=worker.admin_base_url,
-            headers=self._headers,
+            headers=self._headers if worker.admin_contract == "collective_rpc" else None,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(worker_timeout),
             trust_env=False,
@@ -263,18 +331,21 @@ class DynamoAdminPlane(AdminPlane):
     def _bind(
         self,
         worker: DynamoWorker,
-        fingerprint: tuple[int, str],
+        fingerprint: tuple[int, str, int, str, tuple[str, ...]],
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._fingerprint = fingerprint
+        self._admin_contract = worker.admin_contract
+        self._inference_world_size = worker.world_size
         self.clients = [client if client is not None else self._make_worker_client(worker)]
+        self._worker_routes = frozenset(worker.routes)
 
     async def ensure_topology_current(self) -> None:
         if self._nccl_initialization_state == "terminal":
             raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        previous_changed_fingerprint: tuple[int, str] | None = None
+        previous_changed_fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
         last_error: Exception | None = None
         deadline = time.monotonic() + self._timeout
         for attempt in range(3):
@@ -326,6 +397,46 @@ class DynamoAdminPlane(AdminPlane):
         if payload != {"results": [None]}:
             raise ValueError("Dynamo worker returned an invalid collective RPC response")
 
+    async def _engine_post(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int | float,
+    ) -> None:
+        operation_timeout = max(1.0, float(timeout))
+        async with asyncio.timeout(operation_timeout + 15.0):
+            response = await self.clients[0].post(
+                path,
+                timeout=httpx.Timeout(connect=10.0, read=operation_timeout, write=10.0, pool=10.0),
+                json=body,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            raise ValueError(f"Dynamo worker route {path} returned an error")
+
+    async def _set_generation_paused(self, paused: bool) -> None:
+        if self._admin_contract == "engine_routes":
+            operation = "pause_generation" if paused else "resume_generation"
+            body = {"mode": "keep", "clear_cache": False} if paused else {}
+            async with asyncio.timeout(2 * ADMIN_TIMEOUT_S):
+                for attempt in range(10):
+                    try:
+                        await self._engine_post(
+                            f"/engine/{operation}",
+                            body,
+                            ADMIN_TIMEOUT_S,
+                        )
+                        return
+                    except BaseException as error:
+                        if attempt == 9 or not _is_retryable_admin_error(error):
+                            raise
+                        await asyncio.sleep(min(2**attempt, 10))
+        if paused:
+            await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
+        else:
+            await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
+
     async def update_weights(
         self,
         weight_dir: Path | None,
@@ -334,6 +445,8 @@ class DynamoAdminPlane(AdminPlane):
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
+        if self._admin_contract == "engine_routes" and transport != "nccl":
+            raise ValueError("A Dynamo Python worker currently only supports NCCL weight updates")
         if transport != "nccl":
             async with self._mutation_lock:
                 await self.ensure_topology_current()
@@ -352,7 +465,7 @@ class DynamoAdminPlane(AdminPlane):
             self._nccl_initialization_state = "terminal"
 
             try:
-                await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
+                await self._set_generation_paused(True)
             except BaseException as failure:
                 raise RuntimeError("Dynamo pause failed; worker state is unknown and restart is required") from failure
 
@@ -364,12 +477,23 @@ class DynamoAdminPlane(AdminPlane):
                         "Dynamo pause callback failed; engines remain paused and restart is required"
                     ) from error
             try:
-                await self._collective_rpc(
-                    self.clients[0],
-                    method="update_weights_from_path",
-                    timeout=UPDATE_WEIGHTS_TIMEOUT_S,
-                    args=[weight_dir.as_posix()],
-                )
+                if self._admin_contract == "engine_routes":
+                    await self._engine_post(
+                        "/engine/update_weights_from_distributed",
+                        {
+                            "engine_rpc": "update_weights_from_path",
+                            "weight_dir": weight_dir.as_posix(),
+                            "weight_version": step,
+                        },
+                        UPDATE_WEIGHTS_TIMEOUT_S,
+                    )
+                else:
+                    await self._collective_rpc(
+                        self.clients[0],
+                        method="update_weights_from_path",
+                        timeout=UPDATE_WEIGHTS_TIMEOUT_S,
+                        args=[weight_dir.as_posix()],
+                    )
             except BaseException as failure:
                 self._terminalize_nccl()
                 raise RuntimeError(
@@ -377,12 +501,92 @@ class DynamoAdminPlane(AdminPlane):
                 ) from failure
 
             try:
-                await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
+                await self._set_generation_paused(False)
             except BaseException as failure:
                 self._terminalize_nccl()
                 raise RuntimeError("Dynamo resume failed; worker state is unknown and restart is required") from failure
             self._nccl_initialization_state = "ready"
             get_logger().info(f"Applied NCCL weights for policy v{step} to the Dynamo worker")
+
+    def _require_lora_routes(self) -> None:
+        missing_routes = _PYTHON_LORA_ROUTES.difference(self._worker_routes)
+        if missing_routes:
+            raise RuntimeError("Dynamo worker is missing required LoRA routes: " + ", ".join(sorted(missing_routes)))
+
+    def _lora_name(self, step: int) -> str:
+        if step not in self._lora_names_by_step:
+            self._lora_names_by_step[step] = f"prime-rl-policy-v{step}-{uuid.uuid4().hex}"
+        return self._lora_names_by_step[step]
+
+    async def _post_lora(
+        self,
+        operation: Literal["load_lora", "unload_lora"],
+        body: dict[str, object],
+    ) -> None:
+        expected_name = body["lora_name"]
+        response = await self.clients[0].post(
+            f"/engine/{operation}",
+            json=body,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("status") != "success"
+            or payload.get("lora_name") != expected_name
+            or type(payload.get("lora_id")) is not int
+            or payload["lora_id"] <= 0
+        ):
+            raise RuntimeError(f"Dynamo worker rejected LoRA operation: {payload!r}")
+
+    async def _wait_for_lora_model(self, model_name: str) -> None:
+        deadline = time.monotonic() + min(float(self._timeout), 120.0)
+        last_error: Exception | None = None
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    await maybe_check_has_model(self._frontend_clients, model_name)
+                return
+            except (RuntimeError, ValueError, httpx.TransportError, TimeoutError) as error:
+                last_error = error
+            await asyncio.sleep(min(self._poll_interval, remaining))
+        raise TimeoutError(f"Dynamo LoRA adapter {model_name!r} did not become routable") from last_error
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path, *, step: int) -> str:
+        if self._admin_contract != "engine_routes":
+            return await super().load_lora_adapter(lora_name, lora_path, step=step)
+        if lora_name != self._model_name:
+            raise ValueError(f"Dynamo admin plane was configured for {self._model_name!r}, not {lora_name!r}")
+
+        source_uri = lora_path.resolve(strict=True).as_uri()
+        active_model = self._lora_name(step)
+        async with self._mutation_lock:
+            self._require_lora_routes()
+            await self.ensure_topology_current()
+            if active_model in self._loaded_loras:
+                await self._wait_for_lora_model(active_model)
+                return active_model
+            if len(self._loaded_loras) >= _DYNAMO_LORA_RESIDENT_VERSIONS:
+                oldest = self._loaded_loras[0]
+                await self._post_lora("unload_lora", {"lora_name": oldest})
+                self._loaded_loras.pop(0)
+            await self._post_lora(
+                "load_lora",
+                {"lora_name": active_model, "source": {"uri": source_uri}},
+            )
+            try:
+                await self._wait_for_lora_model(active_model)
+            except BaseException:
+                try:
+                    await self._post_lora("unload_lora", {"lora_name": active_model})
+                except Exception as cleanup_error:
+                    get_logger().warning(f"Failed to roll back Dynamo LoRA {active_model}: {cleanup_error!r}")
+                raise
+            self._loaded_loras.append(active_model)
+
+        get_logger().info(f"Activated Dynamo LoRA {active_model} for policy v{step}")
+        return active_model
 
     async def initialize_nccl(
         self,
@@ -394,25 +598,44 @@ class DynamoAdminPlane(AdminPlane):
     ) -> None:
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
-            if inference_world_size != 1:
-                raise ValueError("Dynamo RL currently supports exactly one inference rank")
+            if inference_world_size != self._inference_world_size:
+                if self._admin_contract == "collective_rpc":
+                    raise ValueError("Dynamo sidecar currently supports exactly one inference rank")
+                raise ValueError("Configured inference world size does not match Dynamo discovery")
             self._nccl_initialization_state = "initializing"
             try:
                 await self.ensure_topology_current()
-                get_logger().info("Initializing Dynamo NCCL broadcast for one inference rank")
-                await self._collective_rpc(
-                    self.clients[0],
-                    method="init_broadcaster",
-                    timeout=timeout,
-                    args=[
-                        host,
-                        port,
-                        0,
-                        1,
-                        timeout,
-                        "default",
-                    ],
+                get_logger().info(
+                    f"Initializing Dynamo NCCL broadcast for {self._inference_world_size} inference ranks"
                 )
+                if self._admin_contract == "engine_routes":
+                    await self._engine_post(
+                        "/engine/init_weights_update_group",
+                        {
+                            "engine_rpc": "init_broadcaster",
+                            "host": host,
+                            "port": port,
+                            "rank_offset": 0,
+                            "inference_world_size": self._inference_world_size,
+                            "timeout": timeout,
+                            "session_id": "default",
+                        },
+                        timeout,
+                    )
+                else:
+                    await self._collective_rpc(
+                        self.clients[0],
+                        method="init_broadcaster",
+                        timeout=timeout,
+                        args=[
+                            host,
+                            port,
+                            0,
+                            self._inference_world_size,
+                            timeout,
+                            "default",
+                        ],
+                    )
             except asyncio.CancelledError:
                 self._terminalize_nccl()
                 raise
