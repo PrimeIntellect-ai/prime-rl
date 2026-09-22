@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+import verifiers.v1 as vf
 from verifiers.v1.serve import EpisodeAssembly
 
 from prime_rl.monitors.file.traces import get_trace_dir
@@ -178,6 +179,7 @@ def message_text(message: dict[str, Any]) -> str:
 
 def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
     """The live table's view of one trace: phase, turns, tokens, cost, last message."""
+    typed_trace = vf.WireTrace.model_validate(trace, extra="ignore")
     calls = trace.get("calls") or []
     usage = [call.get("usage") or {} for call in calls]
     # The newest node is usually a tool result; the assistant's latest words say more.
@@ -195,8 +197,8 @@ def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
         "stage": stage(trace),
         "turns": len(calls),
         "branches": sum(1 for index in range(len(nodes)) if index not in parents),
-        "input_tokens": sum(u.get("prompt_tokens") or 0 for u in usage),
-        "output_tokens": sum(u.get("completion_tokens") or 0 for u in usage),
+        "input_tokens": typed_trace.num_input_tokens,
+        "output_tokens": typed_trace.num_output_tokens,
         "cost": sum(costs) if costs else None,
         "stop_condition": trace.get("stop_condition"),
         "errors": len(trace.get("errors") or []),
