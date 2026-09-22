@@ -225,35 +225,14 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "finished_at": None,
                 "trace_id": None,
                 "payload": None,
-                "rollouts": [],
             }
             parent["calls"].append(call)
         call = calls[identity]
-        if event.type == "rollout":
-            rollouts = call["rollouts"]
-            if event.status == "started":
-                rollouts.append(
-                    {
-                        "trace_id": event.trace_id,
-                        "status": "incomplete",
-                        "rollout": event.rollout,
-                        "started_at": event.at,
-                    }
-                )
-            else:
-                rollout = next(r for r in rollouts if r["rollout"] == event.rollout)
-                rollout.update(
-                    status=event.status,
-                    finished_at=event.at,
-                    error=f"{event.error.type}: {event.error.message}" if event.error else None,
-                )
-            call["trace_id"] = event.trace_id
-            continue
         if event.status != "started":
             call.update(
                 status=event.status,
                 finished_at=event.at,
-                trace_id=event.trace_id or call["trace_id"],
+                trace_id=event.trace_id,
                 error=f"{event.error.type}: {event.error.message}" if event.error else None,
                 source_call=event.source_call,
                 source_execution=event.source_execution,
@@ -266,12 +245,11 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
         if node["status"] == "incomplete" and execution_status == "running" and node["order"] > last_launch:
             node["status"] = "running"
         for call in node["calls"]:
-            for item in [call, *call["rollouts"]]:
-                if item["status"] == "incomplete" and node["status"] == "running":
-                    item["status"] = "running"
-                episode = trace_lines.get(item.get("trace_id"))
-                item["episode_line"] = episode[0] if episode else None
-                item["episode_id"] = episode[1] if episode else None
+            if call["status"] == "incomplete" and node["status"] == "running":
+                call["status"] = "running"
+            episode = trace_lines.get(call["trace_id"])
+            call["episode_line"] = episode[0] if episode else None
+            call["episode_id"] = episode[1] if episode else None
 
     edges: list[dict[str, Any]] = []
     by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)

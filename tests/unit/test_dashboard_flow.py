@@ -25,18 +25,6 @@ def root(tmp_path):
         {"type": "started", "execution": "first", "error": None},
         {"type": "steer", "sha": "hold", "action": {"status": "held", "note": "pause after review"}},
         {"type": "call", "execution": "first", "call": "producer", "status": "started"},
-        *[
-            {
-                "type": "rollout",
-                "execution": "first",
-                "call": "producer",
-                "rollout": n,
-                "trace_id": trace,
-                "status": status,
-            }
-            for n, trace, outcome in [(1, "failed", "failed"), (2, "trace", "succeeded")]
-            for status in ("started", outcome)
-        ],
         {"type": "call", "execution": "first", "call": "producer", "status": "succeeded", "trace_id": "trace"},
         {
             "type": "transition",
@@ -66,12 +54,12 @@ def root(tmp_path):
         ],
         {"type": "call", "execution": "second", "call": "lost", "status": "started"},
     ]
-    # Identical timestamps deliberately cannot identify any stage or retry.
+    # Identical timestamps deliberately cannot identify an execution.
     defaults = {"unit": "t", "stage": "evaluate", "at": "2026-01-01T00:00:00+00:00", "key": "solve", "kind": "agent"}
     rows = []
     for event in events:
         row = {**defaults, **event}
-        if row["type"] in ("call", "rollout"):
+        if row["type"] == "call":
             row["invocation"] = {k: row.pop(k) for k in ("unit", "stage", "execution", "call", "key", "kind")}
             row["invocation"]["cache"] = None
         rows.append(json.dumps(row) + "\n")
@@ -88,7 +76,7 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     run = root(tmp_path)
     (run / "units/t/state.json").write_text("incomplete operator edit")
     assert unit_states(run)["t"].status == "held"
-    result = project_flow(run, {"trace": (0, "episode"), "failed": (1, "failed-episode")})
+    result = project_flow(run, {"trace": (0, "episode")})
     assert {u["name"] for u in result["units"]} == {"coordinator", "t"}
     assert result["status"] == "incomplete"
     first, second = result["nodes"]
@@ -98,7 +86,6 @@ def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_
     assert first["links"] == [{"unit": "coordinator", "label": "updated"}]
     (producer,) = first["calls"]
     assert producer["id"] == "producer" and producer["episode_line"] == 0
-    assert [r["status"] for r in producer["rollouts"]] == ["failed", "succeeded"]
     attachment, unkeyed, lost = second["calls"]
     assert attachment["source_call"] == producer["id"] and attachment["source_execution"] == "first"
     assert unkeyed["status"] == "cancelled" and lost["status"] == "incomplete"

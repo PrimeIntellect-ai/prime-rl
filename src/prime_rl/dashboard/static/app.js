@@ -664,7 +664,6 @@ function openFlowStage(nodeId) {
         <span class="fm-kind">${esc(call.kind)}</span><code>${esc(call.key)}</code>
         <small>${esc(fmtWhen(call.started_at))}${call.finished_at ? ` · ${esc(flowDuration(call))}` : ""} · ${esc(call.status)} ${call.source_call ? " · cached result" : ""}${call.trace_id ? " · trace" : ""}</small>
         ${call.error ? `<small>${esc(call.error)}</small>` : ""}
-        ${(call.rollouts || []).length > 1 ? call.rollouts.map((r, j) => `<button class="btn" data-fm-rollout="${j}" title="${esc(r.error || "")}">rollout ${r.rollout}: ${esc(r.status)}</button>`).join("") : ""}
       </div>
       ${call.kind !== "agent" ? `<pre class="fm-payload" hidden>${esc(flowPayload(call) || "(no result recorded)")}</pre>` : ""}`).join("")
     : `<div class="empty"><span>no calls recorded</span><small>this stage has no call events</small></div>`;
@@ -6663,13 +6662,6 @@ $("#flow-modal").addEventListener("click", (event) => {
   if (!row) return;
   const call = state.flow.modal?.calls[Number(row.dataset.fmCall)];
   if (!call) return;
-  const rolloutButton = event.target.closest("[data-fm-rollout]");
-  if (rolloutButton) {
-    const rollout = call.rollouts[Number(rolloutButton.dataset.fmRollout)];
-    if (rollout.episode_line == null) return toastMsg("trace not yet recorded");
-    closeFlowStage();
-    return openFlowTrace(rollout);
-  }
   if (call.kind === "agent") {
     if (call.episode_line == null) return toastMsg(call.status === "running" ? "still running" : "this call has no trace");
     closeFlowStage();
