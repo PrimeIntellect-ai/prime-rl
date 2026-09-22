@@ -1,0 +1,41 @@
+# Budget variant of swe.toml: train a 100B+ MoE on only two nodes (1 train + 1 infer replica) with
+# the single-node sign-SGD trainer. Overlay for swe-budget.toml — this file only carries the
+# deltas, so compose the two (left-to-right merge, see docs/configuration.md "TOML Composition"):
+#
+#   uv run rl @ examples/advanced/glm-4.5-air/swe-budget.toml @ examples/advanced/glm-4.5-air/swe-2-node.toml
+#
+# The batch size is 64 (4 groups of 16), matching the rollout throughput of the single inference
+# replica. The SLURM job name, sandbox cleanup label, and W&B run name are per-variant so the
+# budget variants can run side by side.
+
+[slurm]
+job_name = "glm45air-swe-2-node"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-swe-2-node" -y || true'
+
+[deployment]
+num_infer_replicas = 1
+
+[monitors.wandb]
+name = "glm45air-scaleswe-2-node"
+
+[orchestrator]
+batch_size = 64
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["glm45air-swe-2-node"]
+
+# --- Eval: SWE-Bench Verified at step 0 + every 20 steps, bash harness on prime ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["glm45air-swe-2-node"]
+env.agent.timeout.rollout = 3600

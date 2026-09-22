@@ -20,9 +20,11 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import random
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from itertools import islice
+from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
@@ -32,20 +34,44 @@ from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSour
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.pathing import env_address_file
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
 # before serving.
 ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
+# Fixed seed for shuffle=True sources: the finite taskset is shuffled once at
+# startup and the shuffled order is fixed for the whole run (train curricula and
+# eval selection both consume it).
+TASKSET_SHUFFLE_SEED = 42
+
+
+async def wait_for_address(path: Path, timeout: float) -> str:
+    """The address a launcher-managed env server published, polling for the file the
+    server writes once it has bound (it starts concurrently with this process)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if address := path.read_text().strip():
+                return address
+        except FileNotFoundError:
+            pass
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"env server never published its address to {path} within {timeout}s")
+        await asyncio.sleep(0.5)
+
 
 class Env:
     """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: EnvConfig, address: str):
+    def __init__(self, config: EnvConfig, address: str | None, address_file: Path):
         self.config = config
         self.address = address
+        self.address_file = address_file
+        """Where a launcher-managed server publishes its address; read when ``address``
+        is None."""
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
@@ -68,19 +94,25 @@ class Env:
 
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side."""
-        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
         t0 = time.perf_counter()
+        if self.address is None:
+            self.address = await wait_for_address(self.address_file, timeout=ENV_SERVER_STARTUP_TIMEOUT)
+        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
+            if self.config.shuffle:
+                raise ValueError(f"Env {self.name} has an infinite taskset — cannot shuffle it")
             self.tasks = iter(taskset)
             self.num_tasks = None
         else:
             # Materialize off the event loop — iterating may pull a dataset.
             materialized = await asyncio.to_thread(lambda: list(taskset))
+            if self.config.shuffle:
+                random.Random(TASKSET_SHUFFLE_SEED).shuffle(materialized)
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
@@ -98,14 +130,18 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
+        on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
         """Run and return one typed episode. A failed multi-trace episode marks
-        its otherwise-clean traces failed so partial episodes never train."""
+        its otherwise-clean traces failed so partial episodes never train.
+        ``on_delta`` sees each delta of the env server's stream — a turn or a phase
+        change of one of the episode's traces — as it lands."""
         episode = await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
+            on_delta=on_delta,
         )
         for trace in episode.traces:
             if not episode.ok and trace.ok:
@@ -123,11 +159,12 @@ class TrainEnv(Env):
     def __init__(
         self,
         config: TrainSourceConfig,
-        address: str,
+        address: str | None,
+        address_file: Path,
         generation_source: GenerationSource,
         algorithm: Algorithm,
     ):
-        super().__init__(config, address)
+        super().__init__(config, address, address_file)
         self.generation_source = generation_source
         self.algorithm = algorithm
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
@@ -142,8 +179,8 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str):
-        super().__init__(config, address)
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
+        super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
 
@@ -203,7 +240,8 @@ class TrainEnvs(Envs[TrainEnv]):
     def __init__(
         self,
         configs: Sequence[TrainSourceConfig],
-        addresses: dict[tuple[str, str], str],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
         *,
         clients,
         renderer_config=None,
@@ -215,6 +253,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
+                env_address_file(config_dir, "train", config.resolved_name),
                 GenerationSource(config.algo.sampling, clients, renderer_config),
                 build_algorithm(config.algo, clients),
             )
@@ -224,8 +263,11 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str]):
+    def __init__(
+        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+    ):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
-            env = EvalEnv(config, addresses[("eval", config.resolved_name)])
+            name = config.resolved_name
+            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
             self._envs[env.name] = env
