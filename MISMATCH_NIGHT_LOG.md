@@ -532,6 +532,14 @@ weight-scale patch (both sides on `amax / 448`), clamp patch active, `wo_a` FP8 
 | step | fp8/fp8 kl_mean | kl_max | is_masked | reward | peak mem | control (job 991) | bf16 control |
 |---|---|---|---|---|---|---|---|
 | 1 | 0.00212 | 1.22 | 2.1e-5 | 0.580 | 74.0 GiB | 0.00149 | 0.00054 |
+| 2-20 | 0.0021-0.0038, mean 0.00266 (1-20) | <= 22.7 (15), else <= 8.9 | <= 3.0e-5 | 0.32-0.84 | | 0.00220 (1-20) | 0.00061 (1-20) |
+
+Steps 2-20 (00:08): flat within noise; steps 17-20 read 0.0026-0.0028 where the control read 0.0027-0.0031 and
+then kept climbing. Anomaly to investigate separately: the trainer's `optim/grad_norm` is 0.004-0.018 in this run
+versus 0.03-0.09 in the control at the same steps, about 5x lower. The FP8 backward (dgrad and wgrad via the
+`(1,1,128)` recipe in `fp8_linear.py` / `fp8_grouped_gemm.py`) is the only trainer-side difference; Adam's
+normalisation keeps update sizes unaffected, but gradient direction quality could differ. Offline check to do: one
+batch, FP8 versus bf16 backward, per-layer gradient norm and cosine.
 
 Step 1 at 23:13 after a 20 min first step. Grad norm 0.006 (control 0.04 at step 1); worth watching. Comparison targets:
 job 991's 20-step means 0.0022, 0.0033, 0.0043, 0.0066, 0.0119 (pinned served weights, growth) and job 1047's
