@@ -52,9 +52,12 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     ``line`` numbers the episode within the stream from 1, so the last of n reads as
     n — it is what a reader sees and what addresses the episode."""
     rewards, advantages = [], []
-    episode = vf.WireEpisode.model_validate(rec, extra="ignore")
-    input_tokens = episode.num_input_tokens
-    output_tokens = episode.num_output_tokens
+    input_tokens = rec.get("num_input_tokens")
+    output_tokens = rec.get("num_output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        episode = vf.WireEpisode.model_validate(rec, extra="ignore")
+        input_tokens = episode.num_input_tokens
+        output_tokens = episode.num_output_tokens
     turns = branches = 0
     stop_condition = None
     truncated = False
