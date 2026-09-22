@@ -26,7 +26,7 @@ uv run flow drain --root outputs/candidates
 The package exports exactly one `Flow[Config]` subclass in `__all__`. Its Pydantic config
 is addressed under `flow`, including overrides such as `--flow.samples 8`. An existing
 pipeline config can be loaded with `--flow @ pipeline.toml --flow.id PACKAGE`.
-See the [Verifiers examples](https://github.com/PrimeIntellect-ai/verifiers/tree/feat/flow-class-api/examples/flow)
+See the [Verifiers examples](https://github.com/PrimeIntellect-ai/verifiers/tree/feat/flow/examples/flow)
 for authoring, native agent calls, parallel recovery and artifact revisions.
 
 Repeat the launch command with the same run name to resume Git checkpoints and reuse
