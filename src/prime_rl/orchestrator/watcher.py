@@ -48,8 +48,10 @@ class WeightWatcher:
     async def sync_startup(self, step: int, timeout: float) -> None:
         """Apply the startup policy and notify the registered update hooks."""
         async with self.update_lock:
-            await self.receiver.sync_startup(step, timeout)
+            active_model = await self.receiver.sync_startup(step, timeout)
             self.ckpt_step = step
+            if active_model is not None:
+                self.policy.model_name = active_model
             self.policy.version = step
             await self._notify_update(step)
 
@@ -110,9 +112,11 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
-            await self.receiver.receive(next_step)
+            active_model = await self.receiver.receive(next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
+            if active_model is not None:
+                self.policy.model_name = active_model
             self.policy.version = next_step
             get_logger().debug(
                 f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"

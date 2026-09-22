@@ -160,10 +160,10 @@ class WeightReceiver(ABC):
         (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
 
     @abstractmethod
-    async def receive(self, step: int) -> None:
-        """Acknowledge the offered v{step} and move the engines onto it."""
+    async def receive(self, step: int) -> str | None:
+        """Move engines to v{step}; return a replacement request model when needed."""
 
-    async def sync_startup(self, step: int, timeout: float) -> None:
+    async def sync_startup(self, step: int, timeout: float) -> str | None:
         """Rendezvous with the trainer's startup broadcast of v{step}."""
         await asyncio.wait_for(self.wait_published(step), timeout=timeout)
-        await self.receive(step)
+        return await self.receive(step)
