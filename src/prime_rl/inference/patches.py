@@ -143,21 +143,13 @@ _DIAG_LOGGER_NAME = "vllm.prime_rl.diag"
 def monkey_patch_triton_moe_swiglu_clamp():
     """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
 
-    ``TritonExperts.apply`` fuses SiLU-and-mul with the per-block fp8 quantization of the
-    second expert GEMM's input through ``ops.silu_and_mul_per_block_quant`` whenever the
-    activation is SiLU, the weights are fp8 w8a8 with 128x128 blocks, no LoRA is active and
-    DeepGEMM E8M0 is off. That op has no clamp argument, so a model's ``swiglu_limit``
-    (DeepSeek V4 Flash: 10.0) is dropped on that path while every other path applies it,
-    and tokens whose gate or up pre-activation exceeds the limit get a wrong expert output.
-    With ``VLLM_USE_DEEP_GEMM_E8M0=0`` this is the path taken for every batch below 128
-    tokens, i.e. every decode step.
-
-    The fast-path condition's only reference to ``is_deep_gemm_e8m0_used`` is the
-    module-level name in ``triton_moe``, so while an ``apply`` call runs with a clamp
-    configured that name is bound to return True, which routes the call to the clamped
-    branch (``self.activation`` followed by ``moe_kernel_quantize_input``). Calls without a
-    clamp keep the fused fast path. Redundant once upstream gates the fast path on the
-    clamp itself.
+    That path fuses SiLU-and-mul into ``ops.silu_and_mul_per_block_quant``, which takes no clamp
+    argument, so a model's ``swiglu_limit`` (DeepSeek V4 Flash: 10.0) is dropped for every batch
+    below 128 tokens, i.e. every decode step. Binding ``triton_moe.is_deep_gemm_e8m0_used`` to
+    return True for the duration of a clamped ``apply`` call steers it to the clamped branch;
+    unclamped calls keep the fast path. Remove this once
+    https://github.com/vllm-project/vllm/pull/57984 (merged upstream, unreleased) is in the
+    pinned vLLM.
     """
     from vllm.logger import init_logger
     from vllm.model_executor.layers.fused_moe.experts import triton_moe
