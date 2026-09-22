@@ -7,8 +7,6 @@ the episode at so a reader can seek straight to one. A stream another producer w
 has no index, so its reader derives the same rows itself.
 """
 
-import verifiers.v1 as vf
-
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
     """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""
@@ -54,10 +52,6 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     rewards, advantages = [], []
     input_tokens = rec.get("num_input_tokens")
     output_tokens = rec.get("num_output_tokens")
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
-        episode = vf.WireEpisode.model_validate(rec, extra="ignore")
-        input_tokens = episode.num_input_tokens
-        output_tokens = episode.num_output_tokens
     turns = branches = 0
     stop_condition = None
     truncated = False
