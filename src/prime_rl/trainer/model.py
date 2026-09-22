@@ -298,7 +298,8 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    # DeepSeek V4 reads this off its own config; see `IndexCache` below for the pattern.
+    # DeepSeek V4 reads both of these off its own config; see `IndexCache` below for the pattern.
+    model_config.simulate_fp8_kv_cache = config.simulate_fp8_kv_cache
     if config.fp32_lm_head_logits == "auto":
         model_config.fp32_lm_head_logits = model_config.model_type == "deepseek_v4"
     else:
