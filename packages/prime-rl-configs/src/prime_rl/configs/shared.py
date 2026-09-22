@@ -171,7 +171,7 @@ class DynamoConfig(BaseConfig):
 
 
 class ClientConfig(BaseConfig):
-    wait_for_ready_timeout: int = 1800
+    wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
 
     base_url: str = "http://localhost:8000/v1"
