@@ -135,6 +135,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Unwei
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.matmul import matmul_to_float32
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -460,10 +461,20 @@ class DeepseekV4Compressor(nn.Module):
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         batch = hidden_states.shape[0]
+        compute_dtype = hidden_states.dtype
         layout = packed.compression_layouts[self.compress_rate]
 
+        # fp32 from the projections through the norm and the rotation, rounding once at the return,
+        # as vLLM's fused compressor does.
         width = self.n_series * self.head_dim
-        proj = torch.cat([self.kv_proj(hidden_states), self.gate_proj(hidden_states)], dim=-1)
+        flat_hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
+        proj = torch.cat(
+            [
+                matmul_to_float32(flat_hidden, self.kv_proj.weight.T),
+                matmul_to_float32(flat_hidden, self.gate_proj.weight.T),
+            ],
+            dim=-1,
+        ).view(*hidden_states.shape[:-1], -1)
         if cp_world_size > 1:
             proj = gather_for_cp(proj, cp_group)
         kv, gate = proj.split(width, dim=-1)
@@ -473,13 +484,13 @@ class DeepseekV4Compressor(nn.Module):
         if self.n_series == 2:
             kv, gate = self._overlap_with_previous_window(kv, gate, layout)
 
-        # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
-        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
+        weights = gate.softmax(dim=2, dtype=torch.float32)
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
         cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
-        return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+        rotated = apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+        return rotated.to(compute_dtype)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
