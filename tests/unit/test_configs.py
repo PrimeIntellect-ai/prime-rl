@@ -181,6 +181,23 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_custom_vlm_can_trust_checkpoint_vision_code():
+    config = TrainerModelConfig.model_validate(
+        {
+            "impl": "custom",
+            "trust_remote_code": True,
+            "vlm": {"vision_encoder_attr": "model.vision_model", "language_model_attr": "model.language_model"},
+        }
+    )
+
+    assert config.trust_remote_code is True
+
+
+def test_custom_text_model_cannot_trust_remote_code():
+    with pytest.raises(ValidationError, match="custom VLM"):
+        TrainerModelConfig.model_validate({"impl": "custom", "trust_remote_code": True})
+
+
 def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     default_config = TrainerConfig()
     assert default_config.loss.type == "ipo"
