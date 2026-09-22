@@ -94,8 +94,6 @@ def parse_dynamo_worker(
                 "routes": routes,
             }
         )
-        if worker.admin_contract == "collective_rpc" and worker.world_size != 1:
-            raise ValueError("Dynamo sidecar currently supports exactly one inference rank")
         try:
             admin_url = httpx.URL(worker.admin_base_url)
         except httpx.InvalidURL as error:
@@ -394,7 +392,14 @@ class DynamoAdminPlane(AdminPlane):
             )
             response.raise_for_status()
             payload = response.json()
-        if payload != {"results": [None]}:
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or len(payload) != 1
+            or not isinstance(results, list)
+            or len(results) != self._inference_world_size
+            or any(result is not None for result in results)
+        ):
             raise ValueError("Dynamo worker returned an invalid collective RPC response")
 
     async def _engine_post(
@@ -599,9 +604,10 @@ class DynamoAdminPlane(AdminPlane):
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
             if inference_world_size != self._inference_world_size:
-                if self._admin_contract == "collective_rpc":
-                    raise ValueError("Dynamo sidecar currently supports exactly one inference rank")
-                raise ValueError("Configured inference world size does not match Dynamo discovery")
+                raise ValueError(
+                    f"Configured inference world size {inference_world_size} does not match discovered world size "
+                    f"{self._inference_world_size}"
+                )
             self._nccl_initialization_state = "initializing"
             try:
                 await self.ensure_topology_current()
