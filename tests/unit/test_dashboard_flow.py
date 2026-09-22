@@ -1,29 +1,29 @@
-"""Real Git checkpoints and explicit execution events drive the read-only projection."""
+"""Published state and explicit execution events drive the read-only projection."""
 
 import json
-import subprocess
 
-from prime_rl.dashboard.flow import flow_etag, project_flow, unit_states
+from verifiers.v1.flow import UnitState
+
+from prime_rl.dashboard.flow import flow_etag, project_flow
 
 
-def commit(unit, state):
+def publish(unit, state):
     unit.mkdir(parents=True, exist_ok=True)
-    (unit / "state.json").write_text(json.dumps(state))
-    for args in (("init", "-q"), ("add", "state.json"), ("commit", "-qm", "state")):
-        subprocess.run(
-            ["git", "-C", str(unit), "-c", "user.name=test", "-c", "user.email=test@local", *args], check=True
-        )
+    checkpoint = UnitState(
+        data_type="verifiers.v1.flow:UnitData", stages=[state["stage"]], events="../../transitions.jsonl", **state
+    )
+    (unit / "state.json").write_text(checkpoint.model_dump_json())
 
 
 def root(tmp_path):
     (tmp_path / "flow.json").write_text("{}")
-    commit(tmp_path / "units/coordinator", {"stage": "plan", "status": "waiting", "data": {}})
-    commit(tmp_path / "units/t", {"stage": "evaluate", "status": "held", "data": {"tree": "artifact"}})
+    publish(tmp_path / "units/coordinator", {"stage": "plan", "status": "waiting", "data": {}})
+    publish(tmp_path / "units/t", {"stage": "evaluate", "status": "held", "data": {}})
     events = [
         {"type": "run_started"},
-        {"type": "steer", "sha": "initial", "action": {"note": "initial guidance"}},
+        {"type": "steer", "revision": 1, "action": {"note": "initial guidance"}},
         {"type": "started", "execution": "first", "error": None},
-        {"type": "steer", "sha": "hold", "action": {"status": "held", "note": "pause after review"}},
+        {"type": "steer", "revision": 2, "action": {"status": "held", "note": "pause after review"}},
         {"type": "call", "execution": "first", "call": "producer", "status": "started"},
         {"type": "call", "execution": "first", "call": "producer", "status": "succeeded", "trace_id": "trace"},
         {
@@ -37,7 +37,7 @@ def root(tmp_path):
             "report": "published.md",
             "links": [{"unit": "coordinator", "label": "updated"}],
         },
-        {"type": "steer", "sha": "control", "action": {"status": "ready", "note": "retry"}},
+        {"type": "steer", "revision": 4, "action": {"status": "ready", "note": "retry"}},
         {"type": "started", "execution": "second", "error": None},
         {
             "type": "call",
@@ -74,8 +74,6 @@ def root(tmp_path):
 
 def test_projection_uses_ids_preserves_provenance_and_shows_incomplete_work(tmp_path):
     run = root(tmp_path)
-    (run / "units/t/state.json").write_text("incomplete operator edit")
-    assert unit_states(run)["t"].status == "held"
     result = project_flow(run, {"trace": (0, "episode")})
     assert {u["name"] for u in result["units"]} == {"coordinator", "t"}
     assert result["status"] == "incomplete"
@@ -122,7 +120,7 @@ def test_fingerprint_tracks_workflow_and_calls(tmp_path):
     (run / "live").mkdir()
     (run / "live/t--call.json").write_text("{}")
     assert flow_etag(run) == changed
-    commit(run / "units/t", {"stage": "evaluate", "status": "ready", "data": {"tree": "artifact"}})
+    publish(run / "units/t", {"stage": "evaluate", "status": "ready", "data": {}})
     assert flow_etag(run) != changed
 
 

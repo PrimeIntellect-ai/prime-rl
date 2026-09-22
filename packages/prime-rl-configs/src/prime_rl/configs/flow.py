@@ -3,7 +3,7 @@
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, NonNegativeInt, SerializeAsAny, model_validator
 from verifiers.v1.configs.flow import FlowConfig as PipelineConfig
 from verifiers.v1.flow.events import Status
 from verifiers.v1.utils.loaders import flow_config_type, narrow_plugin_field
@@ -57,7 +57,7 @@ class SteerConfig(BaseConfig):
     note: str | None = None
     data: Path | None = None
     """JSON object of pipeline data fields to update while the unit is settled."""
-    expected: str | None = None
+    expected: NonNegativeInt | None = None
     """Inspected workflow revision; required for data updates."""
 
 

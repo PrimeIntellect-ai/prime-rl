@@ -29,10 +29,12 @@ pipeline config can be loaded with `--flow @ pipeline.toml --flow.id PACKAGE`.
 See the [Verifiers examples](https://github.com/PrimeIntellect-ai/verifiers/tree/feat/flow/examples/flow)
 for authoring, native agent calls, parallel recovery and artifact revisions.
 
-Repeat the launch command with the same run name to resume Git checkpoints and reuse
-successful keyed calls. `inspect` reports committed state and executing stages. `steer`
+Repeat the launch command with the same run name to resume saved workflow state and reuse
+successful keyed calls. `inspect` reports current state and executing stages. `steer`
 changes a unit's next stage/status or adds a note; it does not interrupt a model conversation.
-Data edits use `--data patch.json --expected SHA` while the unit is settled.
+Data edits use `--data patch.json --expected REVISION` while the unit is settled;
+`REVISION` is the integer at `state.revision` in the inspection. Each unit keeps one
+current `state.json`, replaced atomically under its write lock.
 
 Drain finishes running calls and stops new work. Remove the run's `drain` file before
 relaunching. Ctrl-C drains once; a second signal cancels. With `flow.stay_alive = true`,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import subprocess
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -23,9 +22,7 @@ TRANSITIONS = "transitions.jsonl"
 def flow_etag(run_dir: Path) -> str:
     paths = [run_dir / "transitions.jsonl", run_dir / "traces.jsonl", run_dir / "drain"]
     paths.extend((run_dir / "calls").glob("*/*.json"))
-    for unit in sorted((run_dir / "units").glob("*")):
-        paths.extend([unit / "state.json", unit / ".git/HEAD", unit / ".git/packed-refs"])
-        paths.extend((unit / ".git/refs/heads").rglob("*"))
+    paths.extend(run_dir.glob("units/*/state.json"))
     parts = [str(_running(run_dir))]
     for path in sorted(paths):
         try:
@@ -73,19 +70,11 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def unit_states(run_dir: Path) -> dict[str, UnitState[Any]]:
-    """Committed unit state, matching what the scheduler reads."""
-    states = {}
-    for unit in sorted((run_dir / "units").glob("*")):
-        if not (unit / ".git").exists():
-            continue
-        result = subprocess.run(
-            ["git", "-C", str(unit), "show", "HEAD:state.json"],
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            states[unit.name] = UnitState[Any].model_validate_json(result.stdout)
-    return states
+    """Published unit state, matching what the scheduler reads."""
+    return {
+        path.parent.name: UnitState[Any].model_validate_json(path.read_bytes())
+        for path in sorted(run_dir.glob("units/*/state.json"))
+    }
 
 
 def call_records(run_dir: Path) -> list[Record]:

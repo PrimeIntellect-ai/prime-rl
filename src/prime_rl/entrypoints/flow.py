@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 from verifiers.v1.flow import drain_on_interrupt
 from verifiers.v1.flow.flow import DRAIN_FILE, TRANSITIONS, UNITS, unit_path
-from verifiers.v1.flow.unit import Unit, UnitInspection
+from verifiers.v1.flow.unit import STATE, Unit, UnitInspection
 from verifiers.v1.utils.loaders import load_flow
 
 from prime_rl.configs.flow import DrainConfig, FlowConfig, InspectConfig, SteerConfig
@@ -59,7 +59,7 @@ def inspect(root: Path, name: str | None = None) -> Inspection:
     root = root.resolve()
     paths = [unit_path(root, name)] if name else sorted((root / UNITS).iterdir())
     return Inspection(
-        units=[Unit(path).inspect() for path in paths if (path / ".git").exists()],
+        units=[Unit(path).inspect() for path in paths if (path / STATE).is_file()],
         events=root / TRANSITIONS,
         traces=root / "traces.jsonl",
         calls=root / "calls",
