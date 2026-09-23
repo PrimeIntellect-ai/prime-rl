@@ -14,6 +14,8 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
+  - [IcePop Loss](#icepop-loss)
+  - [Score Centering Loss](#score-centering-loss)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -184,7 +186,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss), [Score Centering](#score-centering-loss), or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -244,6 +246,40 @@ ratio_high = 5.0
 | `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
+
+### Score Centering Loss
+
+Score centering ([arXiv:2609.20807](https://arxiv.org/abs/2609.20807)) replaces the importance-ratio correction with a **zero-expected-score baseline**, stabilizing RL under training-inference mismatch (quantization, staleness, weight noise). The baseline cancels the drift term that biases off-policy policy gradients, keeping the estimator unbiased:
+
+$$
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
+\hat{A}_t
+\left[
+\log \pi(y_t) - \sum_{k} \mathrm{sg}\!\left(q_k - \alpha\, p_k\right) \log \pi(z_k) - \alpha \, \mathrm{sg}\!\left(\textstyle\sum_v p_v \log p_v\right)
+\right].
+$$
+
+$\pi$ is the trainer policy; $q_k$ / $z_k$ are the **sampler's** top-k logprobs and token ids for that position (recorded at rollout time, sampled token first); $p_k$ / $\pi(z_k)$ are the trainer's own gather at those ids. The tail beyond the head is modeled as proportional to the trainer's distribution, rescaled to the sampler's tail mass ($\alpha = q_{\text{tail}}/p_{\text{tail}}$). Every correction over the modeled tail is constant, so the backward pass touches only the k head gathers — the full-vocab $\sum_v p_v \log p_v$ (minus the trainer's entropy) enters detached, and $\mathrm{sg}$ marks stop-gradients. When the tail model is exact, the top-k estimator *equals* full score centering; when trainer and sampler distributions coincide, it reduces to REINFORCE.
+
+Enable it explicitly:
+
+```toml
+[trainer.loss]
+type = "score_centering"
+topk = 128
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `topk` | 128 | Sampler head size k the `rl` entrypoint stamps onto train sampling configs that set no `logprobs`. The paper found k = 128 (and k = 32) matched full centering; the loss itself adapts to whatever head the rollouts carry. |
+
+Requirements, handled automatically by the `rl` entrypoint:
+
+- The inference server records the sampler's top-k head per generated token (`sampling.logprobs = k`, a request the orchestrator owns; k = 128 unless you set it explicitly). The trainer errors at runtime if rollouts lack the heads.
+- **Not with truncated sampling**: sampling replay owns truncation (it renormalizes the trainer distribution over the kept set), while score centering centers the full sampler distribution — the combination is rejected at config time. Score centering targets drift mismatch, not truncation.
+- Gemma models with the fused softcapped LM head are rejected (`model.fused_lm_head_token_chunk_size = "disabled"` works); every other model runs on both the fused and vanilla LM-head paths.
+
+Metrics: `rho` (the tail rescale factor — drift made visible), `head_mass` (sampler head probability mass), and the standard `unmasked_mismatch_kl`.
 
 ### Custom Loss
 

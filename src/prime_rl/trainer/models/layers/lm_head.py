@@ -164,9 +164,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         logz = torch.empty((n,), device=device, dtype=torch.float32)
         replay = torch.zeros((n,), device=device, dtype=torch.bool) if sampling_mask is not None else None
         topk_logprobs = (
-            torch.empty((n, topk_ids.shape[1]), device=device, dtype=torch.float32)
-            if topk_ids is not None
-            else None
+            torch.empty((n, topk_ids.shape[1]), device=device, dtype=torch.float32) if topk_ids is not None else None
         )
 
         for start in range(0, n, chunk_size):
@@ -316,9 +314,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None, None, None
-
-
-
 
 
 def inject_prime_lm_head(

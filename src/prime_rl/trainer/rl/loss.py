@@ -135,7 +135,9 @@ def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
     return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 
 
-def shift_tensor_right(t: Float[Tensor, "batch seq ..."], pad_value: float | None = None) -> Float[Tensor, "batch seq ..."]:
+def shift_tensor_right(
+    t: Float[Tensor, "batch seq ..."], pad_value: float | None = None
+) -> Float[Tensor, "batch seq ..."]:
     """Shifts the tensor one token to the right, prepending a padding value.
 
     Used to realign logprobs/entropy after computing with shifted labels.
@@ -307,9 +309,7 @@ class ScoreCenteringLoss:
             per_token_loss = per_token_loss * inputs.loss_weights
         loss = per_token_loss.sum()
 
-        _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            inputs.trainer_logprobs, inputs.inference_logprobs
-        )
+        _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(inputs.trainer_logprobs, inputs.inference_logprobs)
         metrics = {
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask),
             "head_mass": _safe_mean(q_head.sum(-1), inputs.loss_mask),
