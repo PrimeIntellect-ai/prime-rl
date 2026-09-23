@@ -648,10 +648,8 @@ def rl(config: RLConfig):
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
     # the vehicle for runtime info between processes, and every spawned process inherits
     # them. Components launched standalone have no run identity. TODO: fetch the id from
-    # the Prime SDK once runs are registered there. $VF_RUN_ID is the same id for
-    # verifiers.
+    # the Prime SDK once runs are registered there.
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    os.environ["VF_RUN_ID"] = os.environ["PRL_RUN_ID"]
     assert config.run.name is not None  # resolved at construction
     os.environ["PRL_RUN_NAME"] = config.run.name
 
