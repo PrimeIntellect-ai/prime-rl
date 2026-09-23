@@ -12,7 +12,7 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_referenc
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
@@ -1425,7 +1425,9 @@ def test_interleaved_rope_matches_vllm_bit_for_bit(vllm_dsv4_rope, compress_rati
 def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
     """The rotations vLLM's DeepSeek-V4 prefill fuses into other kernels agree with this one.
 
-    The kv rope is fused with the cache insert and stays bf16, so it compares directly. The indexer
+    The kv rope is fused with the cache insert and stays bf16, so it compares directly. The q rope is
+    fused after an fp32 RMSNorm and rounds to bf16 once, as the trainer's q path does; the norm's
+    reduction order differs, so a few elements per million land one ulp apart. The indexer
     q rope is fused with a per-head fp8 quantization after a bf16 round trip, and the attention
     output's inverse rope with a per-128-channel fp8 quantization straight from fp32; both are
     compared on the fp8 bytes after replaying the quantization on this kernel's output. The inverse
@@ -1446,11 +1448,15 @@ def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
     q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
     slot_mapping = torch.arange(n_tokens, device="cuda")
     eps = V4FLASH_MODEL["rms_norm_eps"]
+    normed_q = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
     torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
         q, kv, kv_cache, slot_mapping, positions, cos_sin, eps, block_size
     )
     rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos_sin, positions)
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
+    rotated_q = apply_interleaved_rope_(normed_q, cos_sin, positions).to(torch.bfloat16)
+    assert (rotated_q != q).float().mean() < 1e-5
+    _assert_relative(rotated_q, q, torch.finfo(torch.bfloat16).eps, "q")
 
     index_heads, index_head_dim = V4FLASH_MODEL["index_n_heads"], V4FLASH_MODEL["index_head_dim"]
     index_q = torch.randn(n_tokens, index_heads, index_head_dim, device="cuda", dtype=torch.bfloat16)

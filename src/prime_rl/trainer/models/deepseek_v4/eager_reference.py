@@ -115,7 +115,7 @@ def eager_attention_forward(
 
     q_residual = module.q_a_norm(module.q_a_proj(hidden_states))
     q = module.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)
-    q = apply_rotary_pos_emb_interleaved(module.q_b_norm(q), cos, sin)
+    q = apply_rotary_pos_emb_interleaved(module.q_b_norm(q), cos, sin).to(q.dtype)
 
     kv = module.kv_norm(module.kv_proj(hidden_states))
     kv = kv.view(*kv.shape[:2], 1, module.head_dim)

@@ -671,7 +671,7 @@ class DeepseekV4Attention(nn.Module):
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)
         self.q_a_norm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
-        self.q_b_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps)
+        self.q_b_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps, out_dtype=torch.float32)
         self.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.o_a_proj = DeepseekV4GroupedLinear(
@@ -725,8 +725,9 @@ class DeepseekV4Attention(nn.Module):
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
-        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape))  # (b, t, h, d)
-        q = apply_interleaved_rope_(q, cos_sin, packed.rope_rows)
+        q = self.q_b_proj(q_residual).view(*hidden_shape)  # (b, t, h, d)
+        # Normed and rotated in fp32 with a single rounding, as vLLM's fused q norm + RoPE does.
+        q = apply_interleaved_rope_(self.q_b_norm(q), cos_sin, packed.rope_rows).to(q.dtype)
 
         compressed = (
             self.compressor(
