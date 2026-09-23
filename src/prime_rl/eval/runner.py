@@ -114,7 +114,7 @@ class EvalRunner:
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=None,
+            tasks_per_minute=config.concurrency.tasks_per_minute,
             max_off_policy_steps=0,
             run_id=self.run_id,
             run_name=self.run_name,

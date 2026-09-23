@@ -5,7 +5,8 @@
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
-- Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
+- Optional admission rate limit via ``AsyncLimiter(tasks_per_minute, 60)``: one
+  acquire per episode, so the rate is episodes per minute.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
