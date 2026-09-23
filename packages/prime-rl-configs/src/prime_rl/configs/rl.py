@@ -29,6 +29,12 @@ from prime_rl.configs.shared import (
     VLMConfig,
 )
 from prime_rl.configs.trainer import (
+    DistributionalIPOLossConfig,
+    ScoreCenteringLossConfig,
+    TokenizerConfig,
+    TrainerConfig,
+)
+from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
@@ -36,11 +42,6 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    ScoreCenteringLossConfig,
-    TokenizerConfig,
-    TrainerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import (
@@ -644,14 +645,11 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_score_centering(self):
-        """Score centering needs the sampler's top-k head on every policy-sampled
-        rollout: stamp ``sampling.logprobs`` (the request-side knob the
-        orchestrator owns) where unset, and reject truncated train sampling —
-        sampling replay owns truncation and would renormalize the trainer
-        distribution the loss centers."""
-        if not isinstance(self.trainer.loss, ScoreCenteringLossConfig):
+    def auto_setup_candidate_logprobs(self):
+        """Request candidate probabilities for distribution losses using full-vocab normalization."""
+        if not isinstance(self.trainer.loss, (ScoreCenteringLossConfig, DistributionalIPOLossConfig)):
             return self
+        loss_type = self.trainer.loss.type
         k = self.trainer.loss.topk
         policy_samplings = [
             env.sampling
@@ -661,26 +659,21 @@ class RLConfig(BaseConfig):
         truncating = [s for s in policy_samplings if s.truncates_distribution()]
         if truncating:
             raise ValueError(
-                "score_centering does not compose with truncated train sampling (top_p < 1.0 or "
-                "top_k set): sampling replay renormalizes the trainer distribution over the "
-                "kept set, while score centering centers it against the full sampler "
-                "distribution. Keep the train sampling untruncated — score centering targets "
-                "drift mismatch (quantization, staleness, weight noise), and sampling replay "
-                "already handles truncation."
+                f"{loss_type} requires untruncated train sampling (top_p = 1.0, no top_k): "
+                "candidate logprobs must use full-vocabulary normalization."
             )
         for sampling in policy_samplings:
             if sampling.logprobs is None:
                 sampling.logprobs = k
             elif sampling.logprobs < k:
                 warnings.warn(
-                    f"score_centering with topk={k}, but train sampling records only "
+                    f"{loss_type} with topk={k}, but train sampling records only "
                     f"{sampling.logprobs} logprobs per token; using the smaller head.",
                     stacklevel=2,
                 )
         if not policy_samplings:
             warnings.warn(
-                "score_centering is on, but no train source samples from the policy — no "
-                "rollouts will carry top-k heads.",
+                f"{loss_type} is on, but no train source samples from the policy — no rollouts will carry top-k heads.",
                 stacklevel=2,
             )
         return self

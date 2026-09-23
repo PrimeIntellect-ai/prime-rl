@@ -597,6 +597,19 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
+class DistributionalIPOLossConfig(IPOLossConfig):
+    type: Literal["distributional_ipo"] = "distributional_ipo"
+
+    eps: float = Field(0.3, ge=0, le=1)
+    """Maximum total variation over the recorded candidates plus one tail bucket."""
+
+    topk: int = Field(128, ge=1)
+    """Number of sampler candidate logprobs requested per token; this does not truncate sampling."""
+
+    kl_tau: float = Field(0.0, ge=0)
+    """Weight on the sampler-weighted squared log ratio over candidates plus tail. Not an exact KL."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -617,7 +630,8 @@ class ScoreCenteringLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | ScoreCenteringLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | DistributionalIPOLossConfig | IcePopLossConfig | ScoreCenteringLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
