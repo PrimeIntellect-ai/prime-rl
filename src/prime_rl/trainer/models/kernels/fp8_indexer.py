@@ -169,7 +169,16 @@ def _triton_fp8_indexer_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
-def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
+@torch.library.custom_op("prime_rl::fp8_indexer", mutates_args=())
+def fp8_indexer(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    w: torch.Tensor,
+    ks: torch.Tensor,
+    ke: torch.Tensor,
+    topk: int,
+    weight_scale: float = 1.0,
+) -> torch.Tensor:
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
     Args:
@@ -240,3 +249,8 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     indices = indices.masked_fill(out_of_range, S_k)
 
     return indices.to(torch.int32)
+
+
+@fp8_indexer.register_fake
+def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0):
+    return q.new_empty((q.shape[0], topk), dtype=torch.int32)

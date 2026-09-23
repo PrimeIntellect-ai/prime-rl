@@ -1246,6 +1246,8 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
+        monkeypatch.setattr(dsv4_attention, "_start_cp_gather", lambda tensor, context: gather(tensor, context.cp_group))
+        monkeypatch.setattr(dsv4_attention, "_finish_cp_gather", lambda tensor: tensor)
         module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
 
         packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
