@@ -284,6 +284,8 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
+The trainer's last step and final checkpoint come after its last weight broadcast, so the orchestrator waits for the trainer to finish (it writes `<run_dir>/control/trainer_finished`) before finalizing the run, up to `orchestrator.trainer_finish_timeout` seconds (0 disables the wait).
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

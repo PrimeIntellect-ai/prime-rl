@@ -600,6 +600,9 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
+    trainer_finish_timeout: int = Field(1800, ge=0)
+    """After the last step, wait up to this many seconds for the trainer to finish its final optimizer step and checkpoint before finalizing the run. The trainer's last weight broadcast lands before those, and launchers that tear a run down once the orchestrator finalizes would otherwise kill the trainer mid-save. 0 skips the wait."""
+
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 

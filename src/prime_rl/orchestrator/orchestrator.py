@@ -78,7 +78,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, get_trainer_finished_path
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -429,6 +429,7 @@ class Orchestrator:
         try:
             await self.main_loop()
             await self.wait_for_final_broadcast()
+            await self.wait_for_trainer_finish()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -491,6 +492,25 @@ class Orchestrator:
         if self.config.max_steps is None:
             return
         await self.wait_for_version(self.config.max_steps, reason="before shutdown")
+
+    async def wait_for_trainer_finish(self) -> None:
+        """Stay alive until the trainer has taken its last step and saved its final
+        checkpoint. Its last broadcast lands before both, and a launcher that tears
+        the run down once the orchestrator finalizes would kill the trainer mid-save."""
+        timeout = self.config.trainer_finish_timeout
+        if self.config.max_steps is None or timeout == 0:
+            return
+        path = get_trainer_finished_path(self.config.output_dir)
+        get_logger().info(f"Waiting up to {timeout}s for the trainer's final step and checkpoint before shutdown")
+
+        async def wait() -> None:
+            while not path.exists():
+                await asyncio.sleep(1)
+
+        try:
+            await asyncio.wait_for(wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            get_logger().warning(f"Trainer did not finish within {timeout}s — proceeding anyway")
 
     async def main_loop(self) -> None:
         """Consume dispatcher results and route them to the train / eval sink.
