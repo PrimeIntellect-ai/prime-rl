@@ -496,7 +496,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
-        fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
+        vision_fsdp_config = {
+            **fsdp_config,
+            "reshard_after_forward": config.reshard_after_forward and not config.vlm.freeze_vision_encoder,
+        }
+        fully_shard(vision_encoder, mesh=hsdp_mesh, **vision_fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
