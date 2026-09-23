@@ -174,12 +174,13 @@ class EvalRunner:
         episodes of this epoch are cancelled so the caller can move on to it."""
         assert self.dispatcher is not None
         fired = await self.evaluator.trigger(step, force=force)
-        if not fired:
-            return []
+        # Landed episodes rejoin their epoch whether or not anything is still owed.
         if restored:
             get_logger().info(f"{len(restored)} restored episodes rejoin the epoch")
         for episode in restored:
             await self.evaluator.restore(episode)
+        if not fired:
+            return []
 
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None

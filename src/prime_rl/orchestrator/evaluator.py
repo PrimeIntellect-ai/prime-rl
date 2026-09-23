@@ -128,8 +128,11 @@ class Evaluator:
         if batch.cancelled:
             metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
             metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
-        # An epoch measures the policy version its step applied.
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
+        # The policy the epoch measured: the oldest version any of its rollouts started
+        # on. Episodes dispatched before the step's weights applied carry an older span.
+        versions = {span.start for episode in episodes if (span := eval_work(episode).policy) is not None}
+        versions.update(failure.policy_version for failure in batch.failures)
+        metrics[f"eval/{batch.env_name}/policy_version"] = float(min(versions, default=batch.step))
         metrics["step"] = float(batch.step)
         await self.monitors.log(metrics, step=batch.step)
 
