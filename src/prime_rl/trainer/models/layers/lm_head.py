@@ -274,9 +274,14 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             replay_chunk = replay[start:end] if replay is not None else None
             topk_chunk = topk_ids[start:end].to(torch.long) if topk_ids is not None else None
             # The logsumexp side of every head gather shares one softmax row.
-            grad_scale = -grad_chunk
+            # Padded ids hold a constant 0.0 head logprob, so their incoming
+            # gradients drop out entirely — mask before the sum and the scatter.
+            grad_topk_chunk = None
             if topk_chunk is not None and grad_topk_logprobs is not None:
-                grad_scale = grad_scale - grad_topk_logprobs[start:end].to(torch.float32).sum(-1)
+                grad_topk_chunk = grad_topk_logprobs[start:end].to(torch.float32) * (topk_chunk >= 0)
+            grad_scale = -grad_chunk
+            if grad_topk_chunk is not None:
+                grad_scale = grad_scale - grad_topk_chunk.sum(-1)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -300,11 +305,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
                 local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
                 grad_logits.scatter_add_(1, local_idx.unsqueeze(1), (grad_chunk * in_range).unsqueeze(1))
-                if topk_chunk is not None and grad_topk_logprobs is not None:
+                if grad_topk_chunk is not None:
                     topk_local, topk_in_range = _sampling_mask_local_indices(topk_chunk, vocab_start, vocab_end)
-                    grad_logits.scatter_add_(
-                        1, topk_local, grad_topk_logprobs[start:end].to(torch.float32) * topk_in_range
-                    )
+                    grad_logits.scatter_add_(1, topk_local, grad_topk_chunk * topk_in_range)
                 grad_logits = grad_logits * inv_t_chunk
 
                 if needs_hidden:

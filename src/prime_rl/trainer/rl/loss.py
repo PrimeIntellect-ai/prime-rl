@@ -284,7 +284,10 @@ class ScoreCenteringLoss:
         q_head = inputs.sampler_topk_logprobs.exp().masked_fill(~valid, 0.0)
         head_p = inputs.trainer_topk_logprobs
         p_head = head_p.exp().masked_fill(~valid, 0.0)
-        plogp = -inputs.entropy
+        # The tail's negative entropy enters as a constant (the paper stops its
+        # gradient); the real pipeline computes it under no_grad, and detaching
+        # keeps that invariant regardless of the caller.
+        plogp = -inputs.entropy.detach()
 
         # The modeled tail: q_tail = alpha * p_tail, alpha detached throughout —
         # its gradient contribution is identically zero (E_p[grad log p] = 0).
