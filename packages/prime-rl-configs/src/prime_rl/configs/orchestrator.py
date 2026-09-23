@@ -493,8 +493,8 @@ class ConcurrencyConfig(BaseConfig):
     max_inflight: int | None = Field(1024, ge=1)
     """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Rate limit on episode admission, in episodes per minute, shared by train and eval. Each admitted episode is one rollout, so for sandbox-backed environments this bounds the sandbox creation rate. None disables rate limiting; the in-flight cap still bounds the pool."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, in episodes per minute, shared by train and eval. Each dispatched episode is one rollout, so for sandbox-backed environments this bounds the sandbox creation rate. None disables rate limiting; the in-flight cap still bounds the pool."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
