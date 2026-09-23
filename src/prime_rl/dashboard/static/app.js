@@ -3211,7 +3211,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     semanticExpandedRuns.clear();
     clearSemanticTranscriptOrigin();
     $("#sg-inspector").hidden = true;
-    $("#tm-messages").innerHTML = `<div class="chart-empty">loading live trace…</div>`;
+    resetTranscript(`<div class="chart-empty">loading live trace…</div>`);
     $("#tm-timeline").innerHTML = "";
     $("#tm-meta").innerHTML = "";
   }
@@ -3428,7 +3428,7 @@ async function modalStep(delta) {
     currentLine = null;
     currentEpisode = null;
     renderRolloutList();
-    $("#tm-messages").innerHTML = emptyState("no episodes", "this step has no rollouts for the current filters");
+    resetTranscript(emptyState("no episodes", "this step has no rollouts for the current filters"));
     $("#tm-meta").innerHTML = "";
   }
 }
@@ -3476,6 +3476,15 @@ async function ensureTokens() {
   currentEpisode = episode;
 }
 
+/* Every path that replaces the transcript with a placeholder goes through here, so the
+   previous episode's error strip never outlives its episode. */
+function resetTranscript(html) {
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.hidden = true;
+  episodeErrors.innerHTML = "";
+  $("#tm-messages").innerHTML = html;
+}
+
 async function openEpisode(line, target = {}) {
   currentLive = null;
   $("#tm-live-label").textContent = "";
@@ -3488,7 +3497,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = null;
   renderModalStep();
   renderRolloutList();
-  $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  resetTranscript(`<div class="chart-empty">loading episode…</div>`);
   const timelineTarget = $("#tm-timeline");
   timelineTarget.classList.remove("semantic-canvas");
   delete timelineTarget.dataset.semanticEpisode;
@@ -6569,7 +6578,7 @@ async function reopenFirstEpisode() {
   currentLine = null;
   currentEpisode = null;
   renderRolloutList();
-  $("#tm-messages").innerHTML = emptyState("no episodes", "nothing here for the current filters");
+  resetTranscript(emptyState("no episodes", "nothing here for the current filters"));
   $("#tm-meta").innerHTML = "";
 }
 
