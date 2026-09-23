@@ -247,6 +247,7 @@ class _FusedMLARoPEInplace(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad: torch.Tensor):
         cos_sin, position_ids = ctx.saved_tensors
+        # Rotates `grad` in place: unsafe if autograd hands this same tensor to another consumer.
         grad = grad.contiguous()
         mla_rope_unapply_raw(grad, cos_sin, position_ids, ctx.inverse)
         return grad, None, None, None
