@@ -137,9 +137,15 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
-# Needed for private environments hub auth
+# Needed for private environments hub auth. prime pins `verifiers==0.2.0`,
+# which squashes the workspace verifiers this image was synced with (the
+# vendored 0.3.x with the v1 serve API) down to PyPI 0.2.0 — breaking every
+# env-server built on the image. Restore the workspace package right after.
+# Durable fix: prime#934 drops the CLI's verifiers dep; once it ships a
+# release without it, drop the reinstall line.
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
+    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7' \
+    && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/verifiers
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
