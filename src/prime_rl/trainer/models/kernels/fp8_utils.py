@@ -526,6 +526,68 @@ def grouped_per_block_cast_to_fp8_triton(
     return out, sf
 
 
+@triton.jit
+def _grouped_transpose_bytes_kernel(
+    x_ptr,
+    y_ptr,
+    rows,
+    cols,
+    stride_xg,
+    stride_xm,
+    stride_xn,
+    stride_yg,
+    stride_ym,
+    stride_yn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_g = tl.program_id(axis=0)
+    pid_m = tl.program_id(axis=1)
+    pid_n = tl.program_id(axis=2)
+    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
+    tile = tl.load(
+        x_ptr + pid_g * stride_xg + row_offsets[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
+        mask=mask,
+    )
+    tl.store(
+        y_ptr + pid_g * stride_yg + col_offsets[:, None] * stride_ym + row_offsets[None, :] * stride_yn,
+        tl.trans(tile),
+        mask=tl.trans(mask),
+    )
+
+
+def grouped_transpose_block_fp8_triton(x_fp8: torch.Tensor, sf: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Transpose a (G, M, N) 128x128 block-scaled FP8 tensor to (G, N, M), bytes and scales.
+
+    A block's amax is invariant under transposition, so the result is bitwise the block cast of the
+    transposed source.
+    """
+    assert x_fp8.dim() == 3 and x_fp8.dtype == torch.float8_e4m3fn
+    groups, rows, cols = x_fp8.shape
+    x_bytes = x_fp8.view(torch.uint8)
+    out = torch.empty((groups, cols, rows), device=x_fp8.device, dtype=torch.uint8)
+    block_m, block_n = 128, 128
+    grid = (groups, ceil_div(rows, block_m), ceil_div(cols, block_n))
+    _grouped_transpose_bytes_kernel[grid](
+        x_bytes,
+        out,
+        rows,
+        cols,
+        x_bytes.stride(0),
+        x_bytes.stride(1),
+        x_bytes.stride(2),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        num_warps=8,
+    )
+    return out.view(torch.float8_e4m3fn), sf.transpose(1, 2).contiguous()
+
+
 def per_block_cast_to_fp8_triton(
     x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
 ) -> Tuple[torch.Tensor, torch.Tensor]:
