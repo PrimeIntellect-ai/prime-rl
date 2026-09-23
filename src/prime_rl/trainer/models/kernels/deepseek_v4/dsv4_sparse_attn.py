@@ -48,11 +48,11 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
 
 
-def _tile_counts(indices: torch.Tensor, tile: int) -> torch.Tensor:
-    """Per query, how many leading tiles of `tile` slots reach its last valid slot."""
+def _tiles_to_read(indices: torch.Tensor, tile_size: int) -> torch.Tensor:
     batch, seq_len, kv_group, n_slots = indices.shape
-    tile_has_valid = (indices.view(batch, seq_len, kv_group, n_slots // tile, tile) >= 0).any(dim=-1)
-    tile_numbers = torch.arange(1, n_slots // tile + 1, device=indices.device, dtype=torch.int32)
+    n_tiles = n_slots // tile_size
+    tile_has_valid = (indices.view(batch, seq_len, kv_group, n_tiles, tile_size) >= 0).any(dim=-1)
+    tile_numbers = torch.arange(1, n_tiles + 1, device=indices.device, dtype=torch.int32)
     return (tile_has_valid * tile_numbers).amax(dim=-1).to(torch.int32)
 
 
@@ -129,7 +129,7 @@ def dsv4_sparse_attn(
         threads=threads,
     )
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, block_I)
-    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), _tile_counts(indices, block_I))
+    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), _tiles_to_read(indices, block_I))
     return out, lse
 
 
@@ -182,7 +182,7 @@ def dsv4_sparse_attn_backward(
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, BWD_SLOT_TILE)
-    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, _tile_counts(indices, BWD_SLOT_TILE), dkv)
+    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, _tiles_to_read(indices, BWD_SLOT_TILE), dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv, delta
