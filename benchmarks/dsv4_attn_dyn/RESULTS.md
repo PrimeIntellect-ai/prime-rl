@@ -92,3 +92,35 @@ compile-free steps in the last three quarters of the run.
 | CSA     | 65536   | 21.9            | 75.8            | 281                | 27.1              |
 | CSA     | 131072  | 42.8            | 151.5           | 596                | 53.8              |
 | Sliding | 131072  | 18.3            | 49.4            | 334                | 52.4              |
+
+## Phase 2
+
+Each candidate is re-run through `sweep.sh` on the same 40 packings per config (same seed) with a
+fresh tilelang cache. Kernel times are means over all 40 steps, so they compare like for like
+across candidates. The layer wall-time median is not directly comparable to the baseline's, since
+the baseline's median excludes its compiling steps, which are a different subset of packings.
+
+### Fix 4: tiled `Indices`, dynamic tile count (label `tiled`)
+
+The `tiled_{fwd,bwd}.py` layout moved into `dsv4_sparse_attn_{fwd,bwd}.py`: the op passes
+`Indices` as a view `(B, S, G, K / tile, tile)` and `topk` is no longer a compile key.
+
+| Layer   | Tokens  | Compiles (base -> fix) | Compile stall s (base -> fix) | Last compile step (base -> fix) |
+|---------|---------|------------------------|-------------------------------|---------------------------------|
+| HCA     | 65536   | 14 -> 4                | 70.7 -> 16.1                  | 12 -> 0                         |
+| HCA     | 131072  | 22 -> 4                | 112.7 -> 15.3                 | 23 -> 0                         |
+| HCA     | 262144  | 34 -> 4                | 179.7 -> 15.2                 | 35 -> 0                         |
+| CSA     | 131072  | 4 -> 4                 | 15.4 -> 15.5                  | 0 -> 0                          |
+
+| Layer   | Tokens  | Kernel fwd ms (base -> fix) | Kernel bwd ms (base -> fix) | Peak GiB (base -> fix) |
+|---------|---------|-----------------------------|-----------------------------|------------------------|
+| HCA     | 65536   | 15.1 -> 14.8                | 44.2 -> 44.3                | 26.8 -> 26.8           |
+| HCA     | 131072  | 37.2 -> 35.8                | 116.2 -> 115.9              | 53.4 -> 53.4           |
+| HCA     | 262144  | 88.8 -> 85.0                | 284.8 -> 284.4              | 107.2 -> 107.2         |
+| CSA     | 65536   | 21.9 -> 21.0                | 75.8 -> 75.8                | 27.1 -> 27.1           |
+| CSA     | 131072  | 42.8 -> 41.1                | 151.5 -> 151.8              | 53.8 -> 53.8           |
+| Sliding | 131072  | 18.3 -> 18.6                | 49.4 -> 49.4                | 52.4 -> 52.4           |
+
+Every layer now compiles its four kernels (fwd, bwd, `preprocess`, `postprocess`) once, on the
+first step, whatever the packing. Kernel time is unchanged in the backward and 2-4% lower in the
+forward. The 92 kernel and model tests pass unchanged.

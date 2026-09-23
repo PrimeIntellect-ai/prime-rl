@@ -195,7 +195,9 @@ def main() -> None:
         mean_kernel_ms=statistics.mean(row["kernel_fwd_ms"] + row["kernel_bwd_ms"] for row in steps),
         mean_kernel_fwd_ms=statistics.mean(row["kernel_fwd_ms"] for row in steps),
         mean_kernel_bwd_ms=statistics.mean(row["kernel_bwd_ms"] for row in steps),
-        median_steady_layer_s=statistics.median([row["layer_s"] for row in steady if not row["n_compiles"]] or [math.nan]),
+        median_steady_layer_s=statistics.median(
+            [row["layer_s"] for row in steady if not row["n_compiles"]] or [math.nan]
+        ),
         max_peak_gb=max(row["peak_gb"] for row in steps),
     )
     print("SUMMARY " + json.dumps(summary), flush=True)

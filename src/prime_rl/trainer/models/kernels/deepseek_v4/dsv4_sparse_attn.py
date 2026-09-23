@@ -30,6 +30,7 @@ LOG2E = 1.44269504
 # The forward tiles the gather-slot axis at `block_I = 64` and the backward at `block_size = 32`,
 # so the slot count must be a multiple of `lcm(64, 32) = 64`.
 SLOT_TILE = 64
+BWD_SLOT_TILE = 32
 
 
 def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
@@ -108,12 +109,10 @@ def dsv4_sparse_attn(
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
     indices = _pad_slots_to_tile(indices)
-    topk = indices.shape[-1]
 
     kernel = dsv4_sparse_attn_fwd(
         heads,
         dim,
-        topk,
         kv_group,
         sm_scale,
         True,
@@ -121,7 +120,8 @@ def dsv4_sparse_attn(
         num_stages=num_stages,
         threads=threads,
     )
-    out, lse = kernel(q, kv, indices, sinks.float().contiguous())
+    tiled_indices = indices.view(batch, seq_len, kv_group, -1, block_I)
+    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous())
     return out, lse
 
 
@@ -166,15 +166,15 @@ def dsv4_sparse_attn_backward(
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
     indices = _pad_slots_to_tile(indices)
-    topk = indices.shape[-1]
 
     preprocess_kernel = preprocess(heads, dim)
-    bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True)
+    bwd_kernel = bwd(heads, dim, kv_group, sm_scale, True, block_size=BWD_SLOT_TILE)
     postprocess_kernel = postprocess(dim, kv_group)
 
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
+    tiled_indices = indices.view(batch, seq_len, kv_group, -1, BWD_SLOT_TILE)
+    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv, delta

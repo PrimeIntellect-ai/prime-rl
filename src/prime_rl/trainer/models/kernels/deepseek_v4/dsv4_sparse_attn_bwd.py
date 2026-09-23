@@ -15,6 +15,9 @@ Beyond the forward's tensors:
     dQ[b, s, h, d]   (B, S, H, D)   bfloat16
     dKV[b, n, g, d]  (B, N, G, D)   float32 until `postprocess`
 
+`Indices` arrives tiled as in the forward, but at this kernel's own tile:
+`(B, S, G, K / block_size, block_size)`, with only the tile count symbolic.
+
 [What it computes]
 
 With `key[b,s,k,d] = KV[b, Indices[b,s,0,k], 0, d]` and `scale = D ** -0.5` as in the forward:
@@ -167,7 +170,6 @@ def postprocess(
 def bwd(
     H,
     D,
-    topk,
     kv_group=1,
     sm_scale=None,
     is_causal=True,
@@ -179,7 +181,6 @@ def bwd(
     accum_dtype=T.float32,
 ):
     assert is_causal is True, "non-casual is not supported now"
-    assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
     assert indices_dtype == T.int32
@@ -191,12 +192,13 @@ def bwd(
     B = T.dynamic("B")
     S = T.dynamic("S")
     S_kv = T.dynamic("S_kv")
+    n_tiles = T.dynamic("n_tiles")
 
     H_kv = H // kv_group
     q_shape = [B, S, H, D]
     k_shape = [B, S_kv, kv_group, D]
     o_shape = [B, S, H, D]
-    indices_shape = [B, S, kv_group, topk]
+    indices_shape = [B, S, kv_group, n_tiles, block_size]
     delta_shape = [B, S, H]
     lse_shape = [B, S, H]
 
@@ -206,7 +208,7 @@ def bwd(
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
-    NS = tilelang.cdiv(topk, block_size)
+    NS = n_tiles
 
     split_store = 2
     # The acc_dkv accumulator's per-thread layout (from the GEMMs that produce it) is only
@@ -262,13 +264,13 @@ def bwd(
 
             for i_i in T.Pipelined(NS, num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
-                    mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] >= 0
+                    mask[bi_i] = Indices[by, s_i, bz // NH, i_i, bi_i] >= 0
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
 
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, d_i]
+                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i, bi_i], bz // NH, d_i]
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
@@ -313,9 +315,9 @@ def bwd(
                     # dKV. Do not add a predicate back: reading the `mask` fragment here compiles
                     # cleanly but pins this loop to the four threads owning those elements.
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        slot_i = i_i * BS + bi_i + s * (BS // split_store)
+                        slot_i = bi_i + s * (BS // split_store)
                         T.atomic_addx4(
-                            dKV[by, Indices[by, s_i, bz // NH, slot_i], bz // NH, d_i * 4],
+                            dKV[by, Indices[by, s_i, bz // NH, i_i, slot_i], bz // NH, d_i * 4],
                             acc_dkv_shared[bi_i, d_i * 4],
                         )
 

@@ -50,8 +50,12 @@ a shrunken combination of the gathered keys. That is how a head attends to nothi
 
 [What the caller must guarantee]
 
-`K` is fixed when the kernel compiles and is part of its compilation key, so it is sized for the
-most keys any query could need and a given query will often have fewer.
+`K` is sized for the most keys any query could need, and a given query will often have fewer. It is
+a runtime size rather than part of the compilation key, so one compiled kernel serves every `K`.
+The kernel reads `Indices` split into tiles, as `(B, S, G, K / block_I, block_I)`, which the caller
+passes as a free view of the contiguous `(B, S, G, K)` tensor; `K` must therefore be a multiple of
+`block_I`. Only the tile count is symbolic. Declaring `K` itself symbolic instead makes TileLang
+bounds-check every slot read against it, which costs the backward about a quarter of its time.
 
 Every unused slot must hold a negative index, which is the masking condition:
 
@@ -122,7 +126,6 @@ LOG2E = 1.44269504
 def dsv4_sparse_attn_fwd(
     heads,
     dim,
-    topk,
     kv_group=1,
     sm_scale=None,
     is_causal=True,
@@ -132,7 +135,6 @@ def dsv4_sparse_attn_fwd(
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
     assert is_causal is True, "non-casual is not supported"
-    assert topk % block_I == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     if sm_scale is None:
         sm_scale = (1.0 / dim) ** 0.5
     # Both names are kept: the sink logit enters the softmax unscaled, so seeding the running max
@@ -142,12 +144,13 @@ def dsv4_sparse_attn_fwd(
     batch = T.dynamic("batch")
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
+    n_tiles = T.dynamic("n_tiles")
 
     head_kv = heads // kv_group
     q_shape = [batch, seq_len, heads, dim]
     kv_shape = [batch, seq_len_kv, kv_group, dim]
     o_shape = [batch, seq_len, heads, dim]
-    indices_shape = [batch, seq_len, kv_group, topk]
+    indices_shape = [batch, seq_len, kv_group, n_tiles, block_I]
     sinks_shape = [heads]
     lse_shape = [batch, seq_len, heads]
     indices_dtype = T.int32
@@ -163,7 +166,7 @@ def dsv4_sparse_attn_fwd(
             " automatically)"
         )
     BI = block_I
-    NI = tilelang.cdiv(topk, block_I)
+    NI = n_tiles
     D = dim
 
     if head_kv > 64:
@@ -233,10 +236,10 @@ def dsv4_sparse_attn_fwd(
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
                 for bi_i in T.Parallel(BI):
-                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] >= 0
+                    mask[bi_i] = Indices[b_i, s_i, g_i, i_i, bi_i] >= 0
 
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i, bi_i], g_i, d_i]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))

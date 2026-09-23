@@ -399,8 +399,6 @@ class SparseAttnInputs:
 
         # A surplus pick is `IGNORE_SLOT` (-1) and stays `IGNORE_SLOT`; a real one names an entry,
         # which sits past the token stream in `kv_buf`, hence the shift by `n_tokens`.
-        # NOTE: the attention kernel recompiles for every unique `indices.shape[-1]` value. If
-        # recompilation becomes a bottleneck, consider padding to fixed length with `IGNORE_SLOT` values.
         picks = torch.where(top_k_indices >= 0, top_k_indices + n_tokens, IGNORE_SLOT)
         indices = torch.cat([window, picks[:, :, None, :].to(torch.int32)], dim=-1)
         return cls(kv_buf=kv_buf, indices=indices)
