@@ -16,6 +16,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Hyper
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
+from prime_rl.trainer.models.kernels.deepseek_v4.q_norm_rope import q_norm_rope
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
@@ -1167,9 +1168,9 @@ def _cp_gathered_projections(
     """
     # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
-        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
-        .rope_cos_sin[module.rope_layer_type][None]
-        .chunk(2, dim=-1)
+        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
+            module.rope_layer_type
+        ]
         for cp_rank in range(cp_world_size)
     ]
 
@@ -1417,7 +1418,7 @@ def test_interleaved_rope_matches_vllm_bit_for_bit(vllm_dsv4_rope, compress_rati
     x = torch.randn(positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
 
     expected, _ = rotary_emb.forward_cuda(positions, x.clone(), None, inverse=inverse)
-    actual = apply_interleaved_rope_(x.clone(), rotary_emb.cos_sin_cache, positions, inverse=inverse)
+    actual = apply_interleaved_rope_(x.clone(), *rotary_emb.cos_sin_cache[positions].chunk(2, dim=-1), inverse=inverse)
 
     assert torch.equal(actual, expected)
 
@@ -1448,13 +1449,13 @@ def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
     q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
     slot_mapping = torch.arange(n_tokens, device="cuda")
     eps = V4FLASH_MODEL["rms_norm_eps"]
-    normed_q = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
+    q_input = q.clone()
     torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
         q, kv, kv_cache, slot_mapping, positions, cos_sin, eps, block_size
     )
-    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos_sin, positions)
+    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), *cos_sin[positions].chunk(2, dim=-1))
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
-    rotated_q = apply_interleaved_rope_(normed_q, cos_sin, positions).to(torch.bfloat16)
+    rotated_q = q_norm_rope(q_input, *cos_sin[positions].chunk(2, dim=-1), eps)
     assert (rotated_q != q).float().mean() < 1e-5
     _assert_relative(rotated_q, q, torch.finfo(torch.bfloat16).eps, "q")
 
@@ -1462,7 +1463,7 @@ def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
     index_q = torch.randn(n_tokens, index_heads, index_head_dim, device="cuda", dtype=torch.bfloat16)
     index_weights = torch.randn(n_tokens, index_heads, device="cuda", dtype=torch.bfloat16)
     index_q_fp8, _ = fused_indexer_q_rope_quant(positions, index_q.clone(), cos_sin, index_weights, 1.0, 1.0)
-    rotated_index_q = apply_interleaved_rope_(index_q.clone(), cos_sin, positions).float()
+    rotated_index_q = apply_interleaved_rope_(index_q.clone(), *cos_sin[positions].chunk(2, dim=-1)).float()
     amax = rotated_index_q.abs().amax(-1, keepdim=True).clamp_min(1e-4)
     scale = torch.exp2(torch.ceil(torch.log2(amax / fp8_max)))
     replayed_index_q_fp8 = (rotated_index_q / scale).to(torch.float8_e4m3fn)
@@ -1471,7 +1472,7 @@ def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
     o_groups, quant_group = V4FLASH_MODEL["o_groups"], 128
     attn_out = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
     o_fp8, _ = fused_inv_rope_fp8_quant(attn_out, positions, cos_sin, o_groups, heads // o_groups)
-    unrotated = apply_interleaved_rope_(attn_out.float(), cos_sin, positions, inverse=True)
+    unrotated = apply_interleaved_rope_(attn_out.float(), *cos_sin[positions].chunk(2, dim=-1), inverse=True)
     blocks = unrotated.view(n_tokens, heads, head_dim // quant_group, quant_group)
     block_scale = torch.exp2(
         torch.ceil(torch.log2(blocks.abs().amax(-1, keepdim=True).clamp_min(1e-10) * (1.0 / fp8_max)))
@@ -1520,7 +1521,9 @@ def test_interleaved_rope_matches_the_eager_rotation(dtype, inverse, layout):
     heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
     kernel_leaf, eager_leaf = _leaves(*[_rope_input(layout, positions.numel(), heads, head_dim, dtype)] * 2)
 
-    rotated = apply_interleaved_rope_(_as_rope_layout(kernel_leaf.clone(), layout), cos_sin, positions, inverse=inverse)
+    rotated = apply_interleaved_rope_(
+        _as_rope_layout(kernel_leaf.clone(), layout), *cos_sin[positions].chunk(2, dim=-1), inverse=inverse
+    )
     expected = _eager_interleaved_rope(_as_rope_layout(eager_leaf, layout), cos_sin, positions, inverse)
     weight = torch.randn_like(expected)
     (rotated.float() * weight).sum().backward()
@@ -1539,7 +1542,7 @@ def test_interleaved_rope_leaves_the_nope_channels_untouched(heads, head_dim):
     leaf = torch.randn(positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     nope = slice(0, head_dim - ROPE_DIM)
 
-    rotated = apply_interleaved_rope_(leaf.clone(), cos_sin, positions)
+    rotated = apply_interleaved_rope_(leaf.clone(), *cos_sin[positions].chunk(2, dim=-1))
     weight = torch.randn_like(rotated)
     (rotated * weight).sum().backward()
 
@@ -1562,7 +1565,7 @@ def test_interleaved_rope_traces_under_torch_compile():
     weight = torch.randn(1, positions.numel(), heads, head_dim, device="cuda")
 
     def rotate(x: torch.Tensor) -> torch.Tensor:
-        return apply_interleaved_rope_((2 * x).transpose(1, 2), cos_sin, positions)
+        return apply_interleaved_rope_((2 * x).transpose(1, 2), *cos_sin[positions].chunk(2, dim=-1))
 
     out = rotate(eager_leaf)
     (out * weight).sum().backward()
@@ -1571,3 +1574,34 @@ def test_interleaved_rope_traces_under_torch_compile():
 
     torch.testing.assert_close(compiled_out, out, rtol=0, atol=0)
     torch.testing.assert_close(compiled_leaf.grad, eager_leaf.grad, rtol=0, atol=0)
+
+
+def test_q_norm_rope_matches_the_composed_norm_and_rotation():
+    """Bit for bit with an fp32 RMSNorm, the in-place rotation and one bf16 cast, eager and compiled.
+
+    Gradients agree to bf16 precision rather than bit for bit: the composed backward carries an
+    fp32 gradient through the rotation, where `q_norm_rope` keeps it in bf16.
+    """
+    positions = _rope_positions()
+    cos, sin = _rope_table(int(positions.max()) + 1)[positions].chunk(2, dim=-1)
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    eps = V4FLASH_MODEL["rms_norm_eps"]
+    leaf = torch.randn(1, positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    fused_leaf, compiled_leaf, composed_leaf = _leaves(leaf, leaf, leaf)
+    weight = torch.randn_like(leaf, dtype=torch.float32)
+
+    def composed(q: torch.Tensor) -> torch.Tensor:
+        normed = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
+        return apply_interleaved_rope_(normed, cos, sin).to(q.dtype)
+
+    fused = q_norm_rope(fused_leaf * 1, cos, sin, eps)
+    compiled = torch.compile(lambda q: q_norm_rope(q * 1, cos, sin, eps), fullgraph=True)(compiled_leaf)
+    expected = composed(composed_leaf * 1)
+    for out in (fused, compiled, expected):
+        (out.float() * weight).sum().backward()
+
+    assert fused.dtype == torch.bfloat16
+    assert torch.equal(fused, expected)
+    assert torch.equal(compiled, fused)
+    assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
+    _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")

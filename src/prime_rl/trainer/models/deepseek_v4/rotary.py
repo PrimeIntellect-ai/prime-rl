@@ -59,8 +59,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
     `<type>_attention_scaling` scalar.
 
     Because the rotation is interleaved, `forward` returns `cos` / `sin` at half the
-    rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them, and
-    `cos_sin` concatenates them into the table the fused in-place kernel reads.
+    rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them.
 
     `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
     `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
@@ -147,11 +146,6 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             sin = freqs.sin() * attention_scaling
 
         return cos.to(dtype=dtype), sin.to(dtype=dtype)
-
-    def cos_sin(self, position_ids: torch.Tensor, layer_type: str) -> torch.Tensor:
-        """The fp32 `(n, rope_dim)` rows `cat(cos, sin)` at `position_ids` `(n,)`, the fused kernel's table layout."""
-        cos, sin = self(position_ids[None], layer_type, dtype=torch.float32)
-        return torch.cat([cos[0], sin[0]], dim=-1)
 
 
 __all__ = [

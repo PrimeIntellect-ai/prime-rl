@@ -51,8 +51,7 @@ layers), built from one `seq_lens` and carrying:
 
   - `position_ids`: each token's position within its own document.
   - `tok_doc_idx`: which document each token belongs to.
-  - `rope_cos_sin`: the RoPE tables, one per rope type, evaluated at `position_ids`.
-  - `rope_rows`: each query's row in those tables.
+  - `position_embeddings`: the RoPE tables, one per rope type, evaluated at `position_ids`.
   - `window_indices`: for each query, the indices of the tokens its local window covers, causal
     and clipped at document boundaries, with `IGNORE_SLOT` (-1) marking invalid/masked entries.
   - `compression_layouts`: one `CompressionLayout` per compress rate in the architecture.
@@ -98,7 +97,7 @@ holds it once and shares it across rates.
 Compression is only part of the story: every attention layer also reads a local sliding window of
 the most recent tokens directly, and the compressed entries are how it reaches anything older.
 That window is enumerated per document by `window_indices`, and every rotation in the block needs
-`position_ids` together with the RoPE tables evaluated at them, `rope_cos_sin`. None of
+`position_ids` together with the RoPE tables evaluated at them, `position_embeddings`. None of
 those belongs to any single compress rate.
 
 `PackedContext.build` takes `seq_lens` and derives every one of its fields from it. Nothing else is
@@ -137,6 +136,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Unwei
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
+from prime_rl.trainer.models.kernels.deepseek_v4.q_norm_rope import q_norm_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -253,8 +253,7 @@ class PackedContext:
 
     position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
     tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
-    rope_cos_sin: dict[str, Tensor]  # (n_queries, qk_rope_head_dim) fp32 cat(cos, sin) per rope type, at `position_ids`
-    rope_rows: Tensor  # (n_queries,) int64 - each query's row in `rope_cos_sin`
+    position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type, at `position_ids`
     window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
@@ -272,8 +271,9 @@ class PackedContext:
 
         `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
         sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. The sequence is as long as
-        `seq_lens` says, padding included: both packers fold their padding into the last document.
+        alongside it keeps them from naming different architectures. The RoPE tables are fp32, as
+        vLLM's are. The sequence is as long as `seq_lens` says, padding included: both packers fold
+        their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -302,8 +302,8 @@ class PackedContext:
         # Document-local by construction: a token's position is its distance from its own
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
-        rope_cos_sin = {
-            rope_type: rotary_emb.cos_sin(position_ids[0], rope_type) for rope_type in rotary_emb.layer_types
+        position_embeddings = {
+            rope_type: rotary_emb(position_ids, rope_type, dtype=torch.float32) for rope_type in rotary_emb.layer_types
         }
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
@@ -315,8 +315,7 @@ class PackedContext:
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
-            rope_cos_sin=rope_cos_sin,
-            rope_rows=torch.arange(n_queries, device=device),
+            position_embeddings=position_embeddings,
             compression_layouts={
                 rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
             },
@@ -489,9 +488,8 @@ class DeepseekV4Compressor(nn.Module):
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
-        cos_sin = self.rotary_emb.cos_sin(entry_first_tok_pos, self.rope_layer_type)
-        entry_rows = torch.arange(entry_first_tok_pos.shape[0], device=entry_first_tok_pos.device)
-        return apply_interleaved_rope_(compressed.unsqueeze(2), cos_sin, entry_rows).squeeze(2)
+        cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0), self.rope_layer_type, dtype=torch.float32)
+        return apply_interleaved_rope_(compressed.unsqueeze(2), cos, sin).squeeze(2)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
@@ -540,8 +538,9 @@ class DeepseekV4Indexer(nn.Module):
         compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
         n_entries = compressed_kv.shape[1]
 
+        cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
-        q = apply_interleaved_rope_(q, packed.rope_cos_sin[self.compressor.rope_layer_type], packed.rope_rows)
+        q = apply_interleaved_rope_(q, cos, sin)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -710,11 +709,11 @@ class DeepseekV4Attention(nn.Module):
 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, h, d), the query view
-        cos_sin = packed.rope_cos_sin[self.rope_layer_type]  # (t, qk_rope_head_dim)
+        cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
-        kv = apply_interleaved_rope_(kv, cos_sin, packed.rope_rows)
+        kv = apply_interleaved_rope_(kv, cos, sin)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -725,9 +724,7 @@ class DeepseekV4Attention(nn.Module):
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
-        q = self.q_b_proj(q_residual).view(*hidden_shape)  # (b, t, h, d)
-        # Normed and rotated in fp32 with a single rounding, as vLLM's fused q norm + RoPE does.
-        q = apply_interleaved_rope_(self.q_b_norm(q), cos_sin, packed.rope_rows).to(q.dtype)
+        q = q_norm_rope(self.q_b_proj(q_residual).view(*hidden_shape), cos, sin, self.q_b_norm.eps)  # (b, t, h, d)
 
         compressed = (
             self.compressor(
@@ -760,7 +757,7 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_interleaved_rope_(attn_output.clone(), cos_sin, packed.rope_rows, inverse=True)
+        attn_output = apply_interleaved_rope_(attn_output.clone(), cos, sin, inverse=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
