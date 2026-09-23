@@ -1,0 +1,58 @@
+# End-to-end SFT benchmark for DeepSeek V4 Flash on 8 nodes with real variable-length scaleswe data
+# (packed per row) and balanced routing. Same harness as sft.toml, bf16. Needs HF_TOKEN (private dataset)
+# and #3544's tool-call fix (c7ba105d5): without it, rendering the flat tool calls in this dataset fails.
+#
+#   uv run sft @ benchmarks/fp8_grouped_gemm/sft_scaleswe.toml --run.name <name>
+
+max_steps = 20
+dist_timeout_seconds = 14400
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "deepseek-v4-flash"
+group = "ds-v4-attn-dynamism-realdata"
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+impl = "custom"
+ep = 8
+cp = 8
+optim_cpu_offload = false
+ac_offloading = "None"
+
+[model.debug]
+force_balanced_routing = true
+
+# DeepEP dies in the activation-checkpoint recompute at full depth.
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+mode = "selective"
+freq = 1
+targets = [
+  "prime_rl::dsv4_sparse_attn",
+  "prime_rl_collectives::all_to_all_single_equal",
+  "aten::sort.stable",
+]
+
+[renderer]
+name = "deepseek-v4"
+enable_thinking = true
+
+[data]
+name = "PrimeIntellect/SyntheticData-GLM5.2-scaleswe-reward0-rlm-filtered"
+splits = ["train"]
+seq_len = 262144
+batch_size = 8
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+
+[slurm]
+job_name = "dsv4-sft-bench-scaleswe"
+partition = "all"
