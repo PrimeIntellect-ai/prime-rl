@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from prime_rl.transports.batch import TrainingSample
 
@@ -12,15 +12,6 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
-
-
-@dataclass
-class Policy:
-    """Mutable shared view of the policy. Passed by reference so observers
-    see new versions immediately."""
-
-    version: int = 0
-    model_name: str = ""
 
 
 @dataclass
@@ -130,6 +121,34 @@ class GroupState:
 
 
 @dataclass
+class FinalizedGroup:
+    """One train group the sink has finished with: its returned episodes, the
+    trainer payload compiled from the traces that may train (empty when the
+    group trains nothing), and the attempts that never returned an episode."""
+
+    env_name: str
+    episodes: list[vf.Episode]
+    samples: dict[str, list[TrainingSample]]
+    """Compiled payload by trace id; only traces that survived scoring and admission."""
+    survivors: list[vf.Trace]
+    """Traces the algorithm let through, before compilation dropped any."""
+    failures: list[DispatchFailure]
+    cancellation: GroupCancellation | None
+    admitted: bool
+    """Whether the curriculum admitted the group; a stale drop is never admitted."""
+
+    @property
+    def stale(self) -> bool:
+        return self.cancellation is not None and self.cancellation.reason == "stale"
+
+    @property
+    def owed(self) -> int:
+        """The group's full episode budget: arrived, failed and cancelled."""
+        cancelled = self.cancellation.count if self.cancellation is not None else 0
+        return len(self.episodes) + len(self.failures) + cancelled
+
+
+@dataclass
 class TrainBatch:
     """Returned episodes, dispatch failures, shipped cohort, and trainer payload."""
 
@@ -143,6 +162,8 @@ class TrainBatch:
     cancelled_attempts: int = 0
     # Stale attempts are a subset of cancelled_attempts.
     stale_attempts: int = 0
+    # Queued traces the staleness sweep voided since the last cut.
+    stale_drops: int = 0
 
 
 @dataclass
@@ -158,15 +179,3 @@ class EvalBatch:
     episodes: EvalEpisodes
     failures: list[DispatchFailure]
     cancelled: int = 0
-
-
-class VersionObserver(Protocol):
-    """Notified around each policy update; walked by the watcher.
-
-    ``on_version_pending`` fires *before* the inference engines are paused for
-    the weight update; ``on_new_version`` fires *after* the new weights are live
-    and ``Policy`` has been mutated."""
-
-    async def on_version_pending(self, step: int) -> None: ...
-
-    async def on_new_version(self, step: int) -> None: ...

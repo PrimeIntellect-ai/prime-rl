@@ -10,12 +10,11 @@ from statistics import mean, median
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
-from prime_rl import monitors
+from prime_rl import monitors as default_monitors
+from prime_rl.configs.orchestrator import InferenceMetricsConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
-POLL_INTERVAL = 5.0
-FETCH_TIMEOUT = 5.0
 METRIC_PREFIX = "vllm:"
 CACHE_CONFIG_FAMILY = "vllm:cache_config_info"
 PD_ROLES = {"prefill", "decode"}
@@ -274,24 +273,25 @@ class InferenceMetricsCollector:
     names.
     """
 
-    def __init__(
-        self,
-        admin_clients: list[AsyncClient],
-        roles: list[str | None] | None = None,
-        on_load: Callable[[list[EngineLoadSample]], None] | None = None,
-        log_metrics: bool = True,
-    ):
-        self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
+    def __init__(self, config: InferenceMetricsConfig, admin_clients: list[AsyncClient]):
+        self.config = config
+        self.endpoints = build_metrics_endpoints(admin_clients, roles=config.roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.max_model_len_by_endpoint: dict[str, int] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
-        self.on_load = on_load
-        self.log_metrics = log_metrics
+        self._on_load: Callable[[list[EngineLoadSample]], None] | None = None
+        self.monitors = default_monitors
         get_logger().info(
             "Collecting inference metrics from "
             + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
         )
+
+    def bind(self, *, on_load: Callable[[list[EngineLoadSample]], None] | None = None, monitors=None) -> None:
+        if on_load is not None:
+            self._on_load = on_load
+        if monitors is not None:
+            self.monitors = monitors
 
     async def start(self):
         async def poll_loop():
@@ -300,7 +300,7 @@ class InferenceMetricsCollector:
                     await self.collect_and_log()
                 except Exception as e:
                     get_logger().warning(f"Inference metrics poll failed: {e!r}")
-                await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(self.config.poll_interval)
 
         self.task = asyncio.create_task(poll_loop())
 
@@ -325,7 +325,7 @@ class InferenceMetricsCollector:
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
-                response = await endpoint.client.get("/metrics", timeout=FETCH_TIMEOUT)
+                response = await endpoint.client.get("/metrics", timeout=self.config.fetch_timeout)
                 response.raise_for_status()
                 return response.text
             except Exception as e:
@@ -343,19 +343,19 @@ class InferenceMetricsCollector:
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
-        metrics = self.build_metrics(samples) if self.log_metrics else {}
+        metrics = self.build_metrics(samples) if self.config.log else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
             self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
 
-        if self.on_load is not None:
-            self.on_load(load_samples)
+        if self._on_load is not None:
+            self._on_load(load_samples)
 
         if metrics:
             # Time-keyed rows (step=None): inference metrics are sampled on wall
             # time, not the training step. Fans out to every registered monitor;
             # each monitor stamps its own timestamp.
-            await monitors.log(metrics, step=None)
+            await self.monitors.log(metrics, step=None)
 
     async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:
         """Cache the engine's max context length from ``/v1/models`` (set
@@ -364,7 +364,7 @@ class InferenceMetricsCollector:
         if endpoint.key in self.max_model_len_by_endpoint:
             return
         try:
-            response = await endpoint.client.get("/v1/models", timeout=FETCH_TIMEOUT)
+            response = await endpoint.client.get("/v1/models", timeout=self.config.fetch_timeout)
             response.raise_for_status()
             lengths = [card.get("max_model_len") for card in response.json().get("data", [])]
             lengths = [length for length in lengths if length]

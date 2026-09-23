@@ -4,7 +4,13 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
-from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
+from prime_rl.configs.orchestrator import (
+    ConcurrencyConfig,
+    DispatcherConfig,
+    EvalSourcesConfig,
+    InferenceMetricsConfig,
+    ScheduledEvalConfig,
+)
 from prime_rl.configs.shared import ClientConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import default_output_dir
@@ -21,10 +27,11 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on episode dispatch, in tasks per minute. Use it for
-    sandbox-backed environments to pace provisioning during autoscaling. None disables
-    rate limiting."""
+    dispatcher: DispatcherConfig = DispatcherConfig()
+    """Episode admission: rate limit and burst smoothing (``[dispatcher]``)."""
+
+    inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
+    """The ``/metrics`` poll of the inference engines (``[inference_metrics]``)."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:

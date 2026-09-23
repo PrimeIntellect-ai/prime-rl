@@ -7,13 +7,12 @@ import contextlib
 import os
 import tempfile
 import time
-from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
-from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
@@ -27,7 +26,7 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def save(self, step: int, progress: Progress, train_source: dict[str, Any]) -> None:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -36,7 +35,7 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                torch.save({"progress": progress, "train_source": train_source}, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
@@ -46,29 +45,23 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
-        """``path`` overrides where the checkpoint is read from (an external run's
+    def load(self, step: int, path: Path | None = None) -> tuple[Progress, dict[str, Any]] | None:
+        """The saved progress and train-source state, or None when the config skips
+        them. ``path`` overrides where the checkpoint is read from (an external run's
         ``step_<N>/orchestrator``)."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
-        get_logger().debug(f"Loading checkpoint from {state_file}")
-        start = time.perf_counter()
         if self.config.skip_progress:
             get_logger().info("Skipping progress and train source loading from checkpoint")
-        else:
-            with open(state_file, "rb") as f:
-                state = torch.load(f, weights_only=False)
-            saved: Progress = state["progress"]
-            for key, value in asdict(saved).items():
-                if hasattr(progress, key):
-                    setattr(progress, key, value)
-            train_source.load_state_dict(state["train_source"])
-            for name in state["train_source"]["envs"]:
-                if name in train_source.curricula:
-                    get_logger().info(f"Resumed curriculum state for env {name}")
+            return None
+        get_logger().debug(f"Loading checkpoint from {state_file}")
+        start = time.perf_counter()
+        with open(state_file, "rb") as f:
+            state = torch.load(f, weights_only=False)
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
+        return state["progress"], state["train_source"]
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:

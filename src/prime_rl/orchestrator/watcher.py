@@ -1,138 +1,153 @@
-"""WeightWatcher: discovers new policy versions via the transport's receiver,
-advances ``Policy``, and notifies observers (dispatcher → staleness cancel).
-Standalone async task; the orchestrator's barrier bounds the in-flight lead."""
+"""WeightWatcher: discovers new policy versions through the weight transport's
+receiver, applies them to inference, and owns the policy version every other
+component reads. Hooks fire around each update: ``on_version_pending`` before the
+engines pause for the weight swap, ``on_new_version`` once the new weights are live."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 
-from prime_rl.orchestrator.types import Policy, VersionObserver
+from prime_rl.configs.orchestrator import WatcherConfig
 from prime_rl.transports.weights import WeightReceiver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import format_time, get_logger
 
+VersionHook = Callable[[int], Awaitable[None]]
+
 
 class WeightWatcher:
-    """``await watcher.start()`` to drive the polling loop until ``stop()``."""
+    """``await watcher.start()`` drives the polling loop until ``stop()``;
+    ``apply(step)`` moves inference onto one version on demand."""
 
-    def __init__(
-        self,
-        receiver: WeightReceiver,
-        *,
-        policy: Policy,
-        observers: list[VersionObserver],
-        ckpt_step: int = 0,
-        poll_interval: float = 1.0,
-    ) -> None:
+    def __init__(self, config: WatcherConfig, receiver: WeightReceiver) -> None:
+        self.config = config
         self.receiver = receiver
-        self.policy = policy
-        self.observers = observers
-        self.ckpt_step = ckpt_step
-        self.poll_interval = poll_interval
+        self._version = 0
+        # The newest version the receiver has published; ``version`` trails it until
+        # inference has applied the weights.
+        self.published = 0
+        self.advanced = asyncio.Event()
 
-        self.last_update_weights_time: float = 0.0
-        self.last_wait_for_ckpt_time: float = 0.0
-        self.update_count: int = 0
+        self.last_update_weights_time = 0.0
+        self.last_wait_for_ckpt_time = 0.0
+        self.update_count = 0
 
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
         self.stopped = asyncio.Event()
-        self.update_hooks: list[Callable[[int], Awaitable[None]]] = []
+        self._on_version_pending: list[VersionHook] = []
+        self._on_new_version: list[VersionHook] = []
 
-    def on_update(self, hook: Callable[[int], Awaitable[None]]) -> None:
-        """Register an async hook that runs after inference applies new weights."""
-        self.update_hooks.append(hook)
+    def bind(
+        self, *, on_version_pending: Iterable[VersionHook] = (), on_new_version: Iterable[VersionHook] = ()
+    ) -> None:
+        self._on_version_pending = list(on_version_pending)
+        self._on_new_version = list(on_new_version)
+
+    @property
+    def version(self) -> int:
+        """The policy version inference currently serves."""
+        return self._version
 
     async def sync_startup(self, step: int, timeout: float) -> None:
-        """Apply the startup policy and notify the registered update hooks."""
+        """Rendezvous with the trainer's startup broadcast and adopt its version."""
         async with self.update_lock:
             await self.receiver.sync_startup(step, timeout)
-            self.ckpt_step = step
-            self.policy.version = step
-            await self._notify_update(step)
+            self.published = step
+            await self._advance(step)
 
     async def start(self) -> None:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                next_step = self.receiver.next_version(self.ckpt_step)
-                if next_step > self.ckpt_step:
-                    await self.apply_policy_update(next_step)
-                await asyncio.sleep(self.poll_interval)
+                next_step = self.receiver.next_version(self.published)
+                if next_step > self.published:
+                    await self.apply(next_step)
+                await asyncio.sleep(self.config.poll_interval)
         except asyncio.CancelledError:
             return
 
     async def stop(self) -> None:
         self.stopped.set()
-        # Let an in-flight apply finish before dying: the trainer blocks inside
-        # its in-memory broadcast until the apply completes, so cancelling
-        # mid-apply would strand it. The orchestrator's global teardown budget
-        # bounds this wait.
+        # Let an in-flight apply finish before dying: the trainer blocks inside its
+        # in-memory broadcast until the apply completes, so cancelling mid-apply would
+        # strand it. The orchestrator's teardown budget bounds this wait.
         async with self.update_lock:
             pass
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
 
-    async def apply_policy_update(self, next_step: int) -> None:
+    async def apply(self, step: int) -> None:
+        """Move inference onto policy ``step``: drain stale work, swap weights, notify."""
         async with self.update_lock:
-            if next_step <= self.ckpt_step:
-                # Another caller raced us — bail without re-applying
-                return
+            if step <= self.published:
+                return  # another caller raced us
 
             t0 = time.perf_counter()
-            await self.receiver.wait_published(next_step, cancelled=self.stopped.is_set)
+            await self.receiver.wait_published(step, cancelled=self.stopped.is_set)
             self.last_wait_for_ckpt_time = time.perf_counter() - t0
+            self.published = step
 
-            # Record the published version before notifying pending observers.
-            # ``policy.version`` advances only after inference applies it.
-            self.ckpt_step = next_step
-
-            # Drain stale rollouts BEFORE pausing the inference engines.
-            # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
-            # ``_reqs_not_processed``), which is only propagated to the workers
-            # while the engine is stepping. If we drain after resume instead,
-            # the aborts race with the flush of KV transfers that completed
-            # during the pause and trip ``assert req_id in self.requests`` in
-            # the decode scheduler's ``_update_from_kv_xfer_finished`` — killing
-            # the engine and cascading to every DP rank. Draining first lets the
-            # aborts settle under normal stepping. ``on_new_version`` (below)
-            # still runs post-update for observers that need the live version.
-            for observer in self.observers:
+            # Stale rollouts drain BEFORE the engines pause. Aborting a rollout triggers
+            # vLLM's KV-connector cleanup, which only propagates to the workers while the
+            # engine is stepping; aborts after resume race the flush of KV transfers that
+            # completed during the pause and crash the decode scheduler.
+            for hook in self._on_version_pending:
                 try:
-                    await observer.on_version_pending(next_step)
+                    await hook(step)
                 except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
-                    )
+                    get_logger().warning(f"on_version_pending({step}) hook raised: {exc!r}")
 
-            get_logger().debug(f"Updating inference weights to policy v{next_step}")
+            get_logger().debug(f"Updating inference weights to policy v{step}")
             t1 = time.perf_counter()
-            await self.receiver.receive(next_step)
+            await self.receiver.receive(step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            self.policy.version = next_step
             get_logger().debug(
-                f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
+                f"Updated inference weights to policy v{step} in {format_time(self.last_update_weights_time)}"
             )
+            await self._advance(step)
 
-            await self._notify_update(next_step)
-
-    async def _notify_update(self, step: int) -> None:
-        for observer in self.observers:
+    async def _advance(self, step: int) -> None:
+        self._version = step
+        self.advanced.set()
+        for hook in self._on_new_version:
             try:
-                await observer.on_new_version(step)
+                await hook(step)
             except Exception as exc:
-                get_logger().warning(f"Observer {type(observer).__name__}.on_new_version({step}) raised: {exc!r}")
+                get_logger().warning(f"on_new_version({step}) hook raised: {exc!r}")
 
-        for hook in self.update_hooks:
-            await hook(step)
+    async def wait_for(self, version: int, *, timeout: float | None = None, reason: str = "") -> bool:
+        """Wait until inference serves at least ``version``. Returns False on timeout."""
+        if self._version >= version:
+            return True
+        get_logger().info(f"Waiting for inference to apply policy v{version} {reason}".rstrip())
+
+        async def wait() -> None:
+            while self._version < version:
+                self.advanced.clear()
+                if self._version >= version:
+                    return
+                if self.stopped.is_set():
+                    raise RuntimeError("weight watcher stopped while a policy version was awaited")
+                try:
+                    await asyncio.wait_for(self.advanced.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+
+        try:
+            await asyncio.wait_for(wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            get_logger().warning(f"Inference did not apply policy v{version} within {timeout}s — proceeding anyway")
+            return False
+        return True
 
     def gauges(self) -> dict[str, float]:
         return {
-            "watcher/policy_version": float(self.policy.version),
+            "watcher/policy_version": float(self._version),
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,

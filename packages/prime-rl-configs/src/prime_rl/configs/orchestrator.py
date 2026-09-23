@@ -506,6 +506,112 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+class DispatcherConfig(BaseConfig):
+    """Episode admission: the rate limit and the burst smoothing on pool growth
+    (``[orchestrator.dispatcher]``, ``[dispatcher]`` for evals)."""
+
+    tasks_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, one token per episode, shared by train and eval. Each episode is one rollout, so for sandbox-backed environments this bounds the sandbox creation rate. None disables it."""
+
+    admission_window: float = Field(5.0, gt=0)
+    """Seconds per admission window. The in-flight pool may only grow by ``admission_fraction`` of its cap per window; replacing a completed episode is always free."""
+
+    admission_fraction: float = Field(0.1, gt=0, le=1)
+    """Share of the in-flight cap the pool may grow by per window."""
+
+    min_burst: int = Field(8, ge=1)
+    """Floor on admissions per window; a train env's ``group_size`` raises it."""
+
+
+class InferenceMetricsConfig(BaseConfig):
+    """The ``/metrics`` poll of the policy inference engines (``[orchestrator.inference_metrics]``).
+    The poll always runs — it feeds the concurrency controller; ``log`` decides whether the
+    scraped metrics also reach the monitors."""
+
+    poll_interval: float = Field(5.0, gt=0)
+    """Seconds between scrapes."""
+
+    fetch_timeout: float = Field(5.0, gt=0)
+    """Per-request timeout of one scrape."""
+
+    roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each policy admin client when collecting P/D inference metrics."""
+
+    log: bool = True
+    """Mirror the scraped inference metrics to the monitors (W&B needs it enabled)."""
+
+
+class TrainSinkConfig(BaseConfig):
+    """Scoring and compilation of finished train groups. Built by the orchestrator from
+    its top-level fields; not a TOML block."""
+
+    constant_trainer_batch_size: bool = True
+    """Prune zero-advantage tokens at compile time so every queued trace carries signal."""
+
+
+class QueueConfig(BaseConfig):
+    """The buffer of compiled train groups between the sink and the trainer. Built by
+    the orchestrator from its top-level fields; not a TOML block."""
+
+    batch_size: int | None = Field(None, ge=1)
+    """Traces per batch (rollout-based batching). Set this OR ``token_batch_size``."""
+
+    token_batch_size: int | None = Field(None, ge=1)
+    """Tokens per batch (token-based batching). Set this OR ``batch_size``."""
+
+    max_off_policy_steps: int = Field(8, ge=0)
+    """Queued traces older than this many policy versions are dropped before every cut."""
+
+    constant_trainer_batch_size: bool = True
+    """Prune zero-advantage tokens at cut time when the sink did not already."""
+
+    seq_len: int = 2048
+    """Token cost assumed for a group that returned nothing, for the zero-output tally."""
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        if (self.batch_size is None) == (self.token_batch_size is None):
+            raise ValueError("Exactly one of batch_size / token_batch_size must be set")
+        return self
+
+
+class ShipperConfig(BaseConfig):
+    """Shipping of cut batches to the trainer. Built by the orchestrator from its
+    top-level fields; not a TOML block."""
+
+    max_steps: int | None = None
+    """Training steps to ship; None ships forever."""
+
+    target_lag: int = Field(1, ge=0)
+    """Batches the orchestrator may run ahead of the policy inference serves. Dispatch pauses past it, and a batch ships only once inference serves v{step - 1 - target_lag}."""
+
+    version_wait_timeout: float | None = None
+    """Bound on waiting for inference to apply the final policy before shutdown; None waits forever."""
+
+
+class EvaluatorConfig(BaseConfig):
+    """Eval epoch triggering and reporting. Built by the launchers; not a TOML block."""
+
+    max_steps: int | None = None
+    """The final step, whose eval fires every env regardless of interval."""
+
+    retrigger_on_resume: bool = True
+    """Re-fire the resume step's evals on a resumed run."""
+
+    resume_step: int | None = None
+    """The step a resumed run continues from."""
+
+    upload_epochs: bool = False
+    """Hand each finished epoch to the monitors as a whole (``log_eval_epoch``), the way ``uv run eval`` publishes to the platform."""
+
+
+class WatcherConfig(BaseConfig):
+    """Discovery of new policy versions from the weight transport (``[orchestrator.watcher]``)."""
+
+    poll_interval: float = Field(1.0, gt=0)
+    """Seconds between checks for a newer published version."""
+
+
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
@@ -549,11 +655,11 @@ class OrchestratorConfig(BaseConfig):
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
-    collect_inference_metrics: bool = True
-    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
+    inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
+    """The ``/metrics`` poll of the policy engines (``[orchestrator.inference_metrics]``)."""
 
-    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    watcher: WatcherConfig = WatcherConfig()
+    """Policy version discovery (``[orchestrator.watcher]``)."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -570,9 +676,6 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
-
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
 
@@ -584,6 +687,9 @@ class OrchestratorConfig(BaseConfig):
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
+
+    dispatcher: DispatcherConfig = DispatcherConfig()
+    """Episode admission: rate limit and burst smoothing (``[orchestrator.dispatcher]``)."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
