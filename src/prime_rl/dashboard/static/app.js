@@ -3942,7 +3942,7 @@ function judgeEvidenceHtml(trace) {
 
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
-  const errors = episodeErrorsHtml(currentEpisode, trace);
+  const errors = scopedErrorsHtml("trace", scopedErrors(currentEpisode, trace).trace);
   if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
@@ -3982,39 +3982,52 @@ function renderedBoxHtml(tokenCount, body, canCopyText) {
 
 let entriesObserver = null;
 
-/* Errors carried by the episode and the open trace, split by what they mean. Verifiers
-   keeps every attempt's errors on the final record and stamps success as `ok`, so the
-   errors of an ok episode or trace are history it recovered from, while a failed one's
-   errors describe its outcome. One failure is often recorded twice, on the episode and
-   on its trace: each list shows it once, keeping whichever copy carries the traceback. */
-function episodeErrors(ep, trace) {
-  const dedup = (errors) => {
-    const byMessage = new Map();
-    for (const error of errors) {
-      const record = error && typeof error === "object" ? error : { message: String(error) };
-      const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
-      const kept = byMessage.get(key);
-      if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
-    }
-    return [...byMessage.values()];
+/* Errors carried by the episode and by the open trace, each split by what they mean.
+   Verifiers keeps every attempt's errors on the final record and stamps success as `ok`,
+   so the errors of an ok episode or trace are history it recovered from, while a failed
+   one's errors describe its outcome. A failure recorded on both the episode and its
+   trace shows once, as the trace's, keeping whichever copy carries the traceback. */
+function scopedErrors(ep, trace) {
+  const record = (error) => (error && typeof error === "object" ? error : { message: String(error) });
+  const key = (r) => `${r.type ?? "Error"}|${r.message ?? ""}`;
+  const keep = (map, r) => {
+    const kept = map.get(key(r));
+    if (!kept || (!kept.traceback && r.traceback)) map.set(key(r), r);
   };
-  const failed = [];
-  const recovered = [];
-  for (const error of ep.errors || []) (ep.ok ? recovered : failed).push(error);
-  for (const error of trace?.errors || []) (trace.ok ? recovered : failed).push(error);
-  return { failed: dedup(failed), recovered: dedup(recovered) };
+  const onTrace = new Map();
+  for (const error of trace?.errors || []) keep(onTrace, record(error));
+  const onEpisode = new Map();
+  for (const error of ep.errors || []) {
+    const r = record(error);
+    if (onTrace.has(key(r))) keep(onTrace, r);
+    else keep(onEpisode, r);
+  }
+  const split = (records, ok) => ({ failed: ok ? [] : records, recovered: ok ? records : [] });
+  return { episode: split([...onEpisode.values()], ep.ok), trace: split([...onTrace.values()], trace?.ok) };
 }
 
-function errorEntryHtml(record) {
+function errorEntryHtml(scope, record) {
   const type = record.type ?? "Error";
   const message = record.message ?? "No error message";
   const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
   return (
-    `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+    `<div class="trace-error-message"><span class="trace-error-scope">${scope} error</span><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
     (traceback
       ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
       : "")
   );
+}
+
+function scopedErrorsHtml(scope, { failed, recovered }) {
+  const banners = failed.length
+    ? `<div class="trace-errors">${failed.map((record) => `<section class="trace-error-banner">${errorEntryHtml(scope, record)}</section>`).join("")}</div>`
+    : "";
+  const history = recovered.length
+    ? `<details class="trace-recovered"><summary><span>recovered from ${recovered.length} ${scope} error${recovered.length === 1 ? "" : "s"} in earlier attempts</span><span class="entry-chev">›</span></summary>` +
+      recovered.map((record) => `<section class="trace-recovered-item">${errorEntryHtml(scope, record)}</section>`).join("") +
+      `</details>`
+    : "";
+  return banners + history;
 }
 
 function episodeRowClass(ep) {
@@ -4029,18 +4042,6 @@ function episodeRowTitle(ep) {
   return n ? `recovered from ${errors} in earlier attempts` : "";
 }
 
-function episodeErrorsHtml(ep, trace) {
-  const { failed, recovered } = episodeErrors(ep, trace);
-  const banners = failed.length
-    ? `<div class="trace-errors">${failed.map((record) => `<section class="trace-error-banner">${errorEntryHtml(record)}</section>`).join("")}</div>`
-    : "";
-  const history = recovered.length
-    ? `<details class="trace-recovered"><summary><span>recovered from ${recovered.length} error${recovered.length === 1 ? "" : "s"} in earlier attempts</span><span class="entry-chev">›</span></summary>` +
-      recovered.map((record) => `<section class="trace-recovered-item">${errorEntryHtml(record)}</section>`).join("") +
-      `</details>`
-    : "";
-  return banners + history;
-}
 
 function normalizedCallUsage(usage = {}) {
   let input = usage.prompt_tokens;
@@ -4061,7 +4062,7 @@ function normalizedCallUsage(usage = {}) {
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
-  const errorsHtml = episodeErrorsHtml(ep, trace);
+  const errorsHtml = scopedErrorsHtml("trace", scopedErrors(ep, trace).trace);
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
@@ -5512,6 +5513,11 @@ function renderEpisode() {
   const trace = traces[currentTraceIdx];
   const branches = trace ? traceBranches(trace) : [];
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
+  // the episode's own errors sit above the agent and branch selectors: they belong to
+  // the whole episode, not to whichever trace is open
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.innerHTML = scopedErrorsHtml("episode", scopedErrors(ep, trace).episode);
+  episodeErrors.hidden = !episodeErrors.innerHTML;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
   traceTabs.innerHTML =

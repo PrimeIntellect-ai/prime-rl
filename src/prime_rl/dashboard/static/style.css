@@ -1179,6 +1179,21 @@ mark.hit {
 .trace-error-banner + .trace-error-banner { margin-top: 8px; }
 .trace-error-message { padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .trace-error-type { font-weight: 500; color: var(--negative); }
+.trace-error-scope {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  letter-spacing: var(--track-mono);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  vertical-align: 1px;
+}
+.trace-error-banner .trace-error-scope { color: var(--negative); }
+#tm-episode-errors { padding: 12px 16px 0; border-bottom: 1px solid var(--hairline); }
+#tm-episode-errors .trace-errors { margin-top: 0; padding-top: 0; margin-bottom: 12px; }
+#tm-episode-errors .trace-recovered { margin-bottom: 12px; }
 .trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
 .trace-recovered > summary {
   display: flex;
