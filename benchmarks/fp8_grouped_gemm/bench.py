@@ -127,7 +127,7 @@ def correctness(case: Case) -> dict[str, float]:
     ref_dx = torch._grouped_mm(dy, w.transpose(-2, -1), offs=offs)
     ref_dw = torch._grouped_mm(x.t(), dy, offs=offs)
     out = FP8_OP(x, w, offs)
-    dx, dw = FP8_BWD_OP(dy, x, w, offs, True, True)
+    dx, dw = FP8_BWD_OP(dy, x, w, offs, True, True, not w.is_contiguous())
     return {
         "fwd": rel_err(out[:rows], ref_out[:rows]),
         "dgrad": rel_err(dx[:rows], ref_dx[:rows]),
@@ -198,8 +198,8 @@ def measure_ops(case: Case, args) -> list[tuple[str, float, float]]:
     add("bf16 dgrad", lambda: torch._grouped_mm(dy, w.transpose(-2, -1), offs=offs))
     add("bf16 wgrad", lambda: torch._grouped_mm(xt, dy, offs=offs))
     add("fp8 fwd", lambda: FP8_OP(x, w, offs))
-    add("fp8 dgrad", lambda: FP8_BWD_OP(dy, x, w, offs, True, False))
-    add("fp8 wgrad", lambda: FP8_BWD_OP(dy, x, w, offs, False, True))
+    add("fp8 dgrad", lambda: FP8_BWD_OP(dy, x, w, offs, True, False, not w.is_contiguous()))
+    add("fp8 wgrad", lambda: FP8_BWD_OP(dy, x, w, offs, False, True, not w.is_contiguous()))
     leaves = [case.x, case.param]
     add("bf16 fwd+bwd autograd", fwd_bwd(case, torch._grouped_mm), leaves)
     add("fp8 fwd+bwd autograd", fwd_bwd(case, fp8_autograd), leaves)
