@@ -65,6 +65,17 @@ class PrefillScorer:
             )
         return await prefill_logprobs(self._client, model, token_ids)
 
+    async def score_with_max(
+        self, config: vf.ClientConfig, model: str, token_ids: list[int]
+    ) -> tuple[list[float], list[float]]:
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                base_url=config.base_url,
+                api_key=resolve_api_key(config.api_key_var),
+                default_headers=config.headers or None,
+            )
+        return await prefill_logprobs_with_max(self._client, model, token_ids)
+
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.close()
@@ -104,6 +115,10 @@ class InferenceClient:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
         return await self._scorer.score(self.train_client, self.model_name, token_ids)
+
+    async def score_with_max(self, token_ids: list[int]) -> tuple[list[float], list[float]]:
+        """Return target-token and best-token prefill logprobs for each position."""
+        return await self._scorer.score_with_max(self.train_client, self.model_name, token_ids)
 
     async def aclose(self) -> None:
         await self._scorer.aclose()
@@ -525,6 +540,18 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
+    logprobs, _ = await _prefill_logprobs(openai, model, token_ids)
+    return logprobs
+
+
+async def prefill_logprobs_with_max(
+    openai: AsyncOpenAI, model: str, token_ids: list[int]
+) -> tuple[list[float], list[float]]:
+    """Return target-token and best-token logprobs for counterfactual credit assignment."""
+    return await _prefill_logprobs(openai, model, token_ids)
+
+
+async def _prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> tuple[list[float], list[float]]:
     from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
@@ -544,13 +571,27 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     )
     response = GenerateResponse.model_validate_json(http_response.content)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
-    # leading token (no preceding context). Flatten to `list[float]`.
+    # leading token (no preceding context). Keep both the target-token value
+    # and the best value returned for that position. vLLM includes the target
+    # token in this map even when it is not the top candidate.
     flat: list[float] = []
-    for entry in response.prompt_logprobs or []:
+    maxima: list[float] = []
+    entries = response.prompt_logprobs or []
+    for index, token_id in enumerate(token_ids):
+        entry = entries[index] if index < len(entries) else None
         if not entry:
             flat.append(0.0)
+            maxima.append(0.0)
             continue
-        first = next(iter(entry.values()))
-        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-        flat.append(float(lp) if lp is not None else 0.0)
-    return flat
+        by_token: dict[str, float] = {}
+        for key, value in entry.items():
+            logprob = value.logprob if hasattr(value, "logprob") else value.get("logprob")
+            if logprob is not None:
+                by_token[str(key)] = float(logprob)
+        decoded = list(by_token.values())
+        target = by_token.get(str(token_id))
+        if target is None:
+            target = decoded[0] if decoded else 0.0
+        flat.append(target)
+        maxima.append(max(decoded, default=0.0))
+    return flat, maxima

@@ -1,8 +1,8 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
-``opsd``, ``sft``, ``echo``, ``debug``).
+on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``cripo_s``,
+``opd``, ``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -294,6 +294,49 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
             )
 
 
+class CriPOAlgoConfig(BaseAlgoConfig):
+    type: Literal["cripo_s"] = "cripo_s"
+    """CriPO-S: criterion-level credit for rubric-based RL.
+
+    Ordinary GRPO reduces a named reward rubric to one scalar before assigning
+    credit. CriPO-S keeps reward components separate, then uses a live-policy
+    counterfactual pass to find sampled tokens that support a criterion which is
+    positive for this rollout but underrepresented in its group.
+
+    The algorithm is opt-in. It adds a policy prefill for each selected
+    criterion and positive rollout branch, and is intended for rubric-heavy
+    environments where the extra signal is worth the inference cost.
+    """
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    criteria_key: str = "criteria"
+    """Trace-info key containing ``{reward_name: criterion_text}``.
+
+    When absent, the reward name is used as the criterion text so existing
+    verifiers remain usable.
+    """
+
+    template: str = (
+        "Identify the smallest spans in the response that demonstrate this criterion. "
+        "If the response did not demonstrate it, do not invent one.\n"
+        "Criterion: {criterion}"
+    )
+    """Hint prepended to the response for the counterfactual policy pass."""
+
+    flip_threshold: float = Field(0.1, gt=0, le=1)
+    """A selected token must be below this fraction of the best next-token probability."""
+
+    flip_tau: float = Field(0.1, ge=0)
+    """Extra advantage applied to a token selected by the counterfactual pass."""
+
+    max_criteria: int = Field(4, ge=1)
+    """Maximum number of positive criteria scored per group to bound prefill cost."""
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer used to build the criterion hint with the live policy tokenizer."""
+
+
 class OPDAlgoConfig(BaseAlgoConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
@@ -397,6 +440,7 @@ AlgoConfig: TypeAlias = Annotated[
     | MaxRLAlgoConfig
     | RAEAlgoConfig
     | HierarchicalGRPOAlgoConfig
+    | CriPOAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig
