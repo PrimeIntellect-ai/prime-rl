@@ -288,13 +288,6 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
-def get_trainer_finished_path(output_dir: Path) -> Path:
-    """Written by the RL trainer's master rank after its last step and final checkpoint.
-    The orchestrator waits for it before finalizing the run, so a launcher that tears
-    the run down on the orchestrator's exit can't kill the trainer mid-save."""
-    return output_dir / "control" / "trainer_finished"
-
-
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 

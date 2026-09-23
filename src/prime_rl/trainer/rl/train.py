@@ -64,7 +64,6 @@ from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.pathing import get_trainer_finished_path
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -81,12 +80,6 @@ def train(config: TrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
-
-    # A marker left by an earlier run in this output dir would let the orchestrator
-    # finalize before this run's final checkpoint.
-    trainer_finished_path = get_trainer_finished_path(config.output_dir)
-    if world.is_master:
-        trainer_finished_path.unlink(missing_ok=True)
 
     # Setup the monitors
     asyncio.run(
@@ -747,11 +740,6 @@ def train(config: TrainerConfig):
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")
-    # The orchestrator waits for this before finalizing the run (see
-    # get_trainer_finished_path).
-    if world.is_master:
-        trainer_finished_path.parent.mkdir(parents=True, exist_ok=True)
-        trainer_finished_path.write_text(f"{progress.step}\n")
     asyncio.run(monitors.finalize())
 
     # Stop metrics/health server if configured
