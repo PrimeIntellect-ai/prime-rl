@@ -13,7 +13,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_channel_cast_to_fp8_rowmajor_triton,
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
-    grouped_transpose_block_fp8_triton,
     ue8m0_for_device,
 )
 from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
@@ -321,29 +320,6 @@ def test_op_matches_the_quantized_float32_oracle(dispatch, distribution, k, n):
             f"{label}: the op differs from the quantized oracle by {gap}, more than {FP8_ORACLE_SLACK}x the "
             f"{bf16_floor} bfloat16 output rounding costs it"
         )
-
-
-@pytest.mark.parametrize("use_ue8m0", [False, True], ids=["fp32_scales", "ue8m0"])
-@pytest.mark.parametrize("layout", ["parameter", "contiguous"])
-@pytest.mark.parametrize("k, n", [(512, 256), (384, 640)], ids=["k512-n256", "k384-n640"])
-def test_transposed_block_cast_is_bit_identical_to_casting_the_transpose(k, n, layout, use_ue8m0):
-    """The dgrad transposes the forward's FP8 weight instead of casting the weight again."""
-    generator = torch.Generator(device="cuda").manual_seed(0)
-    parameter = torch.randn(NUM_EXPERTS, n, k, device="cuda", dtype=torch.bfloat16, generator=generator)
-    parameter[:, :128, :128] *= 1e-4
-    parameter[1] *= 1e-3
-    weight = parameter.transpose(1, 2) if layout == "parameter" else parameter.transpose(1, 2).contiguous()
-
-    forward_fp8, forward_scales = grouped_per_block_cast_to_fp8_triton(
-        weight.transpose(1, 2), use_ue8m0, GROUP_ALIGNMENT
-    )
-    transposed_fp8, transposed_scales = grouped_transpose_block_fp8_triton(forward_fp8, forward_scales)
-    direct_fp8, direct_scales = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
-
-    assert transposed_fp8.shape == direct_fp8.shape and transposed_fp8.is_contiguous()
-    assert transposed_scales.shape == direct_scales.shape and transposed_scales.is_contiguous()
-    _assert_bitwise(transposed_fp8, direct_fp8, "fp8 bytes")
-    _assert_bitwise(transposed_scales, direct_scales, "block scales")
 
 
 @pytest.mark.parametrize("distribution", ["ragged", "sub_alignment"])

@@ -18,6 +18,7 @@ import torch
 import triton
 from triton.testing import do_bench
 
+import prime_rl.trainer.models.layers.fp8_grouped_gemm  # noqa: F401
 from prime_rl.trainer.distributed.token_dispatcher import permute_for_grouped_gemm
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
@@ -27,7 +28,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
 )
-from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 from prime_rl.trainer.models.layers.grouped_gemm import DeepGemmFP8GroupedGemm
 
 NUM_EXPERTS = 32
@@ -36,7 +36,6 @@ ROWS_PER_EXPERT = [128, 256, 512, 1024, 1536, 2048, 4096, 6144, 8192]
 RAGGED_MAX_OVER_MEAN = 6.0
 GATE_REL_ERR = 0.1
 FP8_OP = torch.ops.prime_rl.grouped_fp8_gemm.default
-FP8_WEIGHT_CAST_OP = torch.ops.prime_rl.grouped_fp8_weight_cast.default
 FP8_BWD_OP = torch.ops.prime_rl.grouped_fp8_gemm_backward.default
 
 
@@ -127,9 +126,8 @@ def correctness(case: Case) -> dict[str, float]:
     ref_out = torch._grouped_mm(x, w, offs=offs)
     ref_dx = torch._grouped_mm(dy, w.transpose(-2, -1), offs=offs)
     ref_dw = torch._grouped_mm(x.t(), dy, offs=offs)
-    w_fp8, w_scales = FP8_WEIGHT_CAST_OP(w)
-    out = FP8_OP(x, w, w_fp8, w_scales, offs)
-    dx, dw = FP8_BWD_OP(dy, x, w, w_fp8, w_scales, offs, True, True, not w.is_contiguous())
+    out = FP8_OP(x, w, offs)
+    dx, dw = FP8_BWD_OP(dy, x, w, offs, True, True, not w.is_contiguous())
     return {
         "fwd": rel_err(out[:rows], ref_out[:rows]),
         "dgrad": rel_err(dx[:rows], ref_dx[:rows]),
@@ -148,7 +146,7 @@ def fwd_bwd(case: Case, op):
 
 
 def fp8_autograd(x, weight, *, offs):
-    return grouped_fp8_gemm(x, weight, offs)
+    return FP8_OP(x, weight, offs)
 
 
 def launch_wall(fn, iters: int = 20) -> float:
@@ -199,10 +197,9 @@ def measure_ops(case: Case, args) -> list[tuple[str, float, float]]:
     add("bf16 fwd", lambda: torch._grouped_mm(x, w, offs=offs))
     add("bf16 dgrad", lambda: torch._grouped_mm(dy, w.transpose(-2, -1), offs=offs))
     add("bf16 wgrad", lambda: torch._grouped_mm(xt, dy, offs=offs))
-    w_fp8, w_scales = FP8_WEIGHT_CAST_OP(w)
-    add("fp8 fwd", lambda: FP8_OP(x, w, *FP8_WEIGHT_CAST_OP(w), offs))
-    add("fp8 dgrad", lambda: FP8_BWD_OP(dy, x, w, w_fp8, w_scales, offs, True, False, not w.is_contiguous()))
-    add("fp8 wgrad", lambda: FP8_BWD_OP(dy, x, w, w_fp8, w_scales, offs, False, True, not w.is_contiguous()))
+    add("fp8 fwd", lambda: FP8_OP(x, w, offs))
+    add("fp8 dgrad", lambda: FP8_BWD_OP(dy, x, w, offs, True, False, not w.is_contiguous()))
+    add("fp8 wgrad", lambda: FP8_BWD_OP(dy, x, w, offs, False, True, not w.is_contiguous()))
     leaves = [case.x, case.param]
     add("bf16 fwd+bwd autograd", fwd_bwd(case, torch._grouped_mm), leaves)
     add("fp8 fwd+bwd autograd", fwd_bwd(case, fp8_autograd), leaves)
