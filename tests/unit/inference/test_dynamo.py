@@ -9,6 +9,7 @@ from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
     parse_dynamo_worker,
+    parse_dynamo_workers,
 )
 from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
 
@@ -40,6 +41,9 @@ def python_worker(
     world_size: int = 4,
     routes: list[str] | None = None,
     enable_lora: bool = False,
+    component: str = "backend",
+    instance_id: int = 7,
+    system_port: int = 8081,
 ) -> dict:
     worker_routes = routes or [
         "pause_generation",
@@ -50,8 +54,10 @@ def python_worker(
     if enable_lora:
         worker_routes = [*worker_routes, "load_lora", "unload_lora"]
     return {
-        "instance_id": 7,
-        "system_url": f"http://{host}:8081",
+        "component": component,
+        "endpoint": "rl",
+        "instance_id": instance_id,
+        "system_url": f"http://{host}:{system_port}",
         "world_size": world_size,
         "model": MODEL,
         "routes": worker_routes,
@@ -75,17 +81,8 @@ def admin_for(*workers: dict) -> DynamoAdminPlane:
     )
     admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
     discovered = parsed(*workers)
-    admin._bind(
-        discovered,
-        (
-            discovered.instance_id,
-            str(httpx.URL(discovered.admin_base_url)),
-            discovered.world_size,
-            discovered.admin_contract,
-            tuple(sorted(discovered.routes)),
-        ),
-        AsyncMock(),
-    )
+    workers = (discovered,)
+    admin._bind(workers, admin._topology_fingerprint(workers), [AsyncMock()])
     return admin
 
 
@@ -98,18 +95,31 @@ def python_admin() -> DynamoAdminPlane:
     )
     discovered = parse_dynamo_worker(snapshot(python_worker()), MODEL, expected_admin_host="frontend")
     admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
-    admin._bind(
-        discovered,
-        (
-            discovered.instance_id,
-            str(httpx.URL(discovered.admin_base_url)),
-            discovered.world_size,
-            discovered.admin_contract,
-            tuple(sorted(discovered.routes)),
-        ),
-        AsyncMock(),
-    )
+    workers = (discovered,)
+    admin._bind(workers, admin._topology_fingerprint(workers), [AsyncMock()])
     return admin
+
+
+def python_pd_admin() -> tuple[DynamoAdminPlane, AsyncMock, AsyncMock]:
+    config = ClientConfig(
+        base_url="http://frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://frontend:8001"},
+    )
+    workers = parse_dynamo_workers(
+        snapshot(
+            python_worker(enable_lora=True, component="prefill", instance_id=8, system_port=8083),
+            python_worker(enable_lora=True, component="backend", instance_id=9, system_port=8082),
+        ),
+        MODEL,
+        expected_admin_host="frontend",
+    )
+    admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
+    decode_client = AsyncMock()
+    prefill_client = AsyncMock()
+    admin._bind(workers, admin._topology_fingerprint(workers), [decode_client, prefill_client])
+    return admin, decode_client, prefill_client
 
 
 def test_parse_dynamo_worker_filters_model_and_checks_admin_host():
@@ -135,6 +145,32 @@ def test_parse_dynamo_worker_filters_model_and_checks_admin_host():
 def test_parse_dynamo_worker_rejects_multiple_matching_workers():
     with pytest.raises(ValueError, match="exactly one inference worker"):
         parse_dynamo_worker(snapshot(worker(1), worker(2)), MODEL, expected_admin_host="worker")
+
+
+def test_parse_dynamo_workers_accepts_prefill_decode_pair_in_stable_order():
+    decode = python_worker(
+        enable_lora=True,
+        component="backend",
+        instance_id=9,
+        system_port=8082,
+    )
+    prefill = python_worker(
+        enable_lora=True,
+        component="prefill",
+        instance_id=8,
+        system_port=8083,
+    )
+
+    discovered = parse_dynamo_workers(
+        snapshot(prefill, decode),
+        MODEL,
+        expected_admin_host="frontend",
+    )
+
+    assert [(worker.component, worker.instance_id) for worker in discovered] == [
+        ("backend", 9),
+        ("prefill", 8),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -180,7 +216,7 @@ def test_parse_dynamo_python_worker_rejects_unsafe_or_incomplete_admin(payload, 
 
 def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
     discovered_worker = parsed(worker(1))
-    discover = AsyncMock(side_effect=[discovered_worker, discovered_worker])
+    discover = AsyncMock(side_effect=[(discovered_worker,), (discovered_worker,)])
     admin = setup_admin_plane(
         ClientConfig(
             base_url="http://worker:8000/v1",
@@ -272,7 +308,7 @@ def test_dynamo_admin_plane_rejects_confirmed_topology_drift():
     admin = admin_for(worker(1, admin_base_url=admin_url))
 
     with (
-        patch.object(admin, "_discover", new=AsyncMock(side_effect=[changed, changed])),
+        patch.object(admin, "_discover", new=AsyncMock(side_effect=[(changed,), (changed,)])),
         pytest.raises(RuntimeError, match="topology changed"),
     ):
         asyncio.run(admin.ensure_topology_current())
@@ -378,6 +414,27 @@ def test_dynamo_python_routes_reject_configured_world_size_mismatch_before_mutat
     asyncio.run(admin.aclose())
 
 
+def test_dynamo_python_routes_reject_multi_worker_nccl():
+    admin, decode_client, prefill_client = python_pd_admin()
+
+    with pytest.raises(ValueError, match="exactly one inference worker"):
+        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=2))
+
+    decode_client.post.assert_not_awaited()
+    prefill_client.post.assert_not_awaited()
+    assert admin._nccl_initialization_state == "uninitialized"
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_bind_requires_one_client_per_worker():
+    admin, _, _ = python_pd_admin()
+
+    with pytest.raises(ValueError, match="counts must match"):
+        admin._bind(admin._workers, admin._topology_fingerprint(admin._workers), [AsyncMock()])
+
+    asyncio.run(admin.aclose())
+
+
 def test_dynamo_python_worker_does_not_receive_frontend_credentials(monkeypatch):
     monkeypatch.setenv("DYNAMO_TEST_API_KEY", "secret")
     config = ClientConfig(
@@ -471,17 +528,8 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
 def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
     discovered = parse_dynamo_worker(snapshot(python_worker(enable_lora=True)), MODEL, expected_admin_host="frontend")
     admin = python_admin()
-    admin._bind(
-        discovered,
-        (
-            discovered.instance_id,
-            str(httpx.URL(discovered.admin_base_url)),
-            discovered.world_size,
-            discovered.admin_contract,
-            tuple(sorted(discovered.routes)),
-        ),
-        admin.clients[0],
-    )
+    workers = (discovered,)
+    admin._bind(workers, admin._topology_fingerprint(workers), [admin.clients[0]])
     response = AsyncMock()
     response.raise_for_status = lambda: None
     response.json = lambda: {
@@ -510,6 +558,102 @@ def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
     check_model.assert_awaited_once()
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_python_workers_load_decode_before_prefill(tmp_path):
+    admin, decode_client, prefill_client = python_pd_admin()
+    call_order: list[str] = []
+
+    def response(name: str, lora_name: str):
+        result = AsyncMock()
+        result.raise_for_status = lambda: None
+        result.json = lambda: {"status": "success", "lora_name": lora_name, "lora_id": 17}
+        call_order.append(name)
+        return result
+
+    decode_client.post.side_effect = lambda *args, **kwargs: response("decode", kwargs["json"]["lora_name"])
+    prefill_client.post.side_effect = lambda *args, **kwargs: response("prefill", kwargs["json"]["lora_name"])
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch.object(admin, "_lora_name", return_value="prime-rl-policy-v1-test"),
+        patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()),
+    ):
+        active_model = asyncio.run(admin.load_lora_adapter(MODEL, adapter, step=1))
+
+    assert active_model == "prime-rl-policy-v1-test"
+    assert call_order == ["decode", "prefill"]
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_python_workers_roll_back_partial_lora_load(tmp_path):
+    admin, decode_client, prefill_client = python_pd_admin()
+    call_order: list[tuple[str, str]] = []
+
+    def response(name: str, operation: str, lora_name: str):
+        result = AsyncMock()
+        result.raise_for_status = lambda: None
+        result.json = lambda: {"status": "success", "lora_name": lora_name, "lora_id": 17}
+        call_order.append((name, operation))
+        return result
+
+    decode_client.post.side_effect = lambda path, **kwargs: response(
+        "decode", path.rsplit("/", 1)[-1], kwargs["json"]["lora_name"]
+    )
+    prefill_client.post.side_effect = RuntimeError("prefill load failed")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch.object(admin, "_lora_name", return_value="prime-rl-policy-v1-test"),
+        pytest.raises(RuntimeError, match="prefill load failed"),
+    ):
+        asyncio.run(admin.load_lora_adapter(MODEL, adapter, step=1))
+
+    assert call_order == [("decode", "load_lora"), ("decode", "unload_lora")]
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_python_workers_retry_partial_lora_unload():
+    admin, decode_client, prefill_client = python_pd_admin()
+    events: list[tuple[str, str]] = []
+
+    def result(payload: dict):
+        response = AsyncMock()
+        response.raise_for_status = lambda: None
+        response.json = lambda: payload
+        return response
+
+    def prefill_response(path, **kwargs):
+        events.append(("prefill", path.rsplit("/", 1)[-1]))
+        if len([event for event in events if event[0] == "prefill"]) == 1:
+            return result({"status": "success", "lora_name": kwargs["json"]["lora_name"], "lora_id": 17})
+        return result({"status": "error", "message": "LoRA adapter not found"})
+
+    def decode_response(path, **kwargs):
+        events.append(("decode", path.rsplit("/", 1)[-1]))
+        if len([event for event in events if event[0] == "decode"]) == 1:
+            raise RuntimeError("decode unload failed")
+        return result({"status": "success", "lora_name": kwargs["json"]["lora_name"], "lora_id": 17})
+
+    prefill_client.post.side_effect = prefill_response
+    decode_client.post.side_effect = decode_response
+    body = {"lora_name": "prime-rl-policy-v0-test"}
+
+    with pytest.raises(RuntimeError, match="decode unload failed"):
+        asyncio.run(admin._post_lora_all("unload_lora", body))
+    asyncio.run(admin._post_lora_all("unload_lora", body))
+
+    assert events == [
+        ("prefill", "unload_lora"),
+        ("decode", "unload_lora"),
+        ("prefill", "unload_lora"),
+        ("decode", "unload_lora"),
+    ]
     asyncio.run(admin.aclose())
 
 
