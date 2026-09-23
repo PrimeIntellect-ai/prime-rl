@@ -15,6 +15,7 @@ from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
+from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
@@ -1325,3 +1326,243 @@ def test_fused_post_bda_matches_the_eager_reference():
     for label, fused_leaf, reference_leaf in grads:
         assert reference_leaf.grad is not None, f"{label}: the reference backward left the leaf without a gradient"
         _assert_relative(fused_leaf.grad, reference_leaf.grad, POST_BDA_GRAD_RTOL, label)
+
+
+# The rotary tables below are vLLM's own `cos_sin_cache`, `original_max * factor` rows of fp32 for
+# the YaRN rope and `max_position_embeddings` rows for the plain one. The checkpoint's
+# `original_max_position_embeddings = 65536` would allocate 268 MB per rope; 16384 keeps the table
+# at 64 MB while still reaching the ~128k positions of a long rollout.
+ROPE_DIM = V4FLASH_MODEL["qk_rope_head_dim"]
+ROPE_ORIGINAL_MAX_POSITION = 16384
+ROPE_FACTOR = V4FLASH_MODEL["rope_scaling"]["factor"]
+ROPE_MAX_POSITION = ROPE_ORIGINAL_MAX_POSITION * ROPE_FACTOR
+ROPE_PARAMETERS = {
+    "main": {"rope_type": "default", "partial_rotary_factor": 0.125},
+    "compress": {
+        "type": "yarn",
+        "factor": ROPE_FACTOR,
+        "beta_fast": V4FLASH_MODEL["rope_scaling"]["beta_fast"],
+        "beta_slow": V4FLASH_MODEL["rope_scaling"]["beta_slow"],
+        "original_max_position_embeddings": ROPE_ORIGINAL_MAX_POSITION,
+        "partial_rotary_factor": 0.125,
+    },
+}
+
+# Three packed documents, the last one starting deep into a long rollout, so the rotation sees
+# both position resets and positions near 128k.
+ROPE_DOC_STARTS_AND_LENS = [(0, 700), (0, 1500), (129000, 1896)]
+
+# (heads, head_dim) of every rotated tensor in a V4-Flash layer: main-attention q and the
+# attention output, the single kv head, and the indexer q.
+ROPE_TENSOR_SHAPES = [
+    (V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]),
+    (V4FLASH_MODEL["num_key_value_heads"], V4FLASH_MODEL["head_dim"]),
+    (V4FLASH_MODEL["index_n_heads"], V4FLASH_MODEL["index_head_dim"]),
+]
+ROPE_TENSOR_IDS = ["main-q", "kv", "indexer-q"]
+
+
+def _rope_positions() -> torch.Tensor:
+    return torch.cat([torch.arange(start, start + length) for start, length in ROPE_DOC_STARTS_AND_LENS]).cuda()
+
+
+@pytest.fixture
+def vllm_dsv4_rope():
+    """vLLM's `build_deepseek_v4_rope` on the GPU, as `vllm_rope_builder` in `test_deepseek_v4.py` builds it."""
+    pytest.importorskip("vllm")
+    from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.model_executor.layers import rotary_embedding
+    from vllm.models.deepseek_v4.common import rope as dsv4_rope
+    from vllm.transformers_utils.config import patch_rope_parameters
+    from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
+    from vllm.utils.torch_utils import set_default_torch_dtype
+
+    from prime_rl.inference.patches import monkey_patch_deepseek_v4_per_layer_rope
+
+    monkey_patch_deepseek_v4_per_layer_rope()
+    rotary_embedding._ROPE_DICT.clear()
+
+    def build(compress_ratio: int) -> nn.Module:
+        config = VllmDeepseekV4Config(
+            rope_theta=V4FLASH_MODEL["rope_theta"],
+            compress_rope_theta=V4FLASH_MODEL["compress_rope_theta"],
+            max_position_embeddings=ROPE_MAX_POSITION,
+            rope_parameters={key: dict(value) for key, value in ROPE_PARAMETERS.items()},
+        )
+        patch_rope_parameters(config)
+        with set_default_torch_dtype(torch.bfloat16), set_current_vllm_config(VllmConfig()):
+            rotary_emb = dsv4_rope.build_deepseek_v4_rope(
+                config,
+                head_dim=V4FLASH_MODEL["head_dim"],
+                rope_head_dim=ROPE_DIM,
+                max_position_embeddings=ROPE_MAX_POSITION,
+                compress_ratio=compress_ratio,
+            )
+        return rotary_emb.cuda()
+
+    yield build
+    rotary_embedding._ROPE_DICT.clear()
+
+
+@pytest.mark.parametrize(("heads", "head_dim"), ROPE_TENSOR_SHAPES, ids=ROPE_TENSOR_IDS)
+@pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
+@pytest.mark.parametrize("compress_ratio", [1, 4], ids=["sliding", "compressed"])
+def test_interleaved_rope_matches_vllm_bit_for_bit(vllm_dsv4_rope, compress_ratio, inverse, heads, head_dim):
+    """The kernel and vLLM's in-place `rotary_embedding` op agree on every bit, on vLLM's own table.
+
+    Both are handed the same `cos_sin_cache` rows, so this isolates the rotation: fp32 math on a
+    bf16 input, one rounding on store, and the same multiply-add contraction.
+    """
+    rotary_emb = vllm_dsv4_rope(compress_ratio)
+    positions = _rope_positions()
+    x = torch.randn(positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
+
+    expected, _ = rotary_emb.forward_cuda(positions, x.clone(), None, inverse=inverse)
+    actual = apply_interleaved_rope_(x.clone(), rotary_emb.cos_sin_cache, positions, inverse=inverse)
+
+    assert torch.equal(actual, expected)
+
+
+def test_interleaved_rope_matches_vllm_fused_prefill_kernels(vllm_dsv4_rope):
+    """The rotations vLLM's DeepSeek-V4 prefill fuses into other kernels agree with this one.
+
+    The kv rope is fused with the cache insert and stays bf16, so it compares directly. The indexer
+    q rope is fused with a per-head fp8 quantization after a bf16 round trip, and the attention
+    output's inverse rope with a per-128-channel fp8 quantization straight from fp32; both are
+    compared on the fp8 bytes after replaying the quantization on this kernel's output. The inverse
+    kernel fuses its multiply-add onto the other product, so its fp32 result can differ in the last
+    bit and flip an fp8 rounding in a few elements per hundred million.
+    """
+    from vllm.models.deepseek_v4.common.ops import fused_inv_rope_fp8_quant
+    from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
+
+    cos_sin = vllm_dsv4_rope(4).cos_sin_cache
+    positions = _rope_positions()
+    n_tokens, heads, head_dim = positions.numel(), V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+
+    kv = torch.randn(n_tokens, head_dim, device="cuda", dtype=torch.bfloat16)
+    block_size = 64
+    kv_cache = torch.zeros(n_tokens // block_size, block_size, head_dim, device="cuda", dtype=torch.bfloat16)
+    q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    slot_mapping = torch.arange(n_tokens, device="cuda")
+    eps = V4FLASH_MODEL["rms_norm_eps"]
+    torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
+        q, kv, kv_cache, slot_mapping, positions, cos_sin, eps, block_size
+    )
+    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos_sin, positions)
+    assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
+
+    index_heads, index_head_dim = V4FLASH_MODEL["index_n_heads"], V4FLASH_MODEL["index_head_dim"]
+    index_q = torch.randn(n_tokens, index_heads, index_head_dim, device="cuda", dtype=torch.bfloat16)
+    index_weights = torch.randn(n_tokens, index_heads, device="cuda", dtype=torch.bfloat16)
+    index_q_fp8, _ = fused_indexer_q_rope_quant(positions, index_q.clone(), cos_sin, index_weights, 1.0, 1.0)
+    rotated_index_q = apply_interleaved_rope_(index_q.clone(), cos_sin, positions).float()
+    amax = rotated_index_q.abs().amax(-1, keepdim=True).clamp_min(1e-4)
+    scale = torch.exp2(torch.ceil(torch.log2(amax / fp8_max)))
+    replayed_index_q_fp8 = (rotated_index_q / scale).to(torch.float8_e4m3fn)
+    assert torch.equal(replayed_index_q_fp8.view(torch.uint8), index_q_fp8.view(torch.uint8))
+
+    o_groups, quant_group = V4FLASH_MODEL["o_groups"], 128
+    attn_out = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    o_fp8, _ = fused_inv_rope_fp8_quant(attn_out, positions, cos_sin, o_groups, heads // o_groups)
+    unrotated = apply_interleaved_rope_(attn_out.float(), cos_sin, positions, inverse=True)
+    blocks = unrotated.view(n_tokens, heads, head_dim // quant_group, quant_group)
+    block_scale = torch.exp2(
+        torch.ceil(torch.log2(blocks.abs().amax(-1, keepdim=True).clamp_min(1e-10) * (1.0 / fp8_max)))
+    )
+    replayed_o_fp8 = (blocks / block_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
+    o_fp8_mismatch = replayed_o_fp8.view(n_tokens, o_groups, -1).view(torch.uint8) != o_fp8.view(torch.uint8)
+    assert o_fp8_mismatch.float().mean() < 1e-6
+
+
+def _rope_table(n_rows: int) -> torch.Tensor:
+    """A plain fp32 `[cos | sin]` table in vLLM's layout, one entry per interleaved pair."""
+    inv_freq = 1.0 / (V4FLASH_MODEL["rope_theta"] ** (torch.arange(0, ROPE_DIM, 2, dtype=torch.float32) / ROPE_DIM))
+    freqs = torch.outer(torch.arange(n_rows, dtype=torch.float32), inv_freq)
+    return torch.cat([freqs.cos(), freqs.sin()], dim=-1).cuda()
+
+
+def _eager_interleaved_rope(x: torch.Tensor, cos_sin: torch.Tensor, positions: torch.Tensor, inverse: bool):
+    cos, sin = cos_sin[positions].chunk(2, dim=-1)
+    if x.dim() == 4:
+        cos, sin = cos.unsqueeze(0), sin.unsqueeze(0)
+    return apply_rotary_pos_emb_interleaved(x, cos, -sin if inverse else sin, unsqueeze_dim=x.dim() - 2)
+
+
+def _rope_input(layout: str, n_tokens: int, heads: int, head_dim: int, dtype: torch.dtype) -> torch.Tensor:
+    """A tensor to rotate in the requested layout, `bhtd` being viewed as `(b, t, h, d)` by `_as_rope_layout`."""
+    if layout == "thd":
+        return torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=dtype)
+    return torch.randn(1, heads, n_tokens, head_dim, device="cuda", dtype=dtype)
+
+
+def _as_rope_layout(leaf: torch.Tensor, layout: str) -> torch.Tensor:
+    return leaf if layout == "thd" else leaf.transpose(1, 2)
+
+
+@pytest.mark.parametrize("layout", ["thd", "bhtd"], ids=["contiguous", "transposed-view"])
+@pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+def test_interleaved_rope_matches_the_eager_rotation(dtype, inverse, layout):
+    """Output and input gradient agree with `apply_rotary_pos_emb_interleaved` on the same fp32 table.
+
+    Not bit for bit: the eager path rounds each product before adding, where the kernel contracts
+    one product into a fused multiply-add.
+    """
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    kernel_leaf, eager_leaf = _leaves(*[_rope_input(layout, positions.numel(), heads, head_dim, dtype)] * 2)
+
+    rotated = apply_interleaved_rope_(_as_rope_layout(kernel_leaf.clone(), layout), cos_sin, positions, inverse=inverse)
+    expected = _eager_interleaved_rope(_as_rope_layout(eager_leaf, layout), cos_sin, positions, inverse)
+    weight = torch.randn_like(expected)
+    (rotated.float() * weight).sum().backward()
+    (expected.float() * weight).sum().backward()
+
+    assert rotated.shape == expected.shape
+    torch.testing.assert_close(rotated, expected)
+    _assert_relative(kernel_leaf.grad, eager_leaf.grad, torch.finfo(dtype).eps, "input gradient")
+
+
+@pytest.mark.parametrize(("heads", "head_dim"), ROPE_TENSOR_SHAPES, ids=ROPE_TENSOR_IDS)
+def test_interleaved_rope_leaves_the_nope_channels_untouched(heads, head_dim):
+    """The leading `head_dim - rope_dim` channels pass through bit for bit, forward and backward."""
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    leaf = torch.randn(positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    nope = slice(0, head_dim - ROPE_DIM)
+
+    rotated = apply_interleaved_rope_(leaf.clone(), cos_sin, positions)
+    weight = torch.randn_like(rotated)
+    (rotated * weight).sum().backward()
+
+    assert torch.equal(rotated[..., nope], leaf[..., nope])
+    assert torch.equal(leaf.grad[..., nope], weight[..., nope])
+    assert not torch.equal(rotated[..., -ROPE_DIM:], leaf[..., -ROPE_DIM:])
+
+
+def test_interleaved_rope_traces_under_torch_compile():
+    """`torch.compile(fullgraph=True)` through the in-place rotation, forward and backward.
+
+    `apply_compile` compiles each decoder layer, so the custom ops' fakes and the autograd
+    function's in-place bookkeeping are traced on every real training step.
+    """
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    leaf = torch.randn(1, heads, positions.numel(), head_dim, device="cuda", dtype=torch.bfloat16)
+    eager_leaf, compiled_leaf = _leaves(leaf, leaf)
+    weight = torch.randn(1, positions.numel(), heads, head_dim, device="cuda")
+
+    def rotate(x: torch.Tensor) -> torch.Tensor:
+        return apply_interleaved_rope_((2 * x).transpose(1, 2), cos_sin, positions)
+
+    out = rotate(eager_leaf)
+    (out * weight).sum().backward()
+    compiled_out = torch.compile(rotate, fullgraph=True)(compiled_leaf)
+    (compiled_out * weight).sum().backward()
+
+    torch.testing.assert_close(compiled_out, out, rtol=0, atol=0)
+    torch.testing.assert_close(compiled_leaf.grad, eager_leaf.grad, rtol=0, atol=0)
