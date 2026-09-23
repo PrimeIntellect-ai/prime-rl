@@ -69,6 +69,10 @@ class WeightWatcher:
                 await asyncio.sleep(POLL_INTERVAL)
         except asyncio.CancelledError:
             return
+        finally:
+            # Whoever awaits a version must not wait on a watcher that is gone.
+            self.stopped.set()
+            self.advanced.set()
 
     async def stop(self) -> None:
         self.stopped.set()
@@ -113,13 +117,13 @@ class WeightWatcher:
             await self._advance(step)
 
     async def _advance(self, step: int) -> None:
+        """Publish the version, then run the post-swap hooks. Their errors propagate:
+        an eval that failed to trigger or a gate that failed to move must end the run,
+        not leave it waiting on work that will never be scheduled."""
         self._version = step
         self.advanced.set()
         for hook in self._on_new_version:
-            try:
-                await hook(step)
-            except Exception as exc:
-                get_logger().warning(f"on_new_version({step}) hook raised: {exc!r}")
+            await hook(step)
 
     async def wait_for(self, version: int, *, timeout: float | None = None, reason: str = "") -> bool:
         """Wait until inference serves at least ``version``. Returns False on timeout."""
@@ -129,15 +133,12 @@ class WeightWatcher:
 
         async def wait() -> None:
             while self._version < version:
-                self.advanced.clear()
-                if self._version >= version:
-                    return
                 if self.stopped.is_set():
-                    raise RuntimeError("weight watcher stopped while a policy version was awaited")
-                try:
-                    await asyncio.wait_for(self.advanced.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
+                    raise RuntimeError(f"weight watcher stopped before inference applied policy v{version}")
+                self.advanced.clear()
+                if self._version >= version or self.stopped.is_set():
+                    continue
+                await self.advanced.wait()
 
         try:
             await asyncio.wait_for(wait(), timeout=timeout)

@@ -177,6 +177,21 @@ async def test_cancel_eval_step_covers_queued_and_active_groups():
 
 
 @pytest.mark.asyncio
+async def test_a_failing_consumer_ends_the_dispatcher_even_with_a_full_buffer():
+    env = FakeEnv("env", group_size=1)
+    h = Harness(envs=FakeEnvs(env), max_inflight=8, limit=None)
+
+    async def on_train(item):
+        raise RuntimeError("sink exploded")
+
+    h.dispatcher.bind(on_train=on_train)
+    task = asyncio.create_task(h.dispatcher.start())
+    with pytest.raises(RuntimeError, match="sink exploded"):
+        await asyncio.wait_for(task, timeout=5.0)
+    await h.dispatcher.stop()
+
+
+@pytest.mark.asyncio
 async def test_live_events_reach_the_monitors():
     env = FakeEnv("env", group_size=1)
     h = Harness(envs=FakeEnvs(env), limit=1)

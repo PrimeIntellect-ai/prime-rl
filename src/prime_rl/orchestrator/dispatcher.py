@@ -421,9 +421,19 @@ class Dispatcher:
             raise task.exception()
 
     async def emit(self, item: DispatchResult) -> None:
-        """Queue one result for delivery; blocks while the buffer is full."""
+        """Queue one result for delivery; blocks while the buffer is full. A consumer
+        that died surfaces here instead of leaving the producer parked on a full buffer."""
+        self._raise_if_deliver_failed()
         self.undelivered += 1
-        await self.results.put(item)
+        put = asyncio.ensure_future(self.results.put(item))
+        waiting = {put, self.deliver_task} if self.deliver_task is not None else {put}
+        done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+        if put not in done:
+            await safe_cancel(put)
+            self.undelivered -= 1
+            self._raise_if_deliver_failed()
+            raise RuntimeError("dispatcher result consumer exited")
+        put.result()
 
     async def deliver(self) -> None:
         """Hand queued results to the consumer bound for their kind, in order. Every

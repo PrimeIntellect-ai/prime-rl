@@ -67,13 +67,30 @@ async def test_wait_for_times_out_without_a_version():
 
 
 @pytest.mark.asyncio
-async def test_hook_errors_do_not_stop_the_update():
+async def test_pending_hook_errors_never_block_the_swap_but_new_version_errors_propagate():
     watcher, receiver, hooks = make_watcher()
 
     async def boom(step):
         raise RuntimeError("hook failed")
 
-    watcher.bind(on_version_pending=[boom], on_new_version=[boom, hooks.record_async("new")])
+    watcher.bind(on_version_pending=[boom], on_new_version=[hooks.record_async("new")])
     receiver.publish(1)
     await watcher.apply(1)
     assert watcher.version == 1 and hooks["new"] == [(1,)]
+
+    watcher.bind(on_new_version=[boom])
+    receiver.publish(2)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        await watcher.apply(2)
+    assert watcher.version == 2  # the swap happened; the failed hook ends the run
+
+
+@pytest.mark.asyncio
+async def test_a_dead_watcher_unblocks_waiters(monkeypatch):
+    watcher, receiver, _ = make_watcher(monkeypatch)
+    receiver.next_version = lambda current: (_ for _ in ()).throw(RuntimeError("receiver broke"))
+    task = asyncio.create_task(watcher.start())
+    with pytest.raises(RuntimeError, match="stopped before"):
+        await asyncio.wait_for(watcher.wait_for(3), timeout=2.0)
+    with pytest.raises(RuntimeError, match="receiver broke"):
+        await task
