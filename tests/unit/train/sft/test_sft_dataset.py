@@ -523,10 +523,10 @@ def test_skip_invalid_samples_knob(raising_renderer):
         [{"messages": [{"role": "assistant", "content": content}]} for content in ("a0", "bad", "a1")]
     )
 
-    crashing = SFTDataset(dataset, raising_renderer, shuffle=False, max_epochs=1)
+    crashing = SFTDataset(dataset, lambda _: raising_renderer, shuffle=False, max_epochs=1)
     with pytest.raises(ValueError, match="unrenderable sample"):
         list(crashing)
 
-    skipping = SFTDataset(dataset, raising_renderer, shuffle=False, max_epochs=1, skip_invalid_samples=True)
+    skipping = SFTDataset(dataset, lambda _: raising_renderer, shuffle=False, max_epochs=1, skip_invalid_samples=True)
     samples = list(skipping)
     assert len(samples) == 2
