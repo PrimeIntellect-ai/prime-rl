@@ -99,7 +99,7 @@ curl --fail http://127.0.0.1:8001/v1/rl/workers
 
 ```bash
 uv run python -m prime_rl.entrypoints.env_server \
-  @ examples/advanced/nemotron-3.5-super/env.toml
+  @ examples/extra/dynamo/extra/nemotron-3.5-super/env.toml
 ```
 
 ## 4. Start the trainer
@@ -121,7 +121,7 @@ uv run torchrun \
     mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$CUDA_CACHE_PATH"
     exec python -m prime_rl.trainer.rl.train "$@"
   ' bash \
-  @ examples/advanced/nemotron-3.5-super/trainer.toml \
+  @ examples/extra/dynamo/extra/nemotron-3.5-super/trainer.toml \
   --output-dir "$RUN_DIR" \
   --model.conversion-dir "$MODEL_DIR" \
   --model.name "$MODEL_DIR" \
@@ -132,7 +132,7 @@ uv run torchrun \
 
 ```bash
 uv run python -m prime_rl.entrypoints.orchestrator \
-  @ examples/advanced/nemotron-3.5-super/orchestrator.toml \
+  @ examples/extra/dynamo/extra/nemotron-3.5-super/orchestrator.toml \
   --output-dir "$RUN_DIR"
 ```
 
