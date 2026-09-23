@@ -327,6 +327,12 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32"] = "float32"
     """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
 
+    simulate_fp8_kv_cache: bool = True
+    """DeepSeek V4 only. Round-trip the K/V cache through vLLM's block-scaled FP8 (e4m3) quantization in the forward pass, with a straight-through backward, so the trainer attends over the same degraded K/V that vLLM served. On by default: prime-rl's DeepSeek V4 configs all serve ``kv_cache_dtype = "fp8"``, which vLLM resolves to the ``fp8_ds_mla`` layout this reproduces. Set ``false`` when serving a cache that is not ``fp8_ds_mla``, such as vLLM's SM100 ``FLASHINFER_MLA_SPARSE_DSV4`` backend. A model built outside the trainer entrypoints, as in unit tests, leaves it off."""
+
+    fp32_lm_head_logits: bool | Literal["auto"] = "auto"
+    """Accumulate the lm_head projection into fp32 instead of rounding the logits to the compute dtype, matching the ``torch.mm(..., out_dtype=torch.float32)`` that vLLM's ``LogitsProcessor`` runs under ``inference.enable_fp32_lm_head``. ``auto`` enables it for DeepSeek V4 only; set ``true`` to opt another model in."""
+
     quantization: QuantizationConfig | None = None
 
     index_cache: IndexCacheConfig | None = None

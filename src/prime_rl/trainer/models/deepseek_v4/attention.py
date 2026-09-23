@@ -132,9 +132,11 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
+from prime_rl.trainer.models.deepseek_v4.kv_quant import fake_quantize_kv_cache
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.matmul import matmul_to_float32
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -260,18 +262,11 @@ class PackedContext:
         *,
         rotary_emb: DeepseekV4RotaryEmbedding,
         seq_lens: Tensor,
-        dtype: torch.dtype,
         device: torch.device,
         cp_rank: int = 0,
         cp_world_size: int = 1,
     ) -> "PackedContext":
         """Derive every field from one `seq_lens`, ensuring mutual consistency.
-
-        `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
-        sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. `dtype` must be the dtype
-        attention runs at, since it types the RoPE tables. The sequence is as long as `seq_lens` says,
-        padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -300,9 +295,7 @@ class PackedContext:
         # Document-local by construction: a token's position is its distance from its own
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
-        position_embeddings = {
-            rope_type: rotary_emb(position_ids, rope_type, dtype=dtype) for rope_type in rotary_emb.layer_types
-        }
+        position_embeddings = {rope_type: rotary_emb(position_ids, rope_type) for rope_type in rotary_emb.layer_types}
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
@@ -469,10 +462,20 @@ class DeepseekV4Compressor(nn.Module):
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         batch = hidden_states.shape[0]
+        compute_dtype = hidden_states.dtype
         layout = packed.compression_layouts[self.compress_rate]
 
+        # fp32 from the projections through the norm and the rotation, rounding once at the return,
+        # as vLLM's fused compressor does.
         width = self.n_series * self.head_dim
-        proj = torch.cat([self.kv_proj(hidden_states), self.gate_proj(hidden_states)], dim=-1)
+        flat_hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
+        proj = torch.cat(
+            [
+                matmul_to_float32(flat_hidden, self.kv_proj.weight.T),
+                matmul_to_float32(flat_hidden, self.gate_proj.weight.T),
+            ],
+            dim=-1,
+        ).view(*hidden_states.shape[:-1], -1)
         if cp_world_size > 1:
             proj = gather_for_cp(proj, cp_group)
         kv, gate = proj.split(width, dim=-1)
@@ -482,15 +485,13 @@ class DeepseekV4Compressor(nn.Module):
         if self.n_series == 2:
             kv, gate = self._overlap_with_previous_window(kv, gate, layout)
 
-        # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
-        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
+        weights = gate.softmax(dim=2, dtype=torch.float32)
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
-        cos, sin = self.rotary_emb(
-            entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type, dtype=compressed.dtype
-        )
-        return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+        cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
+        rotated = apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+        return rotated.to(compute_dtype)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
@@ -540,8 +541,8 @@ class DeepseekV4Indexer(nn.Module):
         n_entries = compressed_kv.shape[1]
 
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
-        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
+        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -643,7 +644,7 @@ class DeepseekV4Attention(nn.Module):
     1. Shared-KV multi-query attention. `kv_proj` emits a single `head_dim`-wide vector
        per token that serves as both key and value for every query head.
     2. Partial interleaved RoPE on the trailing `qk_rope_head_dim` channels of each head.
-       Because the value carries that rotation too, the conjugate rotation is applied to
+       Because the value carries that rotation too, the inverse rotation is applied to
        the attention output, which leaves each key's contribution a function of its
        relative distance to the query.
     3. A per-head learnable attention sink.
@@ -690,6 +691,8 @@ class DeepseekV4Attention(nn.Module):
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config) if compressor_class is not None else None
 
+        self.simulate_fp8_kv_cache = getattr(config, "simulate_fp8_kv_cache", False)
+
         self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
@@ -713,13 +716,14 @@ class DeepseekV4Attention(nn.Module):
         cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
-        # Normalizing before the transpose keeps the input contiguous for the quack kernel.
-        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape)).transpose(1, 2)  # (b, h, t, d)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin)
+        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape))  # (b, t, h, d)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+        if self.simulate_fp8_kv_cache:
+            kv = fake_quantize_kv_cache(kv, rope_dim=2 * cos.shape[-1])
         if self.cp_context.cp_enabled:
             kv = gather_for_cp(kv, self.cp_context.cp_group)  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
@@ -743,7 +747,7 @@ class DeepseekV4Attention(nn.Module):
             window_indices=packed.window_indices,
         )
         attn_output, _ = dsv4_sparse_attn(
-            q.transpose(1, 2).contiguous(),
+            q,
             inputs.kv_buf,
             inputs.indices,
             self.sinks,
@@ -751,8 +755,8 @@ class DeepseekV4Attention(nn.Module):
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
-        # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
+        # by the inverse angle at the query position cancels that out.
+        attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, sin, unsqueeze_dim=2, inverse_rotation=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
