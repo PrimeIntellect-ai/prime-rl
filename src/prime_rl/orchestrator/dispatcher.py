@@ -5,8 +5,7 @@
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
-- Optional dispatch rate limit via ``AsyncLimiter(dispatch_per_minute, 60)``: one
-  acquire per episode, so the rate is episodes per minute.
+- Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
@@ -140,7 +139,7 @@ class Dispatcher:
         progress: Progress | None,
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
-        dispatch_per_minute: float | None,
+        tasks_per_minute: float | None,
         max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
@@ -167,7 +166,7 @@ class Dispatcher:
         self.max_inflight = initial_max_inflight
         self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
-            AsyncLimiter(dispatch_per_minute, time_period=60) if dispatch_per_minute else None
+            AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
         # Admission smoothing: the pool may only GROW by ``burst_cap`` per
         # window. Replacing a completed episode is always free (each natural

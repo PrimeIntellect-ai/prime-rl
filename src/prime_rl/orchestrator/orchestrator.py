@@ -343,7 +343,7 @@ class Orchestrator:
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            dispatch_per_minute=config.concurrency.dispatch_per_minute,
+            tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,

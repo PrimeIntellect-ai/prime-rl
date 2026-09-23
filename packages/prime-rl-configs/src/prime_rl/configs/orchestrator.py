@@ -493,9 +493,6 @@ class ConcurrencyConfig(BaseConfig):
     max_inflight: int | None = Field(1024, ge=1)
     """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
-    dispatch_per_minute: int | None = Field(None, ge=1)
-    """Rate limit on episode dispatch, in episodes per minute, shared by train and eval. Each dispatched episode is one rollout, so for sandbox-backed environments this bounds the sandbox creation rate. None disables rate limiting; the in-flight cap still bounds the pool."""
-
     @model_validator(mode="after")
     def validate_bounds(self):
         if self.max_inflight is not None:
@@ -569,6 +566,9 @@ class OrchestratorConfig(BaseConfig):
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    tasks_per_minute: int | None = Field(None, ge=1)
+    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""

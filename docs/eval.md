@@ -36,7 +36,7 @@ Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<fi
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).
 
-Sandbox-backed sources create one sandbox per episode. Set `concurrency.dispatch_per_minute` to pace dispatch, so a large pinned band does not request thousands of sandboxes at once.
+Sandbox-backed sources create one sandbox per episode. Set `tasks_per_minute` to pace dispatch, so a large pinned band does not request thousands of sandboxes at once.
 
 ## Configuration
 
