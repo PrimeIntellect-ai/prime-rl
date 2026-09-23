@@ -159,3 +159,23 @@ over-pays. CSA gains 5-6% from queries early in a document, which have fewer tha
 entries to pick from. The sliding layer has nothing to skip (two forward tiles, both reached by
 almost every query) and pays about 0.7-0.9 ms (1%) for computing `TileCounts`, which the kernel timing
 includes. Peak memory is unchanged. The 92 kernel and model tests pass.
+
+### Not pursued
+
+- Fix 3 (a fixed HCA width from the configured `seq_len`): its purpose was one compile per run,
+  which fix 4 already gives for any width, and fix 2 makes a wider-than-needed width nearly free,
+  so the plumbing into `PackedContext` buys nothing.
+- Fix 1 (prewarming every reachable width): the fallback for an unacceptably slow dynamic kernel.
+  The tiled dynamic kernel runs at static speed, so there is nothing to fall back from.
+
+## Conclusion
+
+The recompiles came from `topk` being a tilelang compile key, and HCA's width changing with the
+longest document. The Slack claim that a dynamic `topk` is too slow is right for the backward
+(24-29% slower) and wrong for the forward, and the slowdown is a TileLang bounds-check artifact,
+not inherent: splitting the slot axis into a dynamic tile count and a static tile keeps the kernels
+at static speed with one compile per process. Every attention layer now compiles its kernels once,
+on the first step, instead of up to 33 times (about 11 s each on a cold cache) spread over a run.
+The same tile structure then allows skipping each query's unreachable tiles exactly, which cuts
+HCA kernel time by 22-43% (growing with sequence length) and CSA's by 5%, for about 1% on the
+sliding layer.
