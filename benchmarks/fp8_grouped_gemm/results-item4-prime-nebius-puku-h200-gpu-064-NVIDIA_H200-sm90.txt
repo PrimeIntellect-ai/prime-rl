@@ -1,0 +1,882 @@
+# 2026-09-23T17:35:01Z  host=prime-nebius-puku-h200-gpu-064  arch=sm90
+# label=item4  alignment=8
+# gpu=NVIDIA H200  sms=132  mem=143155 MiB
+# nvidia-smi (name, driver, max sm clk, max mem clk, cur sm clk): NVIDIA H200, 580.173.02, 1980 MHz, 3201 MHz, 345 MHz
+# torch=2.13.0+cu130  triton=3.7.1  deep_gemm=2.5.0+891d57b
+# num_experts=32  weight=(G, K, N)  shapes={'gate_up': (4096, 4096), 'down': (2048, 4096)}  ragged max/mean=6.0
+# do_bench warmup=10ms rep=40ms return_mode=min, fastest of 3 repeats
+
+## correctness gate (relative L2 error vs torch._grouped_mm, grouped rows only)
+  ok   gate_up rpe=128 balanced         fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=256 balanced         fwd=0.0370  dgrad=0.0370  wgrad=0.0365
+  ok   gate_up rpe=512 balanced         fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=1024 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=1536 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=2048 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=4096 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=6144 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=8192 balanced        fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=128 ragged           fwd=0.0370  dgrad=0.0370  wgrad=0.0360
+  ok   gate_up rpe=256 ragged           fwd=0.0370  dgrad=0.0370  wgrad=0.0363
+  ok   gate_up rpe=512 ragged           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=1024 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=1536 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=2048 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=4096 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=6144 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   gate_up rpe=8192 ragged          fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=128 balanced            fwd=0.0370  dgrad=0.0369  wgrad=0.0364
+  ok   down rpe=256 balanced            fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=512 balanced            fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=1024 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=1536 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=2048 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=4096 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=6144 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=8192 balanced           fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=128 ragged              fwd=0.0370  dgrad=0.0370  wgrad=0.0360
+  ok   down rpe=256 ragged              fwd=0.0370  dgrad=0.0370  wgrad=0.0363
+  ok   down rpe=512 ragged              fwd=0.0370  dgrad=0.0370  wgrad=0.0363
+  ok   down rpe=1024 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=1536 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=2048 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=4096 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=6144 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+  ok   down rpe=8192 ragged             fwd=0.0370  dgrad=0.0370  wgrad=0.0364
+
+## gate_up rpe=128 balanced  x.size(0)=4352 grouped=4096 real=4096  tail=256
+  bf16 fwd                        0.3895 ms  spread  1.8%
+  bf16 dgrad                      0.3908 ms  spread  1.3%
+  bf16 wgrad                      0.4597 ms  spread  1.0%
+  fp8 fwd                         0.8490 ms  spread  0.1%
+  fp8 dgrad                       0.8590 ms  spread  1.1%
+  fp8 wgrad                       3.2344 ms  spread  0.4%
+  bf16 fwd+bwd autograd           1.1868 ms  spread  8.0%
+  fp8 fwd+bwd autograd            4.8553 ms  spread  0.3%
+  sum fwd+dgrad+wgrad: bf16 1.2400 ms  fp8 4.9424 ms  fp8/bf16 3.986   autograd fp8/bf16 4.091
+  host launch wall bf16 fwd+bwd   0.1475 ms  (gpu 1.1868 ms, wall/gpu 0.12)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.7181 ms  (gpu 4.8553 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1251        0    0.0044      28.13x  spread  0.8%
+  act cast per-token x            0.0221     2300    0.0172       1.29x  spread  0.6%
+  weight cast fwd                 0.4252     3788    0.3792       1.12x  spread  0.2%
+  weight cast dgrad               0.4213     3823    0.3823       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.0300     1677    0.0171       1.75x  spread  0.1%
+  kmajor cast dy (wgrad)          0.0300     1679    0.0171       1.76x  spread  0.1%
+  unpack rows                     0.0222     3017    0.0212       1.05x  spread  0.6%
+  grad_weight zeros               0.4587     4682    0.5100       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7341     4388    0.7597       0.97x  spread  0.1%
+
+## gate_up rpe=256 balanced  x.size(0)=8448 grouped=8192 real=8192  tail=256
+  bf16 fwd                        0.4435 ms  spread  0.1%
+  bf16 dgrad                      0.4389 ms  spread  1.2%
+  bf16 wgrad                      0.6320 ms  spread  4.9%
+  fp8 fwd                         0.9165 ms  spread  0.9%
+  fp8 dgrad                       0.9288 ms  spread  0.6%
+  fp8 wgrad                       3.3012 ms  spread  0.9%
+  bf16 fwd+bwd autograd           1.3702 ms  spread 14.9%
+  fp8 fwd+bwd autograd            5.0717 ms  spread  0.9%
+  sum fwd+dgrad+wgrad: bf16 1.5144 ms  fp8 5.1466 ms  fp8/bf16 3.398   autograd fp8/bf16 3.702
+  host launch wall bf16 fwd+bwd   0.1427 ms  (gpu 1.3702 ms, wall/gpu 0.10)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.7750 ms  (gpu 5.0717 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1281        1    0.0046      27.81x  spread  2.5%
+  act cast per-token x            0.0359     2833    0.0296       1.21x  spread  0.4%
+  weight cast fwd                 0.4251     3789    0.3795       1.12x  spread  0.1%
+  weight cast dgrad               0.4211     3825    0.3797       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.0500     2015    0.0293       1.70x  spread  0.3%
+  kmajor cast dy (wgrad)          0.0500     2013    0.0293       1.70x  spread  0.4%
+  unpack rows                     0.0390     3444    0.0365       1.07x  spread  0.2%
+  grad_weight zeros               0.4588     4681    0.5086       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7343     4387    0.7600       0.97x  spread  0.0%
+
+## gate_up rpe=512 balanced  x.size(0)=16640 grouped=16384 real=16384  tail=256
+  bf16 fwd                        0.8443 ms  spread  1.1%
+  bf16 dgrad                      0.8523 ms  spread  0.3%
+  bf16 wgrad                      1.0193 ms  spread  5.7%
+  fp8 fwd                         1.1788 ms  spread  0.3%
+  fp8 dgrad                       1.1969 ms  spread  0.6%
+  fp8 wgrad                       3.4865 ms  spread  0.5%
+  bf16 fwd+bwd autograd           2.7168 ms  spread  1.9%
+  fp8 fwd+bwd autograd            5.7672 ms  spread  0.2%
+  sum fwd+dgrad+wgrad: bf16 2.7159 ms  fp8 5.8622 ms  fp8/bf16 2.158   autograd fp8/bf16 2.123
+  host launch wall bf16 fwd+bwd   0.1482 ms  (gpu 2.7168 ms, wall/gpu 0.05)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.0385 ms  (gpu 5.7672 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1296        1    0.0047      27.73x  spread  1.4%
+  act cast per-token x            0.0635     3204    0.0522       1.22x  spread  0.4%
+  weight cast fwd                 0.4257     3783    0.3795       1.12x  spread  0.0%
+  weight cast dgrad               0.4222     3814    0.3793       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.0919     2190    0.0517       1.78x  spread  0.5%
+  kmajor cast dy (wgrad)          0.0925     2177    0.0518       1.79x  spread  0.4%
+  unpack rows                     0.0724     3707    0.0670       1.08x  spread  0.1%
+  grad_weight zeros               0.4586     4682    0.5080       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7344     4386    0.7595       0.97x  spread  0.0%
+
+## gate_up rpe=1024 balanced  x.size(0)=33024 grouped=32768 real=32768  tail=256
+  bf16 fwd                        1.6745 ms  spread  0.1%
+  bf16 dgrad                      1.6772 ms  spread  0.1%
+  bf16 wgrad                      1.7814 ms  spread  1.9%
+  fp8 fwd                         1.7018 ms  spread  5.2%
+  fp8 dgrad                       1.7257 ms  spread  3.9%
+  fp8 wgrad                       3.7739 ms  spread  0.8%
+  bf16 fwd+bwd autograd           4.8177 ms  spread  8.5%
+  fp8 fwd+bwd autograd            7.0620 ms  spread  0.6%
+  sum fwd+dgrad+wgrad: bf16 5.1331 ms  fp8 7.2013 ms  fp8/bf16 1.403   autograd fp8/bf16 1.466
+  host launch wall bf16 fwd+bwd   0.1477 ms  (gpu 4.8177 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.5840 ms  (gpu 7.0620 ms, wall/gpu 0.37)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1287        2    0.0047      27.37x  spread  0.7%
+  act cast per-token x            0.1223     3327    0.0988       1.24x  spread  0.5%
+  weight cast fwd                 0.4258     3782    0.3791       1.12x  spread  0.1%
+  weight cast dgrad               0.4220     3816    0.3791       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.1851     2175    0.0979       1.89x  spread  0.1%
+  kmajor cast dy (wgrad)          0.1854     2172    0.0979       1.89x  spread  0.2%
+  unpack rows                     0.1399     3837    0.1300       1.08x  spread  0.1%
+  grad_weight zeros               0.4587     4682    0.5068       0.91x  spread  0.1%
+  grad_weight fp32->bf16          0.7345     4386    0.7596       0.97x  spread  0.0%
+
+## gate_up rpe=1536 balanced  x.size(0)=49408 grouped=49152 real=49152  tail=256
+  bf16 fwd                        2.4439 ms  spread  0.6%
+  bf16 dgrad                      2.4439 ms  spread  0.6%
+  bf16 wgrad                      2.5280 ms  spread  2.5%
+  fp8 fwd                         2.2539 ms  spread 11.8%
+  fp8 dgrad                       2.3241 ms  spread  3.5%
+  fp8 wgrad                       4.0681 ms  spread  2.9%
+  bf16 fwd+bwd autograd           7.1644 ms  spread  6.8%
+  fp8 fwd+bwd autograd            8.4791 ms  spread  3.5%
+  sum fwd+dgrad+wgrad: bf16 7.4158 ms  fp8 8.6461 ms  fp8/bf16 1.166   autograd fp8/bf16 1.183
+  host launch wall bf16 fwd+bwd   0.1502 ms  (gpu 7.1644 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   3.1920 ms  (gpu 8.4791 ms, wall/gpu 0.38)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1295        3    0.0047      27.35x  spread  1.3%
+  act cast per-token x            0.1834     3328    0.1466       1.25x  spread  0.2%
+  weight cast fwd                 0.4259     3781    0.3809       1.12x  spread  0.0%
+  weight cast dgrad               0.4217     3820    0.3810       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.2730     2213    0.1452       1.88x  spread  0.2%
+  kmajor cast dy (wgrad)          0.2748     2198    0.1451       1.89x  spread  0.1%
+  unpack rows                     0.2083     3866    0.1931       1.08x  spread  0.1%
+  grad_weight zeros               0.4590     4679    0.5101       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7340     4388    0.7639       0.96x  spread  0.1%
+
+## gate_up rpe=2048 balanced  x.size(0)=65792 grouped=65536 real=65536  tail=256
+  bf16 fwd                        3.2534 ms  spread  0.0%
+  bf16 dgrad                      3.2557 ms  spread  1.1%
+  bf16 wgrad                      3.2899 ms  spread  2.1%
+  fp8 fwd                         2.8825 ms  spread  8.6%
+  fp8 dgrad                       2.7706 ms  spread  0.2%
+  fp8 wgrad                       4.6904 ms  spread  1.1%
+  bf16 fwd+bwd autograd           9.9295 ms  spread  0.1%
+  fp8 fwd+bwd autograd           10.6476 ms  spread  3.2%
+  sum fwd+dgrad+wgrad: bf16 9.7990 ms  fp8 10.3434 ms  fp8/bf16 1.056   autograd fp8/bf16 1.072
+  host launch wall bf16 fwd+bwd   0.5900 ms  (gpu 9.9295 ms, wall/gpu 0.06)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   3.9890 ms  (gpu 10.6476 ms, wall/gpu 0.37)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1294        4    0.0048      26.95x  spread  1.2%
+  act cast per-token x            0.2618     3109    0.1942       1.35x  spread  0.2%
+  weight cast fwd                 0.4273     3769    0.3826       1.12x  spread  0.2%
+  weight cast dgrad               0.4234     3804    0.3825       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.3615     2228    0.1931       1.87x  spread  0.1%
+  kmajor cast dy (wgrad)          0.3628     2220    0.1932       1.88x  spread  0.1%
+  unpack rows                     0.2756     3895    0.2571       1.07x  spread  0.0%
+  grad_weight zeros               0.4586     4682    0.5122       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7343     4387    0.7576       0.97x  spread  0.1%
+
+## gate_up rpe=4096 balanced  x.size(0)=131328 grouped=131072 real=131072  tail=256
+  bf16 fwd                        6.5340 ms  spread  0.9%
+  bf16 dgrad                      6.5382 ms  spread  3.3%
+  bf16 wgrad                      6.7214 ms  spread 15.3%
+  fp8 fwd                         5.0416 ms  spread  1.3%
+  fp8 dgrad                       5.0609 ms  spread  2.5%
+  fp8 wgrad                       7.5556 ms  spread  3.8%
+  bf16 fwd+bwd autograd          19.5100 ms  spread  9.6%
+  fp8 fwd+bwd autograd           17.8604 ms  spread  8.2%
+  sum fwd+dgrad+wgrad: bf16 19.7935 ms  fp8 17.6581 ms  fp8/bf16 0.892   autograd fp8/bf16 0.915
+  host launch wall bf16 fwd+bwd   0.5527 ms  (gpu 19.5100 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   6.1624 ms  (gpu 17.8604 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1294        8    0.0050      26.10x  spread  1.8%
+  act cast per-token x            0.5948     2736    0.3815       1.56x  spread  0.2%
+  weight cast fwd                 0.4247     3793    0.3779       1.12x  spread  0.1%
+  weight cast dgrad               0.4213     3823    0.3776       1.12x  spread  0.0%
+  kmajor cast x (wgrad)           0.7419     2171    0.3779       1.96x  spread  0.2%
+  kmajor cast dy (wgrad)          0.7344     2193    0.3778       1.94x  spread  0.1%
+  unpack rows                     0.5460     3933    0.5052       1.08x  spread  0.0%
+  grad_weight zeros               0.4588     4681    0.5057       0.91x  spread  0.0%
+  grad_weight fp32->bf16          0.7345     4385    0.7574       0.97x  spread  0.0%
+
+## gate_up rpe=6144 balanced  x.size(0)=196864 grouped=196608 real=196608  tail=256
+  bf16 fwd                        9.7491 ms  spread  2.8%
+  bf16 dgrad                     10.0258 ms  spread 20.0%
+  bf16 wgrad                      9.5797 ms  spread  3.4%
+  fp8 fwd                         7.4022 ms  spread  0.9%
+  fp8 dgrad                       7.5163 ms  spread  5.9%
+  fp8 wgrad                      10.8310 ms  spread  3.2%
+  bf16 fwd+bwd autograd          29.1592 ms  spread  9.4%
+  fp8 fwd+bwd autograd           25.9841 ms  spread  2.6%
+  sum fwd+dgrad+wgrad: bf16 29.3546 ms  fp8 25.7495 ms  fp8/bf16 0.877   autograd fp8/bf16 0.891
+  host launch wall bf16 fwd+bwd   0.5997 ms  (gpu 29.1592 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   8.5949 ms  (gpu 25.9841 ms, wall/gpu 0.33)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1325       12    0.0052      25.40x  spread  0.8%
+  act cast per-token x            0.8695     2807    0.5795       1.50x  spread  0.1%
+  weight cast fwd                 0.4261     3780    0.3792       1.12x  spread  0.0%
+  weight cast dgrad               0.4225     3812    0.3792       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           1.2272     1969    0.5740       2.14x  spread  0.1%
+  kmajor cast dy (wgrad)          1.2238     1974    0.5739       2.13x  spread  0.2%
+  unpack rows                     0.8143     3956    0.7631       1.07x  spread  0.1%
+  grad_weight zeros               0.4585     4683    0.5077       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7345     4386    0.7631       0.96x  spread  0.1%
+
+## gate_up rpe=8192 balanced  x.size(0)=262400 grouped=262144 real=262144  tail=256
+  bf16 fwd                       13.3887 ms  spread  8.2%
+  bf16 dgrad                     13.3366 ms  spread 17.9%
+  bf16 wgrad                     13.0011 ms  spread  0.5%
+  fp8 fwd                         9.7140 ms  spread  7.0%
+  fp8 dgrad                       9.8132 ms  spread  4.1%
+  fp8 wgrad                      14.0468 ms  spread  0.6%
+  bf16 fwd+bwd autograd          40.2948 ms  spread  4.5%
+  fp8 fwd+bwd autograd           35.0514 ms  spread  0.5%
+  sum fwd+dgrad+wgrad: bf16 39.7264 ms  fp8 33.5740 ms  fp8/bf16 0.845   autograd fp8/bf16 0.870
+  host launch wall bf16 fwd+bwd   0.5741 ms  (gpu 40.2948 ms, wall/gpu 0.01)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd  10.9524 ms  (gpu 35.0514 ms, wall/gpu 0.31)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1302       16    0.0053      24.51x  spread  1.8%
+  act cast per-token x            1.1703     2781    0.7649       1.53x  spread  0.1%
+  weight cast fwd                 0.4263     3778    0.3793       1.12x  spread  0.1%
+  weight cast dgrad               0.4214     3822    0.3794       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           1.6655     1934    0.7622       2.19x  spread  0.1%
+  kmajor cast dy (wgrad)          1.6669     1932    0.7624       2.19x  spread  0.1%
+  unpack rows                     1.0879     3948    1.0080       1.08x  spread  0.1%
+  grad_weight zeros               0.4588     4680    0.5082       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7342     4387    0.7621       0.96x  spread  0.1%
+
+## gate_up rpe=128 ragged  x.size(0)=4352 grouped=4224 real=4096  tail=128
+  bf16 fwd                        0.4426 ms  spread  1.1%
+  bf16 dgrad                      0.4371 ms  spread  0.8%
+  bf16 wgrad                      0.4842 ms  spread  5.2%
+  fp8 fwd                         0.8757 ms  spread  0.4%
+  fp8 dgrad                       0.8890 ms  spread  0.5%
+  fp8 wgrad                       3.3019 ms  spread  0.5%
+  bf16 fwd+bwd autograd           1.3148 ms  spread  6.6%
+  fp8 fwd+bwd autograd            5.0010 ms  spread  0.3%
+  sum fwd+dgrad+wgrad: bf16 1.3639 ms  fp8 5.0667 ms  fp8/bf16 3.715   autograd fp8/bf16 3.804
+  host launch wall bf16 fwd+bwd   0.1477 ms  (gpu 1.3148 ms, wall/gpu 0.11)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.7417 ms  (gpu 5.0010 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1283        0    0.0045      28.64x  spread  0.4%
+  act cast per-token x            0.0380     1592    0.0197       1.93x  spread  0.7%
+  weight cast fwd                 0.4263     3778    0.3824       1.11x  spread  0.1%
+  weight cast dgrad               0.4228     3810    0.3823       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.0539      964    0.0178       3.03x  spread  0.4%
+  kmajor cast dy (wgrad)          0.0527      985    0.0178       2.96x  spread  0.4%
+  unpack rows                     0.0233     2971    0.0216       1.08x  spread  0.3%
+  grad_weight zeros               0.4586     4682    0.5123       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7344     4386    0.7567       0.97x  spread  0.1%
+
+## gate_up rpe=256 ragged  x.size(0)=8448 grouped=8320 real=8192  tail=128
+  bf16 fwd                        0.6004 ms  spread  0.3%
+  bf16 dgrad                      0.5956 ms  spread  0.5%
+  bf16 wgrad                      0.6732 ms  spread  3.7%
+  fp8 fwd                         0.9744 ms  spread  2.0%
+  fp8 dgrad                       0.9859 ms  spread  1.0%
+  fp8 wgrad                       3.3954 ms  spread  0.2%
+  bf16 fwd+bwd autograd           1.7078 ms  spread 12.9%
+  fp8 fwd+bwd autograd            5.2676 ms  spread  0.5%
+  sum fwd+dgrad+wgrad: bf16 1.8692 ms  fp8 5.3556 ms  fp8/bf16 2.865   autograd fp8/bf16 3.084
+  host launch wall bf16 fwd+bwd   0.1462 ms  (gpu 1.7078 ms, wall/gpu 0.09)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.8595 ms  (gpu 5.2676 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1295        1    0.0044      29.12x  spread  2.4%
+  act cast per-token x            0.0488     2250    0.0309       1.58x  spread  0.1%
+  weight cast fwd                 0.4250     3790    0.3824       1.11x  spread  0.1%
+  weight cast dgrad               0.4211     3825    0.3823       1.10x  spread  0.0%
+  kmajor cast x (wgrad)           0.0716     1427    0.0293       2.44x  spread  0.3%
+  kmajor cast dy (wgrad)          0.0704     1453    0.0293       2.40x  spread  0.5%
+  unpack rows                     0.0393     3469    0.0374       1.05x  spread  0.4%
+  grad_weight zeros               0.4586     4682    0.5116       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7345     4385    0.7598       0.97x  spread  0.0%
+
+## gate_up rpe=512 ragged  x.size(0)=16640 grouped=16480 real=16384  tail=160
+  bf16 fwd                        0.9714 ms  spread  1.5%
+  bf16 dgrad                      0.9723 ms  spread  1.7%
+  bf16 wgrad                      1.0785 ms  spread  2.9%
+  fp8 fwd                         1.2214 ms  spread  0.9%
+  fp8 dgrad                       1.2523 ms  spread  0.7%
+  fp8 wgrad                       3.5875 ms  spread  0.1%
+  bf16 fwd+bwd autograd           2.7011 ms  spread 12.2%
+  fp8 fwd+bwd autograd            5.9535 ms  spread  0.7%
+  sum fwd+dgrad+wgrad: bf16 3.0222 ms  fp8 6.0612 ms  fp8/bf16 2.006   autograd fp8/bf16 2.204
+  host launch wall bf16 fwd+bwd   0.1820 ms  (gpu 2.7011 ms, wall/gpu 0.07)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.1270 ms  (gpu 5.9535 ms, wall/gpu 0.36)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1272        1    0.0046      27.42x  spread 14.6%
+  act cast per-token x            0.0781     2724    0.0545       1.43x  spread  0.3%
+  weight cast fwd                 0.4248     3791    0.3828       1.11x  spread  0.1%
+  weight cast dgrad               0.4214     3822    0.3830       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.1178     1719    0.0521       2.26x  spread  0.1%
+  kmajor cast dy (wgrad)          0.1172     1729    0.0522       2.25x  spread  0.1%
+  unpack rows                     0.0725     3722    0.0676       1.07x  spread  0.5%
+  grad_weight zeros               0.4586     4683    0.5129       0.89x  spread  0.1%
+  grad_weight fp32->bf16          0.7343     4387    0.7600       0.97x  spread  0.0%
+
+## gate_up rpe=1024 ragged  x.size(0)=33024 grouped=32904 real=32768  tail=120
+  bf16 fwd                        1.8101 ms  spread  0.6%
+  bf16 dgrad                      1.8136 ms  spread  1.0%
+  bf16 wgrad                      1.8500 ms  spread  1.6%
+  fp8 fwd                         1.8092 ms  spread  7.7%
+  fp8 dgrad                       1.8023 ms  spread  1.8%
+  fp8 wgrad                       3.9959 ms  spread  0.8%
+  bf16 fwd+bwd autograd           5.5467 ms  spread  0.5%
+  fp8 fwd+bwd autograd            7.4507 ms  spread  1.4%
+  sum fwd+dgrad+wgrad: bf16 5.4737 ms  fp8 7.6074 ms  fp8/bf16 1.390   autograd fp8/bf16 1.343
+  host launch wall bf16 fwd+bwd   0.1519 ms  (gpu 5.5467 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.6346 ms  (gpu 7.4507 ms, wall/gpu 0.35)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1262        2    0.0047      26.83x  spread  0.7%
+  act cast per-token x            0.1368     3049    0.1014       1.35x  spread  0.3%
+  weight cast fwd                 0.4250     3790    0.3790       1.12x  spread  0.0%
+  weight cast dgrad               0.4213     3823    0.3790       1.11x  spread  0.0%
+  kmajor cast x (wgrad)           0.2089     1936    0.0987       2.12x  spread  0.1%
+  kmajor cast dy (wgrad)          0.2079     1944    0.0985       2.11x  spread  0.3%
+  unpack rows                     0.1406     3833    0.1308       1.08x  spread  0.1%
+  grad_weight zeros               0.4589     4680    0.5076       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7348     4384    0.7598       0.97x  spread  0.0%
+
+## gate_up rpe=1536 ragged  x.size(0)=49408 grouped=49256 real=49152  tail=152
+  bf16 fwd                        2.6693 ms  spread  1.2%
+  bf16 dgrad                      2.6656 ms  spread  1.4%
+  bf16 wgrad                      2.6626 ms  spread  0.5%
+  fp8 fwd                         2.4606 ms  spread  6.8%
+  fp8 dgrad                       2.3523 ms  spread  3.3%
+  fp8 wgrad                       4.4721 ms  spread  1.4%
+  bf16 fwd+bwd autograd           8.1233 ms  spread  0.5%
+  fp8 fwd+bwd autograd            9.1096 ms  spread  1.5%
+  sum fwd+dgrad+wgrad: bf16 7.9975 ms  fp8 9.2851 ms  fp8/bf16 1.161   autograd fp8/bf16 1.121
+  host launch wall bf16 fwd+bwd   0.1634 ms  (gpu 8.1233 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   3.2627 ms  (gpu 9.1096 ms, wall/gpu 0.36)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1266        3    0.0047      26.73x  spread  2.8%
+  act cast per-token x            0.1953     3174    0.1496       1.31x  spread  0.3%
+  weight cast fwd                 0.4245     3794    0.3822       1.11x  spread  0.1%
+  weight cast dgrad               0.4221     3816    0.3822       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.2937     2061    0.1464       2.01x  spread  0.1%
+  kmajor cast dy (wgrad)          0.2949     2053    0.1463       2.02x  spread  0.1%
+  unpack rows                     0.2096     3850    0.1931       1.09x  spread  0.3%
+  grad_weight zeros               0.4585     4683    0.5117       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7340     4389    0.7579       0.97x  spread  0.1%
+
+## gate_up rpe=2048 ragged  x.size(0)=65792 grouped=65664 real=65536  tail=128
+  bf16 fwd                        3.4669 ms  spread  1.9%
+  bf16 dgrad                      3.4754 ms  spread  1.8%
+  bf16 wgrad                      3.4799 ms  spread 11.2%
+  fp8 fwd                         2.9302 ms  spread 14.6%
+  fp8 dgrad                       2.9128 ms  spread  0.4%
+  fp8 wgrad                       5.0044 ms  spread  2.4%
+  bf16 fwd+bwd autograd          10.6103 ms  spread  5.9%
+  fp8 fwd+bwd autograd           10.9766 ms  spread  3.1%
+  sum fwd+dgrad+wgrad: bf16 10.4222 ms  fp8 10.8474 ms  fp8/bf16 1.041   autograd fp8/bf16 1.035
+  host launch wall bf16 fwd+bwd   0.2726 ms  (gpu 10.6103 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   3.9645 ms  (gpu 10.9766 ms, wall/gpu 0.36)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1263        4    0.0048      26.15x  spread  3.7%
+  act cast per-token x            0.2703     3050    0.1957       1.38x  spread  0.4%
+  weight cast fwd                 0.4228     3810    0.3814       1.11x  spread  0.1%
+  weight cast dgrad               0.4193     3841    0.3814       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.3836     2104    0.1933       1.98x  spread  0.3%
+  kmajor cast dy (wgrad)          0.3825     2110    0.1929       1.98x  spread  0.2%
+  unpack rows                     0.2754     3907    0.2547       1.08x  spread  0.0%
+  grad_weight zeros               0.4588     4680    0.5108       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7343     4387    0.7603       0.97x  spread  0.1%
+
+## gate_up rpe=4096 ragged  x.size(0)=131328 grouped=131176 real=131072  tail=152
+  bf16 fwd                        6.7585 ms  spread  3.1%
+  bf16 dgrad                      6.7528 ms  spread  2.9%
+  bf16 wgrad                      6.9564 ms  spread 10.9%
+  fp8 fwd                         5.2617 ms  spread  0.3%
+  fp8 dgrad                       5.1224 ms  spread  3.7%
+  fp8 wgrad                       7.7767 ms  spread  2.1%
+  bf16 fwd+bwd autograd          20.1321 ms  spread 11.2%
+  fp8 fwd+bwd autograd           18.4271 ms  spread  4.8%
+  sum fwd+dgrad+wgrad: bf16 20.4677 ms  fp8 18.1609 ms  fp8/bf16 0.887   autograd fp8/bf16 0.915
+  host launch wall bf16 fwd+bwd   0.4788 ms  (gpu 20.1321 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   6.3570 ms  (gpu 18.4271 ms, wall/gpu 0.34)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1287        8    0.0050      25.94x  spread  1.2%
+  act cast per-token x            0.6031     2714    0.3854       1.56x  spread  0.2%
+  weight cast fwd                 0.4269     3773    0.3792       1.13x  spread  0.0%
+  weight cast dgrad               0.4211     3825    0.3794       1.11x  spread  0.1%
+  kmajor cast x (wgrad)           0.7531     2140    0.3795       1.98x  spread  0.1%
+  kmajor cast dy (wgrad)          0.7579     2127    0.3796       2.00x  spread  0.1%
+  unpack rows                     0.5468     3930    0.5136       1.06x  spread  0.2%
+  grad_weight zeros               0.4586     4682    0.5071       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7341     4388    0.7600       0.97x  spread  0.0%
+
+## gate_up rpe=6144 ragged  x.size(0)=196864 grouped=196696 real=196608  tail=168
+  bf16 fwd                       10.2557 ms  spread  0.4%
+  bf16 dgrad                     10.2567 ms  spread 10.5%
+  bf16 wgrad                     10.0823 ms  spread  1.4%
+  fp8 fwd                         7.3977 ms  spread  1.4%
+  fp8 dgrad                       7.4814 ms  spread 10.1%
+  fp8 wgrad                      11.5280 ms  spread  4.0%
+  bf16 fwd+bwd autograd          30.8369 ms  spread  4.9%
+  fp8 fwd+bwd autograd           26.6408 ms  spread  1.7%
+  sum fwd+dgrad+wgrad: bf16 30.5948 ms  fp8 26.4070 ms  fp8/bf16 0.863   autograd fp8/bf16 0.864
+  host launch wall bf16 fwd+bwd   0.6081 ms  (gpu 30.8369 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   8.6878 ms  (gpu 26.6408 ms, wall/gpu 0.33)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1257       13    0.0052      23.95x  spread  1.8%
+  act cast per-token x            0.8765     2796    0.5793       1.51x  spread  0.1%
+  weight cast fwd                 0.4254     3786    0.3790       1.12x  spread  0.2%
+  weight cast dgrad               0.4231     3807    0.3788       1.12x  spread  0.1%
+  kmajor cast x (wgrad)           1.2182     1984    0.5718       2.13x  spread  0.1%
+  kmajor cast dy (wgrad)          1.2215     1979    0.5717       2.14x  spread  0.1%
+  unpack rows                     0.8146     3956    0.7603       1.07x  spread  0.1%
+  grad_weight zeros               0.4589     4679    0.5077       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.7344     4386    0.7597       0.97x  spread  0.1%
+
+## gate_up rpe=8192 ragged  x.size(0)=262400 grouped=262264 real=262144  tail=136
+  bf16 fwd                       13.7076 ms  spread  4.5%
+  bf16 dgrad                     13.9543 ms  spread  9.5%
+  bf16 wgrad                     13.2954 ms  spread  1.2%
+  fp8 fwd                         9.6368 ms  spread  5.8%
+  fp8 dgrad                       9.8931 ms  spread  5.3%
+  fp8 wgrad                      14.8386 ms  spread  1.3%
+  bf16 fwd+bwd autograd          40.7156 ms  spread  3.8%
+  fp8 fwd+bwd autograd           35.5187 ms  spread  2.6%
+  sum fwd+dgrad+wgrad: bf16 40.9573 ms  fp8 34.3685 ms  fp8/bf16 0.839   autograd fp8/bf16 0.872
+  host launch wall bf16 fwd+bwd   0.6630 ms  (gpu 40.7156 ms, wall/gpu 0.02)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd  11.1633 ms  (gpu 35.5187 ms, wall/gpu 0.31)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1263       17    0.0073      17.31x  spread  1.2%
+  act cast per-token x            1.1725     2784    0.7731       1.52x  spread  0.1%
+  weight cast fwd                 0.4267     3775    0.3822       1.12x  spread  0.1%
+  weight cast dgrad               0.4213     3823    0.3822       1.10x  spread  0.0%
+  kmajor cast x (wgrad)           1.6547     1948    0.7607       2.18x  spread  0.1%
+  kmajor cast dy (wgrad)          1.6712     1928    0.7607       2.20x  spread  0.0%
+  unpack rows                     1.0869     3953    1.0172       1.07x  spread  0.3%
+  grad_weight zeros               0.4588     4681    0.5119       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.7343     4387    0.7601       0.97x  spread  0.0%
+
+## down rpe=128 balanced  x.size(0)=4352 grouped=4096 real=4096  tail=256
+  bf16 fwd                        0.2121 ms  spread  0.0%
+  bf16 dgrad                      0.1988 ms  spread  1.8%
+  bf16 wgrad                      0.2390 ms  spread  3.5%
+  fp8 fwd                         0.5418 ms  spread  0.6%
+  fp8 dgrad                       0.5443 ms  spread  0.6%
+  fp8 wgrad                       1.7682 ms  spread  0.3%
+  bf16 fwd+bwd autograd           0.6390 ms  spread  4.0%
+  fp8 fwd+bwd autograd            2.7741 ms  spread  9.3%
+  sum fwd+dgrad+wgrad: bf16 0.6498 ms  fp8 2.8542 ms  fp8/bf16 4.392   autograd fp8/bf16 4.341
+  host launch wall bf16 fwd+bwd   0.1425 ms  (gpu 0.6390 ms, wall/gpu 0.22)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.4317 ms  (gpu 2.7741 ms, wall/gpu 0.52)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1288        0    0.0044      28.95x  spread  1.5%
+  act cast per-token x            0.0142     1794    0.0113       1.25x  spread  1.6%
+  weight cast fwd                 0.2134     3774    0.1928       1.11x  spread  0.0%
+  weight cast dgrad               0.2110     3816    0.1929       1.09x  spread  0.0%
+  kmajor cast x (wgrad)           0.0190     1326    0.0112       1.69x  spread  0.5%
+  kmajor cast dy (wgrad)          0.0296     1700    0.0174       1.70x  spread  0.9%
+  unpack rows                     0.0229     2925    0.0214       1.07x  spread  0.4%
+  grad_weight zeros               0.2314     4640    0.2564       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3694     4360    0.3789       0.97x  spread  0.1%
+
+## down rpe=256 balanced  x.size(0)=8448 grouped=8192 real=8192  tail=256
+  bf16 fwd                        0.2323 ms  spread  0.6%
+  bf16 dgrad                      0.2166 ms  spread  2.9%
+  bf16 wgrad                      0.3195 ms  spread  8.9%
+  fp8 fwd                         0.5910 ms  spread  0.3%
+  fp8 dgrad                       0.5948 ms  spread  1.1%
+  fp8 wgrad                       1.8042 ms  spread  0.2%
+  bf16 fwd+bwd autograd           0.7228 ms  spread 13.8%
+  fp8 fwd+bwd autograd            2.9010 ms  spread  0.6%
+  sum fwd+dgrad+wgrad: bf16 0.7683 ms  fp8 2.9899 ms  fp8/bf16 3.892   autograd fp8/bf16 4.014
+  host launch wall bf16 fwd+bwd   0.1392 ms  (gpu 0.7228 ms, wall/gpu 0.19)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.4370 ms  (gpu 2.9010 ms, wall/gpu 0.50)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1266        1    0.0045      27.87x  spread  0.4%
+  act cast per-token x            0.0215     2365    0.0174       1.24x  spread  1.2%
+  weight cast fwd                 0.2126     3787    0.1927       1.10x  spread  0.1%
+  weight cast dgrad               0.2103     3829    0.1925       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.0296     1699    0.0173       1.71x  spread  0.3%
+  kmajor cast dy (wgrad)          0.0500     2015    0.0289       1.73x  spread  0.1%
+  unpack rows                     0.0392     3427    0.0366       1.07x  spread  0.3%
+  grad_weight zeros               0.2315     4638    0.2584       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.3692     4362    0.3785       0.98x  spread  0.2%
+
+## down rpe=512 balanced  x.size(0)=16640 grouped=16384 real=16384  tail=256
+  bf16 fwd                        0.4415 ms  spread  0.7%
+  bf16 dgrad                      0.4172 ms  spread  1.8%
+  bf16 wgrad                      0.5192 ms  spread  7.0%
+  fp8 fwd                         0.7278 ms  spread  2.1%
+  fp8 dgrad                       0.7299 ms  spread  0.6%
+  fp8 wgrad                       1.9081 ms  spread  0.7%
+  bf16 fwd+bwd autograd           1.2327 ms  spread 17.5%
+  fp8 fwd+bwd autograd            3.2895 ms  spread  0.3%
+  sum fwd+dgrad+wgrad: bf16 1.3779 ms  fp8 3.3659 ms  fp8/bf16 2.443   autograd fp8/bf16 2.669
+  host launch wall bf16 fwd+bwd   0.1366 ms  (gpu 1.2327 ms, wall/gpu 0.11)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.5923 ms  (gpu 3.2895 ms, wall/gpu 0.48)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1277        1    0.0046      27.53x  spread  4.1%
+  act cast per-token x            0.0357     2846    0.0291       1.23x  spread  0.3%
+  weight cast fwd                 0.2149     3747    0.1932       1.11x  spread  0.0%
+  weight cast dgrad               0.2116     3806    0.1929       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.0504     1996    0.0287       1.76x  spread  0.3%
+  kmajor cast dy (wgrad)          0.0927     2172    0.0520       1.78x  spread  0.6%
+  unpack rows                     0.0722     3718    0.0668       1.08x  spread  0.3%
+  grad_weight zeros               0.2315     4638    0.2585       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.3694     4360    0.3806       0.97x  spread  0.1%
+
+## down rpe=1024 balanced  x.size(0)=33024 grouped=32768 real=32768  tail=256
+  bf16 fwd                        0.8544 ms  spread  1.1%
+  bf16 dgrad                      0.8217 ms  spread  2.6%
+  bf16 wgrad                      0.8982 ms  spread  3.2%
+  fp8 fwd                         1.0313 ms  spread  0.9%
+  fp8 dgrad                       1.0373 ms  spread  0.6%
+  fp8 wgrad                       2.0824 ms  spread  1.0%
+  bf16 fwd+bwd autograd           2.3666 ms  spread 12.9%
+  fp8 fwd+bwd autograd            4.0640 ms  spread  1.5%
+  sum fwd+dgrad+wgrad: bf16 2.5743 ms  fp8 4.1511 ms  fp8/bf16 1.612   autograd fp8/bf16 1.717
+  host launch wall bf16 fwd+bwd   0.1348 ms  (gpu 2.3666 ms, wall/gpu 0.06)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.8732 ms  (gpu 4.0640 ms, wall/gpu 0.46)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1249        2    0.0047      26.55x  spread  4.6%
+  act cast per-token x            0.0636     3199    0.0525       1.21x  spread  0.4%
+  weight cast fwd                 0.2154     3739    0.1917       1.12x  spread  0.1%
+  weight cast dgrad               0.2110     3816    0.1916       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.0953     2113    0.0520       1.83x  spread  0.1%
+  kmajor cast dy (wgrad)          0.1851     2175    0.0980       1.89x  spread  0.2%
+  unpack rows                     0.1398     3839    0.1300       1.08x  spread  0.2%
+  grad_weight zeros               0.2314     4640    0.2572       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3697     4357    0.3789       0.98x  spread  0.1%
+
+## down rpe=1536 balanced  x.size(0)=49408 grouped=49152 real=49152  tail=256
+  bf16 fwd                        1.2655 ms  spread  0.3%
+  bf16 dgrad                      1.2194 ms  spread  2.3%
+  bf16 wgrad                      1.2849 ms  spread  1.3%
+  fp8 fwd                         1.3498 ms  spread  1.4%
+  fp8 dgrad                       1.3715 ms  spread  4.3%
+  fp8 wgrad                       2.2794 ms  spread  0.8%
+  bf16 fwd+bwd autograd           3.3026 ms  spread 19.9%
+  fp8 fwd+bwd autograd            4.8652 ms  spread  1.2%
+  sum fwd+dgrad+wgrad: bf16 3.7698 ms  fp8 5.0007 ms  fp8/bf16 1.327   autograd fp8/bf16 1.473
+  host launch wall bf16 fwd+bwd   0.1862 ms  (gpu 3.3026 ms, wall/gpu 0.06)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.2409 ms  (gpu 4.8652 ms, wall/gpu 0.46)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1288        3    0.0048      27.01x  spread  0.4%
+  act cast per-token x            0.0923     3307    0.0756       1.22x  spread  0.4%
+  weight cast fwd                 0.2147     3752    0.1927       1.11x  spread  0.3%
+  weight cast dgrad               0.2121     3796    0.1927       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.1396     2163    0.0749       1.86x  spread  0.2%
+  kmajor cast dy (wgrad)          0.2721     2220    0.1467       1.86x  spread  0.1%
+  unpack rows                     0.2089     3856    0.1926       1.08x  spread  0.1%
+  grad_weight zeros               0.2315     4638    0.2567       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3697     4357    0.3788       0.98x  spread  0.1%
+
+## down rpe=2048 balanced  x.size(0)=65792 grouped=65536 real=65536  tail=256
+  bf16 fwd                        1.6789 ms  spread  0.0%
+  bf16 dgrad                      1.6275 ms  spread  3.1%
+  bf16 wgrad                      1.6654 ms  spread  1.0%
+  fp8 fwd                         1.7378 ms  spread  3.1%
+  fp8 dgrad                       1.6382 ms  spread  3.8%
+  fp8 wgrad                       2.6552 ms  spread  1.9%
+  bf16 fwd+bwd autograd           4.5388 ms  spread 13.4%
+  fp8 fwd+bwd autograd            5.8793 ms  spread  1.3%
+  sum fwd+dgrad+wgrad: bf16 4.9719 ms  fp8 6.0312 ms  fp8/bf16 1.213   autograd fp8/bf16 1.295
+  host launch wall bf16 fwd+bwd   0.1402 ms  (gpu 4.5388 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.5483 ms  (gpu 5.8793 ms, wall/gpu 0.43)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1304        4    0.0048      27.16x  spread  1.0%
+  act cast per-token x            0.1249     3257    0.0988       1.27x  spread  0.4%
+  weight cast fwd                 0.2145     3755    0.1923       1.12x  spread  0.3%
+  weight cast dgrad               0.2114     3809    0.1924       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.1836     2193    0.0977       1.88x  spread  0.2%
+  kmajor cast dy (wgrad)          0.3641     2212    0.1924       1.89x  spread  0.1%
+  unpack rows                     0.2757     3894    0.2580       1.07x  spread  0.1%
+  grad_weight zeros               0.2315     4638    0.2580       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3696     4358    0.3800       0.97x  spread  0.1%
+
+## down rpe=4096 balanced  x.size(0)=131328 grouped=131072 real=131072  tail=256
+  bf16 fwd                        3.3437 ms  spread  0.5%
+  bf16 dgrad                      3.2940 ms  spread  0.3%
+  bf16 wgrad                      3.2991 ms  spread  9.4%
+  fp8 fwd                         2.9918 ms  spread 10.3%
+  fp8 dgrad                       2.9301 ms  spread  0.7%
+  fp8 wgrad                       4.3096 ms  spread  0.8%
+  bf16 fwd+bwd autograd          10.2651 ms  spread  3.7%
+  fp8 fwd+bwd autograd           10.2735 ms  spread  7.2%
+  sum fwd+dgrad+wgrad: bf16 9.9368 ms  fp8 10.2315 ms  fp8/bf16 1.030   autograd fp8/bf16 1.001
+  host launch wall bf16 fwd+bwd   0.4270 ms  (gpu 10.2651 ms, wall/gpu 0.04)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   3.9197 ms  (gpu 10.2735 ms, wall/gpu 0.38)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1247        8    0.0050      24.98x  spread  3.5%
+  act cast per-token x            0.2729     2981    0.1949       1.40x  spread  0.2%
+  weight cast fwd                 0.2141     3761    0.1930       1.11x  spread  0.1%
+  weight cast dgrad               0.2111     3815    0.1931       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.3698     2178    0.1928       1.92x  spread  0.4%
+  kmajor cast dy (wgrad)          0.7423     2170    0.3807       1.95x  spread  0.1%
+  unpack rows                     0.5454     3937    0.5084       1.07x  spread  0.2%
+  grad_weight zeros               0.2316     4637    0.2579       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3695     4359    0.3806       0.97x  spread  0.1%
+
+## down rpe=6144 balanced  x.size(0)=196864 grouped=196608 real=196608  tail=256
+  bf16 fwd                        5.0089 ms  spread  3.1%
+  bf16 dgrad                      5.0007 ms  spread  0.8%
+  bf16 wgrad                      4.9283 ms  spread 10.6%
+  fp8 fwd                         4.2147 ms  spread  4.6%
+  fp8 dgrad                       4.2037 ms  spread  1.3%
+  fp8 wgrad                       6.1271 ms  spread  1.5%
+  bf16 fwd+bwd autograd          15.5358 ms  spread  6.1%
+  fp8 fwd+bwd autograd           14.5620 ms  spread  0.9%
+  sum fwd+dgrad+wgrad: bf16 14.9379 ms  fp8 14.5455 ms  fp8/bf16 0.974   autograd fp8/bf16 0.937
+  host launch wall bf16 fwd+bwd   0.5377 ms  (gpu 15.5358 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   5.4594 ms  (gpu 14.5620 ms, wall/gpu 0.37)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1250       13    0.0052      24.11x  spread  2.2%
+  act cast per-token x            0.3996     3054    0.2889       1.38x  spread  0.3%
+  weight cast fwd                 0.2132     3778    0.1918       1.11x  spread  0.1%
+  weight cast dgrad               0.2107     3823    0.1920       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.6093     1982    0.2860       2.13x  spread  0.2%
+  kmajor cast dy (wgrad)          1.2238     1974    0.5686       2.15x  spread  0.1%
+  unpack rows                     0.8156     3949    0.7644       1.07x  spread  0.1%
+  grad_weight zeros               0.2313     4642    0.2573       0.90x  spread  0.2%
+  grad_weight fp32->bf16          0.3692     4363    0.3808       0.97x  spread  0.1%
+
+## down rpe=8192 balanced  x.size(0)=262400 grouped=262144 real=262144  tail=256
+  bf16 fwd                        6.7932 ms  spread  0.9%
+  bf16 dgrad                      6.6544 ms  spread  7.1%
+  bf16 wgrad                      6.5132 ms  spread  9.9%
+  fp8 fwd                         5.3373 ms  spread  3.0%
+  fp8 dgrad                       5.3955 ms  spread  1.3%
+  fp8 wgrad                       8.0136 ms  spread  6.0%
+  bf16 fwd+bwd autograd          20.1494 ms  spread 16.0%
+  fp8 fwd+bwd autograd           18.7121 ms  spread 10.6%
+  sum fwd+dgrad+wgrad: bf16 19.9607 ms  fp8 18.7463 ms  fp8/bf16 0.939   autograd fp8/bf16 0.929
+  host launch wall bf16 fwd+bwd   0.5245 ms  (gpu 20.1494 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   6.7511 ms  (gpu 18.7121 ms, wall/gpu 0.36)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1292       16    0.0053      24.32x  spread  1.6%
+  act cast per-token x            0.5342     3046    0.3845       1.39x  spread  0.2%
+  weight cast fwd                 0.2135     3771    0.1930       1.11x  spread  0.1%
+  weight cast dgrad               0.2100     3835    0.1931       1.09x  spread  0.2%
+  kmajor cast x (wgrad)           0.8207     1963    0.3844       2.14x  spread  0.2%
+  kmajor cast dy (wgrad)          1.6579     1943    0.7615       2.18x  spread  0.1%
+  unpack rows                     1.0831     3966    1.0105       1.07x  spread  0.2%
+  grad_weight zeros               0.2316     4636    0.2584       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3694     4360    0.3844       0.96x  spread  0.1%
+
+## down rpe=128 ragged  x.size(0)=4352 grouped=4224 real=4096  tail=128
+  bf16 fwd                        0.2354 ms  spread  0.4%
+  bf16 dgrad                      0.2353 ms  spread  1.2%
+  bf16 wgrad                      0.2597 ms  spread  1.2%
+  fp8 fwd                         0.5518 ms  spread  0.5%
+  fp8 dgrad                       0.5646 ms  spread  0.7%
+  fp8 wgrad                       1.8059 ms  spread  0.4%
+  bf16 fwd+bwd autograd           0.7146 ms  spread  5.0%
+  fp8 fwd+bwd autograd            2.8645 ms  spread  0.4%
+  sum fwd+dgrad+wgrad: bf16 0.7304 ms  fp8 2.9223 ms  fp8/bf16 4.001   autograd fp8/bf16 4.008
+  host launch wall bf16 fwd+bwd   0.1379 ms  (gpu 0.7146 ms, wall/gpu 0.19)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.4227 ms  (gpu 2.8645 ms, wall/gpu 0.50)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1291        0    0.0045      28.41x  spread  1.1%
+  act cast per-token x            0.0236     1280    0.0124       1.91x  spread  0.5%
+  weight cast fwd                 0.2143     3757    0.1913       1.12x  spread  0.1%
+  weight cast dgrad               0.2114     3809    0.1913       1.11x  spread  0.2%
+  kmajor cast x (wgrad)           0.0320      812    0.0113       2.83x  spread  0.5%
+  kmajor cast dy (wgrad)          0.0525      989    0.0177       2.97x  spread  0.6%
+  unpack rows                     0.0234     2954    0.0218       1.07x  spread  0.3%
+  grad_weight zeros               0.2315     4638    0.2563       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.3696     4357    0.3798       0.97x  spread  0.0%
+
+## down rpe=256 ragged  x.size(0)=8448 grouped=8320 real=8192  tail=128
+  bf16 fwd                        0.3122 ms  spread  0.7%
+  bf16 dgrad                      0.2934 ms  spread  2.2%
+  bf16 wgrad                      0.3485 ms  spread  3.4%
+  fp8 fwd                         0.6065 ms  spread  0.7%
+  fp8 dgrad                       0.6202 ms  spread  0.7%
+  fp8 wgrad                       1.8475 ms  spread  0.8%
+  bf16 fwd+bwd autograd           0.8937 ms  spread 10.2%
+  fp8 fwd+bwd autograd            3.0161 ms  spread  0.3%
+  sum fwd+dgrad+wgrad: bf16 0.9541 ms  fp8 3.0741 ms  fp8/bf16 3.222   autograd fp8/bf16 3.375
+  host launch wall bf16 fwd+bwd   0.1373 ms  (gpu 0.8937 ms, wall/gpu 0.15)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.4666 ms  (gpu 3.0161 ms, wall/gpu 0.49)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1260        1    0.0046      27.35x  spread  3.2%
+  act cast per-token x            0.0296     1857    0.0184       1.61x  spread  0.3%
+  weight cast fwd                 0.2129     3783    0.1920       1.11x  spread  0.1%
+  weight cast dgrad               0.2105     3826    0.1919       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.0414     1234    0.0175       2.37x  spread  0.4%
+  kmajor cast dy (wgrad)          0.0704     1453    0.0294       2.39x  spread  0.2%
+  unpack rows                     0.0393     3466    0.0372       1.06x  spread  0.1%
+  grad_weight zeros               0.2315     4639    0.2572       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.3697     4356    0.3786       0.98x  spread  0.1%
+
+## down rpe=512 ragged  x.size(0)=16640 grouped=16480 real=16384  tail=160
+  bf16 fwd                        0.4986 ms  spread  1.8%
+  bf16 dgrad                      0.4992 ms  spread  0.4%
+  bf16 wgrad                      0.5382 ms  spread  2.7%
+  fp8 fwd                         0.7571 ms  spread  0.5%
+  fp8 dgrad                       0.7558 ms  spread  1.4%
+  fp8 wgrad                       1.9804 ms  spread  0.5%
+  bf16 fwd+bwd autograd           1.3895 ms  spread 14.2%
+  fp8 fwd+bwd autograd            3.4272 ms  spread  0.9%
+  sum fwd+dgrad+wgrad: bf16 1.5360 ms  fp8 3.4932 ms  fp8/bf16 2.274   autograd fp8/bf16 2.466
+  host launch wall bf16 fwd+bwd   0.1539 ms  (gpu 1.3895 ms, wall/gpu 0.11)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.5942 ms  (gpu 3.4272 ms, wall/gpu 0.47)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1292        1    0.0047      27.66x  spread  0.5%
+  act cast per-token x            0.0447     2382    0.0299       1.49x  spread  0.1%
+  weight cast fwd                 0.2136     3770    0.1923       1.11x  spread  0.1%
+  weight cast dgrad               0.2105     3826    0.1925       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.0641     1580    0.0287       2.23x  spread  0.2%
+  kmajor cast dy (wgrad)          0.1164     1740    0.0518       2.25x  spread  0.4%
+  unpack rows                     0.0726     3717    0.0676       1.07x  spread  0.1%
+  grad_weight zeros               0.2314     4640    0.2580       0.90x  spread  0.0%
+  grad_weight fp32->bf16          0.3697     4357    0.3790       0.98x  spread  0.1%
+
+## down rpe=1024 ragged  x.size(0)=33024 grouped=32904 real=32768  tail=120
+  bf16 fwd                        0.9275 ms  spread  0.5%
+  bf16 dgrad                      0.9094 ms  spread  2.2%
+  bf16 wgrad                      0.9279 ms  spread  1.1%
+  fp8 fwd                         1.0705 ms  spread  1.2%
+  fp8 dgrad                       1.0743 ms  spread  2.6%
+  fp8 wgrad                       2.2417 ms  spread  1.2%
+  bf16 fwd+bwd autograd           2.6672 ms  spread  6.2%
+  fp8 fwd+bwd autograd            4.2716 ms  spread  1.1%
+  sum fwd+dgrad+wgrad: bf16 2.7648 ms  fp8 4.3865 ms  fp8/bf16 1.587   autograd fp8/bf16 1.602
+  host launch wall bf16 fwd+bwd   0.1431 ms  (gpu 2.6672 ms, wall/gpu 0.05)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   1.9353 ms  (gpu 4.2716 ms, wall/gpu 0.45)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1286        2    0.0046      27.72x  spread  0.4%
+  act cast per-token x            0.0728     2866    0.0534       1.36x  spread  0.3%
+  weight cast fwd                 0.2131     3779    0.1930       1.10x  spread  0.1%
+  weight cast dgrad               0.2101     3833    0.1930       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.1099     1840    0.0521       2.11x  spread  0.2%
+  kmajor cast dy (wgrad)          0.2073     1950    0.0979       2.12x  spread  0.2%
+  unpack rows                     0.1410     3823    0.1309       1.08x  spread  0.0%
+  grad_weight zeros               0.2315     4638    0.2588       0.89x  spread  0.0%
+  grad_weight fp32->bf16          0.3700     4354    0.3785       0.98x  spread  0.1%
+
+## down rpe=1536 ragged  x.size(0)=49408 grouped=49256 real=49152  tail=152
+  bf16 fwd                        1.3700 ms  spread  0.1%
+  bf16 dgrad                      1.3253 ms  spread  2.5%
+  bf16 wgrad                      1.3300 ms  spread  0.2%
+  fp8 fwd                         1.3881 ms  spread  1.0%
+  fp8 dgrad                       1.3943 ms  spread  5.2%
+  fp8 wgrad                       2.5296 ms  spread  1.7%
+  bf16 fwd+bwd autograd           3.7524 ms  spread 11.0%
+  fp8 fwd+bwd autograd            5.1925 ms  spread  1.6%
+  sum fwd+dgrad+wgrad: bf16 4.0252 ms  fp8 5.3120 ms  fp8/bf16 1.320   autograd fp8/bf16 1.384
+  host launch wall bf16 fwd+bwd   0.1764 ms  (gpu 3.7524 ms, wall/gpu 0.05)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.2483 ms  (gpu 5.1925 ms, wall/gpu 0.43)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1264        3    0.0048      26.50x  spread  0.6%
+  act cast per-token x            0.1017     3046    0.0768       1.32x  spread  0.3%
+  weight cast fwd                 0.2127     3785    0.1935       1.10x  spread  0.1%
+  weight cast dgrad               0.2104     3828    0.1935       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.1516     1996    0.0752       2.02x  spread  0.1%
+  kmajor cast dy (wgrad)          0.2938     2060    0.1461       2.01x  spread  0.4%
+  unpack rows                     0.2081     3877    0.1939       1.07x  spread  0.2%
+  grad_weight zeros               0.2315     4638    0.2565       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3698     4355    0.3786       0.98x  spread  0.0%
+
+## down rpe=2048 ragged  x.size(0)=65792 grouped=65664 real=65536  tail=128
+  bf16 fwd                        1.7874 ms  spread  0.6%
+  bf16 dgrad                      1.7046 ms  spread  4.3%
+  bf16 wgrad                      1.7503 ms  spread  0.0%
+  fp8 fwd                         1.7117 ms  spread  8.9%
+  fp8 dgrad                       1.6995 ms  spread  5.1%
+  fp8 wgrad                       2.8568 ms  spread  2.5%
+  bf16 fwd+bwd autograd           5.1035 ms  spread  6.2%
+  fp8 fwd+bwd autograd            6.2023 ms  spread  0.6%
+  sum fwd+dgrad+wgrad: bf16 5.2422 ms  fp8 6.2680 ms  fp8/bf16 1.196   autograd fp8/bf16 1.215
+  host launch wall bf16 fwd+bwd   0.1580 ms  (gpu 5.1035 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   2.5712 ms  (gpu 6.2023 ms, wall/gpu 0.41)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1290        4    0.0048      26.88x  spread  0.4%
+  act cast per-token x            0.1326     3108    0.1005       1.32x  spread  0.2%
+  weight cast fwd                 0.2140     3763    0.1924       1.11x  spread  0.1%
+  weight cast dgrad               0.2101     3832    0.1926       1.09x  spread  0.1%
+  kmajor cast x (wgrad)           0.1970     2048    0.0985       2.00x  spread  0.4%
+  kmajor cast dy (wgrad)          0.3842     2100    0.1930       1.99x  spread  0.1%
+  unpack rows                     0.2751     3911    0.2568       1.07x  spread  0.2%
+  grad_weight zeros               0.2314     4640    0.2583       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3695     4359    0.3788       0.98x  spread  0.1%
+
+## down rpe=4096 ragged  x.size(0)=131328 grouped=131176 real=131072  tail=152
+  bf16 fwd                        3.5311 ms  spread  0.7%
+  bf16 dgrad                      3.3997 ms  spread  2.3%
+  bf16 wgrad                      3.2956 ms  spread  5.7%
+  fp8 fwd                         3.0795 ms  spread  6.4%
+  fp8 dgrad                       2.9792 ms  spread  2.2%
+  fp8 wgrad                       4.5118 ms  spread  0.8%
+  bf16 fwd+bwd autograd          10.5817 ms  spread  1.9%
+  fp8 fwd+bwd autograd           10.9541 ms  spread  1.4%
+  sum fwd+dgrad+wgrad: bf16 10.2263 ms  fp8 10.5706 ms  fp8/bf16 1.034   autograd fp8/bf16 1.035
+  host launch wall bf16 fwd+bwd   0.4573 ms  (gpu 10.5817 ms, wall/gpu 0.04)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   4.1326 ms  (gpu 10.9541 ms, wall/gpu 0.38)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1279        8    0.0050      25.62x  spread  3.2%
+  act cast per-token x            0.2782     2942    0.1952       1.43x  spread  0.1%
+  weight cast fwd                 0.2148     3750    0.1918       1.12x  spread  0.1%
+  weight cast dgrad               0.2114     3810    0.1921       1.10x  spread  0.0%
+  kmajor cast x (wgrad)           0.3808     2116    0.1923       1.98x  spread  0.2%
+  kmajor cast dy (wgrad)          0.7534     2139    0.3805       1.98x  spread  0.2%
+  unpack rows                     0.5462     3935    0.5090       1.07x  spread  0.1%
+  grad_weight zeros               0.2314     4641    0.2576       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3693     4361    0.3809       0.97x  spread  0.1%
+
+## down rpe=6144 ragged  x.size(0)=196864 grouped=196696 real=196608  tail=168
+  bf16 fwd                        5.2922 ms  spread  0.8%
+  bf16 dgrad                      5.1257 ms  spread  1.1%
+  bf16 wgrad                      5.3436 ms  spread  3.4%
+  fp8 fwd                         4.2652 ms  spread  2.5%
+  fp8 dgrad                       4.2075 ms  spread  1.8%
+  fp8 wgrad                       6.5479 ms  spread  0.6%
+  bf16 fwd+bwd autograd          15.8555 ms  spread 10.9%
+  fp8 fwd+bwd autograd           14.8953 ms  spread  1.7%
+  sum fwd+dgrad+wgrad: bf16 15.7615 ms  fp8 15.0206 ms  fp8/bf16 0.953   autograd fp8/bf16 0.939
+  host launch wall bf16 fwd+bwd   0.6649 ms  (gpu 15.8555 ms, wall/gpu 0.04)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   5.4565 ms  (gpu 14.8953 ms, wall/gpu 0.37)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1273       12    0.0052      24.40x  spread  3.6%
+  act cast per-token x            0.4023     3046    0.2937       1.37x  spread  0.1%
+  weight cast fwd                 0.2141     3762    0.1923       1.11x  spread  0.0%
+  weight cast dgrad               0.2113     3811    0.1922       1.10x  spread  0.2%
+  kmajor cast x (wgrad)           0.6080     1988    0.2873       2.12x  spread  0.2%
+  kmajor cast dy (wgrad)          1.2209     1980    0.5700       2.14x  spread  0.2%
+  unpack rows                     0.8151     3954    0.7637       1.07x  spread  0.0%
+  grad_weight zeros               0.2314     4640    0.2581       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3697     4357    0.3817       0.97x  spread  0.1%
+
+## down rpe=8192 ragged  x.size(0)=262400 grouped=262264 real=262144  tail=136
+  bf16 fwd                        7.0999 ms  spread  0.4%
+  bf16 dgrad                      6.8265 ms  spread  9.3%
+  bf16 wgrad                      6.5630 ms  spread 12.7%
+  fp8 fwd                         5.4281 ms  spread  2.8%
+  fp8 dgrad                       5.4347 ms  spread  2.6%
+  fp8 wgrad                       8.3015 ms  spread 12.0%
+  bf16 fwd+bwd autograd          20.4765 ms  spread  8.2%
+  fp8 fwd+bwd autograd           19.9674 ms  spread  7.2%
+  sum fwd+dgrad+wgrad: bf16 20.4894 ms  fp8 19.1643 ms  fp8/bf16 0.935   autograd fp8/bf16 0.975
+  host launch wall bf16 fwd+bwd   0.5361 ms  (gpu 20.4765 ms, wall/gpu 0.03)  device-to-host syncs 0
+  host launch wall fp8  fwd+bwd   6.7465 ms  (gpu 19.9674 ms, wall/gpu 0.34)  device-to-host syncs 5
+  cast / helper                       ms     GB/s   copy ms  x off copy
+  layout build                    0.1287       16    0.0070      18.36x  spread  2.7%
+  act cast per-token x            0.5421     3010    0.3875       1.40x  spread  0.1%
+  weight cast fwd                 0.2129     3783    0.1919       1.11x  spread  0.1%
+  weight cast dgrad               0.2107     3822    0.1919       1.10x  spread  0.1%
+  kmajor cast x (wgrad)           0.8211     1963    0.3830       2.14x  spread  0.2%
+  kmajor cast dy (wgrad)          1.6722     1927    0.7599       2.20x  spread  0.1%
+  unpack rows                     1.0866     3955    1.0184       1.07x  spread  0.2%
+  grad_weight zeros               0.2316     4637    0.2573       0.90x  spread  0.1%
+  grad_weight fp32->bf16          0.3695     4359    0.3805       0.97x  spread  0.1%
+
+## break-even rows/expert (autograd fwd+bwd, fp8/bf16 crosses 1.0)
+  gate_up  balanced     ~2819   128:4.091  256:3.702  512:2.123  1024:1.466  1536:1.183  2048:1.072  4096:0.915  6144:0.891  8192:0.870
+  gate_up  ragged       ~2503   128:3.804  256:3.084  512:2.204  1024:1.343  1536:1.121  2048:1.035  4096:0.915  6144:0.864  8192:0.872
+  down     balanced     ~4118   128:4.341  256:4.014  512:2.669  1024:1.717  1536:1.473  2048:1.295  4096:1.001  6144:0.937  8192:0.929
+  down     ragged       ~4754   128:4.008  256:3.375  512:2.466  1024:1.602  1536:1.384  2048:1.215  4096:1.035  6144:0.939  8192:0.975
+
+## noise control: bf16 fwd gate_up rpe=128 balanced start 0.3835 ms end 0.3733 ms drift -2.6%
+## sweep wall time 201 s

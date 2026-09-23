@@ -14,6 +14,16 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
 )
 
 
+def _is_transposed_contiguous(weight: torch.Tensor) -> bool:
+    return not weight.is_contiguous() and weight.transpose(1, 2).is_contiguous()
+
+
+def _empty_grad_weight(weight: torch.Tensor, grad_weight_transposed: bool) -> torch.Tensor:
+    if grad_weight_transposed:
+        return weight.new_empty(weight.transpose(1, 2).shape).transpose(1, 2)
+    return weight.new_empty(weight.shape)
+
+
 def _compute_grad_weight(
     x: torch.Tensor,
     grad_output: torch.Tensor,
@@ -25,6 +35,7 @@ def _compute_grad_weight(
     actual_ms_tensor: torch.Tensor,
     block_starts_tensor: torch.Tensor,
     aligned_ms: list[int],
+    grad_weight_transposed: bool,
 ) -> torch.Tensor:
     import deep_gemm
 
@@ -78,16 +89,21 @@ def _compute_grad_weight(
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
 
-    grad_weight = torch.zeros(weight.shape, device=x.device, dtype=torch.float32)
+    if grad_weight_transposed:
+        lhs, rhs, grad_shape = dy_fp8, x_fp8, weight.transpose(1, 2).shape
+    else:
+        lhs, rhs, grad_shape = x_fp8, dy_fp8, weight.shape
+    grad_weight = torch.zeros(grad_shape, device=x.device, dtype=torch.float32)
     grouped_weight_grad(
-        x_fp8,
-        dy_fp8,
+        lhs,
+        rhs,
         grad_weight,
         aligned_ms,
         ks_tensor,
         grad_weight,
     )
-    return grad_weight.to(weight.dtype)
+    grad_weight = grad_weight.to(weight.dtype)
+    return grad_weight.transpose(1, 2) if grad_weight_transposed else grad_weight
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
@@ -153,6 +169,7 @@ def _grouped_fp8_gemm_backward(
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    grad_weight_transposed: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     (
         _,
@@ -166,7 +183,7 @@ def _grouped_fp8_gemm_backward(
     ) = build_grouped_layout(offs, total_m=x.size(0))
     grad_output = grad_output.contiguous()
     grad_x = x.new_empty(x.shape)
-    grad_weight = weight.new_empty(weight.shape)
+    grad_weight = _empty_grad_weight(weight, grad_weight_transposed)
 
     if needs_grad_weight:
         grad_weight = _compute_grad_weight(
@@ -180,6 +197,7 @@ def _grouped_fp8_gemm_backward(
             actual_ms_tensor,
             block_starts_tensor,
             ks_tensor.tolist(),
+            grad_weight_transposed,
         )
 
     if needs_grad_x:
@@ -229,13 +247,15 @@ def _grouped_fp8_gemm_backward_fake(
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    grad_weight_transposed: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return x.new_empty(x.shape), weight.new_empty(weight.shape)
+    return x.new_empty(x.shape), _empty_grad_weight(weight, grad_weight_transposed)
 
 
 def _grouped_fp8_gemm_setup_context(ctx, inputs, output) -> None:
     x, weight, offs = inputs
     ctx.save_for_backward(x, weight, offs)
+    ctx.grad_weight_transposed = _is_transposed_contiguous(weight)
 
 
 def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
@@ -248,6 +268,7 @@ def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
         offs,
         needs_grad_x,
         needs_grad_weight,
+        ctx.grad_weight_transposed,
     )
     return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
 
