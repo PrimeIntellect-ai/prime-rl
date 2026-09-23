@@ -27,8 +27,8 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
-    unpack_rows_triton,
 )
+from prime_rl.trainer.models.layers.grouped_gemm import DeepGemmFP8GroupedGemm
 
 NUM_EXPERTS = 32
 SHAPES = {"gate_up": (4096, 4096), "down": (2048, 4096)}
@@ -209,22 +209,15 @@ def measure_ops(case: Case, args) -> list[tuple[str, float, float]]:
 def measure_casts(case: Case, args) -> list[tuple[str, float, float, int, float]]:
     x, w, offs, dy = case.x.detach(), case.weight.detach(), case.offs, case.dy
     ue8m0 = ue8m0_for_device(x.device)
-    (
-        total_m,
-        padded_total_m,
-        _,
-        block_to_group,
-        ks_tensor,
-        starts,
-        actual_ms,
-        block_starts,
-    ) = build_grouped_layout(offs, total_m=x.size(0))
-    out_padded = torch.empty((padded_total_m, case.n), device="cuda", dtype=torch.bfloat16)
+    padded_total_m = x.size(0)
+    _, block_to_group, ks_tensor, starts, actual_ms, block_starts = build_grouped_layout(offs, padded_total_m)
+    grouped_total_m = int(ks_tensor.sum())
+    grouped_blocks = block_to_group[: grouped_total_m // GROUP_ALIGNMENT]
     grad_weight_fp32 = torch.zeros(w.shape, device="cuda", dtype=torch.float32)
     grouped, k, n, g = case.grouped_rows, case.k, case.n, NUM_EXPERTS
     scale_bytes = 4 * padded_total_m * triton.cdiv(k, GROUP_ALIGNMENT)
     specs = [
-        ("layout build", lambda: build_grouped_layout(offs, total_m=x.size(0)), 4 * (2 * padded_total_m)),
+        ("layout build", lambda: build_grouped_layout(offs, padded_total_m), 4 * (2 * padded_total_m)),
         (
             "act cast per-token x",
             lambda: grouped_per_token_cast_to_fp8_triton(
@@ -246,8 +239,8 @@ def measure_casts(case: Case, args) -> list[tuple[str, float, float, int, float]
             "kmajor cast x (wgrad)",
             lambda: grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
                 x,
-                padded_total_m,
-                block_to_group,
+                grouped_total_m,
+                grouped_blocks,
                 starts,
                 actual_ms,
                 ks_tensor,
@@ -261,8 +254,8 @@ def measure_casts(case: Case, args) -> list[tuple[str, float, float, int, float]
             "kmajor cast dy (wgrad)",
             lambda: grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
                 dy,
-                padded_total_m,
-                block_to_group,
+                grouped_total_m,
+                grouped_blocks,
                 starts,
                 actual_ms,
                 ks_tensor,
@@ -271,11 +264,6 @@ def measure_casts(case: Case, args) -> list[tuple[str, float, float, int, float]
                 GROUP_ALIGNMENT,
             ),
             3 * grouped * n,
-        ),
-        (
-            "unpack rows",
-            lambda: unpack_rows_triton(out_padded, total_m, block_to_group, starts, actual_ms, block_starts),
-            4 * grouped * n,
         ),
         ("grad_weight zeros", lambda: torch.zeros(w.shape, device="cuda", dtype=torch.float32), 4 * g * k * n),
         ("grad_weight fp32->bf16", lambda: grad_weight_fp32.to(torch.bfloat16), 6 * g * k * n),
@@ -329,7 +317,12 @@ def break_even(points: list[tuple[int, float]]) -> str:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("label", help="tag in the results filename, e.g. base or item1")
-    parser.add_argument("--alignment", type=int, default=8, help="dispatcher token_group_alignment")
+    parser.add_argument(
+        "--alignment",
+        type=int,
+        default=DeepGemmFP8GroupedGemm().token_group_alignment,
+        help="dispatcher token_group_alignment",
+    )
     parser.add_argument("--rows-per-expert", type=int, nargs="+", default=ROWS_PER_EXPERT)
     parser.add_argument("--shapes", nargs="+", default=list(SHAPES), choices=list(SHAPES))
     parser.add_argument("--distributions", nargs="+", default=["balanced", "ragged"], choices=["balanced", "ragged"])

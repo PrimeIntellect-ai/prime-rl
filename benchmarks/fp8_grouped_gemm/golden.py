@@ -1,8 +1,9 @@
-"""Capture or check byte-level goldens of the DeepGEMM FP8 grouped GEMM: op outputs and every intermediate cast.
+"""Capture or check byte-level goldens of the DeepGEMM FP8 grouped GEMM: op outputs and the weight casts.
 
 Inputs are regenerated from fixed seeds and their digest is stored, so a check refuses to compare against
-goldens drawn from different inputs. Only bytes the base implementation defines are compared: rows past
-`offs[-1]` and the per-token casts' padding rows are left uninitialized by design.
+goldens drawn from different inputs. Tokens are laid out at the op's own dispatcher alignment, and only
+the real token rows, the weight gradient and the weight casts are compared, none of which depend on that
+alignment. So goldens captured before a change of alignment still apply after it.
 """
 
 import argparse
@@ -17,14 +18,11 @@ import torch
 from prime_rl.trainer.distributed.token_dispatcher import permute_for_grouped_gemm
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
-    build_grouped_layout,
     grouped_per_block_cast_to_fp8_triton,
-    grouped_per_channel_cast_to_fp8_rowmajor_triton,
-    grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
-    grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
 )
 from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+from prime_rl.trainer.models.layers.grouped_gemm import DeepGemmFP8GroupedGemm
 
 
 def _ragged(num_experts: int, mean: int, hot: int, head: list[int], tail: list[int]) -> list[int]:
@@ -46,14 +44,11 @@ class Case:
 
 
 CASES = [
-    Case("gate_up-balanced-1536", [1536] * 32, 4096, 4096, "align8", 1),
-    Case("down-ragged-512", _ragged(32, 512, 7 * 512, [0, 1, 127, 128, 129, 5], [0]), 2048, 4096, "align8", 2),
-    Case("gate_up-ragged-1536", _ragged(32, 1536, 6 * 1536, [0, 3, 64], []), 4096, 4096, "align8", 3),
-    Case(
-        "down-ragged-512-align128", _ragged(32, 512, 7 * 512, [0, 1, 127, 128, 129, 5], [0]), 2048, 4096, "align128", 2
-    ),
-    Case("small-sub_alignment", [1, 127, 5, 64, 0, 33, 100, 7], 512, 256, "align8", 4),
-    Case("small-raw-empty", [0, 896, 3, 60, 1, 40, 24, 0], 512, 256, "raw", 5),
+    Case("gate_up-balanced-1536", [1536] * 32, 4096, 4096, "dispatcher", 1),
+    Case("down-ragged-512", _ragged(32, 512, 7 * 512, [0, 1, 127, 128, 129, 5], [0]), 2048, 4096, "dispatcher", 2),
+    Case("gate_up-ragged-1536", _ragged(32, 1536, 6 * 1536, [0, 3, 64], []), 4096, 4096, "dispatcher", 3),
+    Case("small-sub_alignment", [1, 127, 5, 64, 0, 33, 100, 7], 512, 256, "dispatcher", 4),
+    Case("small-manual-empty", [0, 896, 3, 60, 1, 40, 24, 0], 512, 256, "manual", 5),
 ]
 RAW_TAIL_ROWS = 128
 WEIGHT_STD = 0.02
@@ -71,74 +66,57 @@ def _digest(t: torch.Tensor) -> dict:
 
 
 def _inputs(case: Case):
+    """Tokens laid out at the op's alignment: "dispatcher" via `permute_for_grouped_gemm`, "manual" by hand,
+    which keeps an empty expert a truly empty group."""
+    alignment = DeepGemmFP8GroupedGemm().token_group_alignment
     torch.manual_seed(case.seed)
     with torch.device("cuda"):
         tokens = torch.randn(sum(case.counts), case.k, dtype=torch.bfloat16)
         weight = (torch.randn(len(case.counts), case.k, case.n) * WEIGHT_STD).to(torch.bfloat16)
-    if case.dispatch == "raw":
-        x = torch.cat((tokens, tokens.new_zeros(RAW_TAIL_ROWS, case.k)))
-        offs = torch.tensor(case.counts, device="cuda").cumsum(0).to(torch.int32)
-        real_rows = torch.arange(x.shape[0], device="cuda") < tokens.shape[0]
+        real_probe = torch.randn(sum(case.counts), case.n, dtype=torch.bfloat16)
+    if case.dispatch == "manual":
+        padded_counts = [-(-count // alignment) * alignment for count in case.counts]
+        x = tokens.new_zeros(sum(padded_counts) + RAW_TAIL_ROWS, case.k)
+        real_rows = torch.zeros(x.shape[0], dtype=torch.bool, device="cuda")
+        src = dst = 0
+        for count, padded_count in zip(case.counts, padded_counts):
+            x[dst : dst + count] = tokens[src : src + count]
+            real_rows[dst : dst + count] = True
+            src += count
+            dst += padded_count
+        offs = torch.tensor(padded_counts, device="cuda").cumsum(0).to(torch.int32)
     else:
         x, padded_counts, state = permute_for_grouped_gemm(
             tokens,
             torch.tensor(case.counts, dtype=torch.int64, device="cuda"),
             experts_per_rank=len(case.counts),
             num_ranks=1,
-            alignment={"align8": 8, "align128": 128}[case.dispatch],
+            alignment=alignment,
         )
         offs = torch.cumsum(padded_counts, dim=0, dtype=torch.int32)
         real_rows = state.permuted_indices != -1
-    probe = torch.randn(x.shape[0], case.n, device="cuda", dtype=torch.bfloat16) * real_rows.unsqueeze(1)
-    return x, weight, offs, probe
-
-
-def _intermediate_casts(x, weight, offs, probe) -> dict[str, torch.Tensor]:
-    """The casts the base wrapper feeds DeepGEMM, restricted to the rows and scales it writes."""
-    layout = build_grouped_layout(offs, total_m=x.size(0))
-    _, padded_total_m, grouped_layout, block_to_group, ks_tensor, starts, actual_ms, block_starts = layout
-    use_ue8m0 = ue8m0_for_device(x.device)
-    token_args = (padded_total_m, block_to_group, starts, actual_ms, block_starts, use_ue8m0, GROUP_ALIGNMENT)
-    channel_args = (padded_total_m, block_to_group, starts, actual_ms, ks_tensor, block_starts)
-    written = grouped_layout != -1
-
-    casts = {"grouped_layout": grouped_layout, "block_to_group": block_to_group, "ks": ks_tensor}
-    for name, tensor in (("x", x), ("dy", probe)):
-        fp8, scales = grouped_per_token_cast_to_fp8_triton(tensor, *token_args)
-        casts[f"{name}_token_fp8"] = fp8[written]
-        casts[f"{name}_token_scales"] = scales[written]
-    for name, tensor in (("weight_fwd", weight.transpose(1, 2)), ("weight_dgrad", weight)):
-        fp8, scales = grouped_per_block_cast_to_fp8_triton(tensor, use_ue8m0, GROUP_ALIGNMENT)
-        casts[f"{name}_fp8"] = fp8
-        casts[f"{name}_scales"] = scales
-    for name, tensor in (("x", x), ("dy", probe)):
-        if torch.cuda.get_device_capability(x.device)[0] >= 10:
-            fp8, scales = grouped_per_channel_cast_to_fp8_rowmajor_triton(tensor, *channel_args, True, GROUP_ALIGNMENT)
-        else:
-            fp8, scales = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
-                tensor, *channel_args, False, GROUP_ALIGNMENT
-            )
-        casts[f"{name}_channel_fp8"] = fp8
-        casts[f"{name}_channel_scales"] = scales
-    return casts
+    assert torch.equal(x[real_rows], tokens)
+    probe = torch.zeros(x.shape[0], case.n, device="cuda", dtype=torch.bfloat16)
+    probe[real_rows] = real_probe
+    return tokens, weight, real_probe, x, offs, probe, real_rows
 
 
 def _record(case: Case) -> dict:
-    x, weight, offs, probe = _inputs(case)
-    used_rows = int(offs[-1])
+    tokens, weight, real_probe, x, offs, probe, real_rows = _inputs(case)
     x_leaf = x.clone().requires_grad_(True)
     weight_leaf = weight.clone().requires_grad_(True)
     out = grouped_fp8_gemm(x_leaf, weight_leaf, offs)
     (out * probe).sum().backward()
 
-    tensors = {
-        "out": out[:used_rows],
-        "grad_x": x_leaf.grad[:used_rows],
-        "grad_weight": weight_leaf.grad,
-        **_intermediate_casts(x, weight, offs, probe),
-    }
+    tensors = {"out": out[real_rows], "grad_x": x_leaf.grad[real_rows], "grad_weight": weight_leaf.grad}
+    use_ue8m0 = ue8m0_for_device(x.device)
+    for name, tensor in (("weight_fwd", weight.transpose(1, 2)), ("weight_dgrad", weight)):
+        fp8, scales = grouped_per_block_cast_to_fp8_triton(tensor, use_ue8m0, GROUP_ALIGNMENT)
+        tensors[f"{name}_fp8"] = fp8
+        tensors[f"{name}_scales"] = scales
+    inputs = (("tokens", tokens), ("weight", weight), ("probe", real_probe))
     return {
-        "inputs": {name: _digest(t) for name, t in (("x", x), ("weight", weight), ("offs", offs), ("probe", probe))},
+        "inputs": {name: _digest(t) for name, t in inputs},
         "tensors": {name: _digest(t) for name, t in tensors.items()},
     }
 

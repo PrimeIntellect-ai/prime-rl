@@ -14,7 +14,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
-    unpack_rows_triton,
 )
 from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 from prime_rl.trainer.models.layers.grouped_gemm import DeepGemmFP8GroupedGemm
@@ -40,11 +39,12 @@ COUNTS = {
     "sub_alignment": [1, 127, 5, 64, 0, 33, 100, 7],
 }
 
-# How `x` and `offs` are laid out. "align8" and "align128" go through the real dispatcher
-# (`permute_for_grouped_gemm`), which pads each expert to the alignment, gives an empty expert one
-# alignment's worth of zero rows, and leaves a zero tail past `offs[-1]`. "raw" hands the op the
-# unpadded counts, so an empty expert is a truly empty group, followed by a zero tail.
-DISPATCHES = ["align8", "align128", "raw"]
+# How `x` and `offs` are laid out for the op, which takes 128-row groups. "align128" goes through the
+# real dispatcher (`permute_for_grouped_gemm`), which pads each expert to 128 rows, gives an empty
+# expert one alignment's worth of zero rows, and leaves a zero tail past `offs[-1]`. "raw128" pads
+# each expert to 128 rows by hand but keeps an empty expert a truly empty group, followed by a zero
+# tail. "align8", the dispatcher at the old alignment, only feeds the frozen wrapper.
+DISPATCHES = ["align128", "raw128"]
 RAW_TAIL_ROWS = 128
 
 # (in_features, out_features) of the expert weight. Non-square in both directions so a transposed
@@ -114,10 +114,17 @@ def _dispatch(
     tokens: torch.Tensor, counts: list[int], dispatch: str
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Lay expert-sorted `tokens` out as the grouped GEMM sees them: `x`, int32 `offs`, and the mask of real rows."""
-    if dispatch == "raw":
-        x = torch.cat((tokens, tokens.new_zeros(RAW_TAIL_ROWS, tokens.shape[1])))
-        offs = torch.tensor(counts, device=tokens.device).cumsum(0).to(torch.int32)
-        real_rows = torch.arange(x.shape[0], device=tokens.device) < tokens.shape[0]
+    if dispatch == "raw128":
+        padded_counts = [math.ceil(count / GROUP_ALIGNMENT) * GROUP_ALIGNMENT for count in counts]
+        x = tokens.new_zeros(sum(padded_counts) + RAW_TAIL_ROWS, tokens.shape[1])
+        real_rows = torch.zeros(x.shape[0], dtype=torch.bool, device=tokens.device)
+        src = dst = 0
+        for count, padded_count in zip(counts, padded_counts):
+            x[dst : dst + count] = tokens[src : src + count]
+            real_rows[dst : dst + count] = True
+            src += count
+            dst += padded_count
+        offs = torch.tensor(padded_counts, device=tokens.device).cumsum(0).to(torch.int32)
         return x, offs, real_rows
 
     alignment = {"align8": 8, "align128": 128}[dispatch]
@@ -170,22 +177,38 @@ def _frozen_grad_weight(
     return grad_weight.to(weight.dtype)
 
 
+def _frozen_unpack_rows(padded: torch.Tensor, total_m: int, starts, actual_ms, block_starts) -> torch.Tensor:
+    """Move each group's rows from its 128-aligned slot in `padded` back to where it starts in `x`."""
+    ends = starts + actual_ms
+    rows = torch.arange(total_m, device=padded.device)
+    group = torch.searchsorted(ends, rows, right=True)
+    in_group = group < ends.numel()
+    group = group.clamp(max=ends.numel() - 1)
+    src_rows = block_starts[group] * GROUP_ALIGNMENT + rows - starts[group]
+    out = padded.new_zeros((total_m, padded.size(1)))
+    out[in_group] = padded[src_rows[in_group]]
+    return out
+
+
 def _frozen_wrapper(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, grad_output: torch.Tensor):
     """The grouped FP8 GEMM wrapper as of ae37b35a3, built from the primitive kernels, returning out, grad_x, grad_weight."""
     import deep_gemm
 
-    total_m, padded_total_m, grouped_layout, block_to_group, ks_tensor, starts, actual_ms, block_starts = (
-        build_grouped_layout(offs, total_m=x.size(0))
+    counts = torch.diff(offs, prepend=offs.new_zeros(1))
+    padded_total_m = int((torch.ceil(counts / GROUP_ALIGNMENT) * GROUP_ALIGNMENT).sum())
+    grouped_layout, block_to_group, ks_tensor, starts, actual_ms, block_starts = build_grouped_layout(
+        offs, padded_total_m
     )
-    unpack_args = (block_to_group, starts, actual_ms, block_starts)
-    cast_args = (padded_total_m, *unpack_args)
+    total_m = x.size(0)
+    group_args = (block_to_group, starts, actual_ms, block_starts)
+    cast_args = (padded_total_m, *group_args)
     use_ue8m0 = ue8m0_for_device(x.device)
 
     x_fp8 = grouped_per_token_cast_to_fp8_triton(x, *cast_args, use_ue8m0, GROUP_ALIGNMENT)
     weight_fp8 = grouped_per_block_cast_to_fp8_triton(weight.transpose(1, 2), use_ue8m0, GROUP_ALIGNMENT)
     out_padded = torch.empty((padded_total_m, weight.size(2)), device=x.device, dtype=x.dtype)
     deep_gemm.m_grouped_fp8_gemm_nt_contiguous(x_fp8, weight_fp8, out_padded, grouped_layout, use_psum_layout=False)
-    out = unpack_rows_triton(out_padded, total_m, *unpack_args)
+    out = _frozen_unpack_rows(out_padded, total_m, starts, actual_ms, block_starts)
 
     grad_output = grad_output.contiguous()
     grad_weight = _frozen_grad_weight(
@@ -197,7 +220,7 @@ def _frozen_wrapper(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, g
     deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
         dy_fp8, weight_dx_fp8, grad_x_padded, grouped_layout, use_psum_layout=False
     )
-    grad_x = unpack_rows_triton(grad_x_padded, x.size(0), *unpack_args)
+    grad_x = _frozen_unpack_rows(grad_x_padded, total_m, starts, actual_ms, block_starts)
     return out, grad_x, grad_weight
 
 
@@ -410,11 +433,6 @@ def test_op_traces_under_torch_compile():
     _assert_bitwise(compiled[1].grad, eager[1].grad, "grad_weight")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason="build_grouped_layout reads padded_ends[-1] back to the host; the 128-aligned dispatch removes it",
-)
 def test_forward_does_not_sync_with_the_host():
     """The forward launches without a device-to-host sync, so the CPU can run ahead of the GPU.
 
@@ -429,14 +447,9 @@ def test_forward_does_not_sync_with_the_host():
         grouped_fp8_gemm(x, weight, offs)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason="build_grouped_layout reads padded_ends[-1] back to the host; the 128-aligned dispatch removes it",
-)
 def test_build_grouped_layout_does_not_sync_with_the_host():
     x, _, offs, _, _ = _inputs(COUNTS["ragged"], 512, 256, "align128")
     torch.cuda.synchronize()
 
     with _forbid_device_to_host_sync():
-        build_grouped_layout(offs, total_m=x.size(0))
+        build_grouped_layout(offs, x.size(0))

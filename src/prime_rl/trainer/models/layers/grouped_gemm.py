@@ -33,7 +33,7 @@ class BF16GroupedGemm:
 
 @dataclass(frozen=True)
 class DeepGemmFP8GroupedGemm:
-    token_group_alignment: int = 8
+    token_group_alignment: int = 128
 
     def __call__(
         self,
