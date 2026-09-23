@@ -148,7 +148,9 @@ def _per_token_fp8_kernel(
     scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
+        y = tl.clamp(x * (1.0 / scale)[:, None], FP8_MIN, FP8_MAX)
+    else:
+        y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -203,7 +205,9 @@ def _grouped_per_token_fp8_kernel(
     scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
+        y = tl.clamp(x * (1.0 / scale)[:, None], FP8_MIN, FP8_MAX)
+    else:
+        y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
     tl.store(
         out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -256,7 +260,9 @@ def _grouped_per_channel_fp8_kernel(
     scale = tl.math.div_rn(amax, FP8_MAX)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = tl.clamp(tl.math.div_rn(x, scale[None, :]), FP8_MIN, FP8_MAX)
+        y = tl.clamp(x * (1.0 / scale)[None, :], FP8_MIN, FP8_MAX)
+    else:
+        y = tl.clamp(tl.math.div_rn(x, scale[None, :]), FP8_MIN, FP8_MAX)
     flat_base = block_start.to(tl.int64) * BLOCK_K * cols
     if K_MAJOR:
         out_ptrs = out_ptr + flat_base + col_offsets_i64[:, None] * aligned_m + row_offsets_i64[None, :]
