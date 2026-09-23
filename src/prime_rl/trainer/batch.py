@@ -6,7 +6,14 @@ from typing import Any
 
 import numpy as np
 
-from prime_rl.transports.batch.types import EncodedTensor, MicroBatch, RoutedExperts, SamplingMask, TrainingSample
+from prime_rl.transports.batch.types import (
+    EncodedTensor,
+    MicroBatch,
+    RoutedExperts,
+    SamplingMask,
+    TopLogprobs,
+    TrainingSample,
+)
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -293,6 +300,37 @@ def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingM
     )
 
 
+_TOP_LOGPROBS_ITEMSIZE = 4  # int32 ids / float32 logprobs / int32 counts
+
+
+def _empty_top_logprobs(num_tokens: int) -> TopLogprobs:
+    return TopLogprobs(
+        ids=b"",
+        logprobs=b"",
+        counts=b"\0" * (num_tokens * _TOP_LOGPROBS_ITEMSIZE),
+    )
+
+
+def _slice_top_logprobs(top_logprobs: TopLogprobs, seq_len: int) -> TopLogprobs:
+    counts = np.frombuffer(top_logprobs.counts, dtype=np.int32)[:seq_len]
+    n = int(counts.sum()) * _TOP_LOGPROBS_ITEMSIZE
+    return TopLogprobs(
+        ids=top_logprobs.ids[:n],
+        logprobs=top_logprobs.logprobs[:n],
+        counts=counts.tobytes(),
+    )
+
+
+def _pad_top_logprobs(micro_batch: MicroBatch, padding_size: int) -> None:
+    """Add zero-count head rows for sequence-padding tokens.
+
+    Padding adds token positions but no sampled candidates, so only `counts` grows.
+    """
+    top_logprobs = micro_batch.top_logprobs
+    assert top_logprobs is not None
+    top_logprobs.counts += b"\0" * (padding_size * _TOP_LOGPROBS_ITEMSIZE)
+
+
 def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
     """Add zero-count mask rows for sequence-padding tokens.
 
@@ -411,6 +449,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    # Same reasoning for the top-k sampling heads.
+    top_logprobs = training_example.top_logprobs
 
     if len(input_ids) > seq_len:
         # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
@@ -436,6 +476,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
+        if top_logprobs is not None:
+            top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -473,6 +515,15 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         )
         assert len(sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE
 
+    if top_logprobs is not None:
+        head_counts = np.frombuffer(top_logprobs.counts, dtype=np.int32)
+        assert len(head_counts) == len(input_ids), (
+            f"top_logprobs counts: {len(head_counts)}, input_ids: {len(input_ids)}"
+        )
+        head_n = int(head_counts.sum()) * _TOP_LOGPROBS_ITEMSIZE
+        assert len(top_logprobs.ids) == head_n
+        assert len(top_logprobs.logprobs) == head_n
+
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
@@ -486,6 +537,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -584,6 +636,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_top_logprobs = any(sample.top_logprobs is not None for sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -599,6 +652,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    top_logprobs: TopLogprobs | None = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
@@ -642,6 +696,11 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+        if top_logprobs is not None:
+            sample_head = sample.top_logprobs if sample.top_logprobs is not None else _empty_top_logprobs(sample_len)
+            top_logprobs.ids += sample_head.ids
+            top_logprobs.logprobs += sample_head.logprobs
+            top_logprobs.counts += sample_head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -660,6 +719,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -791,6 +851,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         _pad_routed_experts(micro_batch, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
+    if micro_batch.top_logprobs is not None:
+        _pad_top_logprobs(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -842,6 +904,20 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
+    if micro_batch.top_logprobs is not None:
+        head_counts = np.frombuffer(micro_batch.top_logprobs.counts, dtype=np.int32)
+        assert len(head_counts) == num_tokens, (
+            f"top_logprobs misaligned after packing: {len(head_counts)} != {num_tokens} tokens"
+        )
+        head_n = int(head_counts.sum()) * _TOP_LOGPROBS_ITEMSIZE
+        assert len(micro_batch.top_logprobs.ids) == head_n, (
+            f"top_logprobs ids/counts inconsistent after packing: "
+            f"{len(micro_batch.top_logprobs.ids)} bytes != {int(head_counts.sum())} ids"
+        )
+        assert len(micro_batch.top_logprobs.logprobs) == head_n, (
+            f"top_logprobs logprobs/counts inconsistent after packing: "
+            f"{len(micro_batch.top_logprobs.logprobs)} bytes != {int(head_counts.sum())} logprobs"
+        )
 
 
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
@@ -854,8 +930,10 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
-    # Fully loss-masked, so replaying sampling masks would be pure wasted work.
+    # Fully loss-masked, so replaying sampling masks or gathering head logprobs
+    # would be pure wasted work.
     dummy.sampling_mask = None
+    dummy.top_logprobs = None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None

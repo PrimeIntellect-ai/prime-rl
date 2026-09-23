@@ -607,7 +607,18 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")]
+class ScoreCenteringLossConfig(BaseConfig):
+    type: Literal["score_centering"] = "score_centering"
+
+    topk: int = Field(128, ge=1)
+    """Sampler head size (k) the rl entrypoint stamps onto train sampling configs that
+    set no ``logprobs``. The paper's default is 128 (k = 32 matched it in their
+    experiments); the loss itself adapts to whatever head the rollouts carry."""
+
+
+LossConfig: TypeAlias = Annotated[
+    IPOLossConfig | IcePopLossConfig | ScoreCenteringLossConfig | CustomLossConfig, Field(discriminator="type")
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):

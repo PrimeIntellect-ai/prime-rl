@@ -32,6 +32,7 @@ from prime_rl.trainer.rl.loss import (
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
     selective_log_softmax_with_sampling_mask,
+    selective_topk_log_softmax,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
@@ -358,6 +359,21 @@ def train(config: TrainerConfig):
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
+            top_logprobs_ids = (
+                micro_batch["top_logprobs_ids"].to("cuda") if micro_batch["top_logprobs_ids"] is not None else None
+            )
+            top_logprobs_logprobs = (
+                micro_batch["top_logprobs_logprobs"].to("cuda")
+                if micro_batch["top_logprobs_logprobs"] is not None
+                else None
+            )
+            if sampling_mask is not None and top_logprobs_ids is not None:
+                raise ValueError(
+                    "Sampling replay (truncated sampling) and score centering cannot run together: "
+                    "replay renormalizes the trainer distribution over the kept set while score "
+                    "centering centers the full sampler distribution. Keep the train sampling "
+                    "untruncated (top_p = 1.0, no top_k) for score centering."
+                )
 
             # Multimodal kwargs are an opaque per-model dict (e.g.
             # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
@@ -383,6 +399,15 @@ def train(config: TrainerConfig):
                 # Sampling masks ride at the sampled token's own position (like inference
                 # logprobs); shift to align with the label each position predicts.
                 sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
+            topk_valid = None
+            topk_ids_labels = None
+            if top_logprobs_ids is not None:
+                # Heads ride at the sampled token's own position too: shift the ids to
+                # the label each position predicts for the LM-head gather, and key the
+                # loss-side validity off the unshifted ids (token-aligned like the
+                # sampler's logprobs).
+                topk_ids_labels = shift_tensor_left(top_logprobs_ids, pad_value=-1)
+                topk_valid = top_logprobs_ids >= 0
 
             seq_lens_are_pre_shard = False
 
@@ -407,6 +432,9 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+                if topk_ids_labels is not None:
+                    # Same label-shard alignment as the sampling masks.
+                    topk_ids_labels = shard_for_cp(topk_ids_labels, cp_rank=cp_rank, cp_world_size=cp_size)
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
@@ -446,6 +474,7 @@ def train(config: TrainerConfig):
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
+                    topk_ids=topk_ids_labels,
                 )
 
             if out.get("logprobs") is None:
@@ -459,11 +488,15 @@ def train(config: TrainerConfig):
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
+                if topk_ids_labels is not None:
+                    out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids_labels)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                if out.get("topk_logprobs") is not None:
+                    out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -473,6 +506,10 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+            if out.get("topk_logprobs") is not None:
+                # Align the head gather to the sampled token's position; padded rows
+                # read 0.0 and the loss keys validity off the sampler ids.
+                out["topk_logprobs"] = shift_tensor_right(out["topk_logprobs"], pad_value=0.0)
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
@@ -489,6 +526,18 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                trainer_topk_logprobs=(
+                    out["topk_logprobs"].squeeze().split(sequence_lengths)
+                    if out.get("topk_logprobs") is not None
+                    else None
+                ),
+                sampler_topk_logprobs=(
+                    top_logprobs_logprobs.squeeze().split(sequence_lengths)
+                    if top_logprobs_logprobs is not None
+                    else None
+                ),
+                topk_valid=topk_valid.squeeze().split(sequence_lengths) if topk_valid is not None else None,
+                entropy=out["entropy"].squeeze().split(sequence_lengths),
             )
 
             # Backward pass

@@ -25,6 +25,16 @@ class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True
     counts: bytes
 
 
+# Top-k sampler heads (score centering): flat int32 token-id bytes, float32
+# logprob bytes, and an int32 count per token position (0 = no head);
+# len(ids) == len(logprobs) == 4 * counts.sum(). Rows hold the sampler's
+# top-k candidates for one generated token, sampled token first.
+class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    ids: bytes
+    logprobs: bytes
+    counts: bytes
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -80,6 +90,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # keeps the wire layout of earlier fields stable across versions.
     sampling_mask: SamplingMask | None = None
 
+    # The sampler's per-token top-k head (ids + logprobs), recorded when the
+    # rollout requested ``logprobs=k > 1`` — the data score centering needs to
+    # cancel trainer/sampler drift on off-policy rollouts. Aligned per token
+    # like ``logprobs``; 0-count positions carry no head.
+    top_logprobs: TopLogprobs | None = None
+
     # Identity of the branch this sample was built from, so the trainer can key
     # its per-token annotations back to the rollout trace. ``None`` on synthetic
     # samples (e.g. fake data).
@@ -117,6 +133,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
 
     # See TrainingSample.sampling_mask; appended for wire-layout stability.
     sampling_mask: SamplingMask | None = None
+
+    # See TrainingSample.top_logprobs; appended for wire-layout stability.
+    top_logprobs: TopLogprobs | None = None
 
     # Per-sequence branch identity, parallel to ``sequence_lengths`` (see
     # TrainingSample.trace_id). ``""`` / ``-1`` mark an unknown sequence

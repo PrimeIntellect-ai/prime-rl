@@ -6,7 +6,13 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    LossConfig,
+    ScoreCenteringLossConfig,
+)
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -19,6 +25,11 @@ class LossInputs:
     component — the component loss functions never re-derive eligibility.
     ``loss_weights`` is the component's per-token weight stream (None means
     1.0 everywhere).
+
+    The ``topk_*`` fields carry the sampler's top-k head and the trainer's own
+    gather at those ids, aligned per token like ``trainer_logprobs``; the score
+    centering loss reads them, everything else ignores them. ``entropy`` is the
+    trainer policy's entropy (``plogp = -entropy``).
     """
 
     trainer_logprobs: Float[Tensor, " seq"]
@@ -27,6 +38,10 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    trainer_topk_logprobs: Float[Tensor, " seq k"] | None = field(default=None)
+    sampler_topk_logprobs: Float[Tensor, " seq k"] | None = field(default=None)
+    topk_valid: Bool[Tensor, " seq k"] | None = field(default=None)
+    entropy: Float[Tensor, " seq"] | None = field(default=None)
 
 
 @dataclass
@@ -61,6 +76,22 @@ def selective_log_softmax(
 ) -> Float[Tensor, "batch seq"]:
     logprobs = logits.log_softmax(dim=-1)
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
+
+@jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
+def selective_topk_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"], topk_ids: Int[Tensor, "batch seq k"]
+) -> Float[Tensor, "batch seq k"]:
+    """The trainer's logprobs at ``topk_ids``, full-vocab normalized.
+
+    Padding ids (-1) yield 0.0 — consumers mask with the ids themselves. The
+    logsumexp reduces over the vocab, so no full log-softmax materializes.
+    """
+    logz = torch.logsumexp(logits, dim=-1, keepdim=True)
+    safe_ids = topk_ids.clamp_min(0).to(torch.int64)
+    head_logprobs = logits.gather(dim=-1, index=safe_ids) - logz
+    return head_logprobs.masked_fill(topk_ids < 0, 0.0)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -104,12 +135,15 @@ def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
     return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 
 
-def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = None) -> Float[Tensor, "batch seq"]:
+def shift_tensor_right(
+    t: Float[Tensor, "batch seq ..."], pad_value: float | None = None
+) -> Float[Tensor, "batch seq ..."]:
     """Shifts the tensor one token to the right, prepending a padding value.
 
     Used to realign logprobs/entropy after computing with shifted labels.
     After shift: result[i] = t[i-1], result[0] = pad_value.
     This converts from "predict next token" convention to "probability of current token" convention.
+    Works for [batch, seq] and label-aligned [batch, seq, ...] fields like top-k heads.
 
     Args:
         t: Tensor to shift right
@@ -119,7 +153,8 @@ def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = 
     """
     if pad_value is None:
         pad_value = 0.0
-    return torch.cat([torch.full((t.shape[0], 1), pad_value, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+    pad = torch.full((t.shape[0], 1, *t.shape[2:]), pad_value, device=t.device, dtype=t.dtype)
+    return torch.cat([pad, t[:, :-1]], dim=1)
 
 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
@@ -213,6 +248,76 @@ class IcePopLoss:
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
+class ScoreCenteringLoss:
+    """Score centering loss ([arXiv:2609.20807](https://arxiv.org/abs/2609.20807)):
+    policy gradient with a zero-expected-score baseline that cancels
+    trainer/sampler drift on off-policy rollouts.
+
+    The sampler's top-k head (ids + logprobs, recorded at rollout time) is
+    transported to the trainer; the tail beyond it is modeled as proportional
+    to the trainer's own distribution, rescaled to the sampler's tail mass
+    (``q_tail = rho * p_tail``). Every ratio correction is constant over that
+    modeled tail, so the backward pass touches only the k head gathers — the
+    full-vocab entropy (``plogp``) enters detached.
+    """
+
+    # Floor on the modeled trainer tail mass; the paper's default.
+    TAIL_EPS = 1e-6
+
+    def __init__(self, config: ScoreCenteringLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        if (
+            inputs.trainer_topk_logprobs is None
+            or inputs.sampler_topk_logprobs is None
+            or inputs.topk_valid is None
+            or inputs.entropy is None
+        ):
+            raise ValueError(
+                "score_centering requires top-k sampler heads on every rl member token: request them "
+                "with `logprobs = k` on the train sampling config (the rl entrypoint stamps it "
+                "automatically) and run a vLLM >= 0.28 /inference/v1/generate server."
+            )
+
+        valid = inputs.topk_valid
+        # The sampler's head q, and the trainer's gather at the same ids (the
+        # only differentiable path). Padded columns read as zero mass.
+        q_head = inputs.sampler_topk_logprobs.exp().masked_fill(~valid, 0.0)
+        head_p = inputs.trainer_topk_logprobs
+        p_head = head_p.exp().masked_fill(~valid, 0.0)
+        # The tail's negative entropy enters as a constant (the paper stops its
+        # gradient); the real pipeline computes it under no_grad, and detaching
+        # keeps that invariant regardless of the caller.
+        plogp = -inputs.entropy.detach()
+
+        # The modeled tail: q_tail = alpha * p_tail, alpha detached throughout —
+        # its gradient contribution is identically zero (E_p[grad log p] = 0).
+        tail_q_mass = (1.0 - q_head.sum(-1)).clamp_min(0.0)
+        p_tail = (1.0 - p_head.sum(-1)).clamp_min(self.TAIL_EPS)
+        alpha = (tail_q_mass / p_tail).detach()
+        residual = (q_head - alpha[..., None] * p_head).detach()
+
+        # Zero-expected-score baseline: E_q[score] = 0, so the estimator stays
+        # unbiased while the drift term cancels.
+        center = (residual * head_p).sum(-1) + alpha * plogp
+        score = inputs.trainer_logprobs - center
+
+        per_token_loss = -inputs.advantages.detach() * score
+        per_token_loss = per_token_loss * inputs.loss_mask
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+        loss = per_token_loss.sum()
+
+        _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(inputs.trainer_logprobs, inputs.inference_logprobs)
+        metrics = {
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask),
+            "head_mass": _safe_mean(q_head.sum(-1), inputs.loss_mask),
+            "rho": _safe_mean(alpha, inputs.loss_mask),
+        }
+        return LossOutputs(loss=loss, metrics=metrics)
+
+
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     Ref-KL loss type (on-policy distillation): the reverse KL to the reference
@@ -298,6 +403,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case ScoreCenteringLossConfig():
+            return ScoreCenteringLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
@@ -315,6 +422,10 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    trainer_topk_logprobs: list[Float[Tensor, " seq_i k"]] | None = None,
+    sampler_topk_logprobs: list[Float[Tensor, " seq_i k"]] | None = None,
+    topk_valid: list[Bool[Tensor, " seq_i k"]] | None = None,
+    entropy: list[Float[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -361,6 +472,14 @@ def compute_loss(
         ce_weights = [None] * n
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
+    if trainer_topk_logprobs is None:
+        trainer_topk_logprobs = [None] * n
+    if sampler_topk_logprobs is None:
+        sampler_topk_logprobs = [None] * n
+    if topk_valid is None:
+        topk_valid = [None] * n
+    if entropy is None:
+        entropy = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -375,7 +494,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_topk, s_topk, topk_ok, ent in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -384,6 +503,10 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        trainer_topk_logprobs,
+        sampler_topk_logprobs,
+        topk_valid,
+        entropy,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -394,6 +517,10 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                trainer_topk_logprobs=t_topk,
+                sampler_topk_logprobs=s_topk,
+                topk_valid=topk_ok,
+                entropy=ent,
             )
 
         if rl_w is None:
