@@ -88,8 +88,8 @@ def _packed_context(
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
-    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at.
+    half of a packing comparison runs at. `dtype` is the default dtype the rotary embedding is built
+    under; the RoPE tables themselves are always fp32.
 
     `doc_lens` always describes the whole row, `cp_world_size` shards included: the context
     parallel tests below hand it the same layout every rank sees and vary only `cp_rank`.
@@ -99,7 +99,6 @@ def _packed_context(
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
-        dtype=dtype,
         device=torch.device("cuda"),
         cp_rank=cp_rank,
         cp_world_size=cp_world_size,
@@ -1168,9 +1167,9 @@ def _cp_gathered_projections(
     """
     # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
-        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
-            module.rope_layer_type
-        ]
+        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size)
+        .rope_cos_sin[module.rope_layer_type][None]
+        .chunk(2, dim=-1)
         for cp_rank in range(cp_world_size)
     ]
 

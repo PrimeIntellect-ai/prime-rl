@@ -189,15 +189,14 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
-    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at.
+    half of a packing comparison runs at. `dtype` is the default dtype the rotary embedding is built
+    under; the RoPE tables themselves are always fp32.
     """
     with torch.device("cuda"), default_dtype(dtype):
         rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
-        dtype=dtype,
         device=torch.device("cuda"),
     )
 
