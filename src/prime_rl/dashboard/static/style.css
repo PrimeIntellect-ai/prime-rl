@@ -1178,6 +1178,24 @@ mark.hit {
 .trace-error-banner + .trace-error-banner { margin-top: 8px; }
 .trace-error-message { padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .trace-error-type { font-weight: 500; color: var(--negative); }
+.trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
+.trace-recovered > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--grey-4);
+  cursor: pointer;
+  list-style: none;
+}
+.trace-recovered > summary::-webkit-details-marker { display: none; }
+.trace-recovered[open] > summary .entry-chev { transform: rotate(90deg); }
+.trace-recovered-item { border-top: 1px solid var(--grey-3); }
+.trace-recovered-item .trace-error-type { color: var(--grey-4); }
+.trace-recovered-item .trace-error-tb > summary { border-top-color: var(--grey-3); }
+.chip.recovered { margin-left: 6px; }
+.seg button.err, .seg button.err.active { color: var(--negative); }
 .trace-error-tb > summary {
   display: flex;
   align-items: center;

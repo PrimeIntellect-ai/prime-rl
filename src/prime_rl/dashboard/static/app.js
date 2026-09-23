@@ -1176,7 +1176,7 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   }
   // failure rates count every landed episode, the errors filter notwithstanding
   if (all.length) {
-    const errored = all.filter((i) => series.ok?.[i] === false || (series.num_errors?.[i] ?? 0) > 0).length;
+    const errored = all.filter((i) => series.ok?.[i] === false).length;
     const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
     for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
       const rate = n / all.length;
@@ -3022,12 +3022,14 @@ function fmtSpan(dispatched, arrived, elapsed) {
 }
 
 function episodeRowHtml(ep) {
-  const failed = !ep.ok || !!ep.num_errors;
+  // an ok episode keeps the errors of the attempts it recovered from; they mark the
+  // row as retried, not as failed
+  const failed = !ep.ok;
   const phase = failed ? "error" : "done";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
   return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
         <td class="muted">${ep.line}</td>
-        <td><span class="badge stage stage-${phase}">${phase}</span></td>
+        <td><span class="badge stage stage-${phase}">${phase}</span>${!failed && ep.num_errors ? recoveredChipHtml(ep.num_errors) : ""}</td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
@@ -3325,7 +3327,7 @@ function tmItemHtml(item) {
   }
   const e = item;
   return (
-    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.ok ? "" : " err"}" data-line="${e.line}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -3940,7 +3942,7 @@ function judgeEvidenceHtml(trace) {
 
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
-  const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
+  const errors = episodeErrorsHtml(currentEpisode, trace);
   if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
@@ -3980,41 +3982,56 @@ function renderedBoxHtml(tokenCount, body, canCopyText) {
 
 let entriesObserver = null;
 
+/* Errors carried by the episode and the open trace, split by what they mean. Verifiers
+   keeps every attempt's errors on the final record and stamps success as `ok`, so the
+   errors of an ok episode or trace are history it recovered from, while a failed one's
+   errors describe its outcome. One failure is often recorded twice, on the episode and
+   on its trace: each list shows it once, keeping whichever copy carries the traceback. */
 function episodeErrors(ep, trace) {
-  // one failure is often recorded twice, on the episode and on its trace; show it
-  // once, keeping whichever copy carries the traceback
-  const byMessage = new Map();
-  for (const error of [...(ep.errors || []), ...(trace?.errors || [])]) {
-    const record = error && typeof error === "object" ? error : { message: String(error) };
-    const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
-    const kept = byMessage.get(key);
-    if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
-  }
-  return [...byMessage.values()];
+  const dedup = (errors) => {
+    const byMessage = new Map();
+    for (const error of errors) {
+      const record = error && typeof error === "object" ? error : { message: String(error) };
+      const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
+      const kept = byMessage.get(key);
+      if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
+    }
+    return [...byMessage.values()];
+  };
+  const failed = [];
+  const recovered = [];
+  for (const error of ep.errors || []) (ep.ok ? recovered : failed).push(error);
+  for (const error of trace?.errors || []) (trace.ok ? recovered : failed).push(error);
+  return { failed: dedup(failed), recovered: dedup(recovered) };
 }
 
-function errorBannersHtml(errors) {
-  if (!errors.length) return "";
+function errorEntryHtml(record) {
+  const type = record.type ?? "Error";
+  const message = record.message ?? "No error message";
+  const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
   return (
-    `<div class="trace-errors">` +
-    errors
-      .map((error) => {
-        const record = error && typeof error === "object" ? error : { message: String(error) };
-        const type = record.type ?? "Error";
-        const message = record.message ?? "No error message";
-        const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
-        return (
-          `<section class="trace-error-banner">` +
-          `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
-          (traceback
-            ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
-            : "") +
-          `</section>`
-        );
-      })
-      .join("") +
-    `</div>`
+    `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+    (traceback
+      ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
+      : "")
   );
+}
+
+function recoveredChipHtml(count) {
+  return ` <span class="chip recovered" title="recovered from ${count} error${count === 1 ? "" : "s"} in earlier attempts">${count} recovered</span>`;
+}
+
+function episodeErrorsHtml(ep, trace) {
+  const { failed, recovered } = episodeErrors(ep, trace);
+  const banners = failed.length
+    ? `<div class="trace-errors">${failed.map((record) => `<section class="trace-error-banner">${errorEntryHtml(record)}</section>`).join("")}</div>`
+    : "";
+  const history = recovered.length
+    ? `<details class="trace-recovered"><summary><span>recovered from ${recovered.length} error${recovered.length === 1 ? "" : "s"} in earlier attempts</span><span class="entry-chev">›</span></summary>` +
+      recovered.map((record) => `<section class="trace-recovered-item">${errorEntryHtml(record)}</section>`).join("") +
+      `</details>`
+    : "";
+  return banners + history;
 }
 
 function normalizedCallUsage(usage = {}) {
@@ -4036,7 +4053,7 @@ function normalizedCallUsage(usage = {}) {
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
-  const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
+  const errorsHtml = episodeErrorsHtml(ep, trace);
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
@@ -5492,7 +5509,7 @@ function renderEpisode() {
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
