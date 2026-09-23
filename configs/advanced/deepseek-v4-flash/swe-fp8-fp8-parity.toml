@@ -1,0 +1,43 @@
+# A/B arm: the swe-fp8-fp8 recipe with the DeepSeek V4 trainer/vLLM parity improvements enabled.
+# An overlay, not a standalone config. Compose it on top of the control:
+#
+#   uv run rl @ configs/advanced/deepseek-v4-flash/swe-fp8-fp8.toml \
+#             @ configs/advanced/deepseek-v4-flash/swe-fp8-fp8-parity.toml
+#
+# Control is job 1228 (`dsv4-swe-131k-fp8-fp8-rerun`), which settled at mismatch_kl/all/mean 0.0027,
+# roughly 3x the bf16-serving floor. Everything that defines the recipe (8 train + 8 inference nodes,
+# cp = 4, ep = 8, the FP8 ignore_patterns, deepgemm_fp8 MoE compute, AdamW at lr = 1e-6,
+# max_steps = 100, seq_len = 131072 and the whole [inference] block) is inherited so the two arms
+# cannot drift; only the treatment and the names live here.
+
+[run]
+name = "dsv4-swe-131k-fp8-fp8-parity"
+
+[slurm]
+job_name = "dsv4-swe-fp8-fp8-parity"
+# The label below and `env.agent.runtime.labels` must change together: this reaps every sandbox
+# carrying the label and that is what stamps it, so leaving the control's label here would let a
+# relaunch of either arm delete the other arm's live sandboxes.
+pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe-fp8-fp8-parity" -y || true'
+
+[monitors.wandb]
+# `tags` is a list, and a later config file replaces lists wholesale rather than appending, so the
+# inherited tags are restated in full. `entity` and `project` are scalars and deep-merge from the base.
+name = "swe-scaleswe-131k-fp8-fp8-parity-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp8", "fp8-train", "vllm-parity"]
+
+# Both flags already default this way on this branch (`simulate_fp8_kv_cache` is True, and
+# `fp32_lm_head_logits = "auto"` resolves true for deepseek_v4). Setting them explicitly makes the
+# treatment legible in configs/latest/resolved/trainer.json, which is what the arms get compared on.
+[trainer.model]
+simulate_fp8_kv_cache = true
+fp32_lm_head_logits = true
+
+# Restated in full for the same list-replacement reason as `tags`. Only the runtime label differs
+# from the base.
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["dsv4-swe-fp8-fp8-parity"]
