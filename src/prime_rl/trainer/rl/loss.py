@@ -6,7 +6,13 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    LossConfig,
+    ScoreCenteringLossConfig,
+)
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -129,12 +135,13 @@ def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
     return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 
 
-def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = None) -> Float[Tensor, "batch seq"]:
+def shift_tensor_right(t: Float[Tensor, "batch seq ..."], pad_value: float | None = None) -> Float[Tensor, "batch seq ..."]:
     """Shifts the tensor one token to the right, prepending a padding value.
 
     Used to realign logprobs/entropy after computing with shifted labels.
     After shift: result[i] = t[i-1], result[0] = pad_value.
     This converts from "predict next token" convention to "probability of current token" convention.
+    Works for [batch, seq] and label-aligned [batch, seq, ...] fields like top-k heads.
 
     Args:
         t: Tensor to shift right
@@ -144,7 +151,8 @@ def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = 
     """
     if pad_value is None:
         pad_value = 0.0
-    return torch.cat([torch.full((t.shape[0], 1), pad_value, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+    pad = torch.full((t.shape[0], 1, *t.shape[2:]), pad_value, device=t.device, dtype=t.dtype)
+    return torch.cat([pad, t[:, :-1]], dim=1)
 
 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
@@ -392,6 +400,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case ScoreCenteringLossConfig():
+            return ScoreCenteringLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
@@ -409,6 +419,10 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    trainer_topk_logprobs: list[Float[Tensor, " seq_i k"]] | None = None,
+    sampler_topk_logprobs: list[Float[Tensor, " seq_i k"]] | None = None,
+    topk_valid: list[Bool[Tensor, " seq_i k"]] | None = None,
+    entropy: list[Float[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -455,6 +469,14 @@ def compute_loss(
         ce_weights = [None] * n
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
+    if trainer_topk_logprobs is None:
+        trainer_topk_logprobs = [None] * n
+    if sampler_topk_logprobs is None:
+        sampler_topk_logprobs = [None] * n
+    if topk_valid is None:
+        topk_valid = [None] * n
+    if entropy is None:
+        entropy = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -469,7 +491,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_topk, s_topk, topk_ok, ent in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -478,6 +500,10 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        trainer_topk_logprobs,
+        sampler_topk_logprobs,
+        topk_valid,
+        entropy,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -488,6 +514,10 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                trainer_topk_logprobs=t_topk,
+                sampler_topk_logprobs=s_topk,
+                topk_valid=topk_ok,
+                entropy=ent,
             )
 
         if rl_w is None:
