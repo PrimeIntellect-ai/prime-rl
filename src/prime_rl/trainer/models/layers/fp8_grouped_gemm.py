@@ -5,10 +5,12 @@ import torch
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
     build_grouped_layout,
+    ceil_div,
     grouped_per_block_cast_to_fp8_triton,
     grouped_per_channel_cast_to_fp8_rowmajor_triton,
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
+    grouped_transpose_block_fp8_triton,
     ue8m0_for_device,
 )
 
@@ -111,8 +113,31 @@ def _compute_grad_weight(
     return grad_weight.transpose(1, 2) if grad_weight_transposed else grad_weight
 
 
+@torch.library.custom_op("prime_rl::grouped_fp8_weight_cast", mutates_args=())
+def _grouped_fp8_weight_cast(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    return grouped_per_block_cast_to_fp8_triton(
+        weight.transpose(1, 2), ue8m0_for_device(weight.device), GROUP_ALIGNMENT
+    )
+
+
+@_grouped_fp8_weight_cast.register_fake
+def _grouped_fp8_weight_cast_fake(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    groups, k, n = weight.shape
+    weight_fp8 = weight.new_empty((groups, n, k), dtype=torch.float8_e4m3fn)
+    weight_scales = weight.new_empty(
+        (groups, ceil_div(n, GROUP_ALIGNMENT), ceil_div(k, GROUP_ALIGNMENT)), dtype=torch.float32
+    )
+    return weight_fp8, weight_scales
+
+
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
-def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    weight_fp8: torch.Tensor,
+    weight_scales: torch.Tensor,
+    offs: torch.Tensor,
+) -> torch.Tensor:
     import deep_gemm
 
     (
@@ -135,16 +160,10 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
         use_ue8m0,
         GROUP_ALIGNMENT,
     )
-    weight_fp8 = grouped_per_block_cast_to_fp8_triton(
-        weight.transpose(1, 2),
-        use_ue8m0,
-        GROUP_ALIGNMENT,
-    )
-
     out = torch.empty((x.size(0), weight.size(2)), device=x.device, dtype=x.dtype)
     deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
         x_fp8,
-        weight_fp8,
+        (weight_fp8, weight_scales),
         out,
         grouped_layout,
         use_psum_layout=False,
@@ -153,7 +172,13 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
 
 
 @_grouped_fp8_gemm.register_fake
-def _grouped_fp8_gemm_fake(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    weight_fp8: torch.Tensor,
+    weight_scales: torch.Tensor,
+    offs: torch.Tensor,
+) -> torch.Tensor:
     return x.new_empty((x.shape[0], weight.shape[2]))
 
 
@@ -162,6 +187,8 @@ def _grouped_fp8_gemm_backward(
     grad_output: torch.Tensor,
     x: torch.Tensor,
     weight: torch.Tensor,
+    weight_fp8: torch.Tensor,
+    weight_scales: torch.Tensor,
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
@@ -210,7 +237,7 @@ def _grouped_fp8_gemm_backward(
             use_ue8m0,
             GROUP_ALIGNMENT,
         )
-        weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
+        weight_dx_fp8 = grouped_transpose_block_fp8_triton(weight_fp8, weight_scales)
         grad_x = torch.empty(x.shape, device=grad_output.device, dtype=grad_output.dtype)
         deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
             dy_fp8,
@@ -230,6 +257,8 @@ def _grouped_fp8_gemm_backward_fake(
     grad_output: torch.Tensor,
     x: torch.Tensor,
     weight: torch.Tensor,
+    weight_fp8: torch.Tensor,
+    weight_scales: torch.Tensor,
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
@@ -239,24 +268,26 @@ def _grouped_fp8_gemm_backward_fake(
 
 
 def _grouped_fp8_gemm_setup_context(ctx, inputs, output) -> None:
-    x, weight, offs = inputs
-    ctx.save_for_backward(x, weight, offs)
+    x, weight, weight_fp8, weight_scales, offs = inputs
+    ctx.save_for_backward(x, weight, weight_fp8, weight_scales, offs)
     ctx.grad_weight_transposed = _is_transposed_contiguous(weight)
 
 
 def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight, offs = ctx.saved_tensors
-    needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+    x, weight, weight_fp8, weight_scales, offs = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
     grad_x, grad_weight = _grouped_fp8_gemm_backward(
         grad_output,
         x.detach(),
         weight.detach(),
+        weight_fp8,
+        weight_scales,
         offs,
         needs_grad_x,
         needs_grad_weight,
         ctx.grad_weight_transposed,
     )
-    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None, None
 
 
 _grouped_fp8_gemm.register_autograd(
@@ -280,7 +311,9 @@ def grouped_fp8_gemm(
     Returns:
         (M, N) output tensor in bfloat16. Rows past offs[-1] are left uninitialized.
 
-    The forward never syncs with the host. The backward reads the group sizes back once, because
+    The backward reuses the forward's FP8 weight for the dgrad, transposing its bytes instead of
+    casting the bfloat16 weight again. The forward never syncs with the host. The backward reads the group sizes back once, because
     DeepGEMM's k-grouped weight-gradient GEMM takes them as a host list.
     """
-    return _grouped_fp8_gemm(x, weight, offs)
+    weight_fp8, weight_scales = _grouped_fp8_weight_cast(weight.detach())
+    return _grouped_fp8_gemm(x, weight, weight_fp8, weight_scales, offs)
