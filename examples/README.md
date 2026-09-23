@@ -24,7 +24,7 @@ Walk-throughs for the core environments (baseline eval → optional SFT warmup �
 - [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
 - [`hendrycks-sanity/`](basic/hendrycks-sanity/README.md) — single-turn math, long-running
-- [`dynamo/rl.toml`](basic/dynamo/rl.toml) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
+- [`dynamo/`](basic/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
 
 ## extra/ — beyond the core loop
 
