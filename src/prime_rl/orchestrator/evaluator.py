@@ -94,9 +94,16 @@ class Evaluator:
     # ── reporting ──────────────────────────────────────────────────────────
 
     async def finalize(self, batch: EvalBatch) -> None:
-        """Persist and log one completed eval epoch through the monitors."""
-        self.pending.discard((batch.env_name, batch.step))
-        self.changed.set()
+        """Persist and log one completed eval epoch through the monitors. The epoch
+        counts as done only once everything is logged, so a caller waiting on
+        ``changed`` can finalize the monitors right after."""
+        try:
+            await self.report(batch)
+        finally:
+            self.pending.discard((batch.env_name, batch.step))
+            self.changed.set()
+
+    async def report(self, batch: EvalBatch) -> None:
         if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return

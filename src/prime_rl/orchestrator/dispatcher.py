@@ -228,18 +228,17 @@ class Dispatcher:
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
         monitors: Any = None,
     ) -> None:
-        if step is not None:
-            self._step = step
-        if version is not None:
-            self._version = version
-        if on_train is not None:
-            self._on_train = on_train
-        if on_eval is not None:
-            self._on_eval = on_eval
-        if on_episode_complete is not None:
-            self._on_episode_complete = on_episode_complete
-        if monitors is not None:
-            self.monitors = monitors
+        bound = {
+            "_step": step,
+            "_version": version,
+            "_on_train": on_train,
+            "_on_eval": on_eval,
+            "_on_episode_complete": on_episode_complete,
+            "monitors": monitors,
+        }
+        for name, hook in bound.items():
+            if hook is not None:
+                setattr(self, name, hook)
 
     def _train_generation_for(self, env_name: str) -> tuple[InferenceClient, str, bool]:
         """``(clients, model_name, is_live)`` for *train* rollouts of this env —

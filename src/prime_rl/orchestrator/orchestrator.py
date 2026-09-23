@@ -62,7 +62,7 @@ from prime_rl.transports.weights import setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
+from prime_rl.utils.pathing import get_broadcast_dir, get_ckpt_dir, get_config_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -170,7 +170,7 @@ class Orchestrator:
             else:
                 self.resume_step = config.resume.step
                 if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(get_ckpt_manager_dir(config))
+                    self.resume_step = resolve_latest_ckpt_step(get_ckpt_dir(config.output_dir))
         get_logger().info(
             f"Resuming from step {self.resume_step}" if self.resume_step is not None else "Starting from scratch"
         )
@@ -484,10 +484,6 @@ class Orchestrator:
             os._exit(0)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
-
-
-def get_ckpt_manager_dir(config: OrchestratorConfig):
-    return setup_ckpt_manager(config.output_dir, config.ckpt).ckpt_dir
 
 
 @clean_exit

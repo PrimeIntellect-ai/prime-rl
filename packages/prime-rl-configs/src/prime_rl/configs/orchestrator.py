@@ -507,14 +507,13 @@ class ConcurrencyConfig(BaseConfig):
 
 
 class DispatcherConfig(BaseConfig):
-    """Episode admission: the rate limit and the burst smoothing on pool growth
-    (``[orchestrator.dispatcher]``, ``[dispatcher]`` for evals)."""
+    """Episode admission (``[orchestrator.dispatcher]``, ``[dispatcher]`` for evals)."""
 
     tasks_per_minute: int | None = Field(None, ge=1)
-    """Rate limit on episode dispatch, one token per episode, shared by train and eval. Each episode is one rollout, so for sandbox-backed environments this bounds the sandbox creation rate. None disables it."""
+    """Rate limit on episode dispatch, one token per episode (one rollout, one sandbox), shared by train and eval. None disables it."""
 
     admission_window: float = Field(5.0, gt=0)
-    """Seconds per admission window. The in-flight pool may only grow by ``admission_fraction`` of its cap per window; replacing a completed episode is always free."""
+    """Seconds per admission window: the in-flight pool grows by at most ``admission_fraction`` of its cap per window; replacing a completed episode is free."""
 
     admission_fraction: float = Field(0.1, gt=0, le=1)
     """Share of the in-flight cap the pool may grow by per window."""
@@ -524,9 +523,9 @@ class DispatcherConfig(BaseConfig):
 
 
 class InferenceMetricsConfig(BaseConfig):
-    """The ``/metrics`` poll of the policy inference engines (``[orchestrator.inference_metrics]``).
-    The poll always runs — it feeds the concurrency controller; ``log`` decides whether the
-    scraped metrics also reach the monitors."""
+    """The ``/metrics`` poll of the inference engines (``[orchestrator.inference_metrics]``). It
+    always runs — it feeds the concurrency controller; ``log`` decides whether the scraped
+    metrics also reach the monitors."""
 
     poll_interval: float = Field(5.0, gt=0)
     """Seconds between scrapes."""
@@ -535,29 +534,29 @@ class InferenceMetricsConfig(BaseConfig):
     """Per-request timeout of one scrape."""
 
     roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    """Role of each admin client when collecting P/D inference metrics."""
 
     log: bool = True
-    """Mirror the scraped inference metrics to the monitors (W&B needs it enabled)."""
+    """Mirror the scraped metrics to the monitors."""
 
 
 class TrainSinkConfig(BaseConfig):
-    """Scoring and compilation of finished train groups. Built by the orchestrator from
-    its top-level fields; not a TOML block."""
+    """Scoring and compilation of finished train groups; derived from the orchestrator's
+    top-level fields, not a TOML block."""
 
     constant_trainer_batch_size: bool = True
     """Prune zero-advantage tokens at compile time so every queued trace carries signal."""
 
 
 class QueueConfig(BaseConfig):
-    """The buffer of compiled train groups between the sink and the trainer. Built by
-    the orchestrator from its top-level fields; not a TOML block."""
+    """The buffer of compiled groups between the sink and the trainer; derived from the
+    orchestrator's top-level fields, not a TOML block."""
 
     batch_size: int | None = Field(None, ge=1)
-    """Traces per batch (rollout-based batching). Set this OR ``token_batch_size``."""
+    """Traces per batch. Set this OR ``token_batch_size``."""
 
     token_batch_size: int | None = Field(None, ge=1)
-    """Tokens per batch (token-based batching). Set this OR ``batch_size``."""
+    """Tokens per batch. Set this OR ``batch_size``."""
 
     max_off_policy_steps: int = Field(8, ge=0)
     """Queued traces older than this many policy versions are dropped before every cut."""
@@ -576,21 +575,21 @@ class QueueConfig(BaseConfig):
 
 
 class ShipperConfig(BaseConfig):
-    """Shipping of cut batches to the trainer. Built by the orchestrator from its
-    top-level fields; not a TOML block."""
+    """Shipping of cut batches to the trainer; derived from the orchestrator's top-level
+    fields, not a TOML block."""
 
     max_steps: int | None = None
     """Training steps to ship; None ships forever."""
 
     target_lag: int = Field(1, ge=0)
-    """Batches the orchestrator may run ahead of the policy inference serves. Dispatch pauses past it, and a batch ships only once inference serves v{step - 1 - target_lag}."""
+    """Batches the orchestrator may run ahead of the policy inference serves: dispatch pauses past it, and a batch ships only once inference serves v{step - 1 - target_lag}."""
 
     version_wait_timeout: float | None = None
     """Bound on waiting for inference to apply the final policy before shutdown; None waits forever."""
 
 
 class EvaluatorConfig(BaseConfig):
-    """Eval epoch triggering and reporting. Built by the launchers; not a TOML block."""
+    """Eval epoch triggering and reporting; derived by the launchers, not a TOML block."""
 
     max_steps: int | None = None
     """The final step, whose eval fires every env regardless of interval."""
@@ -602,7 +601,7 @@ class EvaluatorConfig(BaseConfig):
     """The step a resumed run continues from."""
 
     upload_epochs: bool = False
-    """Hand each finished epoch to the monitors as a whole (``log_eval_epoch``), the way ``uv run eval`` publishes to the platform."""
+    """Hand each finished epoch to the monitors whole (``log_eval_epoch``), the way ``uv run eval`` publishes to the platform."""
 
 
 class WatcherConfig(BaseConfig):
