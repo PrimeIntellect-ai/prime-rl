@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 
 import httpx
 from pydantic import BaseModel, Field
@@ -38,8 +38,13 @@ _DYNAMO_LORA_RESIDENT_VERSIONS = 2
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _WILDCARD_HOSTS = {"0.0.0.0", "::"}
 
+WorkerFingerprint: TypeAlias = tuple[str, str, int, str, int, str, tuple[str, ...]]
+TopologyFingerprint: TypeAlias = tuple[WorkerFingerprint, ...]
+
 
 class DynamoWorker(BaseModel):
+    component: str = "backend"
+    endpoint: str = "rl"
     admin_base_url: str
     instance_id: int = Field(ge=0, strict=True)
     world_size: int = Field(gt=0, strict=True)
@@ -56,12 +61,12 @@ class DynamoDiscoveryPending(RuntimeError):
     """The discovery endpoint is healthy but has not published a complete worker set."""
 
 
-def parse_dynamo_worker(
+def parse_dynamo_workers(
     payload: object,
     model_name: str,
     *,
     expected_admin_host: str | None = None,
-) -> DynamoWorker:
+) -> tuple[DynamoWorker, ...]:
     snapshot = DynamoSnapshot.model_validate(payload)
     matching_workers: list[DynamoWorker] = []
     for raw_worker in snapshot.workers:
@@ -131,6 +136,30 @@ def parse_dynamo_worker(
 
     if not matching_workers:
         raise DynamoDiscoveryPending(f"Dynamo returned no bound workers for model {model_name!r}")
+    workers = tuple(
+        sorted(
+            matching_workers,
+            key=lambda worker: (
+                worker.component,
+                worker.endpoint,
+                worker.instance_id,
+                worker.admin_base_url,
+            ),
+        )
+    )
+    contracts = {worker.admin_contract for worker in workers}
+    if len(contracts) != 1:
+        raise ValueError("Dynamo workers must expose the same admin contract")
+    return workers
+
+
+def parse_dynamo_worker(
+    payload: object,
+    model_name: str,
+    *,
+    expected_admin_host: str | None = None,
+) -> DynamoWorker:
+    matching_workers = parse_dynamo_workers(payload, model_name, expected_admin_host=expected_admin_host)
     if len(matching_workers) != 1:
         raise ValueError("Dynamo RL currently supports exactly one inference worker")
     return matching_workers[0]
@@ -166,13 +195,13 @@ def resolve_dynamo_discovery_url(client_config: ClientConfig) -> str:
     return str(base_url.copy_with(port=base_url.port + 1, path="", query=None, fragment=None, userinfo=b""))
 
 
-async def discover_dynamo_worker(
+async def discover_dynamo_workers(
     discovery_url: str,
     model_name: str,
     *,
     headers: dict[str, str],
     timeout: float,
-) -> DynamoWorker:
+) -> tuple[DynamoWorker, ...]:
     try:
         base_url = httpx.URL(discovery_url)
     except httpx.InvalidURL as error:
@@ -198,7 +227,25 @@ async def discover_dynamo_worker(
                 payload = response.json()
     except TimeoutError as error:
         raise TimeoutError(f"Dynamo discovery request exceeded {timeout} seconds") from error
-    return parse_dynamo_worker(payload, model_name, expected_admin_host=base_url.host)
+    return parse_dynamo_workers(payload, model_name, expected_admin_host=base_url.host)
+
+
+async def discover_dynamo_worker(
+    discovery_url: str,
+    model_name: str,
+    *,
+    headers: dict[str, str],
+    timeout: float,
+) -> DynamoWorker:
+    workers = await discover_dynamo_workers(
+        discovery_url,
+        model_name,
+        headers=headers,
+        timeout=timeout,
+    )
+    if len(workers) != 1:
+        raise ValueError("Dynamo RL currently supports exactly one inference worker")
+    return workers[0]
 
 
 class DynamoAdminPlane(AdminPlane):
@@ -221,7 +268,8 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
-        self._fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
+        self._workers: tuple[DynamoWorker, ...] = ()
+        self._fingerprint: TopologyFingerprint | None = None
         self._admin_contract: Literal["collective_rpc", "engine_routes"] = "collective_rpc"
         self._inference_world_size = 1
         self._worker_routes: frozenset[str] = frozenset()
@@ -243,12 +291,27 @@ class DynamoAdminPlane(AdminPlane):
     def _terminalize_nccl(self) -> None:
         self._nccl_initialization_state = "terminal"
 
-    async def _discover(self) -> DynamoWorker:
-        return await discover_dynamo_worker(
+    async def _discover(self) -> tuple[DynamoWorker, ...]:
+        return await discover_dynamo_workers(
             self._discovery_url,
             self._model_name,
             headers=self._headers,
             timeout=min(30.0, max(1.0, float(self._timeout))),
+        )
+
+    @staticmethod
+    def _topology_fingerprint(workers: tuple[DynamoWorker, ...]) -> TopologyFingerprint:
+        return tuple(
+            (
+                worker.component,
+                worker.endpoint,
+                worker.instance_id,
+                str(httpx.URL(worker.admin_base_url)),
+                worker.world_size,
+                worker.admin_contract,
+                tuple(sorted((_PYTHON_ENGINE_ROUTES | _PYTHON_LORA_ROUTES).intersection(worker.routes))),
+            )
+            for worker in workers
         )
 
     async def wait_for_ready(self, model_name: str) -> None:
@@ -266,29 +329,27 @@ class DynamoAdminPlane(AdminPlane):
         except TimeoutError as error:
             raise TimeoutError(f"Dynamo frontend readiness exceeded {self._timeout} seconds") from error
 
-        previous_fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
+        previous_fingerprint: TopologyFingerprint | None = None
         last_error: Exception | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             try:
                 async with asyncio.timeout(remaining):
-                    worker = await self._discover()
-                fingerprint = (
-                    worker.instance_id,
-                    str(httpx.URL(worker.admin_base_url)),
-                    worker.world_size,
-                    worker.admin_contract,
-                    tuple(sorted((_PYTHON_ENGINE_ROUTES | _PYTHON_LORA_ROUTES).intersection(worker.routes))),
-                )
+                    workers = await self._discover()
+                fingerprint = self._topology_fingerprint(workers)
                 if fingerprint == previous_fingerprint:
-                    candidate_client = self._make_worker_client(worker)
+                    if len(workers) > 1 and workers[0].admin_contract != "engine_routes":
+                        raise ValueError(
+                            "Multiple Dynamo workers are currently supported only for Python engine routes"
+                        )
+                    candidate_clients = [self._make_worker_client(worker) for worker in workers]
                     try:
                         remaining = self._remaining(deadline)
                         async with asyncio.timeout(remaining):
-                            await check_health([candidate_client], timeout=remaining, quiet=True)
+                            await check_health(candidate_clients, timeout=remaining, quiet=True)
                     except BaseException:
-                        await candidate_client.aclose()
+                        await asyncio.gather(*(client.aclose() for client in candidate_clients))
                         raise
-                    self._bind(worker, fingerprint, candidate_client)
+                    self._bind(workers, fingerprint, candidate_clients)
                     return
                 previous_fingerprint = fingerprint
             except httpx.HTTPStatusError as error:
@@ -323,22 +384,30 @@ class DynamoAdminPlane(AdminPlane):
 
     def _bind(
         self,
-        worker: DynamoWorker,
-        fingerprint: tuple[int, str, int, str, tuple[str, ...]],
-        client: httpx.AsyncClient | None = None,
+        workers: tuple[DynamoWorker, ...],
+        fingerprint: TopologyFingerprint,
+        clients: list[httpx.AsyncClient] | None = None,
     ) -> None:
+        contracts = {worker.admin_contract for worker in workers}
+        if len(contracts) != 1:
+            raise ValueError("Dynamo workers must expose the same admin contract")
+        if len(workers) > 1 and workers[0].admin_contract != "engine_routes":
+            raise ValueError("Multiple Dynamo workers are currently supported only for Python engine routes")
+        if clients is not None and len(clients) != len(workers):
+            raise ValueError("Dynamo worker and admin client counts must match")
+        self._workers = workers
         self._fingerprint = fingerprint
-        self._admin_contract = worker.admin_contract
-        self._inference_world_size = worker.world_size
-        self.clients = [client if client is not None else self._make_worker_client(worker)]
-        self._worker_routes = frozenset(worker.routes)
+        self._admin_contract = workers[0].admin_contract
+        self._inference_world_size = sum(worker.world_size for worker in workers)
+        self.clients = clients if clients is not None else [self._make_worker_client(worker) for worker in workers]
+        self._worker_routes = frozenset.intersection(*(frozenset(worker.routes) for worker in workers))
 
     async def ensure_topology_current(self) -> None:
         if self._nccl_initialization_state == "terminal":
             raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if self._fingerprint is None:
             raise RuntimeError("Dynamo topology has not been pinned")
-        previous_changed_fingerprint: tuple[int, str, int, str, tuple[str, ...]] | None = None
+        previous_changed_fingerprint: TopologyFingerprint | None = None
         last_error: Exception | None = None
         deadline = time.monotonic() + self._timeout
         for attempt in range(3):
@@ -347,14 +416,8 @@ class DynamoAdminPlane(AdminPlane):
                 break
             try:
                 async with asyncio.timeout(remaining):
-                    worker = await self._discover()
-                fingerprint = (
-                    worker.instance_id,
-                    str(httpx.URL(worker.admin_base_url)),
-                    worker.world_size,
-                    worker.admin_contract,
-                    tuple(sorted((_PYTHON_ENGINE_ROUTES | _PYTHON_LORA_ROUTES).intersection(worker.routes))),
-                )
+                    workers = await self._discover()
+                fingerprint = self._topology_fingerprint(workers)
                 if fingerprint == self._fingerprint:
                     return
                 if fingerprint == previous_changed_fingerprint:
@@ -451,6 +514,8 @@ class DynamoAdminPlane(AdminPlane):
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
+        if transport == "nccl" and len(self._workers) != 1:
+            raise ValueError("Dynamo NCCL weight transfer currently requires exactly one inference worker")
         if self._admin_contract == "engine_routes" and transport != "nccl":
             raise ValueError("A Dynamo Python worker currently only supports NCCL weight updates")
         if transport != "nccl":
@@ -524,19 +589,27 @@ class DynamoAdminPlane(AdminPlane):
             self._lora_names_by_step[step] = f"prime-rl-policy-v{step}-{uuid.uuid4().hex}"
         return self._lora_names_by_step[step]
 
-    async def _post_lora(
+    async def _post_lora_to(
         self,
+        client: httpx.AsyncClient,
         operation: Literal["load_lora", "unload_lora"],
         body: dict[str, object],
     ) -> None:
         expected_name = body["lora_name"]
-        response = await self.clients[0].post(
+        response = await client.post(
             f"/engine/{operation}",
             json=body,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
         )
         response.raise_for_status()
         payload = response.json()
+        if (
+            operation == "unload_lora"
+            and isinstance(payload, dict)
+            and payload.get("status") == "error"
+            and "not found" in str(payload.get("message", "")).lower()
+        ):
+            return
         if (
             not isinstance(payload, dict)
             or payload.get("status") != "success"
@@ -545,6 +618,33 @@ class DynamoAdminPlane(AdminPlane):
             or payload["lora_id"] <= 0
         ):
             raise RuntimeError(f"Dynamo worker rejected LoRA operation: {payload!r}")
+
+    def _lora_targets(self, operation: Literal["load_lora", "unload_lora"]):
+        targets = list(zip(self._workers, self.clients, strict=True))
+        return sorted(
+            targets,
+            key=lambda target: target[0].component == "prefill",
+            reverse=operation == "unload_lora",
+        )
+
+    async def _post_lora_all(
+        self,
+        operation: Literal["load_lora", "unload_lora"],
+        body: dict[str, object],
+    ) -> None:
+        completed: list[httpx.AsyncClient] = []
+        try:
+            for _, client in self._lora_targets(operation):
+                await self._post_lora_to(client, operation, body)
+                completed.append(client)
+        except BaseException:
+            if operation == "load_lora":
+                for client in reversed(completed):
+                    try:
+                        await self._post_lora_to(client, "unload_lora", {"lora_name": body["lora_name"]})
+                    except Exception as cleanup_error:
+                        get_logger().warning(f"Failed to roll back Dynamo LoRA load: {cleanup_error!r}")
+            raise
 
     async def _wait_for_lora_model(self, model_name: str) -> None:
         deadline = time.monotonic() + min(float(self._timeout), 120.0)
@@ -575,9 +675,9 @@ class DynamoAdminPlane(AdminPlane):
                 return active_model
             if len(self._loaded_loras) >= _DYNAMO_LORA_RESIDENT_VERSIONS:
                 oldest = self._loaded_loras[0]
-                await self._post_lora("unload_lora", {"lora_name": oldest})
+                await self._post_lora_all("unload_lora", {"lora_name": oldest})
                 self._loaded_loras.pop(0)
-            await self._post_lora(
+            await self._post_lora_all(
                 "load_lora",
                 {"lora_name": active_model, "source": {"uri": source_uri}},
             )
@@ -585,7 +685,7 @@ class DynamoAdminPlane(AdminPlane):
                 await self._wait_for_lora_model(active_model)
             except BaseException:
                 try:
-                    await self._post_lora("unload_lora", {"lora_name": active_model})
+                    await self._post_lora_all("unload_lora", {"lora_name": active_model})
                 except Exception as cleanup_error:
                     get_logger().warning(f"Failed to roll back Dynamo LoRA {active_model}: {cleanup_error!r}")
                 raise
@@ -603,6 +703,8 @@ class DynamoAdminPlane(AdminPlane):
         inference_world_size: int,
     ) -> None:
         async with self._mutation_lock:
+            if len(self._workers) != 1:
+                raise ValueError("Dynamo NCCL weight transfer currently requires exactly one inference worker")
             self._require_uninitialized_nccl()
             if inference_world_size != self._inference_world_size:
                 raise ValueError(
