@@ -7,8 +7,8 @@ from torch import Tensor
 class _MatmulToFloat32Fn(torch.autograd.Function):
     """`lhs @ rhs` accumulated into float32, with a hand-written backward.
 
-    `aten::mm.dtype` has no registered derivative, so the widened matmul cannot be used in an
-    autograd-tracked forward without this wrapper.
+    The `aten::mm.dtype` overload carries an autograd stub with no derivative formula behind it,
+    so it raises in an autograd-tracked forward without this wrapper.
     """
 
     @staticmethod
