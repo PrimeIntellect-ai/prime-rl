@@ -125,8 +125,8 @@ def main():
     )
 
     # The run identity is runtime-only: $PRL_RUN_ID / $PRL_RUN_NAME are stamped on
-    # every episode and inherited by the env servers. $VF_RUN_ID scopes verifiers'
-    # creation limiters to this run.
+    # every episode and inherited by the env servers; $VF_RUN_ID is the same id for
+    # verifiers.
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
     os.environ["VF_RUN_ID"] = os.environ["PRL_RUN_ID"]
     assert config.run.name is not None  # resolved at construction
