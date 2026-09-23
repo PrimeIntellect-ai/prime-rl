@@ -176,8 +176,6 @@ def _grouped_fp8_gemm_backward(
         block_starts_tensor,
     ) = _grouped_layout(x, offs)
     grad_output = grad_output.contiguous()
-    grad_x = x.new_empty(x.shape)
-    grad_weight = _empty_grad_weight(weight, grad_weight_transposed)
 
     if needs_grad_weight:
         aligned_ms = ks_tensor.tolist()
@@ -195,6 +193,8 @@ def _grouped_fp8_gemm_backward(
             aligned_ms,
             grad_weight_transposed,
         )
+    else:
+        grad_weight = _empty_grad_weight(weight, grad_weight_transposed)
 
     if needs_grad_x:
         import deep_gemm
@@ -219,6 +219,8 @@ def _grouped_fp8_gemm_backward(
             grouped_layout,
             use_psum_layout=False,
         )
+    else:
+        grad_x = x.new_empty(x.shape)
 
     return grad_x, grad_weight
 
