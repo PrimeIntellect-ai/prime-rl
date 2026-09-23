@@ -30,7 +30,7 @@ class GemmaFusedOutputLinear(torch.nn.Linear):
         assert temperature is not None, "GemmaFusedOutputLinear requires per-token temperatures"
         assert sampling_mask is None, "sampling-mask replay is not supported with Gemma softcapped lm_heads"
         assert topk_ids is None, (
-            "score centering is not supported with Gemma softcapped fused lm_heads — set model.fused_lm_head_token_chunk_size = 'disabled'"
+            "candidate logprobs are not supported with Gemma softcapped fused lm_heads — set model.fused_lm_head_token_chunk_size = 'disabled'"
         )
 
         b, s, h = hidden_states.shape

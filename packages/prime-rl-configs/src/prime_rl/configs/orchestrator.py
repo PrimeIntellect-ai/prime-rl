@@ -60,10 +60,9 @@ class TrainSamplingConfig(BaseConfig):
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
     logprobs: int | None = Field(None, ge=1)
-    """Number of top sampler logprobs recorded per generated token (the head score
-    centering consumes). None keeps the sampled token's logprob only. The ``rl``
-    entrypoint stamps this automatically when the trainer's loss is
-    ``score_centering`` (k = 128, the paper's default)."""
+    """Number of sampler candidate logprobs recorded per generated token. None keeps
+    the sampled token's logprob only. The ``rl`` entrypoint requests the configured
+    ``topk`` automatically for ``score_centering`` and ``distributional_ipo``."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers

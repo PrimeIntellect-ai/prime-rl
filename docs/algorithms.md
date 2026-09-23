@@ -184,7 +184,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): IPO by default, or optionally [distributional IPO](#distributional-ipo-loss), [IcePop](#icepop-loss) or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -214,6 +214,59 @@ The knobs under `[trainer.loss]` are:
 | `kl_tau` | 0.0 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+### Distributional IPO Loss
+
+Distributional IPO retains the sampled-token importance-weighted policy gradient,
+but gates it using total variation across the recorded candidates and one bucket
+for all unrecorded tokens. For example, changing `[0.5, 0.25, 0.25]` to
+`[0.5, 0.49, 0.01]` leaves the first token's probability unchanged but moves 0.24
+of the distribution's mass; this masks the policy-gradient term when `eps < 0.24`.
+
+```toml
+[trainer.loss]
+type = "distributional_ipo"
+topk = 128
+eps = 0.3
+adv_tau = 1.0
+kl_tau = 1e-3
+```
+
+Let $H$ be the recorded candidate IDs. Their probabilities retain full-vocabulary
+normalization; append tail masses $\mu_T = 1-\sum_{a\in H}\mu_a$ and
+$\pi_T = 1-\sum_{a\in H}\pi_a$. On this categorical distribution $C=H\cup\{T\}$:
+
+$$
+d_t = \frac12\sum_{a\in C}|\pi_a-\mu_a|, \qquad
+R_t = \sum_{a\in C}\mu_a\log^2\!\left(\frac{\pi_a}{\mu_a}\right),
+$$
+$$
+\mathcal L = \frac1N\sum_t\left[
+-\mathbb 1[d_t\le\epsilon]\tau_A\hat A_t\frac{\pi(y_t)}{\mu(y_t)}
++\tau_{KL}R_t\right].
+$$
+
+The sampler probabilities are fixed targets. The penalty remains active on
+RL-member positions even when their policy-gradient term is masked. `kl_tau`
+weights the sampler-expected **squared log ratio**, not an exact KL divergence;
+its default is 0.0, so set it explicitly to enable regularization. The other
+defaults are `topk = 128`, `eps = 0.3`, and `adv_tau = 1.0`. These are starting
+settings, not tuned values; `eps` measures a different quantity than in IPO.
+
+The `rl` entrypoint requests candidate logprobs automatically. `topk` controls
+how many probabilities are recorded, not which tokens can be sampled. Train
+sampling must be untruncated (`top_p = 1.0`, no sampling `top_k`). Standalone
+orchestrators must request `train.sampling.logprobs` themselves. Every RL-member
+position must carry candidates. Gemma softcapped heads require
+`model.fused_lm_head_token_chunk_size = "disabled"`.
+
+The tail bucket detects mass moving between recorded and unrecorded tokens but
+cannot detect redistribution within the tail. Its TV is a lower bound on
+full-vocabulary TV; the squared-log-ratio penalty is defined on the coarsened
+distribution. Tail probabilities are floored at `1e-8` only when taking logs for
+numerical stability. This loss is a gate and penalty, not an enforced bound on
+the optimizer's next step. Metrics include `total_variation`, `squared_log_ratio`,
+`head_mass`, and IPO's masking/mismatch metrics.
 
 ### IcePop Loss
 

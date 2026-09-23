@@ -29,6 +29,22 @@ CONFIG_CLASSES = [
 ]
 
 
+@pytest.mark.parametrize("loss_type", ["distributional_ipo", "score_centering"])
+@pytest.mark.parametrize("per_source", [False, True])
+def test_candidate_losses_request_logprobs(loss_type, per_source):
+    train = {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]} if per_source else {}
+    config = RLConfig(trainer={"loss": {"type": loss_type, "topk": 32}}, orchestrator={"train": train})
+    sampling = config.orchestrator.train.source[0].sampling if per_source else config.orchestrator.train.sampling
+    assert sampling.logprobs == 32
+    assert not sampling.truncates_distribution()
+
+
+@pytest.mark.parametrize("sampling", [{"top_k": 32}, {"top_p": 0.9}])
+def test_distributional_ipo_rejects_truncated_sampling(sampling):
+    with pytest.raises(ValidationError, match="distributional_ipo requires untruncated train sampling"):
+        RLConfig(trainer={"loss": {"type": "distributional_ipo"}}, orchestrator={"train": {"sampling": sampling}})
+
+
 def get_config_files() -> list[Path]:
     """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))

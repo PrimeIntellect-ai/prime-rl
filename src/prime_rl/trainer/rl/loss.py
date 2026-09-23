@@ -8,12 +8,12 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import (
     CustomLossConfig,
+    DistributionalIPOLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
     ScoreCenteringLossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
 
@@ -27,8 +27,8 @@ class LossInputs:
     1.0 everywhere).
 
     The ``topk_*`` fields carry the sampler's top-k head and the trainer's own
-    gather at those ids, aligned per token like ``trainer_logprobs``; the score
-    centering loss reads them, everything else ignores them. ``entropy`` is the
+    gather at those ids, aligned per token like ``trainer_logprobs``; distributional
+    IPO and score centering read them. ``entropy`` is the
     trainer policy's entropy (``plogp = -entropy``).
     """
 
@@ -105,6 +105,8 @@ def selective_log_softmax_with_sampling_mask(
     logsumexp(logits[mask])``, others full-vocab. Non-replayed rows are zeroed
     before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
     """
+    from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
+
     full_logprobs = selective_log_softmax(logits, index)
     replay = sampling_replay_mask(sampling_mask, index)
     mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long())
@@ -211,6 +213,64 @@ class IPOLoss:
         }
 
         return LossOutputs(loss=loss, metrics=metrics)
+
+
+class DistributionalIPOLoss:
+    """IPO with a total-variation gate and expected squared log ratio on candidates plus tail."""
+
+    TAIL_EPS = 1e-8
+
+    def __init__(self, config: DistributionalIPOLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        if inputs.trainer_topk_logprobs is None or inputs.sampler_topk_logprobs is None or inputs.topk_valid is None:
+            raise ValueError("distributional_ipo requires trainer and sampler candidate logprobs.")
+        if (inputs.loss_mask & ~inputs.topk_valid.any(-1)).any():
+            raise ValueError("distributional_ipo requires candidate logprobs at every RL member token.")
+
+        valid = inputs.topk_valid & inputs.loss_mask.unsqueeze(-1)
+        trainer_logp = inputs.trainer_topk_logprobs.masked_fill(~valid, 0.0)
+        sampler_logp = inputs.sampler_topk_logprobs.detach().masked_fill(~valid, 0.0)
+        trainer_probs = trainer_logp.exp().masked_fill(~valid, 0.0)
+        sampler_probs = sampler_logp.exp().masked_fill(~valid, 0.0)
+        trainer_tail = (1.0 - trainer_probs.sum(-1)).clamp_min(0.0)
+        sampler_tail = (1.0 - sampler_probs.sum(-1)).clamp_min(0.0)
+
+        # Coarsening the unrecorded tokens into one bucket hides movement within the tail.
+        total_variation = 0.5 * (
+            (trainer_probs.detach() - sampler_probs).abs().sum(-1) + (trainer_tail.detach() - sampler_tail).abs()
+        )
+        is_masked = total_variation > self.config.eps
+        keep_mask = inputs.loss_mask & ~is_masked
+        log_ratio = inputs.trainer_logprobs - inputs.inference_logprobs.detach()
+        safe_log_ratio = torch.where(keep_mask, log_ratio, 0.0)
+        pg_loss = -(keep_mask * self.config.adv_tau * inputs.advantages.detach() * safe_log_ratio.exp())
+
+        # The floor only stabilizes tail logs when subtraction rounds its mass to zero.
+        tail_log_ratio = trainer_tail.clamp_min(self.TAIL_EPS).log() - sampler_tail.clamp_min(self.TAIL_EPS).log()
+        squared_log_ratio = (sampler_probs * (trainer_logp - sampler_logp).square()).sum(-1)
+        squared_log_ratio = squared_log_ratio + sampler_tail * tail_log_ratio.square()
+        per_token_loss = pg_loss + self.config.kl_tau * squared_log_ratio
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+        loss = per_token_loss[inputs.loss_mask].sum()
+
+        with torch.no_grad():
+            _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+                inputs.trainer_logprobs, inputs.inference_logprobs
+            )
+        return LossOutputs(
+            loss=loss,
+            metrics={
+                "is_masked": _safe_mean(is_masked, inputs.loss_mask),
+                "masked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask & is_masked),
+                "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+                "total_variation": _safe_mean(total_variation, inputs.loss_mask),
+                "squared_log_ratio": _safe_mean(squared_log_ratio.detach(), inputs.loss_mask),
+                "head_mass": _safe_mean(sampler_probs.sum(-1), inputs.loss_mask),
+            },
+        )
 
 
 class IcePopLoss:
@@ -399,6 +459,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
     match loss_config:
         case CustomLossConfig():
             return CustomLoss(loss_config)
+        case DistributionalIPOLossConfig():
+            return DistributionalIPOLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
         case IcePopLossConfig():

@@ -369,10 +369,9 @@ def train(config: TrainerConfig):
             )
             if sampling_mask is not None and top_logprobs_ids is not None:
                 raise ValueError(
-                    "Sampling replay (truncated sampling) and score centering cannot run together: "
-                    "replay renormalizes the trainer distribution over the kept set while score "
-                    "centering centers the full sampler distribution. Keep the train sampling "
-                    "untruncated (top_p = 1.0, no top_k) for score centering."
+                    "Sampling replay (truncated sampling) and candidate-logprob losses cannot run together: "
+                    "replay renormalizes over the kept set, while candidate logprobs use the full vocabulary. "
+                    "Keep train sampling untruncated (top_p = 1.0, no top_k)."
                 )
 
             # Multimodal kwargs are an opaque per-model dict (e.g.
@@ -527,16 +526,16 @@ def train(config: TrainerConfig):
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
                 trainer_topk_logprobs=(
-                    out["topk_logprobs"].squeeze().split(sequence_lengths)
+                    out["topk_logprobs"].squeeze(0).split(sequence_lengths)
                     if out.get("topk_logprobs") is not None
                     else None
                 ),
                 sampler_topk_logprobs=(
-                    top_logprobs_logprobs.squeeze().split(sequence_lengths)
+                    top_logprobs_logprobs.squeeze(0).split(sequence_lengths)
                     if top_logprobs_logprobs is not None
                     else None
                 ),
-                topk_valid=topk_valid.squeeze().split(sequence_lengths) if topk_valid is not None else None,
+                topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
                 entropy=out["entropy"].squeeze().split(sequence_lengths),
             )
 
