@@ -384,8 +384,7 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # Per-attempt read timeout for admin ops, overridable per call. The admin
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
 # weight update forever: the read timeout converts a hang into a TimeoutException
-# that tenacity retries. Sized for `/pause`, which drains in-flight requests
-# (mode="keep") and so can legitimately take a while.
+# that tenacity retries.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
@@ -413,11 +412,18 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
+    """Pause all inference engines and abort stale in-flight requests.
+
+    Dispatch is quiesced before a policy update, but cancelled rollout tasks can
+    leave orphaned non-streaming requests alive in vLLM. Preserving those with
+    ``mode="keep"`` can block the update indefinitely and would resume requests
+    whose KV state was produced by the previous policy. Abort is the safe weight
+    update boundary.
+    """
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
     await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
+        *[_admin_post(client, "/pause", params={"mode": "abort", "clear_cache": "false"}) for client in admin_clients]
     )
     logger.debug("All inference engines paused")
 

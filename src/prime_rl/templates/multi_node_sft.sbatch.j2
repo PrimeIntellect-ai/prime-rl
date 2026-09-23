@@ -105,13 +105,17 @@ echo "ADMIN_URLS=${ADMIN_URLS}"
 
 # Install environment
 cd $PROJECT_DIR
-[ -f .env ] && source .env
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
 source .venv/bin/activate
 {% if not shared_fs %}
 # Node-local venv (e.g. UV_PROJECT_ENVIRONMENT on /tmp): run the sync once on
 # every node. Re-source .env because unexported vars do not cross srun.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
-cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+cd $PROJECT_DIR && { if [ -f .env ]; then set -a; source .env; set +a; fi; } && uv sync --all-extras --all-packages
 SYNC_SH
 {% else %}
 # Shared venv: one sync on the batch node populates it for all nodes.
@@ -146,7 +150,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     set -o pipefail
 
     cd $PROJECT_DIR
-    [ -f .env ] && source .env
+    if [ -f .env ]; then
+        set -a
+        source .env
+        set +a
+    fi
     source $PROJECT_DIR/.venv/bin/activate
     ulimit -n 65536
 

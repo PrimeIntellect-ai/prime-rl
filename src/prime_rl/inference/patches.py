@@ -20,7 +20,11 @@ def apply_shared_vllm_patches():
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
+    monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_deepseek_v4_per_layer_rope()
+    monkey_patch_fp8_ue8m0_weight_scales()
+    monkey_patch_triton_moe_swiglu_clamp()
+    monkey_patch_fp8_stochastic_weight_rounding()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_deepseek_v4_attn_sink_loading()
 
@@ -40,6 +44,63 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_deepseek_v4_request_tools_placement():
+    """Attach request-level tools to the first existing DSV4 system message.
+
+    vLLM 0.29.0's Python DeepSeek-V4 tokenizer always prepends a synthetic
+    system message for request-level tools. That puts the tool schema before
+    an existing system prompt, unlike DeepSeek's reference encoder, vLLM's
+    Rust renderer, and prime-rl's training renderer. Upstream fixed this in
+    vllm-project/vllm#51856 (commit 2909ad8f), after 0.29.0 was released.
+
+    Wrap the tokenizer factory so existing-system requests take the corrected
+    path through the stock implementation: shallow-copy the conversation,
+    attach tools to its first system message, and suppress the stock synthetic
+    insertion. Requests without a system message retain the stock behavior.
+    Remove this patch once the vLLM pin includes the upstream fix.
+    """
+    import copy
+
+    from vllm.tokenizers import deepseek_v4 as dsv4_tokenizer
+
+    original_get_tokenizer = dsv4_tokenizer.get_deepseek_v4_tokenizer
+    if getattr(original_get_tokenizer, "_prime_rl_places_request_tools", False):
+        return
+
+    def _get_deepseek_v4_tokenizer(tokenizer):
+        wrapped = original_get_tokenizer(tokenizer)
+        tokenizer_cls = wrapped.__class__
+        original_apply_chat_template = tokenizer_cls.apply_chat_template
+
+        # Each factory call creates a fresh dynamic tokenizer subclass, but be
+        # defensive if vLLM starts caching that class in a future release.
+        if getattr(original_apply_chat_template, "_prime_rl_places_request_tools", False):
+            return wrapped
+
+        def _apply_chat_template(self, messages, tools=None, **kwargs):
+            if tools:
+                conversation = kwargs.get("conversation", messages)
+                system_idx = next(
+                    (i for i, message in enumerate(conversation) if message.get("role") == "system"),
+                    None,
+                )
+                if system_idx is not None:
+                    conversation = conversation.copy()
+                    conversation[system_idx] = copy.copy(conversation[system_idx])
+                    conversation[system_idx]["tools"] = tools
+                    kwargs["conversation"] = conversation
+                    tools = None
+
+            return original_apply_chat_template(self, messages, tools=tools, **kwargs)
+
+        _apply_chat_template._prime_rl_places_request_tools = True
+        tokenizer_cls.apply_chat_template = _apply_chat_template
+        return wrapped
+
+    _get_deepseek_v4_tokenizer._prime_rl_places_request_tools = True
+    dsv4_tokenizer.get_deepseek_v4_tokenizer = _get_deepseek_v4_tokenizer
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -125,6 +186,48 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_triton_moe_swiglu_clamp():
+    """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
+
+    ``TritonExperts.apply`` fuses SiLU-and-mul with the per-block fp8 quantization of the
+    second expert GEMM's input through ``ops.silu_and_mul_per_block_quant`` whenever the
+    activation is SiLU, the weights are fp8 w8a8 with 128x128 blocks, no LoRA is active and
+    DeepGEMM E8M0 is off. That op has no clamp argument, so a model's ``swiglu_limit``
+    (DeepSeek V4 Flash: 10.0) is dropped on that path while every other path applies it,
+    and tokens whose gate or up pre-activation exceeds the limit get a wrong expert output.
+    With ``VLLM_USE_DEEP_GEMM_E8M0=0`` this is the path taken for every batch below 128
+    tokens, i.e. every decode step.
+
+    The fast-path condition's only reference to ``is_deep_gemm_e8m0_used`` is the
+    module-level name in ``triton_moe``, so while an ``apply`` call runs with a clamp
+    configured that name is bound to return True, which routes the call to the clamped
+    branch (``self.activation`` followed by ``moe_kernel_quantize_input``). Calls without a
+    clamp keep the fused fast path. Redundant once upstream gates the fast path on the
+    clamp itself.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe.experts import triton_moe
+
+    logger = init_logger("vllm.prime_rl.fused_moe")
+    original_apply = triton_moe.TritonExperts.apply
+    if getattr(original_apply, "_prime_honours_swiglu_clamp", False):
+        return
+
+    def apply(self, *args, **kwargs):
+        if self.activation_config.clamp_limit is None:
+            return original_apply(self, *args, **kwargs)
+        saved = triton_moe.is_deep_gemm_e8m0_used
+        triton_moe.is_deep_gemm_e8m0_used = lambda: True
+        try:
+            return original_apply(self, *args, **kwargs)
+        finally:
+            triton_moe.is_deep_gemm_e8m0_used = saved
+
+    apply._prime_honours_swiglu_clamp = True
+    triton_moe.TritonExperts.apply = apply
+    logger.info("TritonExperts.apply takes the clamped activation path when a swiglu clamp is configured.")
 
 
 def monkey_patch_deepseek_v4_bf16_o_proj():
@@ -229,6 +332,125 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_fp8_ue8m0_weight_scales():
+    """Off unless ``PRIME_FP8_UE8M0_WEIGHT_SCALES=1`` (``inference.fp8_ue8m0_weight_scales``): power-of-two block scales.
+
+    ``Fp8PerBlockOnlineLinearMethod`` and its MoE counterpart both call
+    ``per_block_cast_to_fp8(..., use_ue8m0=False)``, which picks the scale
+    ``amax / 448``. The published DeepSeek V4 bf16 checkpoint is a dequantized
+    FP8 release whose weights already lie exactly on the e4m3 grid with
+    power-of-two block scales, so that scale choice rotates the grid and injects
+    the full e4m3 rounding error on weights that would otherwise round-trip
+    exactly. Forcing ``use_ue8m0=True`` restores the original grid.
+
+    The scales stay fp32, so no kernel change is implied: a power of two is an
+    ordinary fp32 scale. This is distinct from ``VLLM_USE_DEEP_GEMM_E8M0=1``,
+    which re-quantizes an already-rounded weight and therefore double-rounds;
+    with both on, the re-quantization finds the weights already on power-of-two
+    scales and leaves them alone, so the pair gives UE8M0 activation scales and
+    exact weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_UE8M0_WEIGHT_SCALES") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    logger = init_logger(__name__)
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_forces_ue8m0", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        kwargs["use_ue8m0"] = True
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_forces_ue8m0 = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_UE8M0_WEIGHT_SCALES=1: quantizing online FP8 weights with power-of-two block scales.")
+
+
+_STOCHASTIC_ROUNDING_ROW_CHUNK = 2048
+_E4M3_SIGN_BIT = 0x80
+_E4M3_MAGNITUDE_MASK = 0x7F
+_E4M3_MAX_FINITE_MAGNITUDE = 0x7E
+
+
+def _expand_block_scales(scales: torch.Tensor, block_size: list[int], rows: int, cols: int) -> torch.Tensor:
+    block_m, block_n = block_size
+    return scales.repeat_interleave(block_m, dim=0)[:rows].repeat_interleave(block_n, dim=1)[:, :cols]
+
+
+def stochastic_round_fp8(x_scaled: torch.Tensor, q_near: torch.Tensor) -> torch.Tensor:
+    """Move each round-to-nearest e4m3 value ``q_near`` to its neighbour on the far side of ``x_scaled`` with probability equal to the fractional distance, so the result equals ``x_scaled`` in expectation."""
+    q_near_float = q_near.float()
+    bits = q_near.contiguous().view(torch.uint8).to(torch.int16)
+    sign = bits & _E4M3_SIGN_BIT
+    magnitude = bits & _E4M3_MAGNITUDE_MASK
+    farther_from_zero = x_scaled.abs() > q_near_float.abs()
+    neighbour_magnitude = torch.where(farther_from_zero, magnitude + 1, magnitude - 1).clamp(
+        0, _E4M3_MAX_FINITE_MAGNITUDE
+    )
+    neighbour = (sign | neighbour_magnitude).to(torch.uint8).view(torch.float8_e4m3fn).float()
+    gap = neighbour - q_near_float
+    probability = torch.where(gap != 0, (x_scaled - q_near_float) / gap, torch.zeros_like(gap)).clamp(0, 1)
+    pick_neighbour = torch.rand_like(probability) < probability
+    return torch.where(pick_neighbour, neighbour, q_near_float).to(torch.float8_e4m3fn)
+
+
+def monkey_patch_fp8_stochastic_weight_rounding():
+    """Off unless ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` (``inference.fp8_stochastic_weight_rounding``): unbiased weight rounding.
+
+    ``per_block_cast_to_fp8`` rounds to nearest, so a weight that starts on the e4m3
+    grid keeps its served value until the trainer has moved it half a bin, about
+    1000 steps at lr 1e-6. Until then the served policy is pinned at step 0 while
+    the trainer drifts and the trainer-vs-inference mismatch grows. Rounding each
+    weight to the far neighbour with probability equal to its fractional distance
+    makes the served weight unbiased, so it tracks sub-bin updates in expectation.
+    On-grid input has zero fractional distance and rounds to nearest, so the
+    checkpoint itself quantizes to identical bytes.
+
+    Wraps whatever ``per_block_cast_to_fp8`` is installed when this runs, so it
+    composes with the UE8M0 wrapper registered just before it. The block scales
+    come back unchanged; only the e4m3 payload is re-rounded, in row chunks so
+    the fp32 temporaries stay bounded on large expert weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+    from vllm.utils.deep_gemm import DEFAULT_BLOCK_SIZE
+
+    logger = init_logger("vllm.prime_rl.fp8")
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_rounds_stochastically", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        quantized, scales = original_cast(x, *args, **kwargs)
+        block_size = kwargs.get("block_size", args[0] if args else DEFAULT_BLOCK_SIZE)
+        block_m = block_size[0]
+        rows, cols = quantized.shape
+        row_chunk = max(block_m, _STOCHASTIC_ROUNDING_ROW_CHUNK // block_m * block_m)
+        out = torch.empty_like(quantized)
+        for row_start in range(0, rows, row_chunk):
+            row_end = min(row_start + row_chunk, rows)
+            scale_rows = scales[row_start // block_m : -(-row_end // block_m)]
+            scale_per_element = _expand_block_scales(scale_rows, block_size, row_end - row_start, cols)
+            x_scaled = x[row_start:row_end].float() * (1.0 / scale_per_element)
+            out[row_start:row_end] = stochastic_round_fp8(x_scaled, quantized[row_start:row_end])
+        return out, scales
+
+    _per_block_cast_to_fp8._prime_rounds_stochastically = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically.")
 
 
 def monkey_patch_deepseek_v4_attn_sink_loading():
