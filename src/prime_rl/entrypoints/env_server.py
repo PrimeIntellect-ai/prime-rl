@@ -1,6 +1,7 @@
 import os
 import queue
 import threading
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -53,6 +54,9 @@ def run_server(config: EnvServerConfig):
 def main():
     """Main entry-point for the env server. Run using `uv run env-server`"""
     set_proc_title("EnvServer")
+    # A launcher passes its run's $VF_RUN_ID; a standalone server scopes verifiers'
+    # creation limiters to itself.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
     run_server(cli(EnvServerConfig))
 
 

@@ -524,8 +524,10 @@ def sft(config: SFTConfig):
 
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
     # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity.
+    # them. Components launched standalone have no run identity. $VF_RUN_ID scopes
+    # verifiers' creation limiters to this run.
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    os.environ["VF_RUN_ID"] = os.environ["PRL_RUN_ID"]
     assert config.run.name is not None  # resolved at construction
     os.environ["PRL_RUN_NAME"] = config.run.name
 
