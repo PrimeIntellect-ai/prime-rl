@@ -81,7 +81,6 @@ def build_packed(rotary: DeepseekV4RotaryEmbedding, tokens: int) -> PackedContex
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens_for(tokens), device="cuda"),
-        dtype=DTYPE,
         device=torch.device("cuda"),
     )
 
