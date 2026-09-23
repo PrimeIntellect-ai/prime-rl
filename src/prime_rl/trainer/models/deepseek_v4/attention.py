@@ -148,16 +148,6 @@ except ImportError:
     sparse_attn_shape_error = None  # type: ignore
 
 
-def _start_cp_gather(tensor: torch.Tensor, cp_context: CPContext) -> torch.Tensor:
-    return torch.ops._c10d_functional.all_gather_into_tensor(
-        tensor.movedim(1, 0).contiguous(), cp_context.cp_world_size, cp_context.cp_group.group_name
-    )
-
-
-def _finish_cp_gather(tensor: torch.Tensor) -> torch.Tensor:
-    return funcol.wait_tensor(tensor).movedim(0, 1).contiguous()
-
-
 def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
     """Why the fused kernel cannot run at this shape, or ``None`` if it can."""
     if dsv4_sparse_attn is None:
@@ -728,7 +718,11 @@ class DeepseekV4Attention(nn.Module):
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
-            kv = _start_cp_gather(kv, self.cp_context)
+            kv = torch.ops._c10d_functional.all_gather_into_tensor(
+                kv.movedim(1, 0).contiguous(),
+                self.cp_context.cp_world_size,
+                self.cp_context.cp_group.group_name,
+            )
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
@@ -748,7 +742,7 @@ class DeepseekV4Attention(nn.Module):
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
         if self.cp_context.cp_enabled:
-            kv = _finish_cp_gather(kv)  # (b, T, 1, d)
+            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
         inputs = SparseAttnInputs.build(
             kv=kv,
