@@ -19,6 +19,11 @@ class LossInputs:
     component — the component loss functions never re-derive eligibility.
     ``loss_weights`` is the component's per-token weight stream (None means
     1.0 everywhere).
+
+    The ``topk_*`` fields carry the sampler's top-k head and the trainer's own
+    gather at those ids, aligned per token like ``trainer_logprobs``; the score
+    centering loss reads them, everything else ignores them. ``entropy`` is the
+    trainer policy's entropy (``plogp = -entropy``).
     """
 
     trainer_logprobs: Float[Tensor, " seq"]
@@ -27,6 +32,10 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    trainer_topk_logprobs: Float[Tensor, " seq k"] | None = field(default=None)
+    sampler_topk_logprobs: Float[Tensor, " seq k"] | None = field(default=None)
+    topk_valid: Bool[Tensor, " seq k"] | None = field(default=None)
+    entropy: Float[Tensor, " seq"] | None = field(default=None)
 
 
 @dataclass
@@ -61,6 +70,22 @@ def selective_log_softmax(
 ) -> Float[Tensor, "batch seq"]:
     logprobs = logits.log_softmax(dim=-1)
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
+
+@jaxtyped(typechecker=typechecker)
+@torch.compile(dynamic=True)
+def selective_topk_log_softmax(
+    logits: Float[Tensor, "batch seq vocab"], topk_ids: Int[Tensor, "batch seq k"]
+) -> Float[Tensor, "batch seq k"]:
+    """The trainer's logprobs at ``topk_ids``, full-vocab normalized.
+
+    Padding ids (-1) yield 0.0 — consumers mask with the ids themselves. The
+    logsumexp reduces over the vocab, so no full log-softmax materializes.
+    """
+    logz = torch.logsumexp(logits, dim=-1, keepdim=True)
+    safe_ids = topk_ids.clamp_min(0).to(torch.int64)
+    head_logprobs = logits.gather(dim=-1, index=safe_ids) - logz
+    return head_logprobs.masked_fill(topk_ids < 0, 0.0)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -211,6 +236,75 @@ class IcePopLoss:
             "is_masked": _safe_mean(is_masked, inputs.loss_mask),
         }
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+
+
+class ScoreCenteringLoss:
+    """Score centering loss ([arXiv:2609.20807](https://arxiv.org/abs/2609.20807)):
+    policy gradient with a zero-expected-score baseline that cancels
+    trainer/sampler drift on off-policy rollouts.
+
+    The sampler's top-k head (ids + logprobs, recorded at rollout time) is
+    transported to the trainer; the tail beyond it is modeled as proportional
+    to the trainer's own distribution, rescaled to the sampler's tail mass
+    (``q_tail = rho * p_tail``). Every ratio correction is constant over that
+    modeled tail, so the backward pass touches only the k head gathers — the
+    full-vocab entropy (``plogp``) enters detached.
+    """
+
+    # Floor on the modeled trainer tail mass; the paper's default.
+    TAIL_EPS = 1e-6
+
+    def __init__(self, config: ScoreCenteringLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        if (
+            inputs.trainer_topk_logprobs is None
+            or inputs.sampler_topk_logprobs is None
+            or inputs.topk_valid is None
+            or inputs.entropy is None
+        ):
+            raise ValueError(
+                "score_centering requires top-k sampler heads on every rl member token: request them "
+                "with `logprobs = k` on the train sampling config (the rl entrypoint stamps it "
+                "automatically) and run a vLLM >= 0.28 /inference/v1/generate server."
+            )
+
+        valid = inputs.topk_valid
+        # The sampler's head q, and the trainer's gather at the same ids (the
+        # only differentiable path). Padded columns read as zero mass.
+        q_head = inputs.sampler_topk_logprobs.exp().masked_fill(~valid, 0.0)
+        head_p = inputs.trainer_topk_logprobs
+        p_head = head_p.exp().masked_fill(~valid, 0.0)
+        plogp = -inputs.entropy
+
+        # The modeled tail: q_tail = alpha * p_tail, alpha detached throughout —
+        # its gradient contribution is identically zero (E_p[grad log p] = 0).
+        tail_q_mass = (1.0 - q_head.sum(-1)).clamp_min(0.0)
+        p_tail = (1.0 - p_head.sum(-1)).clamp_min(self.TAIL_EPS)
+        alpha = (tail_q_mass / p_tail).detach()
+        residual = (q_head - alpha[..., None] * p_head).detach()
+
+        # Zero-expected-score baseline: E_q[score] = 0, so the estimator stays
+        # unbiased while the drift term cancels.
+        center = (residual * head_p).sum(-1) + alpha * plogp
+        score = inputs.trainer_logprobs - center
+
+        per_token_loss = -inputs.advantages.detach() * score
+        per_token_loss = per_token_loss * inputs.loss_mask
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+        loss = per_token_loss.sum()
+
+        _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            inputs.trainer_logprobs, inputs.inference_logprobs
+        )
+        metrics = {
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask),
+            "head_mass": _safe_mean(q_head.sum(-1), inputs.loss_mask),
+            "rho": _safe_mean(alpha, inputs.loss_mask),
+        }
+        return LossOutputs(loss=loss, metrics=metrics)
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
