@@ -42,9 +42,8 @@ def _parameter_layout(weight: torch.Tensor) -> torch.Tensor:
 
 def _backward_op(x, weight, offs, probe, *, needs_grad_x=True, needs_grad_weight=True):
     grad_weight_transposed = not weight.is_contiguous()
-    weight_fp8, weight_scales = torch.ops.prime_rl.grouped_fp8_weight_cast(weight)
     return torch.ops.prime_rl.grouped_fp8_gemm_backward(
-        probe, x, weight, weight_fp8, weight_scales, offs, needs_grad_x, needs_grad_weight, grad_weight_transposed
+        probe, x, weight, offs, needs_grad_x, needs_grad_weight, grad_weight_transposed
     )
 
 
