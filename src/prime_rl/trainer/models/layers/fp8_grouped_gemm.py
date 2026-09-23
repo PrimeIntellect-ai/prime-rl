@@ -10,7 +10,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
-    unpack_rows_triton,
 )
 
 
@@ -22,6 +21,12 @@ def _empty_grad_weight(weight: torch.Tensor, grad_weight_transposed: bool) -> to
     if grad_weight_transposed:
         return weight.new_empty(weight.transpose(1, 2).shape).transpose(1, 2)
     return weight.new_empty(weight.shape)
+
+
+def _grouped_layout(x: torch.Tensor, offs: torch.Tensor):
+    assert x.size(0) % GROUP_ALIGNMENT == 0, f"expected rows padded to {GROUP_ALIGNMENT}, got {x.size(0)}"
+    torch._assert_async(torch.all(offs % GROUP_ALIGNMENT == 0))
+    return build_grouped_layout(offs, x.size(0))
 
 
 def _compute_grad_weight(
@@ -111,20 +116,18 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
     import deep_gemm
 
     (
-        total_m,
-        padded_total_m,
         grouped_layout,
         block_to_group,
         _,
         starts_tensor,
         actual_ms_tensor,
         block_starts_tensor,
-    ) = build_grouped_layout(offs, total_m=x.size(0))
+    ) = _grouped_layout(x, offs)
 
     use_ue8m0 = ue8m0_for_device(x.device)
     x_fp8 = grouped_per_token_cast_to_fp8_triton(
         x,
-        padded_total_m,
+        x.size(0),
         block_to_group,
         starts_tensor,
         actual_ms_tensor,
@@ -138,22 +141,15 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
         GROUP_ALIGNMENT,
     )
 
-    out_padded = torch.empty((padded_total_m, weight.size(2)), device=x.device, dtype=x.dtype)
+    out = torch.empty((x.size(0), weight.size(2)), device=x.device, dtype=x.dtype)
     deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
         x_fp8,
         weight_fp8,
-        out_padded,
+        out,
         grouped_layout,
         use_psum_layout=False,
     )
-    return unpack_rows_triton(
-        out_padded,
-        total_m,
-        block_to_group,
-        starts_tensor,
-        actual_ms_tensor,
-        block_starts_tensor,
-    )
+    return out
 
 
 @_grouped_fp8_gemm.register_fake
@@ -172,31 +168,31 @@ def _grouped_fp8_gemm_backward(
     grad_weight_transposed: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     (
-        _,
-        padded_total_m,
         grouped_layout,
         block_to_group,
         ks_tensor,
         starts_tensor,
         actual_ms_tensor,
         block_starts_tensor,
-    ) = build_grouped_layout(offs, total_m=x.size(0))
+    ) = _grouped_layout(x, offs)
     grad_output = grad_output.contiguous()
     grad_x = x.new_empty(x.shape)
     grad_weight = _empty_grad_weight(weight, grad_weight_transposed)
 
     if needs_grad_weight:
+        aligned_ms = ks_tensor.tolist()
+        grouped_total_m = sum(aligned_ms)
         grad_weight = _compute_grad_weight(
             x,
             grad_output,
             weight,
-            padded_total_m,
-            block_to_group,
+            grouped_total_m,
+            block_to_group[: grouped_total_m // GROUP_ALIGNMENT],
             ks_tensor,
             starts_tensor,
             actual_ms_tensor,
             block_starts_tensor,
-            ks_tensor.tolist(),
+            aligned_ms,
             grad_weight_transposed,
         )
 
@@ -206,7 +202,7 @@ def _grouped_fp8_gemm_backward(
         use_ue8m0 = ue8m0_for_device(grad_output.device)
         dy_fp8 = grouped_per_token_cast_to_fp8_triton(
             grad_output,
-            padded_total_m,
+            x.size(0),
             block_to_group,
             starts_tensor,
             actual_ms_tensor,
@@ -215,25 +211,13 @@ def _grouped_fp8_gemm_backward(
             GROUP_ALIGNMENT,
         )
         weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
-        grad_x_padded = torch.empty(
-            (padded_total_m, weight.size(1)),
-            device=grad_output.device,
-            dtype=grad_output.dtype,
-        )
+        grad_x = torch.empty(x.shape, device=grad_output.device, dtype=grad_output.dtype)
         deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
             dy_fp8,
             weight_dx_fp8,
-            grad_x_padded,
+            grad_x,
             grouped_layout,
             use_psum_layout=False,
-        )
-        grad_x = unpack_rows_triton(
-            grad_x_padded,
-            x.size(0),
-            block_to_group,
-            starts_tensor,
-            actual_ms_tensor,
-            block_starts_tensor,
         )
 
     return grad_x, grad_weight
@@ -287,11 +271,14 @@ def grouped_fp8_gemm(
     """FP8 grouped GEMM, drop-in replacement for torch._grouped_mm.
 
     Args:
-        x: (M, K) concatenated token activations in bfloat16.
+        x: (M, K) concatenated token activations in bfloat16, M a multiple of 128.
         weight: (G, K, N) expert weights in bfloat16.
-        offs: (G,) int32 cumulative token counts per expert.
+        offs: (G,) int32 cumulative token counts per expert, each group a multiple of 128 rows.
 
     Returns:
-        (M, N) output tensor in bfloat16.
+        (M, N) output tensor in bfloat16. Rows past offs[-1] are left uninitialized.
+
+    The forward never syncs with the host. The backward reads the group sizes back once, because
+    DeepGEMM's k-grouped weight-gradient GEMM takes them as a host list.
     """
     return _grouped_fp8_gemm(x, weight, offs)
