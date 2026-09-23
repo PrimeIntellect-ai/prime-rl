@@ -490,7 +490,7 @@ def grouped_per_channel_cast_to_fp8_rowmajor_triton(
         K_MAJOR=False,
         BLOCK_K=gran_k,
         BLOCK_N=block_n,
-        num_warps=4,
+        num_warps=2,
     )
     return out, sf
 
