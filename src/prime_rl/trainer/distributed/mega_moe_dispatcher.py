@@ -12,6 +12,18 @@ def _to_local(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
+def _activation_clamp(activation) -> float | None:
+    """The kernel's SwiGLU clamp for a supported expert activation: None for plain SwiGLU, the
+    limit for DeepSeek V4's clamped SwiGLU (gate <= limit, up in [-limit, limit])."""
+    from prime_rl.trainer.models.deepseek_v4.moe import ClampedSwiglu
+
+    if activation is Silu:
+        return None
+    if isinstance(activation, ClampedSwiglu):
+        return float(activation.limit)
+    raise ValueError("Mega MoE dispatch requires a SwiGLU (`silu` or DeepSeek V4 clamped) expert activation.")
+
+
 class _MegaMoeRoutedExperts(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -23,6 +35,7 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
         down_proj: torch.Tensor,
         buffer,
         interleaved: bool,
+        activation_clamp: float | None,
     ) -> torch.Tensor:
         from prime_rl.trainer.models.layers.mega_moe import (
             MegaMoeExpertWeights,
@@ -39,10 +52,11 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             )
         else:
             weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
-        y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer)
+        y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer, activation_clamp)
         ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
         ctx.buffer = buffer
         ctx.interleaved = interleaved
+        ctx.activation_clamp = activation_clamp
         ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
         ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
         return y.to(x.dtype)
@@ -61,8 +75,18 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             ctx.buffer,
             ctx.dw_dtype,
             dw_natural_layout=not ctx.interleaved,
+            activation_clamp=ctx.activation_clamp,
         )
-        return dx.to(ctx.x_dtype), dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype), None, dl1, dl2, None, None
+        return (
+            dx.to(ctx.x_dtype),
+            dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype),
+            None,
+            dl1,
+            dl2,
+            None,
+            None,
+            None,
+        )
 
 
 class MegaMoeTokenDispatcher(TokenDispatcher):
@@ -115,8 +139,7 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
                 "Mega MoE dispatch requires score_before_experts=False (it applies router weights "
                 "at combine time, after both expert GEMMs)."
             )
-        if experts.activation is not Silu:
-            raise ValueError("Mega MoE dispatch requires the `silu` (SwiGLU) expert activation.")
+        activation_clamp = _activation_clamp(experts.activation)
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("Mega MoE dispatch does not support expert biases.")
         num_tokens = x.shape[0]
@@ -145,6 +168,7 @@ class MegaMoeTokenDispatcher(TokenDispatcher):
                 _to_local(module.down_proj),
                 self.buffer,
                 interleaved,
+                activation_clamp,
             )
 
         return experts(x, None, fused=fused)

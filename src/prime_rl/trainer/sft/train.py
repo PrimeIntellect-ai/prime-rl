@@ -500,6 +500,8 @@ def train(config: SFTConfig):
                         value /= dist.get_world_size()
                     moe_stats[name] += value / grad_accum_steps
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         if gradient_manager is None:

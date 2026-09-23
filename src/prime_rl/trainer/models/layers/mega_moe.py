@@ -157,15 +157,17 @@ def mega_moe_forward(
     topk_weights: torch.Tensor,
     weights: MegaMoeExpertWeights,
     buffer,
+    activation_clamp: float | None = None,
 ) -> torch.Tensor:
     """Fused dispatch + SwiGLU MLP + combine for this rank's raw (pre-dispatch) bf16 tokens ``x``.
-    Router weights are applied at combine time. Returns bf16 ``(num_tokens, hidden)``."""
+    Router weights are applied at combine time. ``activation_clamp`` clamps gate to ``<= clamp`` and
+    up to ``[-clamp, clamp]`` before the SwiGLU. Returns bf16 ``(num_tokens, hidden)``."""
     import deep_gemm
 
     num_tokens, hidden = x.shape
     _stage_inputs(buffer, x, topk_idx, topk_weights)
     y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
-    deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer)
+    deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
     return y
 
 
@@ -178,6 +180,7 @@ def mega_moe_backward(
     buffer,
     dw_dtype: torch.dtype,
     dw_natural_layout: bool = True,
+    activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     import deep_gemm
 
@@ -188,6 +191,15 @@ def mega_moe_backward(
     dw2 = torch.empty(weights.l2.shape, dtype=dw_dtype, device=x.device)
     dtopk = torch.empty((num_tokens, buffer.num_topk), dtype=torch.float32, device=x.device)
     deep_gemm.bf16_mega_moe_backward(
-        dx, dw1, dw2, dtopk, dy, weights.l1, weights.l2, buffer, dw_natural_layout=dw_natural_layout
+        dx,
+        dw1,
+        dw2,
+        dtopk,
+        dy,
+        weights.l1,
+        weights.l2,
+        buffer,
+        dw_natural_layout=dw_natural_layout,
+        activation_clamp=activation_clamp,
     )
     return dx, dw1, dw2, dtopk
