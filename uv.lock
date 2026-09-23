@@ -7740,7 +7740,6 @@ ta = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=1.0.0" },
-    { name = "datasets", marker = "extra == 'lean'", specifier = ">=3.3.0,<6.0.0" },
     { name = "gepa", specifier = ">=0.0.6" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
@@ -7769,7 +7768,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.2" },
     { name = "uvicorn", specifier = ">=0.52.0" },
 ]
-provides-extras = ["harbor", "lean", "modal", "openenv", "ta"]
+provides-extras = ["harbor", "modal", "openenv", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
