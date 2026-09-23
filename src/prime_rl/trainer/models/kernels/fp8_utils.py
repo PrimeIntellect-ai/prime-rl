@@ -8,6 +8,7 @@ import triton.language as tl
 
 FP8_MAX = tl.constexpr(448.0)
 FP8_MIN = tl.constexpr(-448.0)
+FP8_MAX_RECIPROCAL = tl.constexpr(1.0 / 448.0)
 MIN_SCALE = 1e-4
 GROUP_ALIGNMENT = 128
 
@@ -355,11 +356,11 @@ def _grouped_per_block_fp8_kernel(
         mask=mask,
         other=0.0,
     ).to(tl.float32)
-    amax = tl.max(tl.abs(x))
-    scale = tl.maximum(amax / FP8_MAX, 1e-4)
+    amax = tl.maximum(tl.max(tl.abs(x)), 1e-4)
+    scale = amax * FP8_MAX_RECIPROCAL
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale
+    y = x * (1.0 / scale)
     tl.store(
         out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
         y.to(tl.float8e4nv),
