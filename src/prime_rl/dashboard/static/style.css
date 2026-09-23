@@ -1170,7 +1170,7 @@ mark.hit {
 #sg-open-transcript { margin: 0 12px 12px; min-height: 30px; }
 
 /* the banners lead the transcript, so they stand off the first entry */
-.trace-errors { margin-top: auto; padding-top: 12px; margin-bottom: 14px; }
+.trace-errors { margin-top: auto; margin-bottom: 14px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
@@ -1185,14 +1185,15 @@ mark.hit {
   padding: 1px 6px;
   border: 1px solid currentColor;
   font-size: 9px;
+  line-height: 11px;
   letter-spacing: var(--track-mono);
   text-transform: uppercase;
   color: var(--grey-4);
-  vertical-align: 1px;
+  vertical-align: middle;
 }
 .trace-error-banner .trace-error-scope { color: var(--negative); }
 #tm-episode-errors { padding: 12px 16px 0; border-bottom: 1px solid var(--hairline); }
-#tm-episode-errors .trace-errors { margin-top: 0; padding-top: 0; margin-bottom: 12px; }
+#tm-episode-errors .trace-errors { margin-top: 0; margin-bottom: 12px; }
 #tm-episode-errors .trace-recovered { margin-bottom: 12px; }
 .trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
 .trace-recovered > summary {
