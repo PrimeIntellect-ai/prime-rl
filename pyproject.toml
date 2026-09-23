@@ -56,7 +56,7 @@ gpu = [
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.28.0 ; sys_platform == 'linux'",
+    "vllm>=0.29.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
@@ -146,7 +146,7 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.28.0 requires quack-kernels 0.6.4. It requires this exact CUTLASS version.
+    # vLLM 0.29.0 requires quack-kernels 0.6.4. It requires this exact CUTLASS version.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.6.2",
     "transformers==5.6.2",
@@ -224,8 +224,6 @@ requires-dist = [
 # verifiers pins harbor==0.21.0, published minutes inside the rolling window;
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-08-11T00:00:00Z"
-# we want latest vllm, remove next patch
-vllm = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false
@@ -273,8 +271,8 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.1/vllm_router-0.2.1-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.29.0/vllm-0.29.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.29.0/vllm-0.29.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
@@ -309,6 +307,14 @@ explicit = true
 name = "pytorch-cu130-test"
 url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
+
+# Environments Hub wheels carry no upload time, so the exclude-newer cooldown
+# would reject every one of them. The Hub is first-party: skip the cutoff there.
+[[tool.uv.index]]
+name = "prime-hub"
+url = "https://hub.primeintellect.ai/primeintellect/simple/"
+explicit = true
+exclude-newer = false
 
 [tool.ruff.lint]
 select = ["F", "I"]

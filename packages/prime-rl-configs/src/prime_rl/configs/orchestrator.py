@@ -166,6 +166,9 @@ class EnvConfig(BaseConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
+    shuffle: bool = False
+    """Shuffle the source's finite taskset once with a fixed seed. The shuffled order is fixed for the whole run; infinite tasksets cannot be shuffled."""
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
