@@ -216,9 +216,9 @@ def _fake_fp8(a: torch.Tensor, block_rows: int, block_cols: int) -> torch.Tensor
 def _kernel_rounded_weight(weight: torch.Tensor) -> torch.Tensor:
     """The weight as the kernels' 128x128 block cast rounds it, dequantized to float32.
 
-    Taken from the kernel rather than rebuilt in torch because the block cast divides with Triton's
-    approximate `/`, which a correctly rounded torch division disagrees with on about half the
-    blocks' scales. Its bytes are pinned by `test_op_is_bit_identical_to_the_frozen_wrapper`.
+    Taken from the kernel rather than rebuilt in torch because the block cast quantizes with a
+    reciprocal multiply, as vLLM does, which a correctly rounded torch division disagrees with. Its
+    bytes are pinned against vLLM by `test_block_cast_matches_vllm_online_quant`.
     """
     groups, rows, cols = weight.shape
     fp8, scales = grouped_per_block_cast_to_fp8_triton(weight, ue8m0_for_device(weight.device), GROUP_ALIGNMENT)
