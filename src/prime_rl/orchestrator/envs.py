@@ -174,6 +174,12 @@ class TrainEnv(Env):
             and config.algo is not None
             and config.algo.sampling.source == "policy"
         )
+        # Head-carrying policy sampling must ship the heads score centering consumes.
+        self.requires_top_logprobs = (
+            config.sampling.logprobs is not None
+            and config.algo is not None
+            and config.algo.sampling.source == "policy"
+        )
 
 
 class EvalEnv(Env):

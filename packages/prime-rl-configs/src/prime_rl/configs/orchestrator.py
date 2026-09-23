@@ -59,6 +59,12 @@ class TrainSamplingConfig(BaseConfig):
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
+    logprobs: int | None = Field(None, ge=1)
+    """Number of top sampler logprobs recorded per generated token (the head score
+    centering consumes). None keeps the sampled token's logprob only. The ``rl``
+    entrypoint stamps this automatically when the trainer's loss is
+    ``score_centering`` (k = 128, the paper's default)."""
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: dict[str, Any] = {}
@@ -93,7 +99,9 @@ class TrainSamplingConfig(BaseConfig):
         args: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "logprobs": True,
+            # An int head also carries the sampled token (it leads the head);
+            # the OpenAI boolean keeps the sampled-token-only default.
+            "logprobs": self.logprobs if self.logprobs is not None else True,
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens

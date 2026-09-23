@@ -46,6 +46,11 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
+    # Top-k sampler head per position, padded with -1 ids (0.0 logprobs) to the
+    # micro batch's maximum head size. A row containing only -1 has no head.
+    top_logprobs_ids: Int[Tensor, "batch seq head"] | None
+    top_logprobs_logprobs: Float[Tensor, "batch seq head"] | None
+
     # Generic multimodal kwargs — flat dict matching the model's forward
     # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
     # Qwen3-VL; ``{"pixel_values": ...}`` for Gemma3-VL). The trainer
@@ -135,6 +140,8 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_logprobs": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -167,6 +174,8 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_logprobs": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -232,6 +241,22 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+        top_logprobs_ids = None
+        top_logprobs_values = None
+        packed_top_logprobs = micro_batch.top_logprobs
+        if packed_top_logprobs is not None:
+            counts = np.frombuffer(packed_top_logprobs.counts, dtype=np.int32)
+            ids = np.frombuffer(packed_top_logprobs.ids, dtype=np.int32)
+            logprobs = np.frombuffer(packed_top_logprobs.logprobs, dtype=np.float32)
+            # Boolean assignment fills row-major, matching the flat concat order.
+            max_head_size = max(int(counts.max()), 1) if counts.size else 1
+            padded_ids = np.full((len(counts), max_head_size), -1, dtype=np.int32)
+            padded_logprobs = np.zeros((len(counts), max_head_size), dtype=np.float32)
+            has_head = np.arange(max_head_size)[None, :] < counts[:, None]
+            padded_ids[has_head] = ids
+            padded_logprobs[has_head] = logprobs
+            top_logprobs_ids = torch.from_numpy(padded_ids).unsqueeze(0)
+            top_logprobs_values = torch.from_numpy(padded_logprobs).unsqueeze(0)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -255,6 +280,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            top_logprobs_ids=top_logprobs_ids,
+            top_logprobs_logprobs=top_logprobs_values,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,

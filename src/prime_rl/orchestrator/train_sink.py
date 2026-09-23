@@ -290,6 +290,13 @@ class TrainSink:
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
+                if env.requires_top_logprobs and sample.top_logprobs is None:
+                    raise RuntimeError(
+                        f"env '{env_name}' requests top sampler logprobs "
+                        f"(sampling.logprobs={env.sampling_args.get('logprobs')}) but its rollouts "
+                        "carry no top-k heads — the engine ignored the logprobs count. Score "
+                        "centering needs them; use a vLLM >= 0.28 /inference/v1/generate server."
+                    )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]

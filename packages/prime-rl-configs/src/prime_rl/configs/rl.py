@@ -38,6 +38,7 @@ from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    ScoreCenteringLossConfig,
     TokenizerConfig,
     TrainerConfig,
 )
@@ -638,6 +639,48 @@ class RLConfig(BaseConfig):
                 "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
                 "eval sampling config or the model's generation config) or with temperature 0 are "
                 "rejected by the inference server while truncated train sampling is on.",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_score_centering(self):
+        """Score centering needs the sampler's top-k head on every policy-sampled
+        rollout: stamp ``sampling.logprobs`` (the request-side knob the
+        orchestrator owns) where unset, and reject truncated train sampling —
+        sampling replay owns truncation and would renormalize the trainer
+        distribution the loss centers."""
+        if not isinstance(self.trainer.loss, ScoreCenteringLossConfig):
+            return self
+        k = self.trainer.loss.topk
+        policy_samplings = [
+            env.sampling
+            for env in self.orchestrator.train.source
+            if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        truncating = [s for s in policy_samplings if s.truncates_distribution()]
+        if truncating:
+            raise ValueError(
+                "score_centering does not compose with truncated train sampling (top_p < 1.0 or "
+                "top_k set): sampling replay renormalizes the trainer distribution over the "
+                "kept set, while score centering centers it against the full sampler "
+                "distribution. Keep the train sampling untruncated — score centering targets "
+                "drift mismatch (quantization, staleness, weight noise), and sampling replay "
+                "already handles truncation."
+            )
+        for sampling in policy_samplings:
+            if sampling.logprobs is None:
+                sampling.logprobs = k
+            elif sampling.logprobs < k:
+                warnings.warn(
+                    f"score_centering with topk={k}, but train sampling records only "
+                    f"{sampling.logprobs} logprobs per token; using the smaller head.",
+                    stacklevel=2,
+                )
+        if not policy_samplings:
+            warnings.warn(
+                "score_centering is on, but no train source samples from the policy — no "
+                "rollouts will carry top-k heads.",
                 stacklevel=2,
             )
         return self

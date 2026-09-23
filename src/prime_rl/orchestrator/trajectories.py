@@ -21,7 +21,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import TrainingSample
-from prime_rl.transports.batch.types import EncodedTensor, RoutedExperts, SamplingMask
+from prime_rl.transports.batch.types import EncodedTensor, RoutedExperts, SamplingMask, TopLogprobs
 from prime_rl.utils.logger import get_logger
 
 
@@ -84,6 +84,30 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
         counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
     return SamplingMask(
         ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
+        counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
+    )
+
+
+def _encode_top_logprobs(head: vf.TopLogprobs | None, num_tokens: int) -> TopLogprobs | None:
+    """Encode a branch top-k sampling head for a fixed token count.
+
+    Row sizes live in ``counts`` and the flat values in ``ids`` /
+    ``logprobs`` (one row per token, 0 = no head). Realignment mirrors
+    ``_encode_sampling_mask``: truncate a longer head, zero-pad the counts of a
+    shorter one.
+    """
+    if head is None:
+        return None
+    ids, logprobs, counts = head.ids, head.logprobs, head.counts
+    if len(counts) > num_tokens:
+        counts = counts[:num_tokens]
+        ids = ids[: int(counts.sum())]
+        logprobs = logprobs[: int(counts.sum())]
+    elif len(counts) < num_tokens:
+        counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
+    return TopLogprobs(
+        ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
+        logprobs=np.ascontiguousarray(logprobs, dtype=np.float32).tobytes(),
         counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
     )
 
@@ -169,6 +193,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
                 sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
+                top_logprobs=_encode_top_logprobs(branch.top_logprobs, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
             )
