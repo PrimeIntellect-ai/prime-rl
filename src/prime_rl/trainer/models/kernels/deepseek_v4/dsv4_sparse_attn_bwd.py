@@ -16,7 +16,9 @@ Beyond the forward's tensors:
     dKV[b, n, g, d]  (B, N, G, D)   float32 until `postprocess`
 
 `Indices` arrives tiled as in the forward, but at this kernel's own tile:
-`(B, S, G, K / block_size, block_size)`, with only the tile count symbolic.
+`(B, S, G, K / block_size, block_size)`, with only the tile count symbolic. `TileCounts` is the
+forward's too, counted in these tiles, and skipping the tiles past it is exact for the same reason:
+a masked slot contributes nothing to any gradient.
 
 [What it computes]
 
@@ -53,8 +55,8 @@ negative.
 [How the loop runs]
 
 The grid is `(query position, batch, head block)`, the third axis also carrying the KV head when
-`G > 1`, and at `H <= 64` it is a single block covering every query head. The block walks the `K`
-slots in tiles of `block_size`, half the forward's tile, and per tile:
+`G > 1`, and at `H <= 64` it is a single block covering every query head. The block walks its first
+`TileCounts[b,s,g]` tiles of `block_size` slots, half the forward's tile, and per tile:
 
   1. gather `KV_shared[k,d]`, and seed `acc_p` to `0` or `-inf` from the mask
   2. `acc_p[h,k] += Q_shared[h,d] KV_shared[k,d]` onto that seed, then `exp2(... - Lse)` in place,
@@ -200,6 +202,7 @@ def bwd(
     o_shape = [B, S, H, D]
     indices_shape = [B, S, kv_group, n_tiles, block_size]
     delta_shape = [B, S, H]
+    tile_counts_shape = [B, S, kv_group]
     lse_shape = [B, S, H]
 
     H = H_kv
@@ -208,7 +211,6 @@ def bwd(
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
-    NS = n_tiles
 
     split_store = 2
     # The acc_dkv accumulator's per-thread layout (from the GEMMs that produce it) is only
@@ -233,6 +235,7 @@ def bwd(
         Indices: T.Tensor(indices_shape, indices_dtype),
         Lse: T.Tensor(lse_shape, accum_dtype),
         Delta: T.Tensor(delta_shape, accum_dtype),
+        TileCounts: T.Tensor(tile_counts_shape, indices_dtype),
         dQ: T.Tensor(q_shape, dtype),
         dKV: T.Tensor(k_shape, accum_dtype),
     ):
@@ -262,7 +265,10 @@ def bwd(
 
             T.clear(acc_dq)
 
-            for i_i in T.Pipelined(NS, num_stages=num_stages):
+            # `TileCounts` never exceeds `n_tiles`, but TileLang cannot know that; the `min` lets it
+            # prove every `Indices` read in bounds rather than guarding each one, which costs the
+            # backward 11-18%.
+            for i_i in T.Pipelined(T.min(TileCounts[by, s_i, bz // NH], n_tiles), num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
                     mask[bi_i] = Indices[by, s_i, bz // NH, i_i, bi_i] >= 0
 

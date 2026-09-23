@@ -48,6 +48,14 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
 
 
+def _tile_counts(indices: torch.Tensor, tile: int) -> torch.Tensor:
+    """Per query, how many leading tiles of `tile` slots reach its last valid slot."""
+    batch, seq_len, kv_group, n_slots = indices.shape
+    tile_has_valid = (indices.view(batch, seq_len, kv_group, n_slots // tile, tile) >= 0).any(dim=-1)
+    tile_numbers = torch.arange(1, n_slots // tile + 1, device=indices.device, dtype=torch.int32)
+    return (tile_has_valid * tile_numbers).amax(dim=-1).to(torch.int32)
+
+
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     """The reason these kernels cannot serve this shape, or ``None`` if they can.
 
@@ -121,7 +129,7 @@ def dsv4_sparse_attn(
         threads=threads,
     )
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, block_I)
-    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous())
+    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), _tile_counts(indices, block_I))
     return out, lse
 
 
@@ -174,7 +182,7 @@ def dsv4_sparse_attn_backward(
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, BWD_SLOT_TILE)
-    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, dkv)
+    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, _tile_counts(indices, BWD_SLOT_TILE), dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv, delta

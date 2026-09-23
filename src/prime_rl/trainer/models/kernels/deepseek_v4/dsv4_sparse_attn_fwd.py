@@ -12,6 +12,7 @@ Shapes, with the capital of an index letter naming that axis's size:
     KV[b, n, g, d]       (B, N, G, D)   keys, bfloat16; V == K here, so one buffer is both
     Indices[b, s, g, k]  (B, S, G, K)   int32 positions into KV's `n` axis
     Sinks[h]             (H,)           float32, one learnable logit per query head
+    TileCounts[b, s, g]  (B, S, G)      int32, how many leading slot tiles the query reads
     Output[b, s, h, d]   (B, S, H, D)   bfloat16
     Lse[b, s, h]         (B, S, H)      float32
 
@@ -57,6 +58,11 @@ passes as a free view of the contiguous `(B, S, G, K)` tensor; `K` must therefor
 `block_I`. Only the tile count is symbolic. Declaring `K` itself symbolic instead makes TileLang
 bounds-check every slot read against it, which costs the backward about a quarter of its time.
 
+`TileCounts[b,s,g]` must cover the query's last valid slot: every slot past its first
+`TileCounts * block_I` has to be masked, because the kernel never reads those tiles. A fully masked
+tile changes nothing in the online softmax, so skipping one is exact, and a query that reaches
+only a few of the `K` slots pays for only those.
+
 Every unused slot must hold a negative index, which is the masking condition:
 
     Indices[b,s,0,k] < 0 .
@@ -73,8 +79,8 @@ would cost a sync, so an out-of-range index silently corrupts that query's softm
 
 The grid is `(query position, batch, KV head)`, so with `G == 1` that is one block per query
 position per batch index, holding all `H` query heads of that query at once, or a 64-head chunk
-when `H > 64` (`REPLICATE_H`). The block walks the `K` slots in tiles of `block_I`,
-software-pipelined `num_stages` deep, and per tile:
+when `H > 64` (`REPLICATE_H`). The block walks its first `TileCounts[b,s,g]` tiles of `block_I`
+slots, software-pipelined `num_stages` deep, and per tile:
 
   1. gather `KV_shared[k,d] = KV[b, Indices[b,s,0,k], 0, d]` into one shared tile of keys
   2. `acc_s[h,k] = Q_shared[h,d] KV_shared[k,d]`, pre-seeded to `-inf` at masked slots
@@ -152,6 +158,7 @@ def dsv4_sparse_attn_fwd(
     o_shape = [batch, seq_len, heads, dim]
     indices_shape = [batch, seq_len, kv_group, n_tiles, block_I]
     sinks_shape = [heads]
+    tile_counts_shape = [batch, seq_len, kv_group]
     lse_shape = [batch, seq_len, heads]
     indices_dtype = T.int32
     dtype = T.bfloat16
@@ -166,7 +173,6 @@ def dsv4_sparse_attn_fwd(
             " automatically)"
         )
     BI = block_I
-    NI = n_tiles
     D = dim
 
     if head_kv > 64:
@@ -183,6 +189,7 @@ def dsv4_sparse_attn_fwd(
         KV: T.Tensor(kv_shape, dtype),  # type: ignore
         Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
         Sinks: T.Tensor(sinks_shape, accum_dtype),  # type: ignore
+        TileCounts: T.Tensor(tile_counts_shape, indices_dtype),  # type: ignore
         Output: T.Tensor(o_shape, dtype),  # type: ignore
         Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
     ):
@@ -234,7 +241,10 @@ def dsv4_sparse_attn_fwd(
 
             T.copy(Q[b_i, s_i, H0:H1, :], Q_shared)
 
-            for i_i in T.Pipelined(NI, num_stages=num_stages):
+            # `TileCounts` never exceeds `n_tiles`, but TileLang cannot know that; the `min` lets it
+            # prove every `Indices` read in bounds rather than guarding each one, which costs the
+            # backward 11-18%.
+            for i_i in T.Pipelined(T.min(TileCounts[b_i, s_i, g_i], n_tiles), num_stages=num_stages):
                 for bi_i in T.Parallel(BI):
                     mask[bi_i] = Indices[b_i, s_i, g_i, i_i, bi_i] >= 0
 

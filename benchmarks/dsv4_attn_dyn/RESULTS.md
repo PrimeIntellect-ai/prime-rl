@@ -124,3 +124,38 @@ The `tiled_{fwd,bwd}.py` layout moved into `dsv4_sparse_attn_{fwd,bwd}.py`: the 
 Every layer now compiles its four kernels (fwd, bwd, `preprocess`, `postprocess`) once, on the
 first step, whatever the packing. Kernel time is unchanged in the backward and 2-4% lower in the
 forward. The 92 kernel and model tests pass unchanged.
+
+`dyn_topk.py` and `stall.py`'s kernel calls target the kernel signatures at `2da5f7e6f` (static
+`topk`); run them from that commit.
+
+### Fix 2: per-query tile skipping, on top of fix 4 (label `skipmin`)
+
+The op computes, per query, how many leading slot tiles reach its last valid slot (`TileCounts`,
+one `(B, S, G)` int32 per kernel tile size) and each kernel loops over only those. A skipped tile
+is fully masked, so this is exact. It needs no prefix assumption about where the valid slots sit,
+but it pays off when they are a prefix: HCA's are (window, then the causal picks), and CSA's are
+too, because `fp8_indexer`'s `torch.topk` sorts the out-of-range `-inf` scores last.
+
+The first attempt (label `skip`) looped to `TileCounts[b, s, g]` directly. TileLang could not
+prove that at most `n_tiles`, and guarded every `Indices` read again, as with a dynamic `topk`:
+the backward got 11-18% slower where there is little to skip (CSA 131072: 151.8 -> 169.4 ms,
+sliding: 49.4 -> 54.9 ms). Looping to `min(TileCounts, n_tiles)` removes every guard from the
+backward and all but one scalar check from the forward's pipeline.
+
+Kernel time, fwd + bwd in ms, means over the same 40 packings; `fix 4+2` is `skipmin`.
+
+| Layer   | Tokens  | Baseline fwd / bwd | Fix 4 fwd / bwd | Fix 4+2 fwd / bwd | Fix 4+2 total vs baseline |
+|---------|---------|--------------------|-----------------|-------------------|---------------------------|
+| HCA     | 65536   | 15.1 / 44.2        | 14.8 / 44.3     | 12.6 / 33.5       | 59.3 -> 46.1 ms           |
+| HCA     | 131072  | 37.2 / 116.2       | 35.8 / 115.9    | 26.3 / 75.9       | 153.4 -> 102.2 ms         |
+| HCA     | 262144  | 88.8 / 284.8       | 85.0 / 284.4    | 53.8 / 160.0      | 373.6 -> 213.8 ms         |
+| CSA     | 65536   | 21.9 / 75.8        | 21.0 / 75.8     | 20.8 / 71.1       | 97.7 -> 91.9 ms           |
+| CSA     | 131072  | 42.8 / 151.5       | 41.1 / 151.8    | 40.7 / 143.4      | 194.3 -> 184.1 ms         |
+| Sliding | 131072  | 18.3 / 49.4        | 18.6 / 49.4     | 19.3 / 49.3       | 67.7 -> 68.6 ms           |
+
+HCA's kernel time falls 22% at 64k, 33% at 128k and 43% at 256k: with a fixed per-row width,
+every query paid for the longest document's pick count, and the longer the row the more that
+over-pays. CSA gains 5-6% from queries early in a document, which have fewer than `index_topk`
+entries to pick from. The sliding layer has nothing to skip (two forward tiles, both reached by
+almost every query) and pays about 0.7-0.9 ms (1%) for computing `TileCounts`, which the kernel timing
+includes. Peak memory is unchanged. The 92 kernel and model tests pass.
