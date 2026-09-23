@@ -3027,9 +3027,9 @@ function episodeRowHtml(ep) {
   const failed = !ep.ok;
   const phase = failed ? "error" : "done";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
-  return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
+  return `<tr data-line="${ep.line}" class="${episodeRowClass(ep)}" title="${esc(episodeRowTitle(ep))}">
         <td class="muted">${ep.line}</td>
-        <td><span class="badge stage stage-${phase}">${phase}</span>${!failed && ep.num_errors ? recoveredChipHtml(ep.num_errors) : ""}</td>
+        <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
         <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
@@ -3327,7 +3327,7 @@ function tmItemHtml(item) {
   }
   const e = item;
   return (
-    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.ok ? "" : " err"}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""} ${episodeRowClass(e)}" data-line="${e.line}" title="${esc(episodeRowTitle(e))}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -4017,8 +4017,16 @@ function errorEntryHtml(record) {
   );
 }
 
-function recoveredChipHtml(count) {
-  return ` <span class="chip recovered" title="recovered from ${count} error${count === 1 ? "" : "s"} in earlier attempts">${count} recovered</span>`;
+function episodeRowClass(ep) {
+  if (!ep.ok) return "err";
+  return ep.num_errors ? "retried" : "";
+}
+
+function episodeRowTitle(ep) {
+  const n = ep.num_errors || 0;
+  const errors = `${n || 1} error${n === 1 ? "" : "s"}`;
+  if (!ep.ok) return errors;
+  return n ? `recovered from ${errors} in earlier attempts` : "";
 }
 
 function episodeErrorsHtml(ep, trace) {
