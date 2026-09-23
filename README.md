@@ -113,11 +113,6 @@ uv sync --all-extras
 
 > *NOTE*: Environments are opt-in uv workspace members — `uv sync --all-extras` does not install them. To train on them, install all with `uv sync --all-extras --all-packages`, or a subset with `uv sync --package prime-rl --package <env>`.
 
-3.1. Optional: Flash Attention 3 (on Hopper GPUs only, for flash_attention_3 attention backend)
-
-> *NOTE*: No extra step is needed — step 4 already installs `flash_attn_3` 3.0.0 as a prebuilt wheel from the [PyTorch test index](https://download.pytorch.org/whl/test/cu130) via the `flash-attn-3` extra, which `uv sync --all-extras` includes.
-> *NOTE*: If you override the pin with a manual source build (`uv pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git#subdirectory=hopper" --no-build-isolation`), later `uv sync`/`uv run` invocations will uninstall it — run `uv sync --inexact` or `uv run --no-sync` instead.
-
 </details>
 
 <details>
