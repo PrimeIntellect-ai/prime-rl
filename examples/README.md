@@ -24,13 +24,13 @@ Walk-throughs for the core environments (baseline eval → optional SFT warmup �
 - [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
 - [`hendrycks-sanity/`](basic/hendrycks-sanity/README.md) — single-turn math, long-running
-- [`dynamo/`](basic/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
 
 ## extra/ — beyond the core loop
 
 Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 - [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
+- [`dynamo/`](extra/dynamo/README.md) — external Python `dynamo.vllm` RL recipes, from a two-GPU Qwen3 example to TP=4 Nemotron 3.5 Super VLM training
 
 ## Related config folders
 
