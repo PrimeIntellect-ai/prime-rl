@@ -85,12 +85,6 @@ def build_packed(rotary: DeepseekV4RotaryEmbedding, tokens: int) -> PackedContex
     )
 
 
-def fused_cos_sin(rotary: DeepseekV4RotaryEmbedding, rope_type: str, n_rows: int) -> torch.Tensor:
-    rows = torch.arange(n_rows, device="cuda")[None]
-    cos, sin = rotary(rows, rope_type, dtype=torch.float32)
-    return torch.cat([cos[0], sin[0]], dim=-1).contiguous()
-
-
 def time_ms(step: Callable[[], None], warmup: int, iters: int) -> float:
     for _ in range(warmup):
         step()
@@ -153,12 +147,12 @@ def eager_attn_output(leaf, cos, sin, **_):
     return apply_rotary_pos_emb_interleaved(leaf * 1, cos, -sin, unsqueeze_dim=2)
 
 
-def fused_forward(leaf, cos_sin, position_ids, **_):
-    return apply_interleaved_rope_(leaf * 1, cos_sin, position_ids)
+def fused_forward(leaf, cos32, sin32, **_):
+    return apply_interleaved_rope_(leaf * 1, cos32, sin32)
 
 
-def fused_attn_output(leaf, cos_sin, position_ids, **_):
-    return apply_interleaved_rope_((leaf * 1).clone(), cos_sin, position_ids, inverse=True)
+def fused_attn_output(leaf, cos32, sin32, **_):
+    return apply_interleaved_rope_((leaf * 1).clone(), cos32, sin32, inverse=True)
 
 
 OP_CASES = [
@@ -174,8 +168,7 @@ def op_case_rows(
 ) -> Iterator[str]:
     name, heads, dim, rope_type, has_backward, eager_impl, fused_impl = case
     cos, sin = rotary(packed.position_ids, rope_type, dtype=DTYPE)
-    cos_sin = fused_cos_sin(rotary, rope_type, tokens)
-    position_ids = packed.position_ids[0]
+    cos32, sin32 = rotary(packed.position_ids, rope_type, dtype=torch.float32)
     leaf = torch.randn(1, tokens, heads, dim, device="cuda", dtype=DTYPE, requires_grad=True)
     grad_out = torch.randn_like(leaf)
     variants = [("eager", eager_impl)]
@@ -184,7 +177,7 @@ def op_case_rows(
     for variant, impl in variants:
 
         def forward(impl=impl) -> torch.Tensor:
-            return impl(leaf, cos=cos, sin=sin, cos_sin=cos_sin, position_ids=position_ids)
+            return impl(leaf, cos=cos, sin=sin, cos32=cos32, sin32=sin32)
 
         fwd, fwd_bwd = fwd_and_fwd_bwd(forward, grad_out)
         if has_backward:
