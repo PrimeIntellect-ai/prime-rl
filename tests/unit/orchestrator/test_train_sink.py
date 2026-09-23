@@ -1,6 +1,5 @@
 import pytest
 
-from prime_rl.configs.orchestrator import TrainSinkConfig
 from prime_rl.orchestrator.train_sink import TrainSink
 from tests.unit.orchestrator.fakes import (
     FakeEnv,
@@ -14,7 +13,7 @@ from tests.unit.orchestrator.fakes import (
 
 def make_sink(*, group_size=2, admit=None):
     env = FakeEnv("env", group_size=group_size)
-    sink = TrainSink(TrainSinkConfig(), FakeEnvs(env))
+    sink = TrainSink(FakeEnvs(env))
     hooks = RecordingHooks()
     sink.bind(on_group=hooks.record_async("on_group"), admit=admit)
     return sink, hooks, env

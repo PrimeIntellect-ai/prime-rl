@@ -9,20 +9,21 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Iterable
 
-from prime_rl.configs.orchestrator import WatcherConfig
 from prime_rl.transports.weights import WeightReceiver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import format_time, get_logger
 
 VersionHook = Callable[[int], Awaitable[None]]
 
+POLL_INTERVAL = 1.0
+"""Seconds between checks for a newer published version."""
+
 
 class WeightWatcher:
     """``await watcher.start()`` drives the polling loop until ``stop()``;
     ``apply(step)`` moves inference onto one version on demand."""
 
-    def __init__(self, config: WatcherConfig, receiver: WeightReceiver) -> None:
-        self.config = config
+    def __init__(self, receiver: WeightReceiver) -> None:
         self.receiver = receiver
         self._version = 0
         # The newest version the receiver has published; ``version`` trails it until
@@ -65,7 +66,7 @@ class WeightWatcher:
                 next_step = self.receiver.next_version(self.published)
                 if next_step > self.published:
                     await self.apply(next_step)
-                await asyncio.sleep(self.config.poll_interval)
+                await asyncio.sleep(POLL_INTERVAL)
         except asyncio.CancelledError:
             return
 

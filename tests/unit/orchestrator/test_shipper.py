@@ -48,7 +48,7 @@ def make_shipper(tmp_path, *, version=0, **config):
     )
     state = {"version": version}
 
-    async def wait_for_version(v, *, timeout=None, reason=""):
+    async def wait_for_version(v, *, reason=""):
         hooks.record("wait")(v)
         state["version"] = max(state["version"], v)
         return True
@@ -80,8 +80,8 @@ async def test_ship_advances_the_step_and_reports_metrics(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_lag_gate_closes_past_target_lag_and_reopens_on_version(tmp_path):
-    shipper, hooks, _, _, _, state = make_shipper(tmp_path, target_lag=1)
+async def test_lag_gate_closes_past_the_lag_and_reopens_on_version(tmp_path):
+    shipper, hooks, _, _, _, state = make_shipper(tmp_path)
     await shipper.on_batch(make_batch())  # step 1 shipped, lead = 1 - 0 = 1 -> open
     assert hooks["gate"][-1] == (True,)
     await shipper.on_batch(make_batch())  # step 2 shipped, lead 2 > 1 -> closed
@@ -94,10 +94,10 @@ async def test_lag_gate_closes_past_target_lag_and_reopens_on_version(tmp_path):
 
 @pytest.mark.asyncio
 async def test_batch_holds_for_the_required_version(tmp_path):
-    shipper, hooks, _, sender, _, state = make_shipper(tmp_path, target_lag=1)
+    shipper, hooks, _, sender, _, state = make_shipper(tmp_path)
     shipper.progress.step = 5
     await shipper.on_batch(make_batch())
-    # batch 5 needs v3 = 5 - 1 - target_lag
+    # batch 5 needs v3 = 5 - 1 - TARGET_LAG
     assert hooks["wait"] == [(3,)]
     assert len(sender.sent) == 1
 

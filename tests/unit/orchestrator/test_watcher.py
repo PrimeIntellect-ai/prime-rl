@@ -2,15 +2,17 @@ import asyncio
 
 import pytest
 
-from prime_rl.configs.orchestrator import WatcherConfig
+from prime_rl.orchestrator import watcher as module
 from prime_rl.orchestrator.watcher import WeightWatcher
 from tests.unit.orchestrator.fakes import FakeReceiver, RecordingHooks
 
 
-def make_watcher(poll: float = 0.01):
+def make_watcher(monkeypatch=None):
     receiver = FakeReceiver()
     hooks = RecordingHooks()
-    watcher = WeightWatcher(WatcherConfig(poll_interval=poll), receiver)
+    if monkeypatch is not None:
+        monkeypatch.setattr(module, "POLL_INTERVAL", 0.01)
+    watcher = WeightWatcher(receiver)
     watcher.bind(
         on_version_pending=[hooks.record_async("pending")],
         on_new_version=[hooks.record_async("new")],
@@ -45,8 +47,8 @@ async def test_apply_drains_before_receiving_and_advances_after():
 
 
 @pytest.mark.asyncio
-async def test_poll_loop_applies_published_versions_in_order():
-    watcher, receiver, hooks = make_watcher()
+async def test_poll_loop_applies_published_versions_in_order(monkeypatch):
+    watcher, receiver, hooks = make_watcher(monkeypatch)
     task = asyncio.create_task(watcher.start())
     receiver.publish(1)
     receiver.publish(2)

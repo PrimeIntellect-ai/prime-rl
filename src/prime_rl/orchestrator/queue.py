@@ -100,8 +100,20 @@ class Queue:
             self.pending_episodes.extend(group.episodes, admitted=group.admitted)
             self._record_zero_output(group, group.survivors)
         else:
-            self.pending_episodes.extend(group.episodes, sampled_trace_ids=set(group.samples), admitted=True)
-            self.pending_batch.update(group.samples)
+            samples = group.samples
+            if self.config.constant_trainer_batch_size:
+                samples = {
+                    trace_id: kept
+                    for trace_id, trace_samples in samples.items()
+                    if (kept := [sample for sample in trace_samples if prune_zero_advantages(sample)])
+                }
+            group.samples = samples
+            self.pending_episodes.extend(group.episodes, sampled_trace_ids=set(samples), admitted=True)
+            if not samples:
+                self._record_zero_output(group, group.survivors)
+                self._drop_stale()
+                return
+            self.pending_batch.update(samples)
             for episode in group.episodes:
                 for trace in episode.traces:
                     if trace.id in group.samples:

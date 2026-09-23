@@ -509,8 +509,8 @@ class ConcurrencyConfig(BaseConfig):
 class DispatcherConfig(BaseConfig):
     """Episode admission (``[orchestrator.dispatcher]``, ``[dispatcher]`` for evals)."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Rate limit on episode dispatch, one token per episode (one rollout, one sandbox), shared by train and eval. None disables it."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: one episode is one token. None disables it."""
 
     admission_window: float = Field(5.0, gt=0)
     """Seconds per admission window: the in-flight pool grows by at most ``admission_fraction`` of its cap per window; replacing a completed episode is free."""
@@ -527,25 +527,11 @@ class InferenceMetricsConfig(BaseConfig):
     always runs — it feeds the concurrency controller; ``log`` decides whether the scraped
     metrics also reach the monitors."""
 
-    poll_interval: float = Field(5.0, gt=0)
-    """Seconds between scrapes."""
-
-    fetch_timeout: float = Field(5.0, gt=0)
-    """Per-request timeout of one scrape."""
-
     roles: list[Literal["prefill", "decode"]] | None = None
     """Role of each admin client when collecting P/D inference metrics."""
 
     log: bool = True
     """Mirror the scraped metrics to the monitors."""
-
-
-class TrainSinkConfig(BaseConfig):
-    """Scoring and compilation of finished train groups; derived from the orchestrator's
-    top-level fields, not a TOML block."""
-
-    constant_trainer_batch_size: bool = True
-    """Prune zero-advantage tokens at compile time so every queued trace carries signal."""
 
 
 class QueueConfig(BaseConfig):
@@ -562,10 +548,10 @@ class QueueConfig(BaseConfig):
     """Queued traces older than this many policy versions are dropped before every cut."""
 
     constant_trainer_batch_size: bool = True
-    """Prune zero-advantage tokens at cut time when the sink did not already."""
+    """Prune zero-advantage tokens as groups are queued, so a batch is exactly ``batch_size`` traces with signal; off, prune at the cut instead and let the batch shrink."""
 
     seq_len: int = 2048
-    """Token cost assumed for a group that returned nothing, for the zero-output tally."""
+    """Tokens a group that returned no trace is assumed to have cost, so the zero-output warning fires at the same rate under token batching."""
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -580,12 +566,6 @@ class ShipperConfig(BaseConfig):
 
     max_steps: int | None = None
     """Training steps to ship; None ships forever."""
-
-    target_lag: int = Field(1, ge=0)
-    """Batches the orchestrator may run ahead of the policy inference serves: dispatch pauses past it, and a batch ships only once inference serves v{step - 1 - target_lag}."""
-
-    version_wait_timeout: float | None = None
-    """Bound on waiting for inference to apply the final policy before shutdown; None waits forever."""
 
 
 class EvaluatorConfig(BaseConfig):
@@ -602,13 +582,6 @@ class EvaluatorConfig(BaseConfig):
 
     upload_epochs: bool = False
     """Hand each finished epoch to the monitors whole (``log_eval_epoch``), the way ``uv run eval`` publishes to the platform."""
-
-
-class WatcherConfig(BaseConfig):
-    """Discovery of new policy versions from the weight transport (``[orchestrator.watcher]``)."""
-
-    poll_interval: float = Field(1.0, gt=0)
-    """Seconds between checks for a newer published version."""
 
 
 # Top-k injected on truncated policy sampling that has none, and the hard upper
@@ -656,9 +629,6 @@ class OrchestratorConfig(BaseConfig):
 
     inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
     """The ``/metrics`` poll of the policy engines (``[orchestrator.inference_metrics]``)."""
-
-    watcher: WatcherConfig = WatcherConfig()
-    """Policy version discovery (``[orchestrator.watcher]``)."""
 
     ckpt: CheckpointConfig | None = None
 

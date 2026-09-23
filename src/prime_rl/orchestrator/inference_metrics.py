@@ -15,6 +15,8 @@ from prime_rl.configs.orchestrator import InferenceMetricsConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
+POLL_INTERVAL = 5.0
+FETCH_TIMEOUT = 5.0
 METRIC_PREFIX = "vllm:"
 CACHE_CONFIG_FAMILY = "vllm:cache_config_info"
 PD_ROLES = {"prefill", "decode"}
@@ -300,7 +302,7 @@ class InferenceMetricsCollector:
                     await self.collect_and_log()
                 except Exception as e:
                     get_logger().warning(f"Inference metrics poll failed: {e!r}")
-                await asyncio.sleep(self.config.poll_interval)
+                await asyncio.sleep(POLL_INTERVAL)
 
         self.task = asyncio.create_task(poll_loop())
 
@@ -325,7 +327,7 @@ class InferenceMetricsCollector:
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
-                response = await endpoint.client.get("/metrics", timeout=self.config.fetch_timeout)
+                response = await endpoint.client.get("/metrics", timeout=FETCH_TIMEOUT)
                 response.raise_for_status()
                 return response.text
             except Exception as e:
@@ -364,7 +366,7 @@ class InferenceMetricsCollector:
         if endpoint.key in self.max_model_len_by_endpoint:
             return
         try:
-            response = await endpoint.client.get("/v1/models", timeout=self.config.fetch_timeout)
+            response = await endpoint.client.get("/v1/models", timeout=FETCH_TIMEOUT)
             response.raise_for_status()
             lengths = [card.get("max_model_len") for card in response.json().get("data", [])]
             lengths = [length for length in lengths if length]

@@ -18,7 +18,6 @@ import os
 
 from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.orchestrator import WatcherConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -74,7 +73,7 @@ class OnlineEval:
         # drains stale work before the swap and reads the version it serves.
         dispatcher = self.runner.dispatcher
         assert dispatcher is not None
-        self.watcher = WeightWatcher(WatcherConfig(), self.receiver)
+        self.watcher = WeightWatcher(self.receiver)
         self.watcher.bind(
             on_version_pending=[dispatcher.on_version_pending], on_new_version=[dispatcher.on_new_version]
         )

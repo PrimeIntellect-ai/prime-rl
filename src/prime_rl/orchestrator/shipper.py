@@ -4,7 +4,7 @@ Takes each cut ``TrainBatch``, holds it until inference serves a recent enough
 policy, packs and sends it, advances the step, checkpoints, and reports the step's
 metrics. It owns ``Progress`` (the step every other component reads) and the lag
 gate: dispatch pauses while the batch being collected runs more than
-``target_lag`` versions ahead of the policy inference serves. After the final
+``TARGET_LAG`` versions ahead of the policy inference serves. After the final
 batch it asks the pipeline to drain."""
 
 from __future__ import annotations
@@ -27,6 +27,13 @@ from prime_rl.orchestrator.utils import episode_group_id, episode_staleness, tri
 from prime_rl.transports.batch.base import BatchSender
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
+
+# Batches the orchestrator may run ahead of the policy inference serves. Past it
+# dispatch pauses, and a batch ships only once inference serves v{step-1-TARGET_LAG}.
+# The staleness bound alone cannot replace it: staleness is measured at the ship
+# step, so batches shipped far ahead of the trainer would train later, and staler,
+# than measured.
+TARGET_LAG = 1
 
 
 class Shipper:
@@ -134,10 +141,10 @@ class Shipper:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once inference has applied v{step-1-target_lag}: fast
+        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}: fast
         # envs fill batches from buffered rollouts and would race arbitrarily far ahead
         # of the trainer otherwise. Always satisfiable: the trainer broadcasts every version.
-        required_version = step - 1 - config.target_lag
+        required_version = step - 1 - TARGET_LAG
         if self._version() < required_version:
             hold_start = time.perf_counter()
             await self.wait_for_version(required_version, f"to ship batch {step}")
@@ -168,7 +175,7 @@ class Shipper:
         self.log_train_batch(batch, step=step, step_time=step_time)
 
         if config.max_steps is not None and step >= config.max_steps:
-            await self.wait_for_version(step, "before shutdown", timeout=config.version_wait_timeout)
+            await self.wait_for_version(step, "before shutdown")
             # Drain right after the final batch: waiting for another to fill would burn
             # inference on data that can never train.
             await self.start_draining("Shipped the final batch")
@@ -176,24 +183,24 @@ class Shipper:
 
     # ── internals ──────────────────────────────────────────────────────────
 
-    async def wait_for_version(self, version: int, reason: str, *, timeout: float | None = None) -> None:
+    async def wait_for_version(self, version: int, reason: str) -> None:
         if self._version() >= version:
             return
         if self._wait_for_version is None:
             raise RuntimeError("Shipper.wait_for_version is not bound")
-        await self._wait_for_version(version, timeout=timeout, reason=reason)
+        await self._wait_for_version(version, reason=reason)
 
     def update_gate(self) -> None:
-        """Pause dispatch while the batch being collected runs more than ``target_lag``
+        """Pause dispatch while the batch being collected runs more than ``TARGET_LAG``
         ahead of the policy inference serves. Steps are 1-indexed while versions are
         0-indexed, so the shipped-batch count is ``step - 1``."""
         version = self._version()
         lead = (self.progress.step - 1) - version
-        if lead > self.config.target_lag:
+        if lead > TARGET_LAG:
             if self.gate_open:
                 get_logger().info(
                     f"Pausing dispatcher until inference applies policy "
-                    f"v{self.progress.step - 1 - self.config.target_lag} (currently v{version})"
+                    f"v{self.progress.step - 1 - TARGET_LAG} (currently v{version})"
                 )
                 self.gate_closed_at = time.perf_counter()
             self.gate_open = False

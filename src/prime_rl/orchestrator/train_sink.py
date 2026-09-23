@@ -14,11 +14,9 @@ from collections.abc import Awaitable, Callable
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import TrainSinkConfig
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.queue import prune_zero_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, DispatchResult, FinalizedGroup, GroupCancellation
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id
@@ -27,8 +25,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class TrainSink:
-    def __init__(self, config: TrainSinkConfig, envs: TrainEnvs) -> None:
-        self.config = config
+    def __init__(self, envs: TrainEnvs) -> None:
         self.envs = envs
         self._admit: Callable[[list[vf.Episode]], bool] = lambda group: True
         self._on_group: Callable[[FinalizedGroup], Awaitable[None]] | None = None
@@ -135,8 +132,6 @@ class TrainSink:
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
-            if self.config.constant_trainer_batch_size:
-                samples = [sample for sample in samples if prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
         finalized.samples = samples_by_trace

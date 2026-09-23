@@ -29,15 +29,9 @@ from verifiers.v1.runtimes import set_base_sandbox_labels
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
-from prime_rl.configs.orchestrator import (
-    EvaluatorConfig,
-    OrchestratorConfig,
-    QueueConfig,
-    ShipperConfig,
-    TrainSinkConfig,
-)
+from prime_rl.configs.orchestrator import EvaluatorConfig, OrchestratorConfig, QueueConfig, ShipperConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.clients import InferenceClient, setup_admin_plane
+from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -58,6 +52,7 @@ from prime_rl.orchestrator.utils import intercept_vf_logging, set_default_execut
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.batch.base import BatchSender
 from prime_rl.transports.weights import setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
@@ -106,8 +101,8 @@ class Orchestrator:
         self.lag_task: asyncio.Task | None = None
         # Assigned by ``setup()``; None so a teardown after a partial setup is plain attribute checks
         self.clients: InferenceClient | None = None
-        self.admin_plane = None
-        self.sender = None
+        self.admin_plane: AdminPlane | None = None
+        self.sender: BatchSender | None = None
         self.dispatcher: Dispatcher | None = None
         self.watcher: WeightWatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
@@ -197,7 +192,7 @@ class Orchestrator:
         train_source = TrainSource(self.train_envs)
         ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.shipper = Shipper(
-            ShipperConfig(max_steps=config.max_steps, version_wait_timeout=config.weight_broadcast.timeout),
+            ShipperConfig(max_steps=config.max_steps),
             packer=packer,
             sender=self.sender,
             ckpt_manager=ckpt_manager,
@@ -240,7 +235,7 @@ class Orchestrator:
         )
         await receiver.initialize()
         get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
-        self.watcher = WeightWatcher(config.watcher, receiver)
+        self.watcher = WeightWatcher(receiver)
 
         self.evaluator: Evaluator | None = None
         eval_source: EvalSource | None = None
@@ -276,9 +271,7 @@ class Orchestrator:
             run_name=run_name,
         )
         self.inference_metrics = InferenceMetricsCollector(config.inference_metrics, self.admin_plane.clients)
-        self.sink = TrainSink(
-            TrainSinkConfig(constant_trainer_batch_size=config.constant_trainer_batch_size), self.train_envs
-        )
+        self.sink = TrainSink(self.train_envs)
         self.queue = Queue(
             QueueConfig(
                 batch_size=config.batch_size,
@@ -379,9 +372,7 @@ class Orchestrator:
             # Stay alive for the trainer's last broadcast: every broadcast is a blocking
             # rendezvous, and tearing down the watcher first would strand the trainer.
             if config.max_steps is not None:
-                await self.watcher.wait_for(
-                    config.max_steps, timeout=config.weight_broadcast.timeout, reason="before shutdown"
-                )
+                await self.watcher.wait_for(config.max_steps, reason="before shutdown")
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
