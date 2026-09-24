@@ -24,6 +24,21 @@ class ExpertCompute(Protocol):
     ) -> torch.Tensor: ...
 
 
+class FusedDispatchExpertCompute(Protocol):
+    """Expert compute that also dispatches tokens to their experts and combines the results.
+
+    It takes this rank's undispatched tokens and their routing, paired with a ``FusedTokenDispatcher``.
+    """
+
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+    ) -> torch.Tensor: ...
+
+
 def broadcast_expert_bias(
     bias: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,

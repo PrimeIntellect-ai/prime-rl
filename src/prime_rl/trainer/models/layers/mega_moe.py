@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 from torch.distributed import ProcessGroup
+from torch.distributed.tensor import DTensor
+
+from prime_rl.trainer.models.layers.activations import Silu
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
 def mega_moe_available() -> bool:
@@ -60,7 +67,7 @@ def _interleave_gate_up(t: torch.Tensor, inverse: bool = False) -> torch.Tensor:
 
 
 def _reorder_gate_up_(tensor: torch.Tensor, inverse: bool) -> None:
-    from torch.distributed.tensor import DTensor, Shard
+    from torch.distributed.tensor import Shard
 
     if isinstance(tensor, DTensor):
         if any(isinstance(p, Shard) and p.dim == 1 for p in tensor.placements):
@@ -75,13 +82,12 @@ def _reorder_gate_up_(tensor: torch.Tensor, inverse: bool) -> None:
 
 
 def _mega_moe_experts(model: torch.nn.Module):
-    from prime_rl.trainer.distributed.mega_moe_dispatcher import MegaMoeTokenDispatcher
-    from prime_rl.trainer.models.layers.moe import MoE
+    from prime_rl.trainer.models.layers.moe import GroupedExperts
 
     for module in model.modules():
-        if isinstance(module, MoE) and isinstance(module.token_dispatcher, MegaMoeTokenDispatcher):
-            if module.experts.gate_up_proj is not None:
-                yield module.experts
+        if isinstance(module, GroupedExperts) and isinstance(module.compute, MegaMoEExpertCompute):
+            if module.gate_up_proj is not None:
+                yield module
 
 
 @torch.no_grad()
@@ -239,3 +245,142 @@ def mega_moe_backward(
         activation_clamp=activation_clamp,
     )
     return dx, dw1, dw2, dtopk
+
+
+def _to_local(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def _activation_clamp(activation) -> float | None:
+    """The kernel's SwiGLU clamp for a supported expert activation: None for plain SwiGLU, the
+    limit for DeepSeek V4's clamped SwiGLU (gate <= limit, up in [-limit, limit])."""
+    from prime_rl.trainer.models.deepseek_v4.moe import ClampedSwiglu
+
+    if activation is Silu:
+        return None
+    if isinstance(activation, ClampedSwiglu):
+        return float(activation.limit)
+    raise ValueError("Mega MoE requires a SwiGLU (`silu` or DeepSeek V4 clamped) expert activation.")
+
+
+class _MegaMoeRoutedExperts(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        gate_up_proj: torch.Tensor,
+        down_proj: torch.Tensor,
+        buffer,
+        interleaved: bool,
+        activation_clamp: float | None,
+    ) -> torch.Tensor:
+        x_bf16 = x.to(torch.bfloat16).contiguous()
+        topk_idx = selected_experts_indices.to(torch.int64)
+        topk_weights = top_scores.to(torch.float32)
+        if interleaved:
+            weights = MegaMoeExpertWeights(
+                l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
+            )
+        else:
+            weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
+        y = torch.ops.prime_rl.mega_moe_forward(
+            x_bf16, topk_idx, topk_weights, weights.l1, weights.l2, register_mega_moe_buffer(buffer), activation_clamp
+        )
+        ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
+        ctx.buffer = buffer
+        ctx.interleaved = interleaved
+        ctx.activation_clamp = activation_clamp
+        ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
+        ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
+        return y.to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_y: torch.Tensor):
+        x_bf16, topk_idx, topk_weights, l1, l2 = ctx.saved_tensors
+        dx, dl1, dl2, dtopk = mega_moe_backward(
+            grad_y.to(torch.bfloat16).contiguous(),
+            x_bf16,
+            topk_idx,
+            topk_weights,
+            MegaMoeExpertWeights(l1=l1, l2=l2),
+            ctx.buffer,
+            ctx.dw_dtype,
+            dw_natural_layout=not ctx.interleaved,
+            activation_clamp=ctx.activation_clamp,
+        )
+        return (
+            dx.to(ctx.x_dtype),
+            dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype),
+            None,
+            dl1,
+            dl2,
+            None,
+            None,
+            None,
+        )
+
+
+class MegaMoEExpertCompute:
+    """Fused Mega MoE dispatch + SwiGLU expert MLP + combine, forward and backward.
+
+    It runs inside the experts' forward, so FSDP has already unsharded their weights. Pair it with
+    a ``FusedTokenDispatcher``. ``num_experts`` counts the experts across the whole expert-parallel group.
+    """
+
+    def __init__(
+        self,
+        experts: "GroupedExperts",
+        num_experts: int,
+        top_k: int,
+        group: ProcessGroup,
+        max_tokens_per_rank: int,
+        num_reserved_sms: int = 16,
+    ) -> None:
+        if not mega_moe_available():
+            raise RuntimeError(
+                "Mega MoE requires DeepGEMM's Mega MoE kernels (SM100+/Blackwell and a "
+                "deep_gemm build with `bf16_mega_moe` and `bf16_mega_moe_backward`)."
+            )
+        if experts.gate_proj is None and experts.gate_up_proj is None:
+            raise ValueError("Mega MoE requires gated experts (SwiGLU gate+up), got non-gated experts.")
+        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
+            raise ValueError("Mega MoE does not support expert biases.")
+        hidden = experts.down_proj.shape[1]
+        check_mega_moe_dims(hidden, experts.hidden_dim)
+        reserve_sms_for_comm(num_reserved_sms)
+
+        self.activation_clamp = _activation_clamp(experts.activation)
+        self.max_tokens_per_rank = max_tokens_per_rank
+        self.buffer = build_mega_moe_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden, experts.hidden_dim)
+
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        num_tokens = x.shape[0]
+        if num_tokens > self.max_tokens_per_rank:
+            raise RuntimeError(
+                f"Mega MoE buffer is sized for {self.max_tokens_per_rank} tokens/rank, got {num_tokens}. "
+                "Raise `model.moe.dispatch.max_tokens_per_rank`."
+            )
+        if experts.gate_up_proj is not None:
+            gate_up_proj = _to_local(experts.gate_up_proj)
+            interleaved = getattr(experts, "mega_moe_interleaved", False)
+        else:
+            gate_up_proj = torch.cat([_to_local(experts.gate_proj), _to_local(experts.up_proj)], dim=1)
+            interleaved = False
+        return _MegaMoeRoutedExperts.apply(
+            x,
+            top_scores,
+            selected_experts_indices,
+            gate_up_proj,
+            _to_local(experts.down_proj),
+            self.buffer,
+            interleaved,
+            self.activation_clamp,
+        )

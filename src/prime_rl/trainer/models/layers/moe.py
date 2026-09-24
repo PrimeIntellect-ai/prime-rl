@@ -14,7 +14,11 @@ from torch import nn
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
-from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, ExpertCompute
+from prime_rl.trainer.models.layers.expert_compute import (
+    BF16ExpertCompute,
+    ExpertCompute,
+    FusedDispatchExpertCompute,
+)
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
@@ -78,7 +82,7 @@ class GroupedExperts(nn.Module):
         expert_type: ExpertType = "gated",
         activation: ActivationType = "silu",
         bias: bool = False,
-        compute: ExpertCompute | None = None,
+        compute: ExpertCompute | FusedDispatchExpertCompute | None = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -93,7 +97,7 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.compute = compute or BF16ExpertCompute()
+        self.compute: ExpertCompute | FusedDispatchExpertCompute = compute or BF16ExpertCompute()
         self.activation = ActivationDispatch[activation]
         if expert_type == "non_gated":
             self.supported_fusions = {}
@@ -102,13 +106,10 @@ class GroupedExperts(nn.Module):
     def token_group_alignment(self) -> int:
         return self.compute.token_group_alignment
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor | None,
-        fused: Callable[["GroupedExperts", torch.Tensor], torch.Tensor] | None = None,
-    ) -> torch.Tensor:
-        return self.compute(self, x, num_tokens_per_expert)
+    def forward(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor:
+        """``routing`` is ``num_tokens_per_expert`` for dispatched tokens grouped by expert, or
+        ``top_scores, selected_experts_indices`` for undispatched tokens when the compute fuses dispatch."""
+        return self.compute(self, x, *routing)
 
     def init_weights(self, init_std: float):
         if self.gate_up_proj is None:

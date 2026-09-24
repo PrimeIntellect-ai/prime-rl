@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 import torch
 from torch.distributed import ProcessGroup
@@ -14,9 +14,7 @@ from prime_rl.trainer.distributed.collectives import (
 
 
 class ExpertFunction(Protocol):
-    def __call__(
-        self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor | None, fused: Callable | None = None
-    ) -> torch.Tensor: ...
+    def __call__(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor: ...
 
 
 class TokenDispatcher(Protocol):
@@ -31,6 +29,28 @@ class TokenDispatcher(Protocol):
     ) -> torch.Tensor: ...
 
     def synchronize(self) -> None: ...
+
+
+class FusedTokenDispatcher:
+    """Passes undispatched tokens and their routing to an expert compute that dispatches and combines them itself."""
+
+    def run(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        experts: ExpertFunction,
+        *,
+        score_before_experts: bool,
+    ) -> torch.Tensor:
+        if score_before_experts:
+            raise ValueError(
+                "Fused dispatch applies router weights at combine time and requires score_before_experts=False."
+            )
+        return experts(x, top_scores, selected_experts_indices)
+
+    def synchronize(self) -> None:
+        return None
 
 
 DispatchState = TypeVar("DispatchState")

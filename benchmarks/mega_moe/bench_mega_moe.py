@@ -1,5 +1,5 @@
 """Benchmark DeepGEMM's fused Mega MoE kernels (bf16 forward + backward) against prime-rl's
-bf16 EP path (``TorchTokenDispatcher`` + ``BF16GroupedGemm``) for the same routed-expert
+bf16 EP path (``TorchTokenDispatcher`` + ``BF16ExpertCompute``) for the same routed-expert
 workload, weights, and token counts, and check the gradients agree.
 
 Requires >=2 GPUs with symmetric-memory support (SM100/Blackwell) and PyTorch >= 2.9.
@@ -16,10 +16,9 @@ import os
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.mega_moe_dispatcher import MegaMoeTokenDispatcher
-from prime_rl.trainer.distributed.token_dispatcher import TorchTokenDispatcher
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
-from prime_rl.trainer.models.layers.mega_moe import mega_moe_available
+from prime_rl.trainer.distributed.token_dispatcher import FusedTokenDispatcher, TorchTokenDispatcher
+from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, mega_moe_available
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
@@ -74,7 +73,6 @@ def main() -> None:
         dim=args.hidden,
         hidden_dim=args.intermediate,
         num_experts=experts_per_rank,
-        grouped_gemm=BF16GroupedGemm(),
     ).to(device=device, dtype=torch.bfloat16)
     experts.init_weights(init_std=0.02)
     params = [p for p in experts.parameters() if p is not None]
@@ -88,23 +86,30 @@ def main() -> None:
     top_scores = top_scores.reshape(-1).contiguous().requires_grad_(True)
     selected_experts_indices = selected_experts_indices.reshape(-1).contiguous()
 
-    baseline = TorchTokenDispatcher(
-        num_experts=args.num_experts,
-        top_k=args.top_k,
-        token_group_alignment=experts.token_group_alignment,
-        group=group,
+    bf16_compute = BF16ExpertCompute()
+    baseline = (
+        TorchTokenDispatcher(
+            num_experts=args.num_experts,
+            top_k=args.top_k,
+            token_group_alignment=bf16_compute.token_group_alignment,
+            group=group,
+        ),
+        bf16_compute,
     )
-    mega = MegaMoeTokenDispatcher(
+    mega_compute = MegaMoEExpertCompute(
+        experts,
         num_experts=args.num_experts,
         top_k=args.top_k,
-        hidden=args.hidden,
-        intermediate_hidden=args.intermediate,
         group=group,
         max_tokens_per_rank=args.tokens_per_rank,
     )
+    mega = (FusedTokenDispatcher(), mega_compute)
 
-    def run(dispatcher, backward: bool):
+    def run(path, backward: bool):
+        dispatcher, compute = path
+
         def fn():
+            experts.compute = compute
             y = dispatcher.run(x, top_scores, selected_experts_indices, experts, score_before_experts=False)
             if backward:
                 y.backward(dy)
@@ -130,9 +135,9 @@ def main() -> None:
         "dexperts": max(rel_diff(a, b) for a, b in zip(dp_mega, dp_ref)),
     }
 
-    def bench_fwd_bwd(dispatcher):
-        fwd = bench(run(dispatcher, backward=False), args.warmup, args.iters)
-        total = bench(run(dispatcher, backward=True), args.warmup, args.iters)
+    def bench_fwd_bwd(path):
+        fwd = bench(run(path, backward=False), args.warmup, args.iters)
+        total = bench(run(path, backward=True), args.warmup, args.iters)
         return fwd, total
 
     base_fwd, base_total = bench_fwd_bwd(baseline)
@@ -146,7 +151,7 @@ def main() -> None:
         )
         print(f"{'':46} {'fwd':>10} {'bwd':>10} {'fwd+bwd':>10}")
         print(
-            f"{'bf16 EP (TorchTokenDispatcher+BF16GroupedGemm)':46} "
+            f"{'bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)':46} "
             f"{base_fwd:9.3f}ms {base_total - base_fwd:9.3f}ms {base_total:9.3f}ms"
         )
         print(
@@ -159,7 +164,7 @@ def main() -> None:
         )
         print("relative diff vs bf16 EP path: " + ", ".join(f"{k}={v:.4f}" for k, v in diffs.items()))
 
-    mega.buffer.destroy()
+    mega_compute.buffer.destroy()
     dist.destroy_process_group()
 
 
