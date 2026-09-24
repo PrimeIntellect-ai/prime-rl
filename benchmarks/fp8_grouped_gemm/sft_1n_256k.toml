@@ -1,0 +1,41 @@
+# One-node analog of sft.toml: 6 layers, seq_len 262144, cp 8, ep 8, SAC, balanced routing.
+# Compose with sft_fp8.toml or sft_moe_fp8.toml.
+max_steps = 15
+dist_timeout_seconds = 3600
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+impl = "custom"
+ep = 8
+cp = 8
+optim_cpu_offload = false
+ac_offloading = "None"
+
+[model.debug]
+num_layers = 6
+force_balanced_routing = true
+
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+mode = "selective"
+freq = 1
+targets = [
+  "prime_rl::dsv4_sparse_attn",
+  "prime_rl_collectives::all_to_all_single_equal",
+  "aten::sort.stable",
+]
+
+[data]
+type = "fake"
+input_ids = "random"
+seq_len = 262144
+batch_size = 1
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
