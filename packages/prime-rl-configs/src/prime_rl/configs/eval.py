@@ -5,7 +5,7 @@ from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
-from prime_rl.configs.shared import ClientConfig, LogConfig, RunConfig
+from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import default_output_dir
 
@@ -25,6 +25,13 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Global rate limit on episode dispatch, in tasks per minute. Use it for
     sandbox-backed environments to pace provisioning during autoscaling. None disables
     rate limiting."""
+
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat for the run: one ping per landed episode — the first
+    landed episode is the first beat, so the run's boot never shows up as a
+    stale-prone silence. When episodes stop landing, the pings stop and the heartbeat
+    goes stale on Better Stack after its grace period. Size that period + grace above
+    the longest legitimate gap between episodes."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
