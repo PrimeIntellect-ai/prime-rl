@@ -1,0 +1,3 @@
+# MoE-only FP8 overlay: the DeepGEMM grouped GEMM without the dense FP8 linears.
+[model.moe.compute]
+type = "deepgemm_fp8"
