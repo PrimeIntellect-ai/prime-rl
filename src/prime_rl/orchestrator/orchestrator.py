@@ -332,7 +332,9 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
-        self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
+        self.concurrency = ConcurrencyController(
+            config.concurrency, fallback_cost=config.seq_len, episode_budget=config.seq_len
+        )
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
