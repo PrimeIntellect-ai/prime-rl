@@ -199,9 +199,6 @@ class Orchestrator:
         self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
-            train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
-            renderer_config=config.renderer,
         )
         self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
 
@@ -232,7 +229,6 @@ class Orchestrator:
             config.env_addresses,
             config_dir,
             clients=self.clients,
-            renderer_config=config.renderer,
         )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)

@@ -1,5 +1,6 @@
 import asyncio
 from argparse import Namespace
+from threading import Lock
 
 import uvloop
 from fastapi import APIRouter, Request
@@ -126,14 +127,7 @@ async def custom_init_app_state(
     args: Namespace,
     supported_tasks: tuple,
 ):
-    """
-    Modifies init_app_state:
-    1. Call the original init_app_state to set up standard state, including
-       vLLM 0.20's ``serving_tokens`` for ``/inference/v1/generate``.
-    2. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
-       routing and ``routed_experts`` export survive the migration off the
-       legacy ``/v1/generate`` endpoint.
-    """
+    """Attach training metadata to the native vLLM serving interfaces."""
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
@@ -148,6 +142,16 @@ async def custom_init_app_state(
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
+
+    if "generate" in supported_tasks and state.openai_serving_chat is not None:
+        from prime_rl.inference.vllm.serving_chat import PrimeRlServingChat
+
+        upstream = state.openai_serving_chat
+        chat = object.__new__(PrimeRlServingChat)
+        chat.__dict__.update(upstream.__dict__)
+        chat.training_renderer_config = args.prime_renderer
+        chat.training_renderer_lock = Lock()
+        state.openai_serving_chat = chat
 
 
 import vllm.entrypoints.launchers.api_server.entry
