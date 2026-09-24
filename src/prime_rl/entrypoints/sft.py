@@ -137,7 +137,7 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
 
 
 def write_slurm_script(
-    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str | None = None
+    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str, wandb_shared: bool
 ) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
@@ -210,6 +210,7 @@ def write_slurm_script(
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
+            wandb_shared=wandb_shared,
             run_name=config.run.name,
             online_eval=online_eval,
             use_nccl_broadcast=(
@@ -249,16 +250,14 @@ def sft_slurm(config: SFTConfig):
     write_config(config, config_path, exclude=exclude)
 
     # Trainer and online-eval processes log to a single shared W&B run.
-    prl_run_id: str | None = None
-    if online_eval and config.monitors.wandb is not None:
-        prl_run_id = os.environ["PRL_RUN_ID"]
+    wandb_shared = online_eval and config.monitors.wandb is not None
 
     launcher_dir = get_launcher_dir(config.run_dir)
     if online_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, log_dir, script_path, prl_run_id)
+    write_slurm_script(config, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
@@ -544,8 +543,12 @@ def sft(config: SFTConfig):
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model
+        from prime_rl.trainer.sft.data import pre_download_data
 
         pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
+        pre_download_data(config.data, config.env_vars)
+        if config.val is not None:
+            pre_download_data(config.val.data, config.env_vars)
 
     if config.slurm is not None:
         sft_slurm(config)

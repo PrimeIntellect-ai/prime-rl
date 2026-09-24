@@ -128,6 +128,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
+import torch.distributed._functional_collectives as funcol
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -540,8 +541,8 @@ class DeepseekV4Indexer(nn.Module):
         n_entries = compressed_kv.shape[1]
 
         cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
-        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim).transpose(1, 2)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin).transpose(1, 2)
+        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -712,17 +713,21 @@ class DeepseekV4Attention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, h, d), the query view
         cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
 
-        q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
-        # Normalizing before the transpose keeps the input contiguous for the quack kernel.
-        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape)).transpose(1, 2)  # (b, h, t, d)
-        q = apply_rotary_pos_emb_interleaved(q, cos, sin)
-
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
         if self.cp_context.cp_enabled:
-            kv = gather_for_cp(kv, self.cp_context.cp_group)  # (b, T, 1, d)
-        kv = kv.transpose(1, 2)  # (b, 1, T, d)
+            # Launch on NCCL's communication stream; query/compressor work does not read KV.
+            kv = torch.ops._c10d_functional.all_gather_into_tensor(
+                kv.movedim(1, 0).contiguous(),
+                self.cp_context.cp_world_size,
+                self.cp_context.cp_group.group_name,
+            )
+
+        q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
+        # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
+        q = self.q_b_norm(self.q_b_proj(q_residual).view(*hidden_shape))
+        q = apply_rotary_pos_emb_interleaved(q, cos, sin, unsqueeze_dim=2)
 
         compressed = (
             self.compressor(
@@ -736,6 +741,9 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+        if self.cp_context.cp_enabled:
+            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
+        kv = kv.transpose(1, 2)  # (b, 1, T, d)
         inputs = SparseAttnInputs.build(
             kv=kv,
             compressed_kv=compressed_kv,
@@ -743,7 +751,7 @@ class DeepseekV4Attention(nn.Module):
             window_indices=packed.window_indices,
         )
         attn_output, _ = dsv4_sparse_attn(
-            q.transpose(1, 2).contiguous(),
+            q,
             inputs.kv_buf,
             inputs.indices,
             self.sinks,

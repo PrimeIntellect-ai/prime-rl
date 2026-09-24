@@ -85,6 +85,9 @@ class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
+    mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
+    """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
+
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]

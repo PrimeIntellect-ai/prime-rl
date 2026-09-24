@@ -60,11 +60,11 @@ export EVAL_DONE=$LAUNCHER_DIR/.sft_eval_done_$SLURM_JOB_ID
 mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
 
-{% if prl_run_id %}
-# Trainer and online-eval log to one shared W&B run. The trainer creates the run,
-# and the online-eval process finalizes it after the final epoch.
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
+{% if wandb_shared %}
+# Trainer and online-eval log to one shared W&B run. The trainer creates the run,
+# and the online-eval process finalizes it after the final epoch.
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer

@@ -20,6 +20,7 @@ def apply_shared_vllm_patches():
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
+    monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
 
@@ -39,6 +40,64 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_deepseek_v4_request_tools_placement():
+    """Attach request-level tools to the first existing DSV4 system message.
+
+    vLLM 0.29.0's Python DeepSeek-V4 tokenizer always prepends a synthetic
+    system message for request-level tools. That puts the tool schema before
+    an existing system prompt, unlike DeepSeek's reference encoder, vLLM's
+    Rust renderer, and prime-rl's training renderer. Upstream fixed this in
+    https://github.com/vllm-project/vllm/pull/51856 (commit 2909ad8f).
+    The fix is expected to ship in vLLM 0.31.
+
+    Wrap the tokenizer factory so existing-system requests take the corrected
+    path through the stock implementation: shallow-copy the conversation,
+    attach tools to its first system message, and suppress the stock synthetic
+    insertion. Requests without a system message retain the stock behavior.
+    Remove this patch once the vLLM pin includes the upstream fix (likely 0.31).
+    """
+    import copy
+
+    from vllm.tokenizers import deepseek_v4 as dsv4_tokenizer
+
+    original_get_tokenizer = dsv4_tokenizer.get_deepseek_v4_tokenizer
+    if getattr(original_get_tokenizer, "_prime_rl_places_request_tools", False):
+        return
+
+    def _get_deepseek_v4_tokenizer(tokenizer):
+        wrapped = original_get_tokenizer(tokenizer)
+        tokenizer_cls = wrapped.__class__
+        original_apply_chat_template = tokenizer_cls.apply_chat_template
+
+        # Each factory call creates a fresh dynamic tokenizer subclass, but be
+        # defensive if vLLM starts caching that class in a future release.
+        if getattr(original_apply_chat_template, "_prime_rl_places_request_tools", False):
+            return wrapped
+
+        def _apply_chat_template(self, messages, tools=None, **kwargs):
+            if tools:
+                conversation = kwargs.get("conversation", messages)
+                system_idx = next(
+                    (i for i, message in enumerate(conversation) if message.get("role") == "system"),
+                    None,
+                )
+                if system_idx is not None:
+                    conversation = conversation.copy()
+                    conversation[system_idx] = copy.copy(conversation[system_idx])
+                    conversation[system_idx]["tools"] = tools
+                    kwargs["conversation"] = conversation
+                    tools = None
+
+            return original_apply_chat_template(self, messages, tools=tools, **kwargs)
+
+        _apply_chat_template._prime_rl_places_request_tools = True
+        tokenizer_cls.apply_chat_template = _apply_chat_template
+        return wrapped
+
+    _get_deepseek_v4_tokenizer._prime_rl_places_request_tools = True
+    dsv4_tokenizer.get_deepseek_v4_tokenizer = _get_deepseek_v4_tokenizer
 
 
 def monkey_patch_online_fp8_parameter_cast():
