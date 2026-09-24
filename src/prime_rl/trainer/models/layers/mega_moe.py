@@ -121,6 +121,13 @@ def reserve_sms_for_comm(num_reserved_sms: int) -> None:
 
 
 _BUFFER_CACHE: dict[tuple, object] = {}
+_BUFFER_REGISTRY: dict[int, object] = {}
+
+
+def register_mega_moe_buffer(buffer) -> int:
+    key = id(buffer)
+    _BUFFER_REGISTRY[key] = buffer
+    return key
 
 
 def build_mega_moe_buffer(
@@ -169,6 +176,35 @@ def mega_moe_forward(
     y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
     deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
     return y
+
+
+# The forward as a custom op, so selective activation checkpointing can save its output and skip the fused dispatch + expert compute + combine during recompute.
+@torch.library.custom_op("prime_rl::mega_moe_forward", mutates_args=())
+def mega_moe_forward_op(
+    x: torch.Tensor,
+    topk_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    l1: torch.Tensor,
+    l2: torch.Tensor,
+    buffer_key: int,
+    activation_clamp: float | None = None,
+) -> torch.Tensor:
+    return mega_moe_forward(
+        x, topk_idx, topk_weights, MegaMoeExpertWeights(l1=l1, l2=l2), _BUFFER_REGISTRY[buffer_key], activation_clamp
+    )
+
+
+@mega_moe_forward_op.register_fake
+def _mega_moe_forward_fake(
+    x: torch.Tensor,
+    topk_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    l1: torch.Tensor,
+    l2: torch.Tensor,
+    buffer_key: int,
+    activation_clamp: float | None = None,
+) -> torch.Tensor:
+    return torch.empty(x.shape, dtype=torch.bfloat16, device=x.device)
 
 
 def mega_moe_backward(

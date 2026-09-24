@@ -39,8 +39,8 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
     ) -> torch.Tensor:
         from prime_rl.trainer.models.layers.mega_moe import (
             MegaMoeExpertWeights,
-            mega_moe_forward,
             prepare_mega_moe_weights,
+            register_mega_moe_buffer,
         )
 
         x_bf16 = x.to(torch.bfloat16).contiguous()
@@ -52,7 +52,9 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             )
         else:
             weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
-        y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer, activation_clamp)
+        y = torch.ops.prime_rl.mega_moe_forward(
+            x_bf16, topk_idx, topk_weights, weights.l1, weights.l2, register_mega_moe_buffer(buffer), activation_clamp
+        )
         ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
         ctx.buffer = buffer
         ctx.interleaved = interleaved
