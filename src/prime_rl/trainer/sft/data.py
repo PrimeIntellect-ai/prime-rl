@@ -621,9 +621,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
-def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig):
-        return
+def pre_download_data(data: SFTDataConfig, env_vars: dict[str, str]) -> None:
     if Path(data.name).exists():
         get_logger().info(f"Data {data.name} found at local path, skipping download")
         return
