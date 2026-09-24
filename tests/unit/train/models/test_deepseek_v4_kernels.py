@@ -1398,10 +1398,8 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
 
 
 def test_q_norm_rope_matches_the_composed_norm_and_rotation():
-    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, in eager mode.
+    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, eager and compiled.
 
-    Compiled output and gradient agree with eager to bf16 precision: without quack's opaque RMSNorm
-    (pre-Hopper or not installed), Inductor fuses the fallback norm and may reorder its reduction.
     Gradients agree with the composed ops to bf16 precision rather than bit for bit: the composed
     backward carries an fp32 gradient through the rotation, where `dsv4_q_norm_rope` keeps it in bf16.
     """
@@ -1425,7 +1423,6 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
 
     assert fused.dtype == torch.bfloat16
     assert torch.equal(fused, expected)
-    bf16_eps = torch.finfo(torch.bfloat16).eps
-    torch.testing.assert_close(compiled, fused, rtol=bf16_eps, atol=1e-5)
-    torch.testing.assert_close(compiled_leaf.grad, fused_leaf.grad, rtol=bf16_eps, atol=1e-5)
-    _assert_relative(fused_leaf.grad, composed_leaf.grad, bf16_eps, "q gradient")
+    assert torch.equal(compiled, fused)
+    assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
+    _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
