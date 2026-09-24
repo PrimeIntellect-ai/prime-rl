@@ -273,7 +273,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
                     num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
                     num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
                 )
-            ).cpu() # Transfer to CPU now once, so a2a can read this without sync
+            ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
 
         routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits)
         experts_per_rank = self.num_experts // ep_degree
