@@ -483,7 +483,7 @@ reject_max = 0.05
 
 ## Multi-Turn Trajectories
 
-For multi-turn rollouts (tool use, browser environments, long conversations), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
+For multi-turn rollouts (tool use, browser environments, long conversations), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving. Verifiers checks the server-returned token IDs before sharing a prefix.
 
 ### Extension Property
 
@@ -511,45 +511,29 @@ steps 4–5: extension holds   → merged into Sample 2
 result: 2 training samples instead of 5
 ```
 
-The orchestrator enforces an **exact prefix invariant**: the prompt at turn $t$ must be the exact concatenation of prior messages exactly as the LLM originally generated them. If turn 2's prompt is `U1, A1', U2` while `A1' ≠ A1`, the orchestrator can't safely merge — either choice produces logprob drift between trainer and inference. Starting a fresh sample is the only correct behavior, so that's what happens.
+Verifiers enforces an **exact prefix invariant** when merging records: the prompt at turn $t$ must be the exact concatenation of prior messages exactly as the LLM originally generated them. If turn 2's prompt is `U1, A1', U2` while `A1' ≠ A1`, the orchestrator can't safely merge — either choice produces logprob drift between trainer and inference. Starting a fresh sample is the only correct behavior, so that's what happens.
 
 ### Renderers
 
-Best-effort interleaving works because the renderer guarantees the exact-prefix invariant *by construction* — it never re-renders prior turns, so it can't lose tokens to chat-template normalization, BPE retokenization drift, or thinking stripping. A renderer turns a model's chat template into a Python object that can:
+Evaluation and training use the same OpenAI-compatible client. Training requests ask the
+inference server for exact prompt and completion token IDs, sampled-token logprobs, and
+training metadata. Each call is a valid training record in its own right. Verifiers merges
+records only when their token prefixes match exactly; a re-rendered history starts a new
+sample with its context masked out.
 
-- `render_ids(messages)` — tokenize messages to ids the inference engine accepts.
-- `parse_response(completion_ids)` — recover structured `(content, reasoning_content, tool_calls)` from sampled ids.
-- `bridge_to_next_turn(prev_prompt_ids, prev_completion_ids, new_messages)` — extend the previous turn's tokens verbatim with the new environment turn, instead of re-rendering history.
-
-When `bridge_to_next_turn` succeeds, the trainer sees the exact token stream the sampler produced; when it can't be proven safe (e.g. the renderer is `DefaultRenderer` and the template's stop sequence is unknown), it returns `None` and the orchestrator falls back to a full re-render — which triggers the new-sample fallback above.
-
-A common source of breakage in the absence of a hand-coded renderer is models like Qwen3 whose chat templates strip past `<think>` blocks across user turns:
-
-```python
-from transformers import AutoTokenizer
-tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-messages = [
-    {"role": "user", "content": "U1"},
-    {"role": "assistant", "content": "<think>R1</think>A1"},
-    {"role": "user", "content": "U2"},
-]
-tok.apply_chat_template(messages[:1], tokenize=False)
-# <|im_start|>user
-# U1<|im_end|>
-
-tok.apply_chat_template(messages, tokenize=False)
-# <|im_start|>user\nU1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nU2<|im_end|>
-# (the <think>R1</think> from turn 2 is gone)
-```
-
-Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
+The inference server uses the `renderers` library to attribute prompt tokens to messages
+and message bodies, and to return processed multimodal tensors. ECHO uses this attribution
+to select observations, including when tokenization changes across turns. Native vLLM
+handles sampling, response parsing, and tool calls. Sampling masks and expert routing travel
+alongside the tokens for replay in the trainer.
 
 ```toml
-[orchestrator.renderer]
-name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
+[inference.renderer]
+name = "auto"   # detect from tokenizer; use an explicit name for fine-tunes
 ```
 
-For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see [the renderers writeup on the Prime Intellect blog](https://www.primeintellect.ai/blog/renderers) — the canonical reference.
+RL and distillation losses require sampling logprobs. CE-only frozen generation can omit
+logprobs, but its endpoint must still return exact tokens and training metadata.
 
 ### Discontinuous Trajectories
 

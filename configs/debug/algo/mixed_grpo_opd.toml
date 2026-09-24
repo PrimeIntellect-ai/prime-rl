@@ -25,7 +25,7 @@ group_size = 16
 [orchestrator.algo]
 type = "grpo"
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

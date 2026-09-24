@@ -35,6 +35,6 @@ base_url = "http://127.0.0.1:8000/v1"
 [orchestrator.model.client.dynamo]
 enabled = true
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "qwen3"
 enable_thinking = false

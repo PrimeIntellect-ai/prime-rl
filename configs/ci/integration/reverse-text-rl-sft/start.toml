@@ -35,12 +35,8 @@ type = "sft"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 
-# The student's renderer tokenizes the teacher's messages into the student's
-# token space (backfill). Use `prime-qwen3` — it matches this PrimeIntellect
-# Qwen3 model's chat template token-for-token (single-turn + system), so the CE
-# target stays faithful, without the empty `<think></think>` block the stock
-# `qwen3` renderer injects (which this model's template never emits).
-[orchestrator.renderer]
+# Match the policy chat template. The frozen generation server also owns its renderer.
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

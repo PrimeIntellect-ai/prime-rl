@@ -41,6 +41,6 @@ env.agent.runtime.type = "subprocess"
 
 # Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
 # <think> blocks. Match that with renderer thinking_retention.
-[orchestrator.renderer]
+[inference.renderer]
 name = "auto"
 thinking_retention = "all"

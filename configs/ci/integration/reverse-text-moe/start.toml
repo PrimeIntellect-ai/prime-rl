@@ -39,5 +39,5 @@ env.agent.runtime.type = "subprocess"
 [inference.vllm]
 max_model_len = 2048
 gpu_memory_utilization = 0.7
-[orchestrator.renderer]
+[inference.renderer]
 name = "default"

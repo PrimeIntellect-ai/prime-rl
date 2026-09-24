@@ -68,5 +68,5 @@ env.agent.runtime.labels = ["minimax-swe", "swe-bench-verified"]
 
 [inference.vllm]
 tensor_parallel_size = 8
-[orchestrator.renderer]
+[inference.renderer]
 name = "minimax-m2"

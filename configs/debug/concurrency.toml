@@ -100,7 +100,7 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
 

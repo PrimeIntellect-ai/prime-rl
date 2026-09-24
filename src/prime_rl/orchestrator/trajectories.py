@@ -7,8 +7,8 @@ entry (a root→leaf path) is first-class and carries its own flat token sequenc
 training sample directly. Token-length readers (`completion_len`, `total_tokens`, `num_turns`)
 live on `vf.Trace` itself.
 
-Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed. For multimodal rollouts the branch also carries
+The inference endpoint supplies exact token records for RL and frozen-model generation.
+No client-side tokenization or token backfill is needed. For multimodal rollouts the branch also carries
 the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat `mm_kwargs` /
 `mm_token_type_ids` the trainer forwards.
 """
@@ -133,7 +133,7 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def trace_to_samples(trace: vf.Trace, *, env_name: str = "", require_logprobs: bool = True) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
@@ -143,11 +143,15 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     handling happens here. A branch carrying images also gets `mm_kwargs` (the concatenated
     pixel tensors) and `mm_token_type_ids` (`branch.mm_token_type_ids`, computed from the
     trace's renderer-stamped `mm_token_type_id_map`). Branches with no sampled tokens
-    (e.g. an openai client carrying none) yield nothing.
+    (e.g. an evaluation response carrying none) yield nothing.
     """
     samples: list[TrainingSample] = []
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
+        if require_logprobs:
+            for node in branch.nodes:
+                if node.sampled and len(node.logprobs) != sum(node.mask):
+                    raise ValueError("RL samples require a logprob for every sampled token")
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None
         mmd = branch.multi_modal_data

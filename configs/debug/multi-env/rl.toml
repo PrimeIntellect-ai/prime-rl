@@ -11,7 +11,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 batch_size = 128
 group_size = 16
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

@@ -23,7 +23,7 @@ group_size = 1
 type = "opsd"
 demo_key = "answer"
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

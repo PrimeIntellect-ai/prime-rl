@@ -119,7 +119,7 @@ max_inflight = 512
 [orchestrator.model]
 name = "zai-org/GLM-5.3-BF16"
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "glm-5.3"
 clear_thinking = false
 

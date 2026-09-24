@@ -26,8 +26,8 @@ type = "opd"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 
-# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
-[orchestrator.renderer]
+# The inference server returns exact tokens with the policy chat template.
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

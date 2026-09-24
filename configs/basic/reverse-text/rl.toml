@@ -37,5 +37,5 @@ lr = 3e-6
 
 # PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
 # suffix misses the MODEL_RENDERER_MAP exact match).
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
