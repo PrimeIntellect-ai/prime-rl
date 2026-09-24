@@ -1,11 +1,13 @@
 import json
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
+from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
@@ -615,6 +617,21 @@ def cat_collate(samples: list[Sample]) -> Batch:
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
     }
+
+
+def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if not isinstance(data, SFTDataConfig) or Path(data.name).exists():
+        return
+
+    get_logger().info(f"Pre-downloading data {data.name} at revision {data.revision or 'main'}")
+    snapshot = snapshot_download(
+        repo_id=data.name,
+        repo_type="dataset",
+        revision=data.revision,
+        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    )
+    data.name = snapshot
+    get_logger().info(f"Using local data snapshot {snapshot}")
 
 
 def setup_and_interleave_datasets(
