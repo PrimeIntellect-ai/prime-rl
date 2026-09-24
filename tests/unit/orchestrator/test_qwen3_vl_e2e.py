@@ -1,95 +1,44 @@
-"""End-to-end request-shape check for raw Qwen3-VL inference."""
+"""Qwen3-VL training records retain inline images and exact placeholder ranges."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
-from io import BytesIO
+import io
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from types import SimpleNamespace
 
-import httpx
 import pytest
 
-_HF_CACHE = Path("~/.cache/huggingface/hub").expanduser()
 _MODEL = "Qwen/Qwen3-VL-4B-Instruct"
-
-
-def _model_cached() -> bool:
-    safe = "models--" + _MODEL.replace("/", "--")
-    snapshots = _HF_CACHE / safe / "snapshots"
-    if not snapshots.is_dir():
-        return False
-    return any(p.is_dir() for p in snapshots.iterdir())
-
-
+_HF_CACHE = Path("~/.cache/huggingface/hub").expanduser()
 pytestmark = pytest.mark.skipif(
-    not _model_cached(),
+    not (_HF_CACHE / ("models--" + _MODEL.replace("/", "--")) / "snapshots").is_dir(),
     reason=f"{_MODEL}: HF snapshot not cached locally",
 )
 
 
-class _FakeOpenAI:
-    """Minimal AsyncOpenAI stand-in that captures POST bodies.
-
-    ``renderers.client.generate`` calls ``client.post(absolute_url,
-    body=...)``; we capture the body for assertions and return a canned
-    generate response so the parse-side of the flow runs.
-    """
-
-    def __init__(self, image_pad_id: int):
-        self.calls: list[dict[str, Any]] = []
-        self.base_url = "http://fake-host:8000/v1"
-        self.image_pad_id = image_pad_id
-
-    async def post(self, path, *, cast_to=dict, body=None, options=None):
-        self.calls.append({"path": path, "body": body, "options": options})
-        # Reply with two sampled tokens + <|im_end|>. The renderer's
-        # parse_response slices the content tokens.
-        prompt_ids = list(body["token_ids"])
-        pad_index = prompt_ids.index(self.image_pad_id)
-        prompt_ids[pad_index : pad_index + 1] = [self.image_pad_id] * 4
-        payload = {
-            "request_id": "qwen-vl-e2e",
-            "prompt_token_ids": prompt_ids,
-            "mm_placeholders": {"image": [{"offset": pad_index, "length": 4}]},
-            "choices": [
-                {
-                    "index": 0,
-                    "token_ids": [50, 60, 151645],
-                    "logprobs": {
-                        "content": [
-                            {"token": "token_id:50", "logprob": -0.1},
-                            {"token": "token_id:60", "logprob": -0.2},
-                            {"token": "token_id:151645", "logprob": -0.3},
-                        ]
-                    },
-                    "finish_reason": "stop",
-                },
-            ],
-        }
-        return httpx.Response(200, content=json.dumps(payload).encode())
-
-
-def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
+def test_generate_qwen3_vl_e2e_preserves_inline_images_and_expanded_prompt_ids():
+    import verifiers.v1 as vf
     from PIL import Image
+    from renderers import Qwen3VLRendererConfig
     from renderers.base import load_tokenizer
-    from renderers.client import generate
     from renderers.qwen3_vl import Qwen3VLRenderer
+    from transformers import AutoProcessor
+    from verifiers.v1.dialects import ChatDialect
+    from verifiers.v1.graph import prepare_turn
+    from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+
+    from prime_rl.inference.vllm.serving_chat import PrimeRlServingChat
+    from prime_rl.orchestrator.trajectories import trace_to_samples
 
     tokenizer = load_tokenizer(_MODEL)
-    renderer = Qwen3VLRenderer(tokenizer)
-
-    image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
-
-    fake = _FakeOpenAI(image_pad_id)
-
-    # ── Build a user message with an image (OpenAI content-part shape). ─
-    img = Image.new("RGB", (224, 224), color=(64, 128, 255))
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    image_url = f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+    processor = AutoProcessor.from_pretrained(_MODEL)
+    renderer = Qwen3VLRenderer(tokenizer, processor=processor)
+    image = Image.new("RGB", (224, 224), color=(64, 128, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    image_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
     messages = [
         {
             "role": "user",
@@ -99,26 +48,63 @@ def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
             ],
         }
     ]
+    request = ChatCompletionRequest(model=_MODEL, messages=messages, return_token_ids=True)
+    serving = object.__new__(PrimeRlServingChat)
+    serving.model_config = SimpleNamespace(tokenizer=_MODEL, max_model_len=1_000_000)
+    serving.chat_template = None
+    serving.chat_template_content_format = "auto"
+    serving.default_chat_template_kwargs = {}
+    serving.training_renderer_lock = Lock()
+    serving.training_tokenizer = tokenizer
+    serving.training_renderer = renderer
+    serving.training_template_kwargs = {}
+    serving.training_renderer_config = Qwen3VLRendererConfig()
+    _, (engine_input,) = serving._render_training_prompt(request)
 
-    result = asyncio.run(
-        generate(
-            client=fake,
-            renderer=renderer,
-            messages=messages,
-            model=_MODEL,
-            sampling_params={"max_tokens": 16},
-            # Explicit cap so generate() skips the /v1/models discovery round-trip.
-            max_prompt_len=1_000_000,
-            process_multimodal=False,
-        )
+    assert engine_input["type"] == "multimodal"
+    assert len(engine_input["mm_hashes"]["image"]) == 1
+    (placeholder,) = engine_input["mm_placeholders"]["image"]
+    pad_ids = engine_input["prompt_token_ids"][placeholder.offset : placeholder.offset + placeholder.length]
+    assert pad_ids and all(token == tokenizer.convert_tokens_to_ids("<|image_pad|>") for token in pad_ids)
+    (item,) = engine_input["mm_kwargs"]["image"]
+    assert set(item) == {"pixel_values", "image_grid_thw"}
+    expected = processor.image_processor(images=[image], return_tensors="pt")
+    assert item["image_grid_thw"].data.tolist() == expected["image_grid_thw"][0].tolist()
+
+    dialect = ChatDialect()
+    response = dialect.parse_response(
+        {
+            "id": "vlm-record",
+            "object": "chat.completion",
+            "created": 0,
+            "model": _MODEL,
+            "prompt_token_ids": engine_input["prompt_token_ids"],
+            "training_metadata": request._prime_training_metadata,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "A picture."},
+                    "token_ids": [50, 60, 151645],
+                    "logprobs": {
+                        "content": [{"token": f"token_id:{token}", "logprob": -0.1} for token in [50, 60, 151645]]
+                    },
+                }
+            ],
+        }
     )
-
-    assert len(fake.calls) == 1
-    body = fake.calls[0]["body"]
-    assert "features" not in body
-    assert body["content_parts"] == [{"type": "image_url", "url": image_url}]
-    assert body["token_ids"].count(image_pad_id) == 1
-    assert result["renderer_prompt_ids"] == body["token_ids"]
-    assert result["prompt_ids"].count(image_pad_id) == 4
-    assert result["mm_placeholders"] == {"image": [{"offset": body["token_ids"].index(image_pad_id), "length": 4}]}
-    assert result["completion_ids"] == [50, 60, 151645]
+    assert response.tokens is not None
+    assert "multi_modal_data" not in request._prime_training_metadata
+    assert response.tokens.mm_placeholders == [(placeholder.offset, placeholder.length)]
+    assert len(response.tokens.is_content) == len(engine_input["prompt_token_ids"])
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="image")),
+    )
+    prompt, _ = dialect.parse_request({"messages": messages})
+    prepare_turn(trace, prompt.messages).commit(response)
+    (sample,) = trace_to_samples(trace)
+    assert sample.token_ids == [*engine_input["prompt_token_ids"], 50, 60, 151645]
+    assert sample.mm_refs is not None
+    (image_ref,) = sample.mm_refs.images
+    assert (image_ref.url, image_ref.offset, image_ref.length) == (image_url, placeholder.offset, placeholder.length)

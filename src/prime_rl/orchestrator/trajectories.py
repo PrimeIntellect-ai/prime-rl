@@ -7,9 +7,9 @@ entry (a root→leaf path) is first-class and carries its own flat token sequenc
 training sample directly. Token-length readers (`completion_len`, `total_tokens`, `num_turns`)
 live on `vf.Trace` itself.
 
-Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed. Multimodal RL keeps the inline image URLs on
-the messages and pairs them with vLLM's expanded image-token runs here.
+The inference endpoint supplies exact token records for RL and frozen-model generation.
+No client-side tokenization or token backfill is needed. Multimodal RL keeps the inline image
+URLs on the messages and pairs them with the expanded image-token runs here.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def trace_to_samples(trace: vf.Trace, *, env_name: str = "", require_logprobs: bool = True) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
@@ -160,6 +160,10 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     samples: list[TrainingSample] = []
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
+        if require_logprobs:
+            for node in branch.nodes:
+                if node.sampled and len(node.logprobs) != sum(node.mask):
+                    raise ValueError("RL samples require a logprob for every sampled token")
         token_ids = branch.token_ids
         mm_token_type_ids: list[int] | None = None
         mm_refs: MMRefs | None = None

@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from renderers import RendererConfig
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.algorithm import FrozenModelConfig
@@ -144,14 +143,12 @@ class TrainEnv(Env):
         address: str | None,
         address_file: Path,
         clients: InferenceClient,
-        renderer_config: RendererConfig | None,
         algorithm: Algorithm,
     ):
         super().__init__(config, address, address_file)
         # Train rollouts are generated from `clients`: the policy, or the frozen
-        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        # `sampling.source` connected in setup().
         self.clients = clients
-        self.renderer_config = renderer_config
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
@@ -159,6 +156,7 @@ class TrainEnv(Env):
             **config.sampling.model_dump(exclude_none=True),
             # Only policy rollouts need sampling logprobs for importance ratios.
             logprobs=True if self.uses_live_policy else None,
+            return_training_metadata=True,
         )
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
@@ -167,7 +165,7 @@ class TrainEnv(Env):
         async def connect_source() -> None:
             source = self.config.algo.sampling.source
             if isinstance(source, FrozenModelConfig):
-                self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
+                self.connected = await connect_frozen_client(source)
                 self.clients = self.connected
 
         await asyncio.gather(connect_source(), self.algorithm.setup())
@@ -243,7 +241,6 @@ class TrainEnvs(Envs[TrainEnv]):
         config_dir: Path,
         *,
         clients,
-        renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -253,7 +250,6 @@ class TrainEnvs(Envs[TrainEnv]):
                 addresses[("train", config.resolved_name)],
                 env_address_file(config_dir, "train", config.resolved_name),
                 clients,
-                renderer_config,
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
