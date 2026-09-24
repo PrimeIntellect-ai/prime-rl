@@ -13,9 +13,8 @@ from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
-from prime_rl.entrypoints.prepare_data import pre_download_data
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     format_config_message,
@@ -48,6 +47,28 @@ INFERENCE_CONFIG = "inference.json"
 ONLINE_EVAL_CONFIG = "eval.json"
 
 ENVS_DIR = "envs"
+
+
+def pre_download_data(data: SFTDataConfig, env_vars: dict[str, str]) -> str:
+    if Path(data.name).exists():
+        return data.name
+
+    from datasets import load_dataset
+    from huggingface_hub import snapshot_download
+
+    get_logger().info(f"Pre-downloading data {data.name} at revision {data.revision or 'main'}")
+    snapshot = snapshot_download(
+        repo_id=data.name,
+        repo_type="dataset",
+        revision=data.revision,
+        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    )
+    subsets = data.subsets if data.subsets is not None else [None] * (len(data.splits) if data.splits else 1)
+    splits = data.splits if data.splits is not None else ["train"] * len(subsets)
+    for subset, split in zip(subsets, splits, strict=True):
+        load_dataset(snapshot, subset, split=split, cache_dir=env_vars.get("HF_DATASETS_CACHE"))
+    get_logger().info(f"Using local data snapshot {snapshot}")
+    return snapshot
 
 
 def eval_env_servers(config: SFTConfig) -> list[OnlineEvalSourceConfig]:
@@ -546,11 +567,10 @@ def sft(config: SFTConfig):
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
-        if config.slurm is None:
-            if isinstance(config.data, SFTDataConfig):
-                config.data.name = pre_download_data(config.data, config.env_vars)
-            if config.val is not None:
-                config.val.data.name = pre_download_data(config.val.data, config.env_vars)
+        if isinstance(config.data, SFTDataConfig):
+            config.data.name = pre_download_data(config.data, config.env_vars)
+        if config.val is not None:
+            config.val.data.name = pre_download_data(config.val.data, config.env_vars)
 
     if config.slurm is not None:
         sft_slurm(config)

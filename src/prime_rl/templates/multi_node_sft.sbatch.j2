@@ -118,8 +118,6 @@ SYNC_SH
 uv sync --all-extras --all-packages
 {% endif %}
 
-uv run python -m prime_rl.entrypoints.prepare_data "$TRAIN_CONFIG_PATH"
-
 {% if pre_run_command %}
 # Pre-run command
 {{ pre_run_command }}
