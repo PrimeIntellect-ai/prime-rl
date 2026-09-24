@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
-from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1.configs.client import ClientConfig as VerifiersClientConfig
 
 from prime_rl.utils.config import BaseConfig
 
@@ -213,7 +213,7 @@ class DynamoConfig(BaseConfig):
     """Dynamo frontend URL used to discover inference workers for RL control."""
 
 
-class ClientConfig(BaseClientConfig):
+class ClientConfig(VerifiersClientConfig):
     wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
 

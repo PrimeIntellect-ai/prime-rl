@@ -9,16 +9,9 @@ import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
-from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.configs.client import (
-    BaseClientConfig,
-    EvalClientConfig,
-    TrainClientConfig,
-    resolve_api_key,
-    resolve_headers,
-)
+from verifiers.v1.configs.client import resolve_api_key, resolve_headers
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.shared import ClientConfig
@@ -27,7 +20,7 @@ from prime_rl.utils.logger import get_logger
 
 class PrefillScorer:
     """Prefill-scores token ids against a pool's endpoint, lazily resolving
-    a single OpenAI client from the pool's train client config."""
+    a single OpenAI client from the pool's endpoint config."""
 
     def __init__(self) -> None:
         self._client: AsyncOpenAI | None = None
@@ -51,18 +44,8 @@ class InferenceClient:
         self,
         client_config: ClientConfig,
         model_name: str,
-        train_client_type: str = "openai_chat_completions",
-        eval_client_type: str = "openai_chat_completions",
-        renderer_config: RendererConfig | None = None,
     ):
-        renderer_model_name = model_name if train_client_type == "renderer" else None
-        self.train_client = setup_client(
-            client_config,
-            client_type=train_client_type,
-            renderer_config=renderer_config,
-            renderer_model_name=renderer_model_name,
-        )
-        self.eval_client = setup_client(client_config, client_type=eval_client_type)
+        self.client = setup_client(client_config)
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
@@ -76,7 +59,7 @@ class InferenceClient:
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+        return await self._scorer.score(self.client, self.model_name, token_ids)
 
     async def aclose(self) -> None:
         await self._scorer.aclose()
@@ -229,40 +212,17 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
         await admin.aclose()
 
 
-async def connect_frozen_client(
-    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
-) -> InferenceClient:
+async def connect_frozen_client(config: FrozenModelConfig) -> InferenceClient:
     """Connect to an externally hosted frozen model and wait for it."""
     get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
-    if renderer_config is not None:
-        clients = InferenceClient(
-            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
-        )
-    else:
-        clients = InferenceClient(config, model_name=config.name)
+    clients = InferenceClient(config, model_name=config.name)
     await check_inference_ready(config, config.name)
     return clients
 
 
-def setup_client(
-    client_config: ClientConfig,
-    client_type: str = "openai_chat_completions",
-    renderer_config: RendererConfig | None = None,
-    renderer_model_name: str | None = None,
-) -> vf.ClientConfig:
-    """Build a v1 client config for the base URL. ``client_type``
-    ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
-    server should use forwarded as a serialized config so it doesn't fall back to the
-    default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
-    is_renderer = client_type == "renderer"
-    config_cls = TrainClientConfig if is_renderer else EvalClientConfig
-    renderer_extra: dict = {}
-    if is_renderer:
-        renderer_extra = {
-            "renderer": renderer_config,
-            "renderer_model_name": renderer_model_name,
-        }
-    return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
+def setup_client(client_config: ClientConfig) -> vf.ClientConfig:
+    """Build the shared evaluation and training endpoint config."""
+    return vf.ClientConfig(**client_config.model_dump(include=set(vf.ClientConfig.model_fields)))
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
