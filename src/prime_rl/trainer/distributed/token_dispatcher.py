@@ -118,7 +118,26 @@ def permute_for_grouped_gemm(
 
     x = torch.vstack((x, x.new_zeros((1, x.shape[-1]))))
     state = PermutationState(input_shape=x.shape, permuted_indices=permuted_indices)
-    return x[permuted_indices], num_tokens_per_expert, state
+    return _GatherPermutedRows.apply(x, permuted_indices), num_tokens_per_expert, state
+
+
+class _GatherPermutedRows(torch.autograd.Function):
+    """`x[permuted_indices]` with a gather backward, since autograd's scatter-add serializes the padding slots on the zero row."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, permuted_indices: torch.Tensor) -> torch.Tensor:
+        slot_of_row = permuted_indices.new_empty(x.shape[0])
+        slot_of_row[permuted_indices] = torch.arange(
+            permuted_indices.numel(), device=permuted_indices.device, dtype=permuted_indices.dtype
+        )
+        ctx.save_for_backward(slot_of_row[:-1])
+        return x[permuted_indices]
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        (slot_of_real_row,) = ctx.saved_tensors
+        grad_x = torch.cat((grad_output[slot_of_real_row], grad_output.new_zeros((1, grad_output.shape[-1]))))
+        return grad_x, None
 
 
 def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> torch.Tensor:
