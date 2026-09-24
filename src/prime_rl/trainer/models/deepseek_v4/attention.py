@@ -51,7 +51,6 @@ layers), built from one `seq_lens` and carrying:
 
   - `position_ids`: each token's position within its own document.
   - `tok_doc_idx`: which document each token belongs to.
-  - `position_embeddings`: the RoPE tables, one per rope type, evaluated at `position_ids`.
   - `window_indices`: for each query, the indices of the tokens its local window covers, causal
     and clipped at document boundaries, with `IGNORE_SLOT` (-1) marking invalid/masked entries.
   - `compression_layouts`: one `CompressionLayout` per compress rate in the architecture.
@@ -97,13 +96,11 @@ holds it once and shares it across rates.
 Compression is only part of the story: every attention layer also reads a local sliding window of
 the most recent tokens directly, and the compressed entries are how it reaches anything older.
 That window is enumerated per document by `window_indices`, and every rotation in the block needs
-`position_ids` together with the RoPE tables evaluated at them, `position_embeddings`. None of
-those belongs to any single compress rate.
+`position_ids`. Neither belongs to any single compress rate.
 
 `PackedContext.build` takes `seq_lens` and derives every one of its fields from it. Nothing else is
-an input, so a position that disagrees with a document boundary, a window slot that spans one, or a
-RoPE table evaluated at positions other than the ones the causal thresholds count in, cannot be
-constructed. It runs once per model forward.
+an input, so a position that disagrees with a document boundary or a window slot that spans one
+cannot be constructed. It runs once per model forward.
 
 Context parallelism splits the queries across ranks and leaves everything else alone: every field
 above has one entry per query token and so covers this rank's `n_queries` tokens, while
@@ -237,13 +234,12 @@ class CompressionLayout:
 class PackedContext:
     """Everything an attention layer needs to know about the packed row it is running on.
 
-    The window indices, the positions, the RoPE tables and the layouts all encode the same
-    document boundaries and are only correct together. As separate arguments they can contradict
-    each other: a window enumerated without document boundaries spans documents while a layout
-    does not, a sequence-global `position_ids` feeds `causal_threshold` a count that a
-    per-document `entry_local_idx` cannot be compared against, and a RoPE table evaluated at one
-    set of positions rotates queries the thresholds were not counted at. `build` derives every
-    field from one `seq_lens`, so none of those is reachable. It runs once per model forward.
+    The window indices, the positions and the layouts all encode the same document boundaries and
+    are only correct together. As separate arguments they can contradict each other: a window
+    enumerated without document boundaries spans documents while a layout does not, and a
+    sequence-global `position_ids` feeds `causal_threshold` a count that a per-document
+    `entry_local_idx` cannot be compared against. `build` derives every field from one `seq_lens`,
+    so neither is reachable. It runs once per model forward.
 
     Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries
     and a full copy of the keys, so every field but `compression_layouts` has one entry per query
@@ -253,7 +249,6 @@ class PackedContext:
 
     position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
     tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
-    position_embeddings: dict[str, tuple[Tensor, Tensor]]  # (cos, sin) keyed by rope type, at `position_ids`
     window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
 
@@ -269,11 +264,9 @@ class PackedContext:
     ) -> "PackedContext":
         """Derive every field from one `seq_lens`, ensuring mutual consistency.
 
-        `rotary_emb` supplies the RoPE tables and, through the config it was built from, the
-        sliding window and the compress rates in use. Taking the config from it rather than
-        alongside it keeps them from naming different architectures. The RoPE tables are fp32, as
-        vLLM's are. The sequence is as long as `seq_lens` says, padding included: both packers fold
-        their padding into the last document.
+        `rotary_emb` supplies the sliding window, the compress rates in use and the positions its
+        RoPE cache covers, all read from its config. The sequence is as long as `seq_lens` says,
+        padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -284,6 +277,10 @@ class PackedContext:
         total_tokens = int(seq_lens.sum())
         assert total_tokens % cp_world_size == 0, (
             f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
+        )
+        # Document-local positions stay below the row's length; the RoPE kernels index the cache unchecked.
+        assert total_tokens <= config.max_position_embeddings, (
+            f"{total_tokens} tokens exceed the {config.max_position_embeddings} positions of the RoPE cache"
         )
         n_queries = total_tokens // cp_world_size
         q_start = cp_rank * n_queries
@@ -302,9 +299,6 @@ class PackedContext:
         # Document-local by construction: a token's position is its distance from its own
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
-        position_embeddings = {
-            rope_type: rotary_emb(position_ids, rope_type, dtype=torch.float32) for rope_type in rotary_emb.layer_types
-        }
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
@@ -315,7 +309,6 @@ class PackedContext:
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
-            position_embeddings=position_embeddings,
             compression_layouts={
                 rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
             },
@@ -429,7 +422,14 @@ class DeepseekV4Compressor(nn.Module):
 
     rope_layer_type = "compress"
 
-    def __init__(self, config: DeepseekV4Config, head_dim: int, compress_rate: int, n_series: int):
+    def __init__(
+        self,
+        config: DeepseekV4Config,
+        head_dim: int,
+        compress_rate: int,
+        n_series: int,
+        rotary_emb: DeepseekV4RotaryEmbedding,
+    ):
         super().__init__()
         if n_series not in (1, 2):
             raise ValueError(f"n_series must be 1 or 2, got {n_series}")
@@ -440,7 +440,7 @@ class DeepseekV4Compressor(nn.Module):
         self.gate_proj = nn.Linear(config.hidden_size, n_series * head_dim, bias=False)
         self.position_bias = nn.Parameter(torch.zeros(compress_rate, n_series * head_dim))
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=head_dim, eps=config.rms_norm_eps))
-        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
+        self.rotary_emb = rotary_emb
 
     def _overlap_with_previous_window(
         self, kv: torch.Tensor, gate: torch.Tensor, layout: CompressionLayout
@@ -488,8 +488,8 @@ class DeepseekV4Compressor(nn.Module):
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
-        cos, sin = self.rotary_emb(entry_first_tok_pos.unsqueeze(0), self.rope_layer_type, dtype=torch.float32)
-        return apply_interleaved_rope_(compressed.unsqueeze(2), cos, sin).squeeze(2)
+        cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
+        return apply_interleaved_rope_(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
@@ -513,13 +513,17 @@ class DeepseekV4Indexer(nn.Module):
     `IGNORE_SLOT` (-1).
     """
 
-    def __init__(self, config: DeepseekV4Config):
+    def __init__(self, config: DeepseekV4Config, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
         self.head_dim = config.index_head_dim
         self.num_heads = config.index_n_heads
         self.index_topk = config.index_topk
         self.compressor = DeepseekV4Compressor(
-            config, self.head_dim, config.compress_rates["compressed_sparse_attention"], n_series=2
+            config,
+            self.head_dim,
+            config.compress_rates["compressed_sparse_attention"],
+            n_series=2,
+            rotary_emb=rotary_emb,
         )
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
@@ -538,9 +542,9 @@ class DeepseekV4Indexer(nn.Module):
         compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
         n_entries = compressed_kv.shape[1]
 
-        cos, sin = packed.position_embeddings[self.compressor.rope_layer_type]
+        cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
-        q = apply_interleaved_rope_(q, cos, sin)
+        q = apply_interleaved_rope_(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -568,9 +572,15 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
     because the indexer only selects entries whose source tokens all lie at or before the query.
     """
 
-    def __init__(self, config: DeepseekV4Config):
-        super().__init__(config, config.head_dim, config.compress_rates["compressed_sparse_attention"], n_series=2)
-        self.indexer = DeepseekV4Indexer(config)
+    def __init__(self, config: DeepseekV4Config, rotary_emb: DeepseekV4RotaryEmbedding):
+        super().__init__(
+            config,
+            config.head_dim,
+            config.compress_rates["compressed_sparse_attention"],
+            n_series=2,
+            rotary_emb=rotary_emb,
+        )
+        self.indexer = DeepseekV4Indexer(config, rotary_emb)
 
     def forward(
         self,
@@ -602,8 +612,14 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
     the rest with `IGNORE_SLOT` (-1), as the indexer's surplus picks do.
     """
 
-    def __init__(self, config: DeepseekV4Config):
-        super().__init__(config, config.head_dim, config.compress_rates["heavily_compressed_attention"], n_series=1)
+    def __init__(self, config: DeepseekV4Config, rotary_emb: DeepseekV4RotaryEmbedding):
+        super().__init__(
+            config,
+            config.head_dim,
+            config.compress_rates["heavily_compressed_attention"],
+            n_series=1,
+            rotary_emb=rotary_emb,
+        )
 
     def forward(
         self,
@@ -653,7 +669,7 @@ class DeepseekV4Attention(nn.Module):
     which is how a layer sees past the window.
     """
 
-    def __init__(self, config: DeepseekV4Config, layer_idx: int):
+    def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -680,6 +696,7 @@ class DeepseekV4Attention(nn.Module):
         )
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
         self.sinks = nn.Parameter(torch.zeros(self.num_heads))
+        self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
         blocker = _kernel_blocker(self.num_heads, self.head_dim)
@@ -687,7 +704,7 @@ class DeepseekV4Attention(nn.Module):
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
-        self.compressor = compressor_class(config) if compressor_class is not None else None
+        self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
 
         self.cp_context = CPContext()
 
@@ -709,11 +726,11 @@ class DeepseekV4Attention(nn.Module):
 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, h, d), the query view
-        cos, sin = packed.position_embeddings[self.rope_layer_type]  # (1, t, qk_rope_head_dim // 2) each
+        cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)  # (max_position, qk_rope_head_dim)
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
-        kv = apply_interleaved_rope_(kv, cos, sin)
+        kv = apply_interleaved_rope_(kv, cos_sin_cache, packed.position_ids)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -724,7 +741,9 @@ class DeepseekV4Attention(nn.Module):
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
-        q = q_norm_rope(self.q_b_proj(q_residual).view(*hidden_shape), cos, sin, self.q_b_norm.eps)  # (b, t, h, d)
+        q = q_norm_rope(
+            self.q_b_proj(q_residual).view(*hidden_shape), cos_sin_cache, packed.position_ids, self.q_b_norm.eps
+        )  # (b, t, h, d)
 
         compressed = (
             self.compressor(
@@ -757,7 +776,7 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_interleaved_rope_(attn_output.clone(), cos, sin, inverse=True)
+        attn_output = apply_interleaved_rope_(attn_output.clone(), cos_sin_cache, packed.position_ids, inverse=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)

@@ -538,7 +538,7 @@ V4FLASH_DOC_IDS = ["two-docs", "no-entries", "one-short-doc", "three-docs", "sat
 def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, eager: bool = False) -> nn.Module:
     """One attention layer at the real DeepSeek V4 Flash shapes, 126M parameters of it."""
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx=layer_idx)
+        module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx, DeepseekV4RotaryEmbedding(V4FLASH_CONFIG))
     _randomize(module)
     if eager:
         eager_reference.use_eager_attention(module)
@@ -643,7 +643,7 @@ def test_deepseek_v4_refuses_a_shape_the_kernel_cannot_tile():
     """The constructor refuses a head count the kernels cannot tile, rather than the first forward."""
     config = DeepseekV4Config(**{**V4FLASH_MODEL, "num_attention_heads": 16})
     with pytest.raises(ValueError, match="cannot run the fused sparse-attention kernel"):
-        DeepseekV4Attention(config, layer_idx=V4FLASH_CSA_LAYER)
+        DeepseekV4Attention(config, V4FLASH_CSA_LAYER, DeepseekV4RotaryEmbedding(config))
 
 
 @requires_sparse_attn_kernel
@@ -1168,9 +1168,11 @@ def _cp_gathered_projections(
     """
     # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
-        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
-            module.rope_layer_type
-        ]
+        module.rotary_emb(
+            _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_ids,
+            module.rope_layer_type,
+            dtype=torch.float32,
+        )
         for cp_rank in range(cp_world_size)
     ]
 
@@ -1360,7 +1362,7 @@ def test_interleaved_rope_matches_vllm_bit_for_bit(inverse):
     vllm_ops.rotary_embedding(
         positions, expected, None, head_dim, cos_sin, False, rope_dim_offset=head_dim - ROPE_DIM, inverse=inverse
     )
-    actual = apply_interleaved_rope_(x.clone(), *cos_sin[positions].chunk(2, dim=-1), inverse=inverse)
+    actual = apply_interleaved_rope_(x.clone(), cos_sin, positions, inverse=inverse)
 
     assert torch.equal(actual, expected)
 
@@ -1374,7 +1376,6 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     pytest.importorskip("vllm._custom_ops")
     positions = _rope_positions()
     cos_sin = _rope_table(int(positions.max()) + 1)
-    cos, sin = cos_sin[positions].chunk(2, dim=-1)
     n_tokens, heads, head_dim = positions.numel(), V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
     eps, block_size = V4FLASH_MODEL["rms_norm_eps"], 64
     q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
@@ -1385,11 +1386,11 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
         expected_q, kv, kv_cache, torch.arange(n_tokens, device="cuda"), positions, cos_sin, eps, block_size
     )
-    rotated_q = q_norm_rope(q, cos, sin, eps)
+    rotated_q = q_norm_rope(q, cos_sin, positions, eps)
 
     assert (rotated_q != expected_q).float().mean() < 1e-5
     _assert_relative(rotated_q, expected_q, torch.finfo(torch.bfloat16).eps, "q")
-    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos, sin)
+    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos_sin, positions)
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
 
 
@@ -1400,7 +1401,7 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
     fp32 gradient through the rotation, where `q_norm_rope` keeps it in bf16.
     """
     positions = _rope_positions()
-    cos, sin = _rope_table(int(positions.max()) + 1)[positions].chunk(2, dim=-1)
+    cos_sin = _rope_table(int(positions.max()) + 1)
     heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
     eps = V4FLASH_MODEL["rms_norm_eps"]
     leaf = torch.randn(1, positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
@@ -1409,10 +1410,10 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
 
     def composed(q: torch.Tensor) -> torch.Tensor:
         normed = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
-        return apply_interleaved_rope_(normed, cos, sin).to(q.dtype)
+        return apply_interleaved_rope_(normed, cos_sin, positions).to(q.dtype)
 
-    fused = q_norm_rope(fused_leaf * 1, cos, sin, eps)
-    compiled = torch.compile(lambda q: q_norm_rope(q * 1, cos, sin, eps), fullgraph=True)(compiled_leaf)
+    fused = q_norm_rope(fused_leaf * 1, cos_sin, positions, eps)
+    compiled = torch.compile(lambda q: q_norm_rope(q * 1, cos_sin, positions, eps), fullgraph=True)(compiled_leaf)
     expected = composed(composed_leaf * 1)
     for out in (fused, compiled, expected):
         (out.float() * weight).sum().backward()

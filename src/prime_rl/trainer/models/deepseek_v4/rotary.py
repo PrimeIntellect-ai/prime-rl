@@ -61,6 +61,9 @@ class DeepseekV4RotaryEmbedding(nn.Module):
     Because the rotation is interleaved, `forward` returns `cos` / `sin` at half the
     rotary width (one entry per pair). `apply_rotary_pos_emb_interleaved` widens them.
 
+    Each type also keeps a static fp32 `<type>_cos_sin_cache`, `[cos | sin]` at every position in
+    vLLM's layout, which the fused RoPE kernels index by position.
+
     `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
     `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
     outside `SUPPORTED_ROPE_TYPES` is refused at construction, rather than rotating at
@@ -88,6 +91,9 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
             self.register_buffer(f"{layer_type}_original_inv_freq", inv_freq.clone(), persistent=False)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
+            self.register_buffer(
+                f"{layer_type}_cos_sin_cache", self._compute_cos_sin_cache(layer_type), persistent=False
+            )
 
     def _rope_init_fn(self, layer_type: str) -> Callable[..., tuple[torch.Tensor, float]]:
         rope_type = self.rope_type[layer_type]
@@ -96,7 +102,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         return ROPE_INIT_FUNCTIONS[rope_type]
 
     def init_buffers_post_meta(self) -> None:
-        """Re-derive the per-rope-type inverse frequencies in place.
+        """Re-derive the per-rope-type inverse frequencies and cos/sin caches in place.
 
         The tables are computed eagerly in `__init__` and registered non-persistently, so they
         survive neither meta-device construction nor a `load_state_dict`. Re-deriving them is
@@ -110,6 +116,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             inv_freq_buffer.copy_(inv_freq)
             getattr(self, f"{layer_type}_original_inv_freq").copy_(inv_freq)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
+            getattr(self, f"{layer_type}_cos_sin_cache").copy_(self._compute_cos_sin_cache(layer_type))
 
     @staticmethod
     def compute_default_rope_parameters(
@@ -146,6 +153,19 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             sin = freqs.sin() * attention_scaling
 
         return cos.to(dtype=dtype), sin.to(dtype=dtype)
+
+    def _compute_cos_sin_cache(self, layer_type: str) -> torch.Tensor:
+        """`(max_position_embeddings, rope_dim)` fp32 `[cos | sin]` of `layer_type` at every position."""
+        inv_freq = getattr(self, f"{layer_type}_inv_freq")
+        if inv_freq.is_meta:
+            return torch.empty(self.config.max_position_embeddings, 2 * inv_freq.shape[0], device="meta")
+        positions = torch.arange(self.config.max_position_embeddings, device=inv_freq.device)
+        cos, sin = self(positions[None], layer_type, dtype=torch.float32)
+        return torch.cat([cos[0], sin[0]], dim=-1)
+
+    def cos_sin_cache(self, layer_type: str) -> torch.Tensor:
+        """The fp32 `[cos | sin]` cache of `layer_type`, one row per position."""
+        return getattr(self, f"{layer_type}_cos_sin_cache")
 
 
 __all__ = [

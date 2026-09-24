@@ -164,7 +164,7 @@ def prime_attention(layer_idx: int, dtype: torch.dtype = torch.bfloat16) -> nn.M
     bit-identical to one from a config carrying only the attention keys.
     """
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(MODEL_CONFIG, layer_idx=layer_idx)
+        module = DeepseekV4Attention(MODEL_CONFIG, layer_idx, DeepseekV4RotaryEmbedding(MODEL_CONFIG))
     _randomize(module)
     eager_reference.use_eager_attention(module)
     return module

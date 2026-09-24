@@ -111,7 +111,7 @@ def eager_attention_forward(
     """
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, module.head_dim)
-    cos, sin = packed.position_embeddings[module.rope_layer_type]
+    cos, sin = module.rotary_emb(packed.position_ids, module.rope_layer_type, dtype=torch.float32)
 
     q_residual = module.q_a_norm(module.q_a_proj(hidden_states))
     q = module.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)

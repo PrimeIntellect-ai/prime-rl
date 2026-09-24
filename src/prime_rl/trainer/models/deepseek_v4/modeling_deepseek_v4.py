@@ -44,10 +44,10 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     dtype before mixing, so the residual keeps the dtype it entered with.
     """
 
-    def __init__(self, config: DeepseekV4Config, layer_idx: int):
+    def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
         self.layer_idx = layer_idx
-        self.self_attn = DeepseekV4Attention(config, layer_idx)
+        self.self_attn = DeepseekV4Attention(config, layer_idx, rotary_emb)
         self.mlp = DeepseekV4MoE(config, layer_idx)
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
@@ -163,9 +163,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def init_buffers_post_meta(self) -> None:
         # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
         # buffer is restored either here or by the checkpoint. Rebuilt here are the ones no
-        # checkpoint carries: the rotary tables (non-persistent, and there is one rotary per
-        # compressor and per indexer on top of the model-level one, so every instance has to be
-        # walked) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
+        # checkpoint carries: the rotary tables (non-persistent, and the one rotary every attention
+        # layer shares) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
         # hash layer's `tid2eid`, are in the checkpoint that `dcp_load` applies next, so they are
         # left to it.
         for module in self.modules():
@@ -182,11 +181,15 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
+        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.layers = nn.ModuleList(
-            [DeepseekV4DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [
+                DeepseekV4DecoderLayer(config, layer_idx, self.rotary_emb)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.hc_head = DeepseekV4HyperHead(config)
         self.gradient_checkpointing = False
 

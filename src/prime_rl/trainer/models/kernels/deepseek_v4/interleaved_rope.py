@@ -26,7 +26,7 @@
 # Triton kernels vendored from NVIDIA/Megatron-LM under the BSD-3-clause license
 # reproduced above, megatron/core/fusions/fused_mla_yarn_rope_apply.py at commit
 # c16d981ca (dev branch), trimmed to the in-place interleaved THD path and modified
-# to read half-width fp32 cos and sin rows, one row per token.
+# to gather each token's half-width fp32 cos and sin from a `[cos | sin]` cache by position.
 
 import torch
 import triton
@@ -39,17 +39,15 @@ _BLOCK_H_CONFIGS = [triton.Config({"BLOCK_H": block_h}) for block_h in (1, 2, 4,
 @triton.jit
 def _mla_rope_fwd_inplace_kernel(
     Q,
-    COS,
-    SIN,
+    COS_SIN,
+    POS,
     nope_dim,
     emb_dim: tl.constexpr,
     head_num: tl.constexpr,
     stride_x_seq,
     stride_x_nheads,
-    stride_cos_seq,
-    stride_cos_pair,
-    stride_sin_seq,
-    stride_sin_pair,
+    stride_cos_sin_pos,
+    stride_pos,
     INVERSE: tl.constexpr,
     BLOCK_H: tl.constexpr,
 ):
@@ -59,14 +57,15 @@ def _mla_rope_fwd_inplace_kernel(
 
     Input:
         Q: [total_seq_len, head_num, nope_dim + emb_dim]
-        COS: [total_seq_len, emb_dim // 2] cos for each token, one entry per interleaved pair
-        SIN: [total_seq_len, emb_dim // 2] sin for each token, one entry per interleaved pair
+        COS_SIN: [max_position, emb_dim] cos then sin per position, one entry per interleaved pair each
+        POS: [total_seq_len] each token's position, the row of COS_SIN it reads
     """
     pid_m = tl.program_id(axis=0).to(tl.int64)
     pid_head = tl.program_id(axis=1)
 
-    cos = tl.load(COS + pid_m * stride_cos_seq + tl.arange(0, emb_dim // 2) * stride_cos_pair)
-    sin = tl.load(SIN + pid_m * stride_sin_seq + tl.arange(0, emb_dim // 2) * stride_sin_pair)
+    cos_sin = COS_SIN + tl.load(POS + pid_m * stride_pos).to(tl.int64) * stride_cos_sin_pos
+    cos = tl.load(cos_sin + tl.arange(0, emb_dim // 2))
+    sin = tl.load(cos_sin + emb_dim // 2 + tl.arange(0, emb_dim // 2))
     if INVERSE:
         sin = -sin
     cos = cos.expand_dims(0).broadcast_to(BLOCK_H, emb_dim // 2)
@@ -93,17 +92,15 @@ def _mla_rope_fwd_inplace_kernel(
 @triton.jit
 def _mla_rope_bwd_kernel(
     DO,
-    COS,
-    SIN,
+    COS_SIN,
+    POS,
     nope_dim,
     emb_dim: tl.constexpr,
     head_num: tl.constexpr,
     stride_x_seq,
     stride_x_nheads,
-    stride_cos_seq,
-    stride_cos_pair,
-    stride_sin_seq,
-    stride_sin_pair,
+    stride_cos_sin_pos,
+    stride_pos,
     INVERSE: tl.constexpr,
     BLOCK_H: tl.constexpr,
 ):
@@ -113,13 +110,14 @@ def _mla_rope_bwd_kernel(
 
     Input:
         DO: [total_seq_len, head_num, nope_dim + emb_dim]
-        COS and SIN are the same as in the forward pass
+        COS_SIN and POS are the same as in the forward pass
     """
     pid_m = tl.program_id(axis=0).to(tl.int64)
     pid_head = tl.program_id(axis=1)
 
-    cos = tl.load(COS + pid_m * stride_cos_seq + tl.arange(0, emb_dim // 2) * stride_cos_pair)
-    sin = tl.load(SIN + pid_m * stride_sin_seq + tl.arange(0, emb_dim // 2) * stride_sin_pair)
+    cos_sin = COS_SIN + tl.load(POS + pid_m * stride_pos).to(tl.int64) * stride_cos_sin_pos
+    cos = tl.load(cos_sin + tl.arange(0, emb_dim // 2))
+    sin = tl.load(cos_sin + emb_dim // 2 + tl.arange(0, emb_dim // 2))
     if INVERSE:
         sin = -sin
     cos = cos.expand_dims(0).broadcast_to(BLOCK_H, emb_dim // 2)
@@ -153,89 +151,101 @@ def _flatten_rope_input(x: torch.Tensor) -> torch.Tensor:
     )
 
 
-def _flatten_rope_table(table: torch.Tensor) -> torch.Tensor:
-    """Normalize a ``(t, rope_dim / 2)`` or ``(1, t, rope_dim / 2)`` cos or sin to a ``(t, rope_dim / 2)`` view."""
-    return table[0] if table.dim() == 3 and table.shape[0] == 1 else table
+def _flatten_positions(position_ids: torch.Tensor) -> torch.Tensor:
+    """Normalize a ``(t,)`` or ``(1, t)`` ``position_ids`` to a ``(t,)`` view."""
+    return position_ids[0] if position_ids.dim() == 2 and position_ids.shape[0] == 1 else position_ids
 
 
-def _check_rope_layout(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
+def _check_rope_layout(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor) -> None:
     """Validate the shape, dtype and contiguity invariants both RoPE kernels rely on."""
     if x.stride(-1) != 1:
         raise ValueError(f"RoPE input must be contiguous in its last dim, got strides {x.stride()}")
-    for name, table in (("cos", cos), ("sin", sin)):
-        if table.shape != cos.shape or table.dim() != 2 or table.shape[0] != x.shape[0]:
-            raise ValueError(
-                f"cos and sin must both be (tokens, rope_dim / 2) with {x.shape[0]} tokens, "
-                f"got cos {tuple(cos.shape)} and sin {tuple(sin.shape)}"
-            )
-        if table.dtype != torch.float32:
-            raise ValueError(f"{name} must be float32, got {table.dtype}")
-    emb_dim = 2 * cos.shape[-1]
+    if cos_sin_cache.dim() != 2 or cos_sin_cache.stride(-1) != 1:
+        raise ValueError(
+            f"cos_sin_cache must be (max_position, rope_dim) and contiguous in its last dim, got shape "
+            f"{tuple(cos_sin_cache.shape)} and strides {cos_sin_cache.stride()}"
+        )
+    if cos_sin_cache.dtype != torch.float32:
+        raise ValueError(f"cos_sin_cache must be float32, got {cos_sin_cache.dtype}")
+    if position_ids.dim() != 1 or position_ids.shape[0] != x.shape[0]:
+        raise ValueError(
+            f"position_ids must be (tokens,) or (1, tokens) with {x.shape[0]} tokens, got {tuple(position_ids.shape)}"
+        )
+    if position_ids.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"position_ids must be int32 or int64, got {position_ids.dtype}")
+    emb_dim = cos_sin_cache.shape[-1]
     if emb_dim < 2 or 2 * triton.next_power_of_2(emb_dim // 2) != emb_dim:
         raise ValueError(f"rope_dim must be twice a power of two, got {emb_dim}")
     if emb_dim > x.shape[-1]:
         raise ValueError(f"rope_dim {emb_dim} exceeds the head dim {x.shape[-1]}")
-    if not x.device == cos.device == sin.device:
+    if not x.device == cos_sin_cache.device == position_ids.device:
         raise ValueError(
-            f"RoPE tensors must share a device, got x on {x.device}, cos on {cos.device} and sin on {sin.device}"
+            f"RoPE tensors must share a device, got x on {x.device}, cos_sin_cache on {cos_sin_cache.device} "
+            f"and position_ids on {position_ids.device}"
         )
 
 
-def _launch(kernel, t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> None:
+def _launch(kernel, t: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool) -> None:
     x = _flatten_rope_input(t)
-    cos, sin = _flatten_rope_table(cos), _flatten_rope_table(sin)
-    _check_rope_layout(x, cos, sin)
+    position_ids = _flatten_positions(position_ids)
+    _check_rope_layout(x, cos_sin_cache, position_ids)
     total_seqlen, nheads, head_dim = x.shape
     if total_seqlen == 0 or nheads == 0:
         return
-    emb_dim = 2 * cos.shape[-1]
+    emb_dim = cos_sin_cache.shape[-1]
 
     grid = lambda META: (total_seqlen, triton.cdiv(nheads, META["BLOCK_H"]))
     kernel[grid](
         x,
-        cos,
-        sin,
+        cos_sin_cache,
+        position_ids,
         head_dim - emb_dim,
         emb_dim,
         nheads,
         x.stride(0),
         x.stride(1),
-        cos.stride(0),
-        cos.stride(1),
-        sin.stride(0),
-        sin.stride(1),
+        cos_sin_cache.stride(0),
+        position_ids.stride(0),
         INVERSE=inverse,
     )
 
 
 @torch.library.custom_op("prime_rl::dsv4_interleaved_rope_apply", mutates_args=("t",))
-def mla_rope_apply_raw_(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> None:
+def mla_rope_apply_raw_(
+    t: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool
+) -> None:
     """Apply the interleaved RoPE rotation to ``t`` in place, bypassing autograd.
 
     Same kernel and semantics as :func:`apply_interleaved_rope_`, but without the
     autograd node.
     """
-    _launch(_mla_rope_fwd_inplace_kernel, t, cos, sin, inverse)
+    _launch(_mla_rope_fwd_inplace_kernel, t, cos_sin_cache, position_ids, inverse)
 
 
 @mla_rope_apply_raw_.register_fake
-def _mla_rope_apply_raw_fake(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> None:
+def _mla_rope_apply_raw_fake(
+    t: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool
+) -> None:
     return None
 
 
 @torch.library.custom_op("prime_rl::dsv4_interleaved_rope_unapply", mutates_args=("t",))
-def mla_rope_unapply_raw(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> None:
+def mla_rope_unapply_raw(
+    t: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool
+) -> None:
     """Undo :func:`mla_rope_apply_raw_` in place, bypassing autograd.
 
     This is the exact transpose of the forward rotation, so for a unit-magnitude
     rotation it is also its exact inverse. Pass the same ``inverse`` flag that was
     used to apply it.
     """
-    _launch(_mla_rope_bwd_kernel, t, cos, sin, inverse)
+    _launch(_mla_rope_bwd_kernel, t, cos_sin_cache, position_ids, inverse)
 
 
 @mla_rope_unapply_raw.register_fake
-def _mla_rope_unapply_raw_fake(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> None:
+def _mla_rope_unapply_raw_fake(
+    t: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool
+) -> None:
     return None
 
 
@@ -245,43 +255,47 @@ class _FusedMLARoPEInplace(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, inverse: bool) -> torch.Tensor:
-        mla_rope_apply_raw_(x, cos, sin, inverse)
+    def forward(
+        ctx, x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool
+    ) -> torch.Tensor:
+        mla_rope_apply_raw_(x, cos_sin_cache, position_ids, inverse)
         ctx.mark_dirty(x)
-        ctx.save_for_backward(cos, sin)
+        ctx.save_for_backward(cos_sin_cache, position_ids)
         ctx.inverse = inverse
         return x
 
     @staticmethod
     def backward(ctx, grad: torch.Tensor):
-        cos, sin = ctx.saved_tensors
+        cos_sin_cache, position_ids = ctx.saved_tensors
         # Rotates `grad` in place: unsafe if autograd hands this same tensor to another consumer.
         grad = grad.contiguous()
-        mla_rope_unapply_raw(grad, cos, sin, ctx.inverse)
+        mla_rope_unapply_raw(grad, cos_sin_cache, position_ids, ctx.inverse)
         return grad, None, None, None
 
 
 def apply_interleaved_rope_(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, *, inverse: bool = False
+    x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, *, inverse: bool = False
 ) -> torch.Tensor:
     """
     Fused interleaved RoPE applied inplace to the trailing rope_dim elements of each head,
     leaving the leading nope_dim elements unchanged.
 
     With ``x1 = x[..., 2i]`` and ``x2 = x[..., 2i + 1]`` of the rotary slice, writes
-    ``x1 * cos - x2 * sin`` and ``x2 * cos + x1 * sin``, computed in fp32. When
+    ``x1 * cos - x2 * sin`` and ``x2 * cos + x1 * sin``, computed in fp32, with ``cos`` and ``sin``
+    read from row ``position_ids[t]`` of ``cos_sin_cache`` for token ``t``, as vLLM's
+    ``rotary_embedding`` op does. When
     ``inverse=True`` the rotation is reversed, which is useful for undoing RoPE on
     the attention output.
 
     Args:
         x: [total_seq_len, head_num, nope_dim + rope_dim] or [1, total_seq_len, head_num, nope_dim + rope_dim],
             any token and head strides, contiguous in the last dim
-        cos: [total_seq_len, rope_dim // 2] or [1, total_seq_len, rope_dim // 2] float32, one entry per
-            interleaved pair of each token, any strides
-        sin: same shape as ``cos``
+        cos_sin_cache: [max_position, rope_dim] float32, cos then sin, one entry per interleaved pair each,
+            contiguous in the last dim
+        position_ids: [total_seq_len] or [1, total_seq_len] int32 or int64, each in [0, max_position)
         inverse: if True, apply the inverse rotation
 
     Returns:
         x: inplace modified input tensor
     """
-    return _FusedMLARoPEInplace.apply(x, cos, sin, inverse)
+    return _FusedMLARoPEInplace.apply(x, cos_sin_cache, position_ids, inverse)
