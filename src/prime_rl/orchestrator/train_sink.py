@@ -16,9 +16,12 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.ngu import NGUAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.ngu import dump_episode
+from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
@@ -72,6 +75,7 @@ class TrainSink:
         batch_size: int | None,
         token_batch_size: int | None,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        train_source: TrainSource | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -83,6 +87,7 @@ class TrainSink:
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
         self.on_result = on_result
+        self.train_source = train_source
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -104,6 +109,46 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def state_dict(self) -> dict:
+        episodes = {e.id: e for e in self.pending_episodes.episodes}
+        episodes.update((e.id, e) for e in self.episode_by_trace.values())
+        return {
+            "episodes": {key: dump_episode(e) for key, e in episodes.items()},
+            "episode_by_trace": {key: e.id for key, e in self.episode_by_trace.items()},
+            "pending_episodes": {
+                "episodes": [e.id for e in self.pending_episodes.episodes],
+                "sampled_trace_ids": self.pending_episodes.sampled_trace_ids,
+                "admitted": self.pending_episodes.admitted,
+                "cancelled": self.pending_episodes.cancelled,
+            },
+            "fields": {
+                name: getattr(self, name)
+                for name in (
+                    "pending_batch",
+                    "pending_tokens",
+                    "pending_failures",
+                    "pending_cancelled_attempts",
+                    "pending_stale_attempts",
+                    "zero_output_units",
+                    "reported_zero_output_windows",
+                )
+            },
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        episodes = {key: vf.WireEpisode.model_validate(e) for key, e in state["episodes"].items()}
+        self.episode_by_trace = {key: episodes[eid] for key, eid in state["episode_by_trace"].items()}
+        pending = state["pending_episodes"]
+        self.pending_episodes = TrainEpisodes(
+            episodes=[episodes[eid] for eid in pending["episodes"]],
+            sampled_trace_ids=pending["sampled_trace_ids"],
+            admitted=pending["admitted"],
+            cancelled=pending["cancelled"],
+        )
+        for name, value in state["fields"].items():
+            setattr(self, name, value)
+        self._swept_step = 0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -197,8 +242,6 @@ class TrainSink:
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
         min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
-        if min_version <= 0:
-            return
         dropped = 0
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
@@ -213,10 +256,7 @@ class TrainSink:
             dropped += 1
         if dropped:
             self.stale_drops += dropped
-            get_logger().warning(
-                f"Dropped {dropped} queued traces past max_off_policy_steps={self.config.max_off_policy_steps}. "
-                "Consider increasing it to avoid this."
-            )
+            get_logger().warning(f"Dropped {dropped} queued traces past their configured policy-age limit")
 
     async def process_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local algorithm work on one native episode."""
@@ -248,12 +288,30 @@ class TrainSink:
             if cancellation.reason == "stale":
                 self.pending_stale_attempts += cancellation.count
 
+        reported_group = group
+        ngu_cohort = None
+        if env.config.algo.type == "ngu":
+            if self.train_source is None:
+                raise RuntimeError("NGU requires a continuation-capable train source")
+            self.pending_episodes.extend(
+                reported_group, admitted=False, cancelled=cancellation is not None and cancellation.reason == "stale"
+            )
+            reported_group = []
+            cutoff = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+            ngu_cohort = self.train_source.ngu[env_name].finish(
+                group_id, group, complete=not failures and cancellation is None, min_version=cutoff
+            )
+            if ngu_cohort is None:
+                self._record_zero_output(group, [], n_owed)
+                return
+            group = ngu_cohort.episodes
+
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
         # cancelled tail. Stale groups bypass the curriculum — a pipeline
         # decision is not a task result.
         if cancellation is not None and cancellation.reason == "stale":
-            self.pending_episodes.extend(group, admitted=False, cancelled=True)
+            self.pending_episodes.extend(reported_group, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
@@ -263,10 +321,14 @@ class TrainSink:
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
-            await env.algorithm.finalize_group(group)
+            if ngu_cohort is not None:
+                assert isinstance(env.algorithm, NGUAlgorithm)
+                env.algorithm.score_history(group, ngu_cohort.attempts, ngu_cohort.successes)
+            else:
+                await env.algorithm.finalize_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
-            self.pending_episodes.extend(group, admitted=admitted)
+            self.pending_episodes.extend(reported_group, admitted=admitted)
             self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
@@ -296,11 +358,22 @@ class TrainSink:
             if samples:
                 samples_by_trace[trace.id] = samples
 
-        self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
+        self.pending_episodes.extend(reported_group, sampled_trace_ids=set(samples_by_trace), admitted=True)
         if not samples_by_trace:
+            if ngu_cohort is not None:
+                self.train_source.ngu[env_name].counters["no_balanced_payload"] += 1
             self._record_zero_output(group, survivors, n_owed)
             return
 
+        if ngu_cohort is not None:
+            if len(samples_by_trace) != len(survivors):
+                raise RuntimeError("NGU cohort lost trainable traces during sample compilation")
+            counters = self.train_source.ngu[env_name].counters
+            counters["accepted_cohorts"] += 1
+            counters["accepted_payloads"] += len(samples_by_trace)
+            counters["accepted_historical_attempts"] += ngu_cohort.attempts
+        self.pending_episodes.admitted.update(episode.id for episode in group)
+        self.pending_episodes.sampled_trace_ids.update(samples_by_trace)
         self.pending_batch.update(samples_by_trace)
         for episode in group:
             for trace in episode.traces:
@@ -311,11 +384,7 @@ class TrainSink:
                 payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
             )
         self._drop_stale(samples_by_trace)
-        # A group's traces share one dispatch version, so the insertion sweep
-        # voids all or none of them. A fully-voided group shipped nothing —
-        # advance the zero-output tally instead of resetting it, or a stalled
-        # trainer plus a tight bound could void groups forever without ever
-        # surfacing the warning.
+        # A fully stale group advances the zero-output tally.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
             return
@@ -371,7 +440,9 @@ class TrainSink:
                 if running >= self.token_batch_size:
                     break
             selected = items[:cut]
-            self.pending_tokens -= running
+
+        if self.token_batch_size is not None:
+            self.pending_tokens -= sum(payload_tokens(samples, self._trace(tid)) for tid, samples in selected)
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
@@ -388,6 +459,9 @@ class TrainSink:
 
         shipped_ids = set(selected_by_trace)
         buffered_episode_ids = {self.episode_by_trace[trace_id].id for trace_id in self.pending_batch}
+        if self.train_source is not None:
+            for controller in self.train_source.ngu.values():
+                buffered_episode_ids |= controller.buffered_episode_ids()
         traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[int, vf.Episode] = {}
         for trace_id in selected_ids:

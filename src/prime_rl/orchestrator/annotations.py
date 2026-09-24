@@ -40,6 +40,7 @@ def stamp_batch(episodes: list[vf.Episode], step: int) -> list[dict[str, Any]]:
             info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
             if (advantage := trace.info.get("advantage")) is not None:
                 info["advantage"] = advantage
+            info.update({key: value for key, value in trace.info.items() if key.startswith("ngu_")})
             branches = {
                 branch.index: {"advantages": advantages}
                 for branch in trace.branches

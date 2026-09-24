@@ -1,0 +1,25 @@
+model = "PrimeIntellect/GLM-4.5-Air-Scaleswe"
+num_examples = 3000
+group_size = 8
+output_dir = "outputs/ngu-screen-3000"
+dashboard = false
+
+[run]
+name = "swerebench-screen-3000"
+
+[client]
+base_url = "http://localhost:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[concurrency]
+min_inflight = 512
+max_inflight = 1536
+
+[[source]]
+name = "swerebench-screen-3000"
+env.taskset.id = "ngu-swe"
+env.taskset.manifest = "tools/ngu/screen-3000.json"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.timeout.scoring = 3600
