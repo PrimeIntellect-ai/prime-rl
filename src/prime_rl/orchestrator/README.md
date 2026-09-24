@@ -35,20 +35,53 @@ collected), `WeightWatcher.version` (the policy inference serves),
 
 ## Wiring
 
-`Orchestrator.wire()` binds every edge. Read it as the data flow:
+`Orchestrator.wire()` binds every edge. Solid arrows carry data or commands, dashed
+arrows are providers the target reads (`step()`, `version()`, `current_inflight`).
 
+```mermaid
+flowchart LR
+    Collector[InferenceMetricsCollector]
+    Controller[ConcurrencyController]
+    Dispatcher
+    Sink[TrainSink]
+    Queue
+    Shipper
+    Evaluator
+    Watcher[WeightWatcher]
+    Source[TrainSource]
+    Trainer([trainer])
+    Engines([inference engines])
+
+    Engines -- "/metrics" --> Collector
+    Collector -- "on_load(samples)" --> Controller
+    Controller -- "set_limit(n) / cancel_inflight(n)" --> Dispatcher
+    Dispatcher -- "on_episode_complete(...)" --> Controller
+    Dispatcher -. "current_inflight" .-> Controller
+
+    Dispatcher -- "on_train(result)" --> Sink
+    Sink -- "on_group(FinalizedGroup)" --> Queue
+    Source -. "admit(group)" .-> Sink
+    Queue -- "on_batch(TrainBatch)" --> Shipper
+    Shipper -- "send(micro batches)" --> Trainer
+    Shipper -- "gate(open) / on_drain(reason)" --> Dispatcher
+    Shipper -. "step()" .-> Dispatcher
+    Shipper -. "step()" .-> Queue
+
+    Dispatcher -- "on_eval(result)" --> Evaluator
+    Evaluator -- "prefer_eval(reason)" --> Dispatcher
+
+    Trainer -- "weight broadcast" --> Watcher
+    Watcher -- "on_version_pending(step)" --> Dispatcher
+    Watcher -- "on_new_version(step)" --> Dispatcher
+    Watcher -- "on_new_version(step) → trigger" --> Evaluator
+    Watcher -- "on_new_version(step) → on_version" --> Shipper
+    Watcher -. "version" .-> Dispatcher
+    Watcher -. "version / wait_for" .-> Shipper
 ```
-InferenceMetricsCollector ──on_load──▶ ConcurrencyController ──set_limit / cancel_inflight──▶ Dispatcher
-                                            ▲ record_episode                                    │
-                                            └───────────────────────────────────────────────────┘
-Dispatcher ──on_train──▶ TrainSink ──on_group──▶ Queue ──on_batch──▶ Shipper ──send──▶ trainer
-                                       ▲ admit                          │ gate / on_drain
-                                   TrainSource                          └────────────────▶ Dispatcher
-Dispatcher ──on_eval──▶ Evaluator ──prefer_eval──▶ Dispatcher
-WeightWatcher ──on_version_pending──▶ Dispatcher (drops stale groups before the weight swap)
-WeightWatcher ──on_new_version─────▶ Dispatcher, Evaluator.trigger, Shipper.on_version
-Shipper.step, WeightWatcher.version ──▶ read by Dispatcher, Queue, Shipper
-```
+
+The `PeriodicLogger` is not on the graph: it only reads. Every component registers a
+`status()` and/or `gauges()` provider with it, and it writes one line and one metrics
+row per tick.
 
 Two rules keep the graph honest. State crosses a boundary only through a provider
 (`step`, `version`): nothing writes another component's fields. And a component never
