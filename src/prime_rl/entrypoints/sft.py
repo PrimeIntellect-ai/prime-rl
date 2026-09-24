@@ -10,9 +10,10 @@ from threading import Event, Thread
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+from prime_rl.entrypoints.prepare_data import pre_download_data
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -545,6 +546,11 @@ def sft(config: SFTConfig):
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
+        if config.slurm is None:
+            if isinstance(config.data, SFTDataConfig):
+                config.data.name = pre_download_data(config.data, config.env_vars)
+            if config.val is not None:
+                config.val.data.name = pre_download_data(config.val.data, config.env_vars)
 
     if config.slurm is not None:
         sft_slurm(config)

@@ -31,9 +31,15 @@ export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
 
 # Setup environment
 cd $PROJECT_DIR
-[ -f .env ] && source .env
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
 source .venv/bin/activate
 uv sync --all-extras --all-packages
+
+uv run python -m prime_rl.entrypoints.prepare_data {{ config_path }}
 
 {% if pre_run_command %}
 # Pre-run command
