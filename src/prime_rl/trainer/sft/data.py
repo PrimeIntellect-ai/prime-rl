@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
@@ -21,6 +22,7 @@ from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 
 
 class Sample(TypedDict):
@@ -620,18 +622,25 @@ def cat_collate(samples: list[Sample]) -> Batch:
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig) or Path(data.name).exists():
+    if not isinstance(data, SFTDataConfig):
+        return
+    if Path(data.name).exists():
+        get_logger().info(f"Data {data.name} found at local path, skipping download")
         return
 
-    get_logger().info(f"Pre-downloading data {data.name} at revision {data.revision or 'main'}")
+    dataset_name = data.name
+    t0 = time.perf_counter()
+    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
     snapshot = snapshot_download(
-        repo_id=data.name,
+        repo_id=dataset_name,
         repo_type="dataset",
         revision=data.revision,
         cache_dir=env_vars.get("HF_HUB_CACHE"),
     )
     data.name = snapshot
-    get_logger().info(f"Using local data snapshot {snapshot}")
+    get_logger().debug(
+        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
+    )
 
 
 def setup_and_interleave_datasets(
