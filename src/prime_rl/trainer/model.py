@@ -852,9 +852,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
-        if capability != (10, 0):
+        if capability[0] < 10:
             raise ValueError(
-                f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
+                f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 
@@ -912,14 +912,13 @@ def _validate_flash_attn_4_installed() -> None:
 def resolve_auto_attn(config: ModelConfig) -> None:
     """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
 
-    FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
-    Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
-    can't run the Hopper-only FA3 kernels, so they fall back to FA2.
+    FA4 on Blackwell or newer (SM100+, incl. SM103 B300/GB300), FA3 on Hopper (SM90),
+    FA2 otherwise.
     """
     if config.attn != "auto":
         return
     major, minor = torch.cuda.get_device_capability()
-    if (major, minor) == (10, 0):
+    if major >= 10:
         resolved = "flash_attention_4"
     elif major == 9:
         resolved = "flash_attention_3"
