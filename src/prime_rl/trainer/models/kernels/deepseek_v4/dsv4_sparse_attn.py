@@ -48,12 +48,18 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
 
 
-def _tiles_to_read(indices: torch.Tensor, tile_size: int) -> torch.Tensor:
-    batch, seq_len, kv_group, n_slots = indices.shape
-    n_tiles = n_slots // tile_size
-    tile_has_valid = (indices.view(batch, seq_len, kv_group, n_tiles, tile_size) >= 0).any(dim=-1)
-    tile_numbers = torch.arange(1, n_tiles + 1, device=indices.device, dtype=torch.int32)
-    return (tile_has_valid * tile_numbers).amax(dim=-1).to(torch.int32)
+def num_tiles_covering_valid_slots(indices: torch.Tensor, tile_size: int) -> torch.Tensor:
+    """Per query, the number of leading tiles of `tile_size` slots it takes to contain every valid slot.
+
+    `indices` is `(batch, seq_len, num_kv_heads, n_slots)` and the result is
+    `(batch, seq_len, num_kv_heads)`, both int32.
+    """
+    n_slots = indices.shape[-1]
+    assert n_slots % tile_size == 0, f"n_slots must be a multiple of tile_size {tile_size}, got {n_slots}"
+    slot_idxs = torch.arange(n_slots, device=indices.device, dtype=torch.int32)
+    is_valid_slot = indices >= 0
+    last_valid_slot_idx = torch.where(is_valid_slot, slot_idxs, -1).amax(dim=-1)
+    return last_valid_slot_idx // tile_size + 1
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
@@ -132,7 +138,8 @@ def dsv4_sparse_attn(
         threads=threads,
     )
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, block_I)
-    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), _tiles_to_read(indices, block_I))
+    tile_counts = num_tiles_covering_valid_slots(indices, block_I)
+    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), tile_counts)
     return out, lse
 
 
@@ -185,7 +192,8 @@ def dsv4_sparse_attn_backward(
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     tiled_indices = indices.view(batch, seq_len, kv_group, -1, BWD_SLOT_TILE)
-    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, _tiles_to_read(indices, BWD_SLOT_TILE), dkv)
+    tile_counts = num_tiles_covering_valid_slots(indices, BWD_SLOT_TILE)
+    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, tile_counts, dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv, delta
