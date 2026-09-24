@@ -85,6 +85,26 @@ class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
+    mode: Literal["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"] | None = None
+    """Optimization mode passed to ``torch.compile``."""
+
+    cudagraph_partition_ops: list[str] = []
+    """Custom operators that run outside CUDA Graph capture while the surrounding compiled partitions remain captured."""
+
+    cudagraph_copy_static_inputs: bool = False
+    """Copy lifted parameters into stable CUDA Graph input buffers instead of requiring their addresses to remain fixed."""
+
+    @model_validator(mode="after")
+    def cudagraph_options_require_cudagraphs(self):
+        cudagraph_modes = {"reduce-overhead", "max-autotune"}
+        if self.cudagraph_partition_ops and self.mode not in cudagraph_modes:
+            raise ValueError("cudagraph_partition_ops requires mode='reduce-overhead' or mode='max-autotune'")
+        if self.cudagraph_copy_static_inputs and self.mode not in cudagraph_modes:
+            raise ValueError("cudagraph_copy_static_inputs requires mode='reduce-overhead' or mode='max-autotune'")
+        if self.cudagraph_copy_static_inputs and self.cudagraph_partition_ops:
+            raise ValueError("cudagraph_copy_static_inputs cannot be combined with cudagraph_partition_ops")
+        return self
+
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]

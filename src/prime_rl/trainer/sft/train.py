@@ -30,6 +30,7 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_load_balance_stats,
     is_tt_moe_model,
+    mark_cudagraph_step_begin,
     setup_processor,
     setup_tokenizer,
     setup_model,
@@ -418,6 +419,7 @@ def train(config: SFTConfig):
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        mark_cudagraph_step_begin(config.model.compile)
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None

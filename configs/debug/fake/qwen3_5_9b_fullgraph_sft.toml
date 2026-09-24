@@ -1,0 +1,41 @@
+max_steps = 5
+dashboard = false
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+impl = "custom"
+seq_len = 8192
+optim_cpu_offload = false
+fsdp_cpu_offload = false
+reshard_after_forward = false
+ac_offloading = "None"
+
+[model.debug]
+random_init = true
+
+[model.compile]
+fullgraph = true
+mode = "reduce-overhead"
+cudagraph_copy_static_inputs = true
+
+[data]
+type = "fake"
+batch_size = 8
+micro_batch_size = 1
+seq_len = 8192
+length = "fixed"
+input_ids = "random"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 8
+num_train_gpus = 8
+
+[env_vars]
+TORCH_LOGS = "perf_hints"
+FLA_DISABLE_TENSOR_CACHE = "1"
+
+[slurm]
+job_name = "qwen3-5-9b-fullgraph"
+partition = "all"
+time = "00:45:00"

@@ -2,9 +2,10 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from fla.modules import FusedRMSNormGated
 
-from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import resolve_auto_attn
+from prime_rl.configs.trainer import CompileConfig, ModelConfig
+from prime_rl.trainer.model import apply_compile, resolve_auto_attn
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
@@ -17,6 +18,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
+from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNormGated
 from prime_rl.utils.cp import CPContext
 
 
@@ -174,6 +176,60 @@ def test_forward_backward_and_packing(text_config):
             dim=1,
         )
     torch.testing.assert_close(packed, unpacked, atol=0.03, rtol=0.01)
+
+
+@pytest.mark.gpu
+def test_linear_attention_fullgraph_cudagraph_forward_backward():
+    config = get_text_config()
+    config.num_hidden_layers = 2
+    config.layer_types = ["linear_attention", "full_attention"]
+    model = get_model(config)
+    apply_compile(
+        model,
+        CompileConfig(
+            fullgraph=True,
+            mode="reduce-overhead",
+            cudagraph_copy_static_inputs=True,
+        ),
+    )
+
+    for _ in range(2):
+        torch.compiler.cudagraph_mark_step_begin()
+        model.zero_grad(set_to_none=True)
+        input_ids = torch.randint(0, config.vocab_size, (1, 64), device="cuda")
+        output = model(
+            input_ids,
+            position_ids=torch.arange(64, device="cuda").unsqueeze(0),
+            seq_lens=torch.tensor([64], device="cuda"),
+        )
+        output["logits"].sum().backward()
+
+        assert torch.isfinite(output["logits"]).all()
+        assert torch.isfinite(model.model.embed_tokens.weight.grad).all()
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("activation", ["silu", "sigmoid"])
+def test_rms_norm_gated_matches_fla(activation: str):
+    reference = FusedRMSNormGated(64, eps=1e-6, activation=activation, device="cuda", dtype=torch.bfloat16)
+    actual = Qwen3_5RMSNormGated(64, eps=1e-6, activation=activation).to(device="cuda", dtype=torch.bfloat16)
+    actual.weight.data.copy_(reference.weight)
+
+    reference_input = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    reference_gate = torch.randn_like(reference_input, requires_grad=True)
+    actual_input = reference_input.detach().clone().requires_grad_()
+    actual_gate = reference_gate.detach().clone().requires_grad_()
+
+    reference_output = reference(reference_input, reference_gate)
+    actual_output = actual(actual_input, actual_gate)
+    torch.testing.assert_close(actual_output, reference_output, atol=2e-2, rtol=2e-2)
+
+    grad_output = torch.randn_like(reference_output)
+    reference_output.backward(grad_output)
+    actual_output.backward(grad_output)
+    torch.testing.assert_close(actual_input.grad, reference_input.grad, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(actual_gate.grad, reference_gate.grad, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(actual.weight.grad, reference.weight.grad, atol=2e-2, rtol=2e-2)
 
 
 @pytest.mark.gpu

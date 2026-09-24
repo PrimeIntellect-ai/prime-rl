@@ -12,7 +12,8 @@ Configurations for running prime-rl.
   [`examples/advanced/`](../examples/advanced).
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
-  (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), `multi-env/`
+  (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes, including a one-node
+  Qwen3.5-9B full-graph compile and partitioned CUDA Graph check), `multi-env/`
   (two reverse-text train sources + one eval source, one env server per source), and
   `eval/` (`uv run eval` smokes against Prime Inference, one per shape: `single-turn`
   (gsm8k), `multi-turn` (terminal-bench-2 fix-git in sandboxes against a local vLLM deployment with the adaptive band), `resume`, `multi-env`).

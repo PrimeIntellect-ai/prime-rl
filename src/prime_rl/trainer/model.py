@@ -14,6 +14,7 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch._inductor.cudagraph_utils import CUDAGraphPolicy
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
@@ -830,13 +831,40 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     )
 
 
+class _CopyStaticInputsCUDAGraphPolicy(CUDAGraphPolicy):
+    def cudagraphify(self, model, example_inputs, static_input_idxs, **kwargs):
+        return super().cudagraphify(model, example_inputs, (), **kwargs)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    if compile_config.cudagraph_copy_static_inputs:
+        torch._inductor.config.cudagraph_policy = _CopyStaticInputsCUDAGraphPolicy()
     language_model = get_language_model(model)
+    mode = compile_config.mode
+    options = None
+    if compile_config.cudagraph_partition_ops:
+        mode_options = torch._inductor.list_mode_options().get(mode or "default", {})
+        options = {**mode_options, "custom_should_partition_ops": compile_config.cudagraph_partition_ops}
+        mode = None
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model.layers[layer_id].compile(
+            fullgraph=compile_config.fullgraph,
+            mode=mode,
+            options=options,
+        )
+    get_logger().info(
+        f"Compiled {len(language_model.layers)} layers "
+        f"(fullgraph={compile_config.fullgraph}, mode={compile_config.mode}, "
+        f"cudagraph_partition_ops={compile_config.cudagraph_partition_ops}, "
+        f"cudagraph_copy_static_inputs={compile_config.cudagraph_copy_static_inputs})"
+    )
+
+
+def mark_cudagraph_step_begin(compile_config: CompileConfig | None) -> None:
+    if compile_config is not None and compile_config.mode in {"reduce-overhead", "max-autotune"}:
+        torch.compiler.cudagraph_mark_step_begin()
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:

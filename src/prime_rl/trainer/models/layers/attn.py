@@ -24,8 +24,11 @@ except ImportError:
 
 try:
     from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
+
+    from .flash_attn_4_ops import flash_attn_4_varlen
 except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
+    flash_attn_4_varlen = None  # type: ignore
 
 
 @dataclass
@@ -101,17 +104,15 @@ class FlashAttention(nn.Module):
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kwargs: dict = {"causal": True}
+        cu_seqlens_k = cu_seqlens.clone()
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
             kwargs["window_size"] = (sliding_window - 1, 0)
         if self._flash_attn_version == 4:
-            # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
-            # so cu_seqlens must be passed as keyword args to avoid misalignment.
-            kwargs["cu_seqlens_q"] = cu_seqlens
-            kwargs["cu_seqlens_k"] = cu_seqlens
-            out, _ = self.func(q, k, v, **kwargs)
+            # Custom-op wrapper: FA4's public wrapper is not traceable under fullgraph compile.
+            out = flash_attn_4_varlen(q, k, v, cu_seqlens, cu_seqlens_k, **kwargs)
         else:
-            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+            out = self.func(q, k, v, cu_seqlens, cu_seqlens_k, max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(
