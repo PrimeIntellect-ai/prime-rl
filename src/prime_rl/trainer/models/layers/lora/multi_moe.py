@@ -5,11 +5,9 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.activations import ClampedSwiglu
+from prime_rl.trainer.models.layers.expert_compute import broadcast_expert_bias
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
-from prime_rl.trainer.models.layers.moe import (
-    GroupedExperts,
-    broadcast_expert_bias,
-)
+from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
 def _run_lora_grouped_mm(

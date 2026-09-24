@@ -21,11 +21,11 @@ from prime_rl.trainer.distributed.token_dispatcher import (
     MXFP8TorchTokenDispatcher,
     TorchTokenDispatcher,
 )
-from prime_rl.trainer.models.layers.grouped_gemm import (
-    BF16GroupedGemm,
-    DeepGemmFP8GroupedGemm,
-    GroupedGemm,
-    MXFP8GroupedGemm,
+from prime_rl.trainer.models.layers.expert_compute import (
+    BF16ExpertCompute,
+    DeepGemmFP8ExpertCompute,
+    ExpertCompute,
+    MXFP8ExpertCompute,
 )
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -33,10 +33,14 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
 
 
-def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
+def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
     compute = config.moe.compute
     if isinstance(compute, BF16MoEComputeConfig):
-        return BF16GroupedGemm()
+        if compute.backend == "sonicmoe":
+            from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
+
+            return SonicMoEExpertCompute()
+        return BF16ExpertCompute()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         if importlib.util.find_spec("deep_gemm") is None:
             raise RuntimeError("DeepGEMM FP8 expert compute requires the deep-gemm package.")
@@ -45,15 +49,14 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
             raise RuntimeError(
                 f"DeepGEMM FP8 expert compute requires SM90 or newer, but this device is SM{capability[0]}{capability[1]}."
             )
-        return DeepGemmFP8GroupedGemm()
+        return DeepGemmFP8ExpertCompute()
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")
-        return MXFP8GroupedGemm(
+        return MXFP8ExpertCompute(
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
-            token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
@@ -79,13 +82,13 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             if isinstance(module, MoE)
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
-    bf16_grouped_gemm = BF16GroupedGemm()
+    bf16_compute = BF16ExpertCompute()
     dispatch = config.moe.dispatch
     if isinstance(dispatch, MegaMoeMoEDispatchConfig):
         # Compute is fused into dispatch; ignore whatever `model.moe.compute` was configured.
-        selected_grouped_gemm = bf16_grouped_gemm
+        selected_compute = bf16_compute
     else:
-        selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_moes else bf16_grouped_gemm
+        selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     if ep_mesh is None and isinstance(dispatch, MegaMoeMoEDispatchConfig):
         raise ValueError(
@@ -93,31 +96,31 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         )
 
     for moe in moe_layers:
-        grouped_gemm = selected_grouped_gemm if moe in selected_moes else bf16_grouped_gemm
+        compute = selected_compute if moe in selected_moes else bf16_compute
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
-        moe.experts.set_grouped_gemm(grouped_gemm)
+        moe.experts.compute = compute
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
                 top_k=moe.router.top_k,
-                token_group_alignment=grouped_gemm.token_group_alignment,
+                token_group_alignment=compute.token_group_alignment,
             )
         elif isinstance(dispatch, TorchMoEDispatchConfig):
-            if dispatch.transport == "mxfp8" and isinstance(grouped_gemm, MXFP8GroupedGemm):
+            if dispatch.transport == "mxfp8" and isinstance(compute, MXFP8ExpertCompute):
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
-                    token_group_alignment=grouped_gemm.token_group_alignment,
+                    token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
-                    token_group_alignment=grouped_gemm.token_group_alignment,
+                    token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
         elif isinstance(dispatch, DeepEPMoEDispatchConfig):
@@ -125,7 +128,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
             token_dispatcher = DeepEPTokenDispatcher(
                 num_experts=moe.experts.num_experts,
-                token_group_alignment=grouped_gemm.token_group_alignment,
+                token_group_alignment=compute.token_group_alignment,
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
@@ -155,6 +158,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
 
     get_logger().info(
-        f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={config.moe.compute.type}, "
+        f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
         f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
