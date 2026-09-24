@@ -1,11 +1,11 @@
-# Orchestrator engine
+# Orchestrator
 
-The orchestrator process is a set of components. Each one lives in one file, takes one
-config, and talks to its neighbours only through hooks bound with `bind(...)`. The
-`Orchestrator` builds them in `setup()`, connects every edge in `wire()`, and `start()`
-runs their tasks until the pipeline drains. It has no loop and no pipeline logic of its
-own, so every component constructs alone and replays in a unit test
-(`tests/unit/orchestrator`, with fakes in `fakes.py`).
+The orchestrator process is a set of components under `src/prime_rl/orchestrator/`.
+Each one lives in one file, takes one config, and talks to its neighbours only through
+hooks bound with `bind(...)`. The `Orchestrator` builds them in `setup()`, connects
+every edge in `wire()`, and `start()` runs their tasks until the pipeline drains. It has
+no loop and no pipeline logic of its own, so every component constructs alone and
+replays in a unit test (`tests/unit/orchestrator`, with fakes in `fakes.py`).
 
 ## Components
 
