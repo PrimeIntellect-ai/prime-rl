@@ -115,7 +115,9 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         """`(max_position_embeddings, rope_dim)` fp32 `[cos | sin]` of `layer_type` at every position."""
         inv_freq = getattr(self, f"{layer_type}_inv_freq")
         if inv_freq.is_meta:
-            return torch.empty(self.config.max_position_embeddings, 2 * inv_freq.shape[0], device="meta")
+            return torch.empty(
+                self.config.max_position_embeddings, 2 * inv_freq.shape[0], device="meta", dtype=torch.float32
+            )
         # TODO: size to the run's seq_len; 1M positions cost 256 MiB per rope type.
         positions = torch.arange(self.config.max_position_embeddings, device=inv_freq.device)
         cos, sin = self(positions[None], layer_type, dtype=torch.float32)
