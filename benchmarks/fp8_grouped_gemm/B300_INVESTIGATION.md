@@ -19,8 +19,9 @@ follows up `E2E_B300.md`. Short answer:
 3. **The remaining host sync (`ks_tensor.tolist()`) is not the cause.** Measured from the profile, it runs
    12 times per step, blocks the host for 0.06 ms in total, and leaves the GPU idle for 1.46 ms per step.
    The GPU is 98% busy in both arms.
-4. **Three commits on this branch** make FP8 0.5% faster than bf16 on the one-node proxy of the 8-node
-   run (it was 1.4-2.0% slower). All three are bitwise-identical in outputs and gradients:
+4. **Three commits on this branch** bring FP8 to parity with bf16 on the one-node proxy of the 8-node
+   run (it was 1.4-2.0% slower). Over five runs per arm on separate nodes, FP8 is 6.6 ms faster per step
+   (-0.3%) with a standard error of 5.1 ms. All three are bitwise-identical in outputs and gradients:
    - `05e50e5`: multiply by the reciprocal of UE8M0 scales instead of `div_rn` (SM100 only).
    - `07d9c06`: launch the SM100 row-major per-channel cast with 2 warps.
    - `72b78c1`: make the MoE permute's backward a gather instead of an atomic scatter-add. This one speeds
@@ -65,7 +66,7 @@ to bf16 (+2.0%) is close to the 8-node gap (+2.7%). It is a good proxy.
 | MoE fp8, branch | `9ad35e6` | 2.256 s | 2.322 s | +1.5% |
 | MoE fp8, + cast commits | `07d9c06` | 2.252 s | 2.318 s | +1.4% |
 
-With the permute-backward fix (`72b78c1`), FP8 overtakes bf16 on the same code:
+With the permute-backward fix (`72b78c1`), FP8 reaches bf16 on the same code (single runs, one node):
 
 | Arm | Code | fwd+bwd | step | vs bf16 `72b78c1` |
 |---|---|---|---|---|
@@ -76,7 +77,55 @@ With the permute-backward fix (`72b78c1`), FP8 overtakes bf16 on the same code:
 The fix removes 60 ms per step from the FP8 arm (2.255 to 2.195 s) and 12 ms from bf16 (2.219 to
 2.207 s). Losses are unchanged to four decimals in all three arms.
 
+Run-to-run and node-to-node spread is about 10-15 ms, the size of the FP8-vs-bf16 difference, so both
+arms were repeated on separate nodes. Five runs each at `72b78c1` (this node plus four others):
+
+| arm | fwd+bwd per run | mean | sd |
+|---|---|---|---|
+| bf16 | 2.207, 2.193, 2.192, 2.196, 2.212 s | 2.200 s | 9.0 ms |
+| fp8 | 2.195, 2.185, 2.204, 2.190, 2.193 s | 2.193 s | 7.0 ms |
+
+FP8 minus bf16 is -6.6 ms (-0.3%), standard error 5.1 ms: parity, with at most a slight FP8 edge.
+
 Dense FP8 costs almost nothing here: full FP8 is 2-5 ms per step slower than MoE-only FP8.
+
+## Back of the envelope: the FP8 ceiling from the datasheet
+
+Per GPU, from NVIDIA's HGX page (HGX B300: 36 PF BF16, 72 PF FP8 per 8 GPUs, sparse, dense is half) and
+the GB300 NVL72 page (576 TB/s over 72 GPUs): `P16 = 2.25 PF/s`, `P8 = 4.5 PF/s`, `BW = 8 TB/s`. The
+8 TB/s is the GB300 figure, assumed to hold for the B300 SXM. Shapes are those of the 256k proxy: 32
+local experts x 6144 rows (`M = 196608`), gate_up 4096 to 4096, down 2048 to 4096, and under SAC each
+MoE GEMM runs four times per step (forward, recompute, dgrad, wgrad).
+
+GEMMs, `2*M*K*N` FLOPs each: 26.4 TFLOP (gate_up) + 13.2 TFLOP (down) per layer, 237.5 TFLOP per step.
+
+| | bf16 | fp8 |
+|---|---|---|
+| at datasheet peak | 105.6 ms | 52.8 ms |
+| measured (trace) | 146.5 ms (72% of peak) | 90.5 ms (58% of peak) |
+
+Every added kernel is memory-bound. A cast moves about 3.03 B per element (bf16 in, fp8 out, fp32 scale
+per 128), and the wgrad adds an fp32 zero-fill (4 B) and downcast (6 B) per weight element. Per GEMM per
+step there are 3 per-token casts, 2 per-channel casts, 3 weight casts and 1 epilogue, which matches the
+trace's launch counts.
+
+| kernel group | floor, 6 layers | measured (trace, `07d9c06`) | vs floor |
+|---|---|---|---|
+| activation per-token casts | 9.2 ms | 14.8 ms | 1.6x |
+| activation per-channel casts | 6.4 ms | 16.2 ms | 2.5x |
+| weight per-block casts | 5.4 ms | 7.6 ms | 1.4x |
+| wgrad zero-fill + downcast | 6.0 ms | about 6.6 ms | 1.1x |
+| total | 27.0 ms | about 45 ms | 1.7x |
+
+As a fraction of the ideal GEMM saving `F/P8`, gate_up's activation casts cost `2*P8 / (4096*BW) = 0.27`,
+independent of tokens and rows per expert. Its weight casts cost `(P8/BW) / rpe = 0.09` and its epilogue
+`1.67*(P8/BW) / rpe = 0.15`, both shrinking with rows per expert. Down is worse, since its 2048-wide K
+shrinks the FLOPs more than the cast bytes. B300's `P8/BW = 562 FLOP/B` is what makes memory-bound
+overhead expensive relative to tensor-core time.
+
+At the floor, FP8 keeps `52.8 - 27.0 = 25.8 ms`, 1.1% of the 2.35 s step. As measured it keeps about
+`56 - 45 = 11 ms`, 0.5%, consistent with the -6.6 +/- 5.1 ms end-to-end difference after `72b78c1`.
+The gap to the floor is mostly the per-channel (2.5x) and per-token (1.6x) casts, about 16 ms per step.
 
 ## Op level: where FP8 time goes on B300
 
@@ -112,18 +161,23 @@ therefore eat a larger share of the FP8 saving on B300.
 
 The per-token and per-channel casts divide with `tl.math.div_rn`, which #3623 introduced to match vLLM bit
 for bit on SM90. On SM100 the scales are UE8M0 powers of two, so `x * (1 / scale)` is exact and rounds
-identically. A sweep (`~/tmp/fp8-b300/cast_sweep.py`, 32 experts x 6144 rows) shows the per-channel cast
-was ALU-bound on the division:
+identically. A sweep (`~/tmp/fp8-b300/cast_sweep.py`, 32 experts x 6144 rows) shows the division cost
+the per-channel cast about a quarter of its time. The last two columns are the device copy of the same bytes from
+`bench.py` (about 6.4 TB/s) and the floor at the 8 TB/s datasheet bandwidth (read 2 B, write 1 B plus an
+fp32 scale per 128 elements):
 
-| cast | K | div_rn, best config | multiply, best config | copy of the same bytes |
-|---|---|---|---|---|
-| per-token | 4096 | 0.722 ms | 0.713 ms | 0.735 ms |
-| per-channel | 4096 | 1.125 ms | 0.834 ms | 0.735 ms |
-| per-channel | 2048 | 0.567 ms | 0.424 ms | 0.372 ms |
+| cast | K | div_rn, best config | multiply, best config | copy, same bytes | 8 TB/s floor |
+|---|---|---|---|---|---|
+| per-token | 4096 | 0.722 ms | 0.713 ms | 0.380 ms | 0.305 ms |
+| per-channel | 4096 | 1.125 ms | 0.834 ms | 0.380 ms | 0.305 ms |
+| per-channel | 2048 | 0.567 ms | 0.424 ms | 0.193 ms | 0.153 ms |
 
-All swept configs were bitwise identical to the `div_rn` path. After both commits the activation casts
-run at 0.97x to 1.14x the time of a plain copy, so there is little left to gain from them in isolation.
-The remaining cast cost could only shrink through fusion, for example reading `dy` once for both its
+All swept configs were bitwise identical to the `div_rn` path. Even after both commits the casts run at
+1.9x (per-token) to 2.2x (per-channel) the time of a plain copy, so they still have headroom. The sweep
+only varied tile sizes and warps; a better kernel design (wider vector loads and stores, or one program
+covering several 128-wide scale blocks) is the next step. The sweep's own copy reference,
+`0.75 * x.clone()`, came out at about 3.3 TB/s and made the casts look copy-bound, which was wrong.
+Beyond that, the cast cost can shrink through fusion, for example reading `dy` once for both its
 per-token and per-channel casts, or emitting FP8 straight from the SwiGLU and the permute.
 
 ### Dense FP8 linears at 32768 tokens (fwd+bwd kernel time)
@@ -208,6 +262,25 @@ gained 1.3 s on H200. The permute penalty would have hit H200 too, which makes t
 harder to explain from the op-level numbers alone. As `E2E_B300.md` already notes, the H200 gain is far
 larger than its op-level cause, which points to something specific to that run (for example allocator
 pressure on the 141 GB H200, which the 268 GB B300 would not see). This is a hypothesis, not measured.
+
+### Alignment 8 vs 128 with the permute fix
+
+Is the 128-row alignment still worth it once the permute backward is fixed? The FP8 op on this branch
+asserts 128-row groups, so the alignment-8 arm is main `33e02a7` (whose op rebuilds a 128-aligned layout
+internally, with the unpack copies and syncs) plus the `72b78c1` permute patch. 256k proxy, each arm on
+its own node, run in parallel:
+
+| arm | node | fwd+bwd |
+|---|---|---|
+| MoE fp8, alignment 8 | r1n3 | 2.242 s |
+| MoE fp8, alignment 128 | r1n8 | 2.212 s |
+| fp8, alignment 8 | r1n6 | 2.258 s |
+| fp8, alignment 128 | r7n6 | 2.185 s |
+| bf16 | r6n8 | 2.193 s |
+
+Alignment 128 wins by 30 ms (MoE only) and 73 ms (full FP8) per step, above the run-to-run and
+node-to-node spread. That spread is about 15 ms: the same code on the same node measured 2.196 s and
+2.212 s in two runs, and bf16 measured 2.207 s and 2.193 s on two nodes.
 
 ## Other angles checked
 
