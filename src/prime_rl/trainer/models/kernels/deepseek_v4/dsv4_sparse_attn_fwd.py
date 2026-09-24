@@ -31,6 +31,12 @@ asserts `G == 1` outright, so the equations below fix `g = 0` and drop it. Note 
 is spelled `kv_group` but counts KV heads; the query heads per KV head are `H / G`, spelled
 `head_kv`.
 
+`Indices` is listed by its logical shape, but the kernel receives it split into
+`n_tiles = K / block_I` tiles of `block_I` slots, as `(B, S, G, n_tiles, block_I)`. `K` is sized for
+the most keys any query could need, and a given query will often have fewer. Only `n_tiles` is
+symbolic, so one compiled kernel serves every `K`. Declaring `K` itself symbolic instead makes
+TileLang bounds-check every slot read against it, a runtime check inside the innermost loop.
+
 [What it computes]
 
 Write `key[b,s,k,d] = KV[b, Indices[b,s,0,k], 0, d]` for the gathered keys. Summing over repeated
@@ -50,13 +56,6 @@ The sink contributes to the denominator but owns no key, so `sum_k p[b,s,h,k] < 
 a shrunken combination of the gathered keys. That is how a head attends to nothing in particular.
 
 [What the caller must guarantee]
-
-`K` is sized for the most keys any query could need, and a given query will often have fewer. It is
-a runtime size rather than part of the compilation key, so one compiled kernel serves every `K`.
-The kernel reads `Indices` split into tiles, as `(B, S, G, K / block_I, block_I)`, which the caller
-passes as a free view of the contiguous `(B, S, G, K)` tensor; `K` must therefore be a multiple of
-`block_I`. Only the tile count is symbolic. Declaring `K` itself symbolic instead makes TileLang
-bounds-check every slot read against it, which costs the backward about a quarter of its time.
 
 `TileCounts[b,s,g]` must cover the query's last valid slot: every slot past its first
 `TileCounts * block_I` has to be masked, because the kernel never reads those tiles. A fully masked

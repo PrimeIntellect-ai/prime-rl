@@ -16,7 +16,7 @@ Beyond the forward's tensors:
     dKV[b, n, g, d]  (B, N, G, D)   float32 until `postprocess`
 
 `Indices` arrives tiled as in the forward, but at this kernel's own tile:
-`(B, S, G, K / block_size, block_size)`, with only the tile count symbolic. `TileCounts` is the
+`(B, S, G, n_tiles, block_size)` with `n_tiles = K / block_size`, and only `n_tiles` symbolic. `TileCounts` is the
 forward's too, counted in these tiles, and skipping the tiles past it is exact for the same reason:
 a masked slot contributes nothing to any gradient.
 
@@ -266,8 +266,8 @@ def bwd(
             T.clear(acc_dq)
 
             # `TileCounts` never exceeds `n_tiles`, but TileLang cannot know that; the `min` lets it
-            # prove every `Indices` read in bounds rather than guarding each one, which costs the
-            # backward 11-18%.
+            # prove every `Indices` read in bounds. Without it, TileLang guards each read with a
+            # runtime check inside the hot loop, which noticeably slows the backward.
             for i_i in T.Pipelined(T.min(TileCounts[by, s_i, bz // NH], n_tiles), num_stages=num_stages):
                 for bi_i in T.Parallel(BS):
                     mask[bi_i] = Indices[by, s_i, bz // NH, i_i, bi_i] >= 0

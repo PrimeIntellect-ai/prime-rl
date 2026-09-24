@@ -116,6 +116,9 @@ def dsv4_sparse_attn(
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
+    assert SLOT_TILE % block_I == 0, (
+        f"the slot axis is padded to a multiple of {SLOT_TILE}, so block_I must divide it, got {block_I}"
+    )
     indices = _pad_slots_to_tile(indices)
 
     kernel = dsv4_sparse_attn_fwd(
