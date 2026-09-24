@@ -132,8 +132,7 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
-from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
-from prime_rl.trainer.models.kernels.deepseek_v4.q_norm_rope import q_norm_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -489,7 +488,7 @@ class DeepseekV4Compressor(nn.Module):
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
-        return apply_interleaved_rope_(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
+        return dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
@@ -544,7 +543,7 @@ class DeepseekV4Indexer(nn.Module):
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
-        q = apply_interleaved_rope_(q, cos_sin_cache, packed.position_ids)
+        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
@@ -730,7 +729,7 @@ class DeepseekV4Attention(nn.Module):
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
-        kv = apply_interleaved_rope_(kv, cos_sin_cache, packed.position_ids)
+        kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -741,7 +740,7 @@ class DeepseekV4Attention(nn.Module):
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
-        q = q_norm_rope(
+        q = dsv4_q_norm_rope(
             self.q_b_proj(q_residual).view(*hidden_shape), cos_sin_cache, packed.position_ids, self.q_b_norm.eps
         )  # (b, t, h, d)
 
@@ -776,7 +775,7 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = apply_interleaved_rope_(attn_output.clone(), cos_sin_cache, packed.position_ids, inverse=True)
+        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)

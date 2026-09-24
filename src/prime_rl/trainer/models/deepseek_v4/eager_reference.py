@@ -14,7 +14,43 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, SparseAttnInputs
-from prime_rl.trainer.models.deepseek_v4.rotary import apply_rotary_pos_emb_interleaved
+
+
+def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
+    """Rotate consecutive channel pairs: `(x0, x1, x2, x3, ...) -> (-x1, x0, -x3, x2, ...)`.
+
+    Not the same as `prime_rl.trainer.models.layers.rotary_emb.rotate_half`, which pairs
+    channel `i` with channel `i + dim / 2` (the GPT-NeoX layout). DeepSeek-V4 stores each
+    rotary pair adjacently, so the two are not interchangeable.
+    """
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    return torch.stack((-x2, x1), dim=-1).flatten(-2)
+
+
+def apply_rotary_pos_emb_interleaved(
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
+) -> torch.Tensor:
+    """Apply interleaved RoPE to the trailing rotary slice of `x`.
+
+    `cos` and `sin` arrive at half width (one entry per interleaved pair) and are widened
+    with `repeat_interleave`. Each head is laid out as `[nope | rope]`, so only the last
+    `2 * cos.shape[-1]` channels rotate and the leading ones pass through untouched.
+    The rotation itself runs in fp32 and is cast back to `x`'s dtype.
+
+    Args:
+        x: Tensor whose last dimension is the head dimension.
+        cos: Half-width cosines, shape `(batch, seq, rope_dim / 2)`.
+        sin: Half-width sines, same shape as `cos`.
+        unsqueeze_dim: Axis of `x` that `cos` / `sin` must broadcast over. Use `1` for a
+            `(batch, heads, seq, head_dim)` layout and `2` for `(batch, seq, heads, head_dim)`.
+    """
+    cos = cos.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
+    sin = sin.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
+    rope_dim = cos.shape[-1]
+    nope, rope = x[..., :-rope_dim], x[..., -rope_dim:]
+    rotated = ((rope.float() * cos) + (rotate_half_interleaved(rope).float() * sin)).to(x.dtype)
+    return torch.cat([nope, rotated], dim=-1)
 
 
 def eager_attention_with_sinks(

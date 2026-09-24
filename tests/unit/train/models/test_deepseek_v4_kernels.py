@@ -11,12 +11,15 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
-from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
+from prime_rl.trainer.models.deepseek_v4.eager_reference import (
+    apply_rotary_pos_emb_interleaved,
+    dense_mask_from_indices,
+    eager_attention_with_sinks,
+)
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
-from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
+from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
-from prime_rl.trainer.models.kernels.deepseek_v4.interleaved_rope import apply_interleaved_rope_
-from prime_rl.trainer.models.kernels.deepseek_v4.q_norm_rope import q_norm_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
@@ -1346,7 +1349,7 @@ def _rope_table(n_rows: int) -> torch.Tensor:
 
 
 @pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
-def test_interleaved_rope_matches_vllm_bit_for_bit(inverse):
+def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
     """The kernel and vLLM's in-place `rotary_embedding` op agree on every bit, nope channels included.
 
     Both read the same table, so this isolates the rotation: fp32 math on a bf16 input, one rounding
@@ -1362,7 +1365,7 @@ def test_interleaved_rope_matches_vllm_bit_for_bit(inverse):
     vllm_ops.rotary_embedding(
         positions, expected, None, head_dim, cos_sin, False, rope_dim_offset=head_dim - ROPE_DIM, inverse=inverse
     )
-    actual = apply_interleaved_rope_(x.clone(), cos_sin, positions, inverse=inverse)
+    actual = dsv4_rope(x.clone(), cos_sin, positions, inverse=inverse)
 
     assert torch.equal(actual, expected)
 
@@ -1370,7 +1373,7 @@ def test_interleaved_rope_matches_vllm_bit_for_bit(inverse):
 def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     """q matches vLLM's fused prefill q norm + RoPE to the last ulp, and the kv rotation bit for bit.
 
-    vLLM rounds q to bf16 once after an fp32 RMSNorm and rotation, as `q_norm_rope` does. The norm's
+    vLLM rounds q to bf16 once after an fp32 RMSNorm and rotation, as `dsv4_q_norm_rope` does. The norm's
     reduction order differs, so a few elements per million land one ulp apart.
     """
     pytest.importorskip("vllm._custom_ops")
@@ -1386,21 +1389,21 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
         expected_q, kv, kv_cache, torch.arange(n_tokens, device="cuda"), positions, cos_sin, eps, block_size
     )
-    rotated_q = q_norm_rope(q, cos_sin, positions, eps)
+    rotated_q = dsv4_q_norm_rope(q, cos_sin, positions, eps)
 
     assert (rotated_q != expected_q).float().mean() < 1e-5
     _assert_relative(rotated_q, expected_q, torch.finfo(torch.bfloat16).eps, "q")
-    rotated_kv = apply_interleaved_rope_(kv.clone().unsqueeze(1), cos_sin, positions)
+    rotated_kv = dsv4_rope(kv.clone().unsqueeze(1), cos_sin, positions)
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
 
 
 def test_q_norm_rope_matches_the_composed_norm_and_rotation():
-    """Bit for bit with an fp32 RMSNorm, the in-place rotation and one bf16 cast, in eager mode.
+    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, in eager mode.
 
     Compiled output and gradient agree with eager to bf16 precision: without quack's opaque RMSNorm
     (pre-Hopper or not installed), Inductor fuses the fallback norm and may reorder its reduction.
     Gradients agree with the composed ops to bf16 precision rather than bit for bit: the composed
-    backward carries an fp32 gradient through the rotation, where `q_norm_rope` keeps it in bf16.
+    backward carries an fp32 gradient through the rotation, where `dsv4_q_norm_rope` keeps it in bf16.
     """
     positions = _rope_positions()
     cos_sin = _rope_table(int(positions.max()) + 1)
@@ -1412,10 +1415,10 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
 
     def composed(q: torch.Tensor) -> torch.Tensor:
         normed = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
-        return apply_interleaved_rope_(normed, cos_sin, positions).to(q.dtype)
+        return dsv4_rope(normed, cos_sin, positions).to(q.dtype)
 
-    fused = q_norm_rope(fused_leaf * 1, cos_sin, positions, eps)
-    compiled = torch.compile(lambda q: q_norm_rope(q * 1, cos_sin, positions, eps), fullgraph=True)(compiled_leaf)
+    fused = dsv4_q_norm_rope(fused_leaf * 1, cos_sin, positions, eps)
+    compiled = torch.compile(lambda q: dsv4_q_norm_rope(q * 1, cos_sin, positions, eps), fullgraph=True)(compiled_leaf)
     expected = composed(composed_leaf * 1)
     for out in (fused, compiled, expected):
         (out.float() * weight).sum().backward()
