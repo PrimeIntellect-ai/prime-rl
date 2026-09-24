@@ -835,8 +835,10 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    get_logger().info(
+        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+    )
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
