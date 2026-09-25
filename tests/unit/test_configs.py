@@ -95,6 +95,7 @@ def test_eval_min_rollouts_rejects_group_size_and_unbounded_taskset(monkeypatch)
     with pytest.raises(ValidationError, match="infinite taskset needs num_examples"):
         EvalConfig.model_validate({"min_rollouts": 1000, "source": [source]})
 
+
 # All config config classes
 CONFIG_CLASSES = [
     RLConfig,
