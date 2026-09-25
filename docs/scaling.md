@@ -274,8 +274,8 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 # SFT trainer alone
 uv run sft @ sft.toml --data.type fake --max-steps 4
 
-# RL trainer alone (no inference involved)
-uv run trainer @ train.toml --data.fake --max-steps 4
+# RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
+uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
 ```
 
 Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.

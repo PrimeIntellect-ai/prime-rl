@@ -50,7 +50,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     ``line`` numbers the episode within the stream from 1, so the last of n reads as
     n — it is what a reader sees and what addresses the episode."""
     rewards, advantages = [], []
-    input_tokens = output_tokens = turns = branches = 0
+    input_tokens = rec.get("num_input_tokens")
+    output_tokens = rec.get("num_output_tokens")
+    turns = branches = 0
     stop_condition = None
     truncated = False
     reward_parts: dict[str, list[float]] = {}
@@ -86,20 +88,10 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         if advantage is not None:
             advantages.append(advantage)
         for node in nodes:
-            n_tokens = len(node.get("token_ids") or [])
-            if node.get("sampled"):
-                output_tokens += n_tokens
-            else:
-                input_tokens += n_tokens
             if (node.get("message") or {}).get("role") == "assistant":
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
         truncated = truncated or trace_truncated(trace)
-        if input_tokens == 0 and output_tokens == 0:  # some eval traces carry no token arrays
-            for call in trace.get("calls") or []:
-                usage = call.get("usage") or {}
-                input_tokens += usage.get("prompt_tokens") or 0
-                output_tokens += usage.get("completion_tokens") or 0
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},

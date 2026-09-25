@@ -11,10 +11,15 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
-from prime_rl.trainer.models.deepseek_v4.eager_reference import dense_mask_from_indices, eager_attention_with_sinks
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
-from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding, apply_rotary_pos_emb_interleaved
+from prime_rl.trainer.models.deepseek_v4.eager_reference import (
+    apply_rotary_pos_emb_interleaved,
+    dense_mask_from_indices,
+    eager_attention_with_sinks,
+)
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
+from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
@@ -87,8 +92,8 @@ def _packed_context(
     """The context `DeepseekV4Model` would hand its attention layers for a row of `doc_lens`.
 
     A single-element `doc_lens` gives back the single-document context, which is what the unpacked
-    half of a packing comparison runs at. `dtype` types the mask and the rotary tables, and has to
-    be the one the caller runs at.
+    half of a packing comparison runs at. `dtype` is the default dtype the rotary embedding is built
+    under; the RoPE tables themselves are always fp32.
 
     `doc_lens` always describes the whole row, `cp_world_size` shards included: the context
     parallel tests below hand it the same layout every rank sees and vary only `cp_rank`.
@@ -98,7 +103,6 @@ def _packed_context(
     return PackedContext.build(
         rotary_emb=rotary,
         seq_lens=torch.tensor(doc_lens, device="cuda"),
-        dtype=dtype,
         device=torch.device("cuda"),
         cp_rank=cp_rank,
         cp_world_size=cp_world_size,
@@ -537,7 +541,7 @@ V4FLASH_DOC_IDS = ["two-docs", "no-entries", "one-short-doc", "three-docs", "sat
 def v4flash_attention(layer_idx: int, dtype: torch.dtype = torch.float32, eager: bool = False) -> nn.Module:
     """One attention layer at the real DeepSeek V4 Flash shapes, 126M parameters of it."""
     with torch.device("cuda"), default_dtype(dtype):
-        module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx=layer_idx)
+        module = DeepseekV4Attention(V4FLASH_CONFIG, layer_idx, DeepseekV4RotaryEmbedding(V4FLASH_CONFIG))
     _randomize(module)
     if eager:
         eager_reference.use_eager_attention(module)
@@ -642,7 +646,7 @@ def test_deepseek_v4_refuses_a_shape_the_kernel_cannot_tile():
     """The constructor refuses a head count the kernels cannot tile, rather than the first forward."""
     config = DeepseekV4Config(**{**V4FLASH_MODEL, "num_attention_heads": 16})
     with pytest.raises(ValueError, match="cannot run the fused sparse-attention kernel"):
-        DeepseekV4Attention(config, layer_idx=V4FLASH_CSA_LAYER)
+        DeepseekV4Attention(config, V4FLASH_CSA_LAYER, DeepseekV4RotaryEmbedding(config))
 
 
 @requires_sparse_attn_kernel
@@ -1167,9 +1171,11 @@ def _cp_gathered_projections(
     """
     # One context per rank, not one per gather: a rank's gathers all read the same tables.
     rope_tables = [
-        _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_embeddings[
-            module.rope_layer_type
-        ]
+        module.rotary_emb(
+            _packed_context(doc_lens, dtype, config, cp_rank=cp_rank, cp_world_size=cp_world_size).position_ids,
+            module.rope_layer_type,
+            dtype=torch.float32,
+        )
         for cp_rank in range(cp_world_size)
     ]
 
@@ -1246,6 +1252,12 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
     for cp_rank, chunk in enumerate(chunks):
         gather, pending = _fake_gather_for_cp(projections, chunks, cp_rank)
         monkeypatch.setattr(dsv4_attention, "gather_for_cp", gather)
+        monkeypatch.setattr(
+            torch.ops._c10d_functional,
+            "all_gather_into_tensor",
+            lambda tensor, group_size, group_name: gather(tensor.movedim(0, 1), None).movedim(1, 0).contiguous(),
+        )
+        monkeypatch.setattr(dsv4_attention.funcol, "wait_tensor", lambda tensor: tensor)
         module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
 
         packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
@@ -1319,3 +1331,98 @@ def test_fused_post_bda_matches_the_eager_reference():
     for label, fused_leaf, reference_leaf in grads:
         assert reference_leaf.grad is not None, f"{label}: the reference backward left the leaf without a gradient"
         _assert_relative(fused_leaf.grad, reference_leaf.grad, POST_BDA_GRAD_RTOL, label)
+
+
+ROPE_DIM = V4FLASH_MODEL["qk_rope_head_dim"]
+
+
+def _rope_positions() -> torch.Tensor:
+    """Three packed documents, the last starting deep into a long rollout: positions reset and reach ~128k."""
+    return torch.cat([torch.arange(700), torch.arange(1500), torch.arange(129000, 130896)]).cuda()
+
+
+def _rope_table(n_rows: int) -> torch.Tensor:
+    """A plain fp32 `[cos | sin]` table in vLLM's layout, one entry per interleaved pair."""
+    inv_freq = 1.0 / (V4FLASH_MODEL["rope_theta"] ** (torch.arange(0, ROPE_DIM, 2, dtype=torch.float32) / ROPE_DIM))
+    freqs = torch.outer(torch.arange(n_rows, dtype=torch.float32), inv_freq)
+    return torch.cat([freqs.cos(), freqs.sin()], dim=-1).cuda()
+
+
+@pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
+def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
+    """The kernel and vLLM's in-place `rotary_embedding` op agree on every bit, nope channels included.
+
+    Both read the same table, so this isolates the rotation: fp32 math on a bf16 input, one rounding
+    on store, and the same multiply-add contraction.
+    """
+    vllm_ops = pytest.importorskip("vllm._custom_ops")
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    x = torch.randn(positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
+
+    expected = x.clone()
+    vllm_ops.rotary_embedding(
+        positions, expected, None, head_dim, cos_sin, False, rope_dim_offset=head_dim - ROPE_DIM, inverse=inverse
+    )
+    actual = dsv4_rope(x.clone(), cos_sin, positions, inverse=inverse)
+
+    assert torch.equal(actual, expected)
+
+
+def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
+    """q matches vLLM's fused prefill q norm + RoPE to the last ulp, and the kv rotation bit for bit.
+
+    vLLM rounds q to bf16 once after an fp32 RMSNorm and rotation, as `dsv4_q_norm_rope` does. The norm's
+    reduction order differs, so a few elements per million land one ulp apart.
+    """
+    pytest.importorskip("vllm._custom_ops")
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    n_tokens, heads, head_dim = positions.numel(), V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    eps, block_size = V4FLASH_MODEL["rms_norm_eps"], 64
+    q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    kv = torch.randn(n_tokens, head_dim, device="cuda", dtype=torch.bfloat16)
+    kv_cache = torch.zeros(n_tokens // block_size, block_size, head_dim, device="cuda", dtype=torch.bfloat16)
+
+    expected_q = q.clone()
+    torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert(
+        expected_q, kv, kv_cache, torch.arange(n_tokens, device="cuda"), positions, cos_sin, eps, block_size
+    )
+    rotated_q = dsv4_q_norm_rope(q, cos_sin, positions, eps)
+
+    assert (rotated_q != expected_q).float().mean() < 1e-5
+    _assert_relative(rotated_q, expected_q, torch.finfo(torch.bfloat16).eps, "q")
+    rotated_kv = dsv4_rope(kv.clone().unsqueeze(1), cos_sin, positions)
+    assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
+
+
+def test_q_norm_rope_matches_the_composed_norm_and_rotation():
+    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, eager and compiled.
+
+    Gradients agree with the composed ops to bf16 precision rather than bit for bit: the composed
+    backward carries an fp32 gradient through the rotation, where `dsv4_q_norm_rope` keeps it in bf16.
+    """
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    eps = V4FLASH_MODEL["rms_norm_eps"]
+    leaf = torch.randn(1, positions.numel(), heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    fused_leaf, compiled_leaf, composed_leaf = _leaves(leaf, leaf, leaf)
+    weight = torch.randn_like(leaf, dtype=torch.float32)
+
+    def composed(q: torch.Tensor) -> torch.Tensor:
+        normed = DeepseekV4UnweightedRMSNorm(eps=eps, out_dtype=torch.float32)(q)
+        return dsv4_rope(normed, cos_sin, positions).to(q.dtype)
+
+    fused = dsv4_q_norm_rope(fused_leaf * 1, cos_sin, positions, eps)
+    compiled = torch.compile(lambda q: dsv4_q_norm_rope(q * 1, cos_sin, positions, eps), fullgraph=True)(compiled_leaf)
+    expected = composed(composed_leaf * 1)
+    for out in (fused, compiled, expected):
+        (out.float() * weight).sum().backward()
+
+    assert fused.dtype == torch.bfloat16
+    assert torch.equal(fused, expected)
+    assert torch.equal(compiled, fused)
+    assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
+    _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")

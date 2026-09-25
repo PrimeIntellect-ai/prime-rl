@@ -1581,7 +1581,7 @@ def row_filter(
             return False
         if episode is not None and row.get("id") != episode:
             return False
-        if errors_only and not (row.get("num_errors") or not row.get("ok")):
+        if errors_only and row.get("ok"):
             return False
         arrival = row.get("arrival") or 0
         return not ((start is not None and arrival < start) or (end is not None and arrival >= end))

@@ -113,15 +113,6 @@ uv sync --all-extras
 
 > *NOTE*: Environments are opt-in uv workspace members — `uv sync --all-extras` does not install them. To train on them, install all with `uv sync --all-extras --all-packages`, or a subset with `uv sync --package prime-rl --package <env>`.
 
-3.1. Optional: Install Flash Attention 3 (on Hopper GPUs only, for flash_attention_3 attention backend)
-
-> *NOTE*: This step will take a while, as it builds the Flash Attention 3 extension from source, as it has no wheels prebuilt.
-> *NOTE*: After this step, you can't run `uv sync --all-extras` or `uv run` as it will uninstall the package, you can avoid it by running `uv sync --inexact` or `uv run --no-sync`
-
-```bash
-uv pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper" --no-build-isolation
-```
-
 </details>
 
 <details>
@@ -148,19 +139,13 @@ uv run python -c "import flash_attn"
 uv run sft @ configs/debug/fake/sft.toml
 ```
 
-4. Check that you can run the RL trainer (*this requires 1 GPU*)
-
-```bash
-uv run trainer @ configs/debug/fake/rl.toml
-```
-
-5. Check that you can run the inference server (*this requires 1 GPU*)
+4. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
-6. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
+5. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
 
 ```bash
 uv run rl @ configs/basic/reverse-text/rl.toml

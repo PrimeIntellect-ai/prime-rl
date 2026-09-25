@@ -1,6 +1,7 @@
 import os
 import queue
 import threading
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -53,6 +54,10 @@ def run_server(config: EnvServerConfig):
 def main():
     """Main entry-point for the env server. Run using `uv run env-server`"""
     set_proc_title("EnvServer")
+    # verifiers keys run-scoped state (creation limiters) by $VF_RUN_ID. Every launcher,
+    # the Python entrypoints and the SLURM templates alike, hands env servers $PRL_RUN_ID;
+    # a standalone server is a run of its own.
+    os.environ.setdefault("VF_RUN_ID", os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex)
     run_server(cli(EnvServerConfig))
 
 
