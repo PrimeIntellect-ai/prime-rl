@@ -18,6 +18,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.models.layers.attn import setup_kv_cache_replay
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -192,6 +193,10 @@ def train(config: TrainerConfig):
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
+
+    if config.model.kv_cache_dtype != "auto":
+        setup_kv_cache_replay(model, config.model.kv_cache_dtype)
+        logger.info(f"Replaying inference KV cache dtype {config.model.kv_cache_dtype!r} in trainer attention")
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
     # carries no adapter weights); a checkpoint resume below overwrites it.

@@ -17,6 +17,7 @@ This page covers the inference configuration and the supported features/deployme
     - [KV Cache Offload](#kv-cache-offload)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
+    - [FP8 KV Cache](#fp8-kv-cache)
     - [Router Replay](#router-replay)
 
 
@@ -282,6 +283,21 @@ max_num_seqs = 256
 ```
 
 On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (or `--vllm.max-num-seqs 256` for the standalone inference entrypoint); dict-valued arguments take a JSON string, e.g. `--vllm.compilation-config '{"cudagraph_mode": "NONE"}'`.
+
+### FP8 KV Cache
+
+`inference.vllm.kv_cache_dtype` selects the storage dtype of the attention KV cache. Quantized dtypes such as `"fp8"` (or `"fp8_e4m3"` / `"fp8_e5m2"`) store K/V projections in 8 bits, halving the KV memory per token and doubling the rollout token budget — at the cost of a small accuracy drop in generation, since cached K/V tensors are rounded to 8-bit precision.
+
+```toml
+[inference.vllm]
+kv_cache_dtype = "fp8"
+```
+
+Everything downstream adapts automatically: the orchestrator derives rollout concurrency from the engines' live `kv_cache_size_tokens` metric, so the doubled budget flows into dispatching without extra config. For hybrid models (e.g. Qwen3.5's linear-attention layers) only the full-attention layers allocate KV cache; the linear-attention state is unaffected.
+
+The trainer has no KV cache of its own (logprobs are recomputed with full forward passes), but it can *replay* the inference cache's storage quantization: `trainer.model.kv_cache_dtype` casts post-RoPE K and V through the same 8-bit round-trip, dequantizes them back to bf16, and then runs the normal bf16 attention kernel. This reproduces the cache rounding error without changing query or attention compute. The `rl` entrypoint auto-sets it from `inference.vllm.kv_cache_dtype` (fp8-family dtypes only; set it explicitly to override, `"auto"` disables). Only the standard GQA/FlashAttention path is replayed; MLA and linear-attention layers keep their native numerics.
+
+For pure trainer-side FP8 memory savings, use weight/compute quantization instead (`trainer.model.quantization = "fp8"`).
 
 ### Router Replay
 

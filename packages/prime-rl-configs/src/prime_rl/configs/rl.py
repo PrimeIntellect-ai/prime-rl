@@ -586,6 +586,29 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_kv_cache_replay(self):
+        """Propagate a quantized inference KV cache to the trainer's replay knob.
+
+        The trainer forward must see the same K/V quantization error the rollout
+        engine saw, or its logprobs drift from the sampling distribution on
+        exactly the tokens the importance ratios compare. Only dtypes the
+        trainer can simulate propagate; anything else keeps ``"auto"`` and the
+        user opts in explicitly.
+        """
+        if self.inference is None or "kv_cache_dtype" in self.trainer.model.model_fields_set:
+            return self
+        infer_kv = self.inference.vllm.kv_cache_dtype
+        if infer_kv in ("fp8", "fp8_e4m3", "fp8_e5m2"):
+            warnings.warn(
+                f"inference.vllm.kv_cache_dtype={infer_kv!r}: setting "
+                "trainer.model.kv_cache_dtype to match so the trainer replays the "
+                "KV-cache quantization in its logprob forward (set it explicitly to override).",
+                stacklevel=2,
+            )
+            self.trainer.model.kv_cache_dtype = infer_kv
+        return self
+
+    @model_validator(mode="after")
     def validate_llmd_no_routed_experts(self):
         """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
 

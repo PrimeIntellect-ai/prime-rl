@@ -28,6 +28,31 @@ except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
 
 
+# Storage dtypes the trainer can replay for the inference KV cache, mapped to torch
+# dtypes. ``fp8`` is vLLM's uncalibrated e4m3 cache; the straight-through cast below
+# reproduces its unit-scale quantization error.
+_KV_CACHE_DTYPE_MAP: dict[str, torch.dtype] = {
+    "fp8": torch.float8_e4m3fn,
+    "fp8_e4m3": torch.float8_e4m3fn,
+    "fp8_e5m2": torch.float8_e5m2,
+}
+
+
+def simulate_kv_cache_dtype(x: torch.Tensor, kv_cache_dtype: str | None) -> torch.Tensor:
+    """Round-trip a cached K or V tensor through its simulated storage dtype.
+
+    FP8 KV caches store post-RoPE K and V at unit scale. The trainer immediately
+    dequantizes the replayed values back to the model compute dtype, so attention
+    itself still runs through the normal bf16 kernel. The straight-through
+    formulation keeps the backward exact: forward sees the quantized value while
+    the gradient flows as if the cast were identity.
+    """
+    dtype = _KV_CACHE_DTYPE_MAP.get(kv_cache_dtype or "auto")
+    if dtype is None or dtype == x.dtype:
+        return x
+    return x + (x.to(dtype).to(x.dtype) - x).detach()
+
+
 @dataclass
 class AttentionConfig:
     hidden_size: int
@@ -61,6 +86,9 @@ class FlashAttention(nn.Module):
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
         super().__init__()
         self.head_dim = config.head_dim
+        # Inference KV-cache storage dtype to replay in _compute_attention; set on
+        # every FlashAttention module by setup_kv_cache_replay. None = no replay.
+        self.kv_cache_dtype: str | None = None
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.is_causal = config.is_causal
@@ -100,6 +128,12 @@ class FlashAttention(nn.Module):
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        kv_cache_dtype = getattr(self, "kv_cache_dtype", None)
+        if kv_cache_dtype is not None:
+            # K is post-RoPE here, matching what vLLM quantizes at cache-write time.
+            # Dequantize back to bf16 before calling the normal attention kernel.
+            k = simulate_kv_cache_dtype(k, kv_cache_dtype)
+            v = simulate_kv_cache_dtype(v, kv_cache_dtype)
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
@@ -155,6 +189,23 @@ class FlashAttention(nn.Module):
         attn_output = out.contiguous().view(1, out.shape[0], -1)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
+
+
+def setup_kv_cache_replay(model: nn.Module, kv_cache_dtype: str | None) -> None:
+    """Assign the simulated KV-cache storage dtype to every FlashAttention module.
+
+    Mirrors setup_context_parallel's module-walk: modules hold the attribute with
+    a None default and this walk sets it everywhere it applies. Models with
+    custom attention paths (MLA, linear attention) keep the None default and
+    simply skip the replay; their KV cache either does not exist (linear
+    attention) or is quantized by a model-specific scheme this replay does not
+    model.
+    """
+    if kv_cache_dtype is None or kv_cache_dtype == "auto":
+        return
+    for module in model.modules():
+        if isinstance(module, FlashAttention):
+            module.kv_cache_dtype = kv_cache_dtype
 
 
 ATTN_IMPL2CLASS = {

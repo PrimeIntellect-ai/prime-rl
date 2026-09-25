@@ -29,6 +29,30 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
+# vLLM CacheConfig ``cache_dtype`` choices (`vllm/config/cache.py`), for the pinned vLLM
+# (0.28). Hardcoded rather than imported: prime-rl-configs does not depend on vLLM, and
+# importing it costs seconds in every config-parsing process.
+KVCacheDType = Literal[
+    "auto",
+    "float16",
+    "bfloat16",
+    "fp8",
+    "fp8_e4m3",
+    "fp8_e5m2",
+    "fp8_inc",
+    "fp8_ds_mla",
+    "nvfp4_ds_mla",
+    "turboquant_k8v4",
+    "turboquant_4bit_nc",
+    "turboquant_k3v4_nc",
+    "turboquant_3bit_nc",
+    "int4_per_token_head",
+    "int8_per_token_head",
+    "fp8_per_token_head",
+    "nvfp4",
+    "nvfp4_4over6",
+]
+
 # vLLM all2all backend options for expert-parallel deployments.
 All2AllBackend = Literal[
     "allgather_reducescatter",
@@ -109,6 +133,13 @@ class VllmConfig(BaseConfig):
 
     quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+
+    kv_cache_dtype: KVCacheDType = "auto"
+    """Storage dtype for the attention KV cache. Quantized dtypes (e.g. ``"fp8"``) halve the
+    KV memory, doubling the token budget the rollout engines can serve — the orchestrator
+    picks up the larger budget automatically from the live ``kv_cache_size_tokens`` metric.
+    ``"auto"`` keeps the model's native dtype unless the checkpoint declares a KV quant
+    algorithm (vLLM resolves it from ``quantization_config``)."""
 
     enable_lora: bool = False
     """Enable LoRA."""
