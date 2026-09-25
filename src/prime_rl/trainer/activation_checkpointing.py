@@ -59,7 +59,6 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::_scaled_grouped_mm",
         "aten::_scaled_mm",
         "aten::_scaled_mm_v2",
-        "aten::_grouped_mm",
         "aten::addmm",
         "aten::bmm",
         "aten::convolution",
@@ -110,21 +109,52 @@ def _selective_checkpoint_policy(
     return CheckpointPolicy.PREFER_RECOMPUTE
 
 
+# With the default targets, every second matmul is recomputed to balance memory and compute.
+ALTERNATING_SAVE_OPERATIONS = frozenset({"aten::linear", "aten::mm"})
+
+
+def _alternating_matmul_policy(targets: frozenset[str]) -> Callable[..., CheckpointPolicy]:
+    """Build a per-checkpoint policy that saves only every second matmul among ``targets``."""
+    matmul_counts = {False: 0, True: 0}
+
+    def policy(
+        context: SelectiveCheckpointContext,
+        operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
+        *args,
+        **kwargs,
+    ) -> CheckpointPolicy:
+        decision = _selective_checkpoint_policy(context, operation, *args, targets=targets, **kwargs)
+        if decision is CheckpointPolicy.MUST_SAVE and operation.name() in ALTERNATING_SAVE_OPERATIONS:
+            matmul_counts[context.is_recompute] += 1
+            if (matmul_counts[context.is_recompute] & 1) == 0:
+                return CheckpointPolicy.PREFER_RECOMPUTE
+        return decision
+
+    return policy
+
+
 def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
     if config.mode == "full":
-        policy = _mandatory_checkpoint_policy
+        context_fn = partial(create_selective_checkpoint_contexts, _mandatory_checkpoint_policy)
+    elif config.targets is None:
+        # The matmul counter must restart for every checkpointed call, so build the policy per call.
+        def context_fn():
+            return create_selective_checkpoint_contexts(_alternating_matmul_policy(DEFAULT_SELECTIVE_TARGETS))
     else:
-        targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
-        policy = partial(_selective_checkpoint_policy, targets=targets)
+        context_fn = partial(
+            create_selective_checkpoint_contexts,
+            partial(_selective_checkpoint_policy, targets=frozenset(config.targets)),
+        )
 
     return partial(
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-        context_fn=partial(create_selective_checkpoint_contexts, policy),
+        context_fn=context_fn,
     )
 
 
 __all__ = [
+    "ALTERNATING_SAVE_OPERATIONS",
     "DEFAULT_SELECTIVE_SAVE_NAMESPACES",
     "DEFAULT_SELECTIVE_SAVE_OPERATIONS",
     "DEFAULT_SELECTIVE_TARGETS",
