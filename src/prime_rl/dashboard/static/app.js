@@ -344,7 +344,7 @@ function renderOverview() {
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
     meta.type === "flow"
-      ? ["units", `<span class="val">${state.flow.data?.stats.units ?? "–"}</span>`]
+      ? ["jobs", `<span class="val">${state.flow.data?.stats.jobs ?? "–"}</span>`]
       : meta.type === "eval"
         ? ["episodes", `<span class="val">${state.metrics.evalCount.toLocaleString()}</span>`]
         : ["step", `<span class="val">${stepText}</span>`],
@@ -437,7 +437,7 @@ async function fetchFlow() {
   flow.etag = data.etag;
   flow.data = data;
   renderOverview();
-  if (flow.task !== "all" && !data.units.some((task) => task.id === flow.task)) flow.task = "all";
+  if (flow.task !== "all" && !data.jobs.some((task) => task.id === flow.task)) flow.task = "all";
   renderFlow();
 }
 
@@ -454,10 +454,10 @@ function flowDuration(node, running = node.status === "running") {
 function renderFlowStats() {
   const { data, task, modal } = state.flow;
   if (!data) return;
-  const unit = data.units.find((item) => item.id === task);
-  const active = unit && data.nodes.some((node) => node.group === unit.id && node.status === "running");
-  $("#flow-status").textContent = unit
-    ? `${unit.status} · ${flowDuration(unit.stats, active) || "–"} · ${fmtCompact(unit.stats.tokens)} tokens`
+  const job = data.jobs.find((item) => item.id === task);
+  const active = job && data.nodes.some((node) => node.group === job.id && node.status === "running");
+  $("#flow-status").textContent = job
+    ? `${job.status} · ${flowDuration(job.stats, active) || "–"} · ${fmtCompact(job.stats.tokens)} tokens`
     : `${data.stats.running ? `${data.stats.running} active` : data.status} · ${data.stats.routes} routes`;
   const nodes = flowNodeMap();
   for (const el of document.querySelectorAll("[data-flow-duration]")) {
@@ -481,17 +481,17 @@ function renderFlowInspector() {
   if (!data) return;
   const edge = data.edges.find((item) => item.id === flow.selectedEdge);
   const source = flowNodeMap().get(edge?.source);
-  const units = data.units.filter((unit) => flow.task === "all" || unit.id === flow.task);
+  const jobs = data.jobs.filter((job) => flow.task === "all" || job.id === flow.task);
   $("#flow-inspector").innerHTML = (edge ? `
     <div class="flow-inspector-head"><span class="t-label">transition</span><b>${esc(edge.outcome)}</b></div>
     <div class="flow-route-pair"><span>${esc(source.name)}</span><i>→</i><span>${esc(edge.to || "end")}</span></div>
     <div class="flow-inspector-section"><span class="t-label">why</span><p>${esc(edge.summary || "No reason was recorded for this transition.")}</p></div>
     <div class="flow-inspector-section"><span class="t-label">source</span><code>${esc(source.path)}</code></div>
-    ${source.links.length ? `<div class="flow-inspector-section"><span class="t-label">affected units</span><p>${esc(source.links.map((link) => `${link.unit} (${link.label})`).join(", "))}</p></div>` : ""}
+    ${source.links.length ? `<div class="flow-inspector-section"><span class="t-label">affected jobs</span><p>${esc(source.links.map((link) => `${link.job} (${link.label})`).join(", "))}</p></div>` : ""}
     ${edge.report ? `<button class="btn" data-flow-report="${esc(edge.report)}">open report</button>` : ""}`
     : emptyState("select a transition", "click an edge for its reason, a stage for its calls")) +
-    units.flatMap((unit) => unit.steers.map((steer) => `
-      <div class="flow-inspector-section"><span class="t-label">steering · ${esc(unit.name)} · ${esc(fmtWhen(steer.at))}</span><code>${esc(JSON.stringify(steer.action))}</code></div>`)).join("");
+    jobs.flatMap((job) => job.steers.map((steer) => `
+      <div class="flow-inspector-section"><span class="t-label">steering · ${esc(job.name)} · ${esc(fmtWhen(steer.at))}</span><code>${esc(JSON.stringify(steer.action))}</code></div>`)).join("");
 }
 
 function renderFlow() {
@@ -499,7 +499,7 @@ function renderFlow() {
   const data = flow.data;
   if (!data) return;
   const taskSelect = $("#flow-task-select");
-  taskSelect.innerHTML = `<option value="all">all units</option>` + data.units.map((task) =>
+  taskSelect.innerHTML = `<option value="all">all jobs</option>` + data.jobs.map((task) =>
     `<option value="${esc(task.id)}">${esc(task.name)}</option>`
   ).join("");
   taskSelect.value = flow.task;
@@ -507,15 +507,15 @@ function renderFlow() {
 
   const stat = (label, value) => `<div class="flow-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
   $("#flow-summary").innerHTML = [
-    stat("units", data.stats.units), stat("steps", data.stats.steps), stat("active", data.stats.running),
+    stat("jobs", data.stats.jobs), stat("steps", data.stats.steps), stat("active", data.stats.running),
     stat("held", data.stats.held), stat("traces", data.stats.traces), stat("routes", data.stats.routes),
   ].join("");
 
   $("#flow-tasks").innerHTML =
     `<button class="flow-task ${flow.task === "all" ? "active" : ""}" data-flow-task="all">
-      <span><b>all units</b><small>run trajectory</small></span><em>${data.units.length}</em>
+      <span><b>all jobs</b><small>run trajectory</small></span><em>${data.jobs.length}</em>
     </button>` +
-    data.units.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
+    data.jobs.map((task) => `<button class="flow-task ${flow.task === task.id ? "active" : ""}" data-flow-task="${esc(task.id)}">
       <i class="${flowStatusClass(task.status)}"></i><span><b>${esc(task.name)}</b><small>${esc(task.stage || "pending")} · ${esc(task.status || "")} · ${task.traces} traces</small></span><em>${task.nodes}</em>
     </button>`).join("");
   renderFlowGraph();
@@ -524,7 +524,7 @@ function renderFlow() {
 }
 
 function flowGraphLayout(data, selected, viewportWidth) {
-  const groups = selected === "all" ? data.units.map((group) => group.id) : [selected];
+  const groups = selected === "all" ? data.jobs.map((group) => group.id) : [selected];
   const wanted = new Set(groups);
   const nodes = data.nodes.filter((node) => wanted.has(node.group));
   const positions = new Map();
@@ -575,7 +575,7 @@ function renderFlowGraph() {
   const layout = flowGraphLayout(data, state.flow.task, graph.clientWidth);
   const visible = new Set(layout.nodes.map((node) => node.id));
   const edges = data.edges.filter((edge) => visible.has(edge.source) && (!edge.target || visible.has(edge.target)));
-  const groupById = new Map(data.units.map((group) => [group.id, group]));
+  const groupById = new Map(data.jobs.map((group) => [group.id, group]));
   const lanes = layout.lanes.map((lane) => {
     const group = groupById.get(lane.group);
     return `<div class="fg-lane" style="top:${lane.top}px;height:${lane.height}px"><span>${esc(group?.name || lane.group)}</span></div>`;
@@ -604,14 +604,14 @@ function renderFlowGraph() {
     const duration = flowDuration(node);
     const calls = node.calls?.length ? ` · ${node.calls.length} call${node.calls.length === 1 ? "" : "s"}` : "";
     const failed = node.calls.filter((call) => call.status === "failed").length;
-    const held = node.outcome === "held" || node.unit_status === "held";
+    const held = node.outcome === "held" || node.job_status === "held";
     const bad = failed > 0 || node.error !== null;
     const outcome = outcomes.get(node.id);
     const statusClass = flowStatusClass(node.status);
     return `<button class="fg-node ${bad ? "bad" : held ? "stale" : statusClass} kind-stage" data-flow-node="${esc(node.id)}" style="left:${pos.x}px;top:${pos.y}px" title="${esc(node.reason || node.path)}">
-      ${outcome ? `<span class="fg-outcome ${bad ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome)}</span>` : ""}
+      ${outcome ? `<span class="fg-outcome ${bad ? "bad" : ""} ${state.flow.selectedEdge === outcome.id ? "active" : ""}" data-flow-edge="${esc(outcome.id)}">${esc(outcome.outcome || node.job_status)}</span>` : ""}
       ${!outcome && statusClass === "interrupted" ? `<span class="fg-outcome interrupted">${esc(node.status)}</span>` : ""}
-      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.unit_status ? ` · ${esc(node.unit_status)}` : ""}<span data-flow-duration="${esc(node.id)}">${duration ? ` · ${esc(duration)}` : ""}</span>${calls}</small>
+      <span>${esc(node.name)}${esc(suffix)}</span><small>${esc(node.status)}${node.job_status ? ` · ${esc(node.job_status)}` : ""}<span data-flow-duration="${esc(node.id)}">${duration ? ` · ${esc(duration)}` : ""}</span>${calls}</small>
       ${failed ? `<span class="fg-failures">${failed} failed call${failed === 1 ? "" : "s"}</span>` : ""}
     </button>`;
   }).join("");
@@ -642,11 +642,11 @@ function flowPayload(call) {
 
 function renderFlowStageFacts(node) {
   const facts = [
-    ["unit", node.unit], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
+    ["job", node.job], ["status", node.status], ["started", fmtWhen(node.started_at)], ["duration", flowDuration(node)],
     ["tokens", fmtCompact(node.tokens)],
     ["outcome", node.outcome], ["next", node.to], ["reason", node.reason],
     ["error", node.error && `${node.error.type}: ${node.error.message}`],
-    ["unit after stage", node.unit_status], ["affected units", node.links.map((link) => `${link.unit} (${link.label})`).join(", ")],
+    ["job after stage", node.job_status], ["affected jobs", node.links.map((link) => `${link.job} (${link.label})`).join(", ")],
   ].filter(([, value]) => value);
   $("#fm-facts").innerHTML = facts.map(([key, value]) => `<div class="flow-kv"><span>${esc(key)}</span><b>${esc(String(value))}</b></div>`).join("");
 }
@@ -3348,7 +3348,7 @@ function liveRowHtml(r) {
         <td><span class="badge stage stage-${esc(r.stage)}">${esc(r.stage)}</span></td>
         <td class="muted nowrap">${fmtSpan(r.started, null, liveElapsed(r))}</td>
         <td class="muted">${esc(r.kind ?? "")}</td>
-        <td>${esc(r.env ?? r.invocation?.unit ?? "?")}</td>
+        <td>${esc(r.env ?? r.invocation?.job ?? "?")}</td>
         <td class="muted" title="${esc(r.group ?? "")}">${r.group ? esc(r.group.slice(0, 8)) : ""}</td>
         <td>${r.turns ? `<span class="muted">in</span> ${fmtCompact(r.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(r.output_tokens ?? 0)}` : ""}</td>
         <td>${r.turns ?? ""}</td>

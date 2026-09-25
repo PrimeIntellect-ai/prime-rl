@@ -13,21 +13,21 @@ kill/restart commands, and the local view-command/report contract.
 
 `uv run flow run package.launch.entrypoint ROOT @ config.toml` launches an installed
 pipeline's typed `FlowEntrypoint`. The pipeline supplies its config class and an async
-`run(root, config) -> int`; it owns preparation, initial units, and the exit code.
+`run(root, config) -> int`; it owns preparation, initial jobs, and the exit code.
 The launcher records config/log attempts and registers the run with the dashboard.
-Use `flow run --no-dashboard ...` to skip registration, and `flow inspect ROOT`,
-`flow steer ROOT UNIT ...`, or `flow drain ROOT` for controls. The pipeline package
+Use `flow run --no-dashboard ...` to skip registration, and `flow inspect --root ROOT`,
+`flow apply --root ROOT --job JOB ...`, or `flow drain --root ROOT` for controls. The pipeline package
 must be installed in the launcher's environment. Existing roots resume through Flow.
 
 A verifiers flow run directory opens a **Flow** tab following `transitions.jsonl`,
-`calls/`, and `traces.jsonl`. Units under `units/<id>/` form equal lanes; stage executions form nodes
-and transitions form edges. The inspector shows unit steering and affected-unit links without
+`calls/`, and `traces.jsonl`. Jobs under `jobs/<id>/` form equal lanes; stage executions form nodes
+and transitions form edges. The inspector shows job steering and affected-job links without
 inferring execution dependencies. Completed agent calls open the existing trace viewer.
-Explicit execution links draw green cross-unit arrows; dotted connections show subsequent
+Explicit execution links draw green cross-job arrows; dotted connections show subsequent
 executions with recorded steering controls. Outcomes without a connected transition stay on
 their node. Recorded stage errors and failed calls receive red emphasis; ordinary holds
 are blue, and interruptions are grey and dashed. Stage details show the recorded error.
-Unit state is read from committed Git HEAD, including the pipeline's typed `data`.
+Job state is read from committed Git HEAD, including the pipeline's typed `data`.
 Stage and call IDs determine attribution; cache attachments keep producer provenance.
 Failed and uncached calls remain visible, and native retry traces open individually.
 Unfinished starts after a process exits remain incomplete. Run status reports `idle`

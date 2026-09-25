@@ -18,7 +18,7 @@ samples = 4
 ```sh
 uv run flow @ run.toml
 uv run flow inspect --root outputs/candidates
-uv run flow steer --root outputs/candidates --unit task --status ready
+uv run flow apply --root outputs/candidates --job task --status ready
 uv run flow @ run.toml
 uv run flow drain --root outputs/candidates
 ```
@@ -30,10 +30,10 @@ See the [Verifiers examples](https://github.com/PrimeIntellect-ai/verifiers/tree
 for authoring, native agent calls, parallel recovery and artifact revisions.
 
 Repeat the launch command with the same run name to resume saved workflow state and reuse
-successful keyed calls. `inspect` reports current state and executing stages. `steer`
-changes a unit's next stage/status or adds a note; it does not interrupt a model conversation.
-Data edits use `--data patch.json --expected REVISION` while the unit is settled;
-`REVISION` is the integer at `state.revision` in the inspection. Each unit keeps one
+successful keyed calls. `inspect` reports current state and whether execution is active. `apply`
+changes a job's next stage/status or adds a note; it does not interrupt a model conversation.
+Complete data replacements use `--data-file data.json --expected REVISION` while the job is settled;
+`REVISION` is the integer at `state.revision` in the inspection. Each job keeps one
 current `state.json`, replaced atomically under its write lock.
 
 Drain finishes running calls and stops new work. Remove the run's `drain` file before
@@ -46,7 +46,7 @@ contracts. The dashboard reads these files; it does not schedule or recover the 
 
 The Traces tab shows live agent work using the same delta reader and viewer as served
 episodes. A retry replaces the live attempt; completion opens the saved trace. Flow's
-`live/<trace_id>.jsonl` files carry the unit, stage, execution and call identity.
+`live/<trace_id>.jsonl` files carry the job, stage, execution and call identity.
 Monitors can query `GET /api/runs/{run}/live`, then `/api/runs/{run}/live/{trace_id}`
 for an assembled trace, or read locally with
 `uv run python -m prime_rl.monitors.file.traces.live <run_dir> [trace_id]`.

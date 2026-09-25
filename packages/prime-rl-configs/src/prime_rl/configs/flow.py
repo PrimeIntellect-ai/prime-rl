@@ -45,18 +45,20 @@ class FlowConfig(BaseConfig):
 
 class InspectConfig(BaseConfig):
     root: Path
-    unit: str | None = None
+    job: str | None = None
 
 
-class SteerConfig(BaseConfig):
+class ApplyConfig(BaseConfig):
     root: Path
-    unit: str
+    job: str
     stage: str | None = None
     status: Status | None = None
     reason: str | None = None
     note: str | None = None
-    data: Path | None = None
-    """JSON object of pipeline data fields to update while the unit is settled."""
+    outcome: str | None = None
+    report: str | None = None
+    data_file: Path | None = None
+    """Complete job data snapshot, validated against its recorded model."""
     expected: NonNegativeInt | None = None
     """Inspected workflow revision; required for data updates."""
 

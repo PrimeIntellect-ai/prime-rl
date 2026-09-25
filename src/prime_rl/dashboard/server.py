@@ -24,7 +24,7 @@ from itertools import groupby
 from pathlib import Path
 
 import orjson
-from verifiers.v1.flow.events import StageEvent
+from verifiers.v1.flow.events import StageEvent, SteerEvent
 from verifiers.v1.flow.stats import Stats, summarize
 from verifiers.v1.trace import WireTrace
 
@@ -560,7 +560,12 @@ def list_reports(run: str) -> dict:
     run_dir = get_run_dir(run)
     reports_dir = run_dir / "reports"
     published = (
-        {e.report for e in read_events(run_dir) if isinstance(e, StageEvent) and e.type == "transition" and e.report}
+        {
+            report
+            for e in read_events(run_dir)
+            if isinstance(e, SteerEvent) or isinstance(e, StageEvent) and e.type == "transition"
+            if (report := e.action.report if isinstance(e, SteerEvent) else e.report)
+        }
         if is_flow_run(run_dir)
         else None
     )

@@ -1,4 +1,4 @@
-"""Read-only projection of uniform units and explicit stage/call execution events."""
+"""Read-only projection of uniform jobs and explicit stage/call execution events."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from typing import Any
 import orjson
 from verifiers.v1.flow.calls import Record
 from verifiers.v1.flow.events import CallEvent, Event, LinkEvent, RunEvent, StageEvent, SteerEvent, event_adapter
+from verifiers.v1.flow.job import JobState
 from verifiers.v1.flow.stats import Stats, summarize
-from verifiers.v1.flow.unit import UnitState
 from verifiers.v1.utils.trace_store import TraceStore
 
 TRANSITIONS = "transitions.jsonl"
@@ -22,7 +22,7 @@ TRANSITIONS = "transitions.jsonl"
 def flow_etag(run_dir: Path) -> str:
     paths = [run_dir / "transitions.jsonl", run_dir / "traces.jsonl", run_dir / "drain"]
     paths.extend((run_dir / "calls").glob("*/*.json"))
-    paths.extend(run_dir.glob("units/*/state.json"))
+    paths.extend(run_dir.glob("jobs/*/state.json"))
     parts = [str(_running(run_dir))]
     for path in sorted(paths):
         try:
@@ -69,11 +69,11 @@ def _read(path: Path) -> dict[str, Any] | None:
     return _json_file(str(path), stat.st_size, stat.st_mtime_ns)
 
 
-def unit_states(run_dir: Path) -> dict[str, UnitState[Any]]:
-    """Published unit state, matching what the scheduler reads."""
+def job_states(run_dir: Path) -> dict[str, JobState[Any]]:
+    """Published job state, matching what the scheduler reads."""
     return {
-        path.parent.name: UnitState[Any].model_validate_json(path.read_bytes())
-        for path in sorted(run_dir.glob("units/*/state.json"))
+        path.parent.name: JobState[Any].model_validate_json(path.read_bytes())
+        for path in sorted(run_dir.glob("jobs/*/state.json"))
     }
 
 
@@ -127,40 +127,40 @@ def _traces(run_dir: Path) -> TraceStore:
 
 
 def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
-    """Fold transitions, unit states and call records into the run/task/step graph the UI draws."""
+    """Fold transitions, job states and call records into the run/task/step graph the UI draws."""
     events = read_events(run_dir)
     traces = _traces(run_dir)
     traces.index()
     accounting = summarize(events, traces.tokens)
     trace_lines = trace_lines or {}
     row = run_dir.name
-    states = unit_states(run_dir)
+    states = job_states(run_dir)
     nodes: list[dict[str, Any]] = []
     executions: dict[str, dict[str, Any]] = {}
     execution_status = run_status(run_dir, events)
     occurrences: dict[tuple[str, str], int] = defaultdict(int)
 
-    def group_id(unit: str) -> str:
-        return f"{row}/{unit}"
+    def group_id(job: str) -> str:
+        return f"{row}/{job}"
 
     steers: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for order, event in enumerate(events):
         if isinstance(event, SteerEvent):
-            steers[event.unit].append(
+            steers[event.job].append(
                 {"at": event.at, "order": order, "action": event.action.model_dump(exclude_none=True)}
             )
             continue
         if not isinstance(event, StageEvent):
             continue
-        kind, unit, stage = event.type, event.unit, event.stage
+        kind, job, stage = event.type, event.job, event.stage
         if kind == "started":
-            n = occurrences[(unit, stage)]
-            occurrences[(unit, stage)] += 1
+            n = occurrences[(job, stage)]
+            occurrences[(job, stage)] += 1
             node = {
                 "id": f"{row}:{event.execution}",
                 "execution": event.execution,
-                "unit": unit,
-                "path": f"{unit}/{stage}#{n}",
+                "job": job,
+                "path": f"{job}/{stage}#{n}",
                 "name": stage,
                 "occurrence": n,
                 "status": "incomplete",
@@ -170,12 +170,12 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "finished_at": None,
                 "tokens": accounting.executions[event.execution].tokens,
                 "order": order,
-                "group": group_id(unit),
+                "group": group_id(job),
                 "outcome": None,
                 "to": None,
                 "links": [],
                 "calls": [],
-                "unit_status": None,
+                "job_status": None,
                 "report": None,
             }
             nodes.append(node)
@@ -187,7 +187,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 node["status"] = kind
                 continue
             node["status"] = "completed"
-            node["unit_status"] = event.status
+            node["job_status"] = event.status
             node["outcome"], node["to"], node["reason"] = event.outcome, event.to, event.reason
             node["report"] = event.report
             node["links"] = [link.model_dump() for link in event.links]
@@ -241,16 +241,16 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             call["episode_id"] = episode[1] if episode else None
 
     edges: list[dict[str, Any]] = []
-    by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
-        by_unit[node["unit"]].append(node)
-    for lane in by_unit.values():
+        by_job[node["job"]].append(node)
+    for lane in by_job.values():
         for i, source in enumerate(lane):
             following = lane[i + 1] if i + 1 < len(lane) else None
             target = following
-            if source["unit_status"] != "ready" or (target and target["name"] != source["to"]):
+            if source["job_status"] != "ready" or (target and target["name"] != source["to"]):
                 target = None
-            if source["outcome"] is not None:
+            if source["status"] == "completed":
                 edges.append(
                     {
                         "id": f"route:{source['id']}:{source['outcome']}:{source['to']}",
@@ -266,7 +266,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
             if following is not None and target is None:
                 controls = [
                     s
-                    for s in steers[source["unit"]]
+                    for s in steers[source["job"]]
                     if source["order"] < s["order"] < following["order"]
                     and ("stage" in s["action"] or "status" in s["action"])
                 ]
@@ -278,7 +278,7 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                         "target": following["id"],
                         "outcome": "steer / resume" if controls else "resume",
                         "to": following["name"],
-                        "summary": "Next recorded execution of this unit."
+                        "summary": "Next recorded execution of this job."
                         + "".join(f"\n{s['at']}: {orjson.dumps(s['action']).decode()}" for s in controls),
                     }
                 )
@@ -298,34 +298,34 @@ def project_flow(run_dir: Path, trace_lines: dict[str, tuple[int, str]] | None =
                 "source": source["id"],
                 "target": target["id"],
                 "outcome": event.label,
-                "to": f"{target['unit']}/{target['name']}",
+                "to": f"{target['job']}/{target['name']}",
                 "summary": f"This execution selected work from {source['path']}.",
             }
         )
-    units = []
-    for unit, state in states.items():
-        lane = by_unit.get(unit, [])
-        units.append(
+    jobs = []
+    for job, state in states.items():
+        lane = by_job.get(job, [])
+        jobs.append(
             {
-                "id": group_id(unit),
-                "name": unit,
+                "id": group_id(job),
+                "name": job,
                 "stage": state.stage,
                 "status": state.status,
-                "steers": steers[unit],
+                "steers": steers[job],
                 "nodes": len(lane),
                 "traces": sum(c["trace_id"] is not None for n in lane for c in n["calls"]),
-                "stats": accounting.units.get(unit, Stats()).model_dump(),
+                "stats": accounting.jobs.get(job, Stats()).model_dump(),
             }
         )
     all_nodes = sorted(nodes, key=lambda n: (n["order"], n["id"]))
     return {
         "status": execution_status,
-        "units": units,
+        "jobs": jobs,
         "nodes": all_nodes,
         "edges": edges,
         "stats": {
             **accounting.run.model_dump(),
-            "units": len(units),
+            "jobs": len(jobs),
             "steps": len(nodes),
             "running": sum(n["status"] == "running" for n in nodes),
             "held": sum(s.status == "held" for s in states.values()),

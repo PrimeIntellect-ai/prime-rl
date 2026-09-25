@@ -1,4 +1,4 @@
-"""Launch a configured Flow: `flow @ run.toml`; inspect, steer and drain control its boundaries."""
+"""Launch a configured Flow: `flow @ run.toml`; inspect, apply and drain control its boundaries."""
 
 import asyncio
 import json
@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
-from verifiers.v1.flow import drain_on_interrupt
-from verifiers.v1.flow.flow import DRAIN_FILE, TRANSITIONS, UNITS, unit_path
-from verifiers.v1.flow.unit import STATE, Unit, UnitInspection
+from verifiers.v1.configs.flow import FlowConfig as PipelineConfig
+from verifiers.v1.flow import Flow, Transition, drain_on_interrupt
+from verifiers.v1.flow.flow import DRAIN_FILE, JOBS, TRANSITIONS, job_path
+from verifiers.v1.flow.job import STATE, Job, JobInspection
 from verifiers.v1.utils.loaders import load_flow
 
-from prime_rl.configs.flow import DrainConfig, FlowConfig, InspectConfig, SteerConfig
+from prime_rl.configs.flow import ApplyConfig, DrainConfig, FlowConfig, InspectConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 
 
@@ -48,7 +49,7 @@ def launch(config: FlowConfig) -> int:
 
 
 class Inspection(BaseModel):
-    units: list[UnitInspection[Any]]
+    jobs: list[JobInspection[Any]]
     events: Path
     traces: Path
     calls: Path
@@ -57,9 +58,9 @@ class Inspection(BaseModel):
 
 def inspect(root: Path, name: str | None = None) -> Inspection:
     root = root.resolve()
-    paths = [unit_path(root, name)] if name else sorted((root / UNITS).iterdir())
+    paths = [job_path(root, name)] if name else sorted((root / JOBS).iterdir())
     return Inspection(
-        units=[Unit(path).inspect() for path in paths if (path / STATE).is_file()],
+        jobs=[Job(path).inspect() for path in paths if (path / STATE).is_file()],
         events=root / TRANSITIONS,
         traces=root / "traces.jsonl",
         calls=root / "calls",
@@ -69,25 +70,32 @@ def inspect(root: Path, name: str | None = None) -> Inspection:
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
-    command = args.pop(0) if args and args[0] in ("inspect", "steer", "drain") else "run"
+    command = args.pop(0) if args and args[0] in ("inspect", "apply", "drain") else "run"
     if command == "run":
         raise SystemExit(launch(cli(FlowConfig, args=args, prog="flow")))
     if command == "inspect":
         config = cli(InspectConfig, args=args, prog="flow inspect")
-        print(inspect(config.root, config.unit).model_dump_json(indent=2))
+        print(inspect(config.root, config.job).model_dump_json(indent=2))
     elif command == "drain":
         config = cli(DrainConfig, args=args, prog="flow drain")
         (config.root / DRAIN_FILE).touch()
     else:
-        config = cli(SteerConfig, args=args, prog="flow steer")
-        unit = Unit(unit_path(config.root, config.unit))
-        revision = unit.steer(
-            stage=config.stage,
-            status=config.status,
-            reason=config.reason,
-            note=config.note,
+        config = cli(ApplyConfig, args=args, prog="flow apply")
+        flow = Flow(PipelineConfig(), root=config.root)
+        job = flow.job(config.job)
+        data = job.data_type.model_validate_json(config.data_file.read_text()) if config.data_file else None
+        revision = flow.apply(
+            job.id,
+            Transition(
+                stage=config.stage,
+                status=config.status,
+                reason=config.reason,
+                note=config.note,
+                outcome=config.outcome,
+                report=config.report,
+                data=data,
+            ),
             expected=config.expected,
-            data=json.loads(config.data.read_text()) if config.data else None,
         )
         print(json.dumps({"revision": revision}))
 
