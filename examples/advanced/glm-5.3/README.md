@@ -101,18 +101,17 @@ Both RL configs ship without `[ckpt]` — add a `[ckpt]` overlay (e.g. `interval
 
 See [Scaling](../../../docs/scaling.md) for SLURM details and [Inference](../../../docs/inference.md) for the disaggregated-inference and router reference.
 
+## SFT
 
-# SFT
-
-You can run SFT with the following command:
+The SFT configs live under [`sft/h200/`](sft/h200) — they are tuned for 8-GPU H200 nodes. Compose the base config with a data overlay:
 
 ```bash
-uv run sft @ examples/advanced/glm-5.3/sft.toml @ examples/advanced/glm-5.3/sft-math-10k.toml
+uv run sft @ examples/advanced/glm-5.3/sft/h200/base.toml @ examples/advanced/glm-5.3/sft/h200/math-10k.toml
 ```
 
 This will start a SFT run with the following configuration:
 
 - The model is `zai-org/GLM-5.3-BF16`
-- The data is `PrimeIntellect/INTELLECT-3-SFT-10K`
+- The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split)
 
-you can use the same dashboard to monitor the SFT run.
+For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead. You can use the same dashboard to monitor the SFT run.
