@@ -22,8 +22,16 @@ from collections import OrderedDict
 from itertools import groupby
 from pathlib import Path
 
+import httpx
 import orjson
 
+from prime_rl.dashboard.platform import (
+    PLATFORM_DIR,
+    TERMINAL_STATUSES,
+    PlatformError,
+    PlatformSync,
+    written_episode_ids,
+)
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -135,13 +143,15 @@ isolated = False
 
 def tracked_dirs() -> list[Path]:
     """One dashboard per user serves everything: the dirs it was started with
-    plus every dir any launcher (or other dashboard start) has registered.
-    --isolated opts out: only the CLI dirs, no registry."""
+    plus every dir any launcher (or other dashboard start) has registered, and
+    platform evaluations. --isolated opts out: only the CLI dirs, no registry."""
     dirs = list(output_dirs)
     if isolated:
         return dirs
     known = {d.resolve() for d in dirs}
     dirs.extend(d for d in registered_dirs() if d.resolve() not in known and d.is_dir())
+    if PLATFORM_DIR.is_dir() and PLATFORM_DIR.resolve() not in known:
+        dirs.append(PLATFORM_DIR)
     return dirs
 
 
@@ -374,7 +384,11 @@ def list_runs() -> dict:
         meta["name"] = run_id
         runs.append(meta)
     runs.sort(key=lambda r: r["mtime"], reverse=True)
-    return {"output_dir": ", ".join(str(d.resolve()) for d in output_dirs), "runs": runs}
+    return {
+        "output_dir": ", ".join(str(d.resolve()) for d in output_dirs),
+        "runs": runs,
+        "platform_evals": not isolated,
+    }
 
 
 @app.get("/api/runs/{run}")
@@ -1916,6 +1930,71 @@ def get_episode(
     return rec
 
 
+# ------------------------------------------------------------------------ platform
+platform_sync = PlatformSync()
+
+
+def platform_call(call):
+    if isolated:
+        raise HTTPException(409, "an --isolated dashboard serves only its own dirs")
+    try:
+        return call()
+    except PlatformError as error:
+        raise HTTPException(403, str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(502, f"platform request failed: {type(error).__name__}: {error}") from error
+
+
+def local_sync(evaluation_id: str) -> dict | None:
+    """The sync state left on disk, for an evaluation no sync is running for."""
+    run_dir = platform_sync.run_dir(evaluation_id)
+    if not run_dir.is_dir():
+        return None
+    written = len(written_episode_ids(run_dir))
+    stream = get_trace_stream(run_dir)
+    if written and stream.is_dir() and not any(stream.glob("*.jsonl")):
+        return {"state": "done", "written": written}
+    finished = read_json(run_dir / "configs" / "platform.json").get("status") in TERMINAL_STATUSES
+    return {"state": "empty" if finished and not written else "partial", "written": written}
+
+
+@app.get("/api/platform/evaluations")
+def list_platform_evaluations(limit: int = Query(25, ge=1, le=100), skip: int = Query(0, ge=0)) -> dict:
+    platform = platform_call(platform_sync.platform)
+    page = platform_call(lambda: platform.evaluations(limit, skip))
+    jobs = platform_sync.views()
+    return {
+        "account": platform.account(),
+        "total": page.get("total"),
+        "evaluations": [
+            {
+                "id": evaluation["evaluation_id"],
+                "name": evaluation.get("name"),
+                "status": evaluation.get("status"),
+                "env": ", ".join(evaluation.get("environment_names") or []),
+                "model": evaluation.get("inference_model") or evaluation.get("model_name"),
+                "samples": evaluation.get("total_samples"),
+                "created_at": evaluation.get("created_at"),
+                "sync": jobs.get(evaluation["evaluation_id"]) or local_sync(evaluation["evaluation_id"]),
+            }
+            for evaluation in page.get("evaluations") or []
+        ],
+    }
+
+
+@app.post("/api/platform/evaluations/{evaluation_id}/sync")
+def sync_platform_evaluation(evaluation_id: str) -> dict:
+    job = platform_call(lambda: platform_sync.start(evaluation_id))
+    run_dir = platform_sync.run_dir(evaluation_id)
+    run = next((name for name, path in scan_runs().items() if path == run_dir), None)
+    return {"run": run, "sync": job.view()}
+
+
+@app.get("/api/platform/syncs")
+def platform_syncs() -> dict:
+    return {"syncs": platform_sync.views()}
+
+
 # --------------------------------------------------------------------- view command
 #
 # The agent-facing control plane: a local agent that already knows the on-disk
@@ -2210,6 +2289,7 @@ def main() -> None:
         # this instance's dirs join the per-user registry, and it serves the union -
         # one dashboard per host per user covers every run
         register_dirs(output_dirs)
+        PLATFORM_DIR.mkdir(parents=True, exist_ok=True)  # the evals picker works with no local runs
     if not tracked_dirs():
         raise SystemExit("no existing output dir given" + ("" if isolated else " (and none registered)"))
     set_proc_title("Dashboard")
