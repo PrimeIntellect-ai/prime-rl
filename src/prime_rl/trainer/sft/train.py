@@ -21,6 +21,7 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, FusedOutputLinear
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -140,6 +141,11 @@ def train(config: SFTConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    # SFT only needs the summed cross-entropy, so the fused LM head can produce it and its gradients in one chunked
+    # pass instead of per-token logprobs. Other fused heads (e.g. Gemma softcapping) keep the logprob path.
+    fused_cross_entropy = isinstance(model.lm_head, FusedOutputLinear)
+    if fused_cross_entropy:
+        model.lm_head.return_loss = True
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -278,7 +284,19 @@ def train(config: SFTConfig):
         token_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if isinstance(config.model.fused_lm_head_token_chunk_size, int):
+            if fused_cross_entropy:
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    labels=target_ids.masked_fill(~loss_mask, IGNORE_INDEX),
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
+                loss_sum = out["loss"]
+            elif isinstance(config.model.fused_lm_head_token_chunk_size, int):
                 # Same path as the RL trainer: the chunked LM head computes per-token
                 # logprobs without materializing the [N, V] logits, and per-token
                 # cross-entropy is the negative target logprob.

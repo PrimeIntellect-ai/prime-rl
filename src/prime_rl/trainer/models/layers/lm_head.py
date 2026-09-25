@@ -10,6 +10,9 @@ from torch import Tensor
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_final_logit_softcapping
 
+# Same as torch's cross entropy loss
+IGNORE_INDEX = -100
+
 
 class PrimeLmOutput(TypedDict, total=False):
     """Output from LM head - a TypedDict so pytree can find tensors for FSDP2 hooks."""
@@ -38,6 +41,9 @@ class FusedOutputLinear(torch.nn.Linear):
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
+        self.return_loss = False
+        """Return the summed cross-entropy over labels != IGNORE_INDEX as ``loss`` instead of per-token
+        logprobs and entropy. Gradients are computed in the forward pass, chunk by chunk."""
 
     def forward(
         self,
@@ -47,11 +53,17 @@ class FusedOutputLinear(torch.nn.Linear):
         sampling_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
-        assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
+
+        if self.return_loss:
+            assert temperature is None and sampling_mask is None, "return_loss computes plain cross-entropy"
+            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size)
+            return PrimeLmOutput(loss=loss)
+
+        assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
         if sampling_mask is not None:
             sampling_mask = sampling_mask.reshape(b * s, sampling_mask.shape[-1]).contiguous()
@@ -264,6 +276,67 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None, None
+
+
+class _ChunkedCrossEntropySumFn(torch.autograd.Function):
+    """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
+
+    Per chunk of ``chunk_size`` tokens: one full-vocab logits GEMM, the loss, and the gradient
+    (softmax minus one-hot) folded straight into ``grad_hidden`` and ``grad_weight``. Only one chunk's
+    logits are alive at a time and backward does no recompute: it scales the stored gradients by the
+    incoming scalar. Same approach as torchtitan's ChunkedLossWrapper.
+    """
+
+    @staticmethod
+    def forward(  # type: ignore[override]
+        ctx,
+        hidden: torch.Tensor,  # [N, H]
+        weight: torch.Tensor,  # [V, H]
+        labels: torch.Tensor,  # [N], IGNORE_INDEX where the token has no loss
+        chunk_size: int,
+    ) -> torch.Tensor:
+        assert hidden.dim() == 2 and weight.dim() == 2 and labels.dim() == 1
+        assert hidden.shape[0] == labels.shape[0] and hidden.shape[1] == weight.shape[1]
+        assert chunk_size > 0
+
+        needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
+        grad_hidden = torch.empty_like(hidden) if needs_hidden else None
+        grad_weight = torch.zeros_like(weight) if needs_weight else None
+        loss = torch.zeros((), device=hidden.device, dtype=torch.float32)
+
+        for start in range(0, hidden.shape[0], chunk_size):
+            end = min(start + chunk_size, hidden.shape[0])
+            hidden_chunk = hidden[start:end]
+            labels_chunk = labels[start:end]
+            valid = labels_chunk != IGNORE_INDEX
+            target = labels_chunk.clamp(min=0).unsqueeze(-1)
+
+            logits = (hidden_chunk @ weight.t()).float()
+            logz = torch.logsumexp(logits, dim=-1)
+            target_logits = logits.gather(1, target).squeeze(1)
+            loss += torch.where(valid, logz - target_logits, 0.0).sum()
+
+            if needs_hidden or needs_weight:
+                # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
+                grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
+                grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
+                grad_logits = grad_logits.mul_(valid.unsqueeze(-1)).to(hidden.dtype)
+                if needs_hidden:
+                    torch.mm(grad_logits, weight, out=grad_hidden[start:end])
+                if needs_weight:
+                    grad_weight.addmm_(grad_logits.t(), hidden_chunk)
+
+        ctx.save_for_backward(grad_hidden, grad_weight)
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_loss: torch.Tensor):
+        grad_hidden, grad_weight = ctx.saved_tensors
+        if grad_hidden is not None:
+            grad_hidden = grad_hidden * grad_loss.to(grad_hidden.dtype)
+        if grad_weight is not None:
+            grad_weight = grad_weight * grad_loss.to(grad_weight.dtype)
+        return grad_hidden, grad_weight, None, None
 
 
 def inject_prime_lm_head(
