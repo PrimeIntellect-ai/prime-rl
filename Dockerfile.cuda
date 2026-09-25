@@ -141,22 +141,25 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
 
-# Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
-# nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
-# (#2883); rebuilding against our UCX is the documented fix. Only needed for
-# the disaggregated P/D path — default off so training-only / single-node
-# inference builds are unaffected. Enable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=1`.
-ARG INCLUDE_NIXL_FROM_SOURCE=0
+# Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
+# ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
+# rebuilding against our UCX is the documented fix. The rename is required: an
+# unrenamed source build is `nixl_cu12`, and the `nixl` shim imports nixl_cu13
+# (the PyPI wheel) first, so the fix would silently not apply. Libraries carry
+# RUNPATH=/opt/ucx/lib, so no LD_LIBRARY_PATH is needed at runtime.
+# Opt out via `--build-arg INCLUDE_NIXL_FROM_SOURCE=0`.
+ARG INCLUDE_NIXL_FROM_SOURCE=1
 ARG NIXL_VERSION=0.10.1
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         VIRTUAL_ENV=/app/.venv uv pip install pip \
         && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
         && cd /tmp/nixl \
+        && uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml \
         && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
-           LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
-           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
-        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/nixl_cu13-*.whl \
-        && rm -rf /tmp/nixl /app/deps/nixl_cu13-*.whl; \
+           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/tmp/nixl-whl \
+        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /tmp/nixl-whl/nixl_cu13-*.whl \
+        && ldd /app/.venv/lib/python3.12/site-packages/.nixl_cu13.mesonpy.libs/plugins/libplugin_UCX.so | grep -q /opt/ucx/lib/libucp.so \
+        && rm -rf /tmp/nixl /tmp/nixl-whl; \
     fi
 
 # Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
