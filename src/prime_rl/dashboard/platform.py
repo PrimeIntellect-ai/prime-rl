@@ -1,23 +1,5 @@
-"""Platform evaluations in the dashboard, read from Prime Traces.
-
-The dashboard's platform picker lists the account's evaluations; opening one starts a
-background sync that writes the evaluation into a run directory laid out the way the
-file monitor writes one, so every view serves it like a local run:
-
-    ~/.cache/prime-rl/dashboard/platform/<evaluation id>/
-        configs/eval.json            what the overview reads: model, env, group size, expected episodes
-        configs/platform.json        the evaluation record as the platform returned it
-        monitors/file/plan.json      the epoch's expected episode count
-        monitors/file/traces/stream  every episode with its member traces inlined, and its index
-        monitors/prime/run.json      the "view on platform" link, marked as synced from Traces
-
-Traces stores an episode's envelope with ``traces`` reduced to member ids and each
-trace on its own, so a record is the envelope with its members fetched back in. The
-directory is only appended to: a sync fetches just the episodes it has not written
-yet, keeps polling while the evaluation runs, and seals the stream once a finished
-evaluation's episodes are all in, which is what makes the dashboard read it as
-completed. Credentials are the saved Prime ones (``prime login``).
-"""
+"""Sync platform evaluations from Prime Traces into run dirs the dashboard serves
+like local eval runs (``~/.cache/prime-rl/dashboard/platform/<evaluation id>/``)."""
 
 import os
 import threading
@@ -42,38 +24,21 @@ from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_platform_run_path
 
 PLATFORM_DIR = STATE_DIR / "platform"
-"""The output dir synced evaluations live under; every dashboard serves it."""
-
 TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
-
 POLL_S = 15.0
-"""Between passes while an evaluation runs, or while episodes are left to fetch."""
-
+# created_at is the producer's clock at trace start, so uploads can land after later-sorting episodes
 FOLLOW_MARGIN = timedelta(hours=1)
-"""How far behind the newest episode a later pass re-lists. An episode's ``created_at``
-is its producer's clock when its first trace started, so an upload can land well after
-episodes that sort later."""
-
 FETCH_WORKERS = 8
-"""Episodes fetched concurrently: each is one request plus one per member trace."""
-
 FETCH_ATTEMPTS = 3
-"""Tries per stored document within a pass. A raw read streams, and one the connection
-drops midway (a trace can be tens of MB) is past the SDK's own retries."""
-
 FINISHED_PASSES = 3
-"""Passes a finished evaluation gets to fetch episodes that keep failing before the
-sync gives up on them."""
-
 OPTS = orjson.OPT_APPEND_NEWLINE
 
 
 class PlatformError(Exception):
-    """A platform request the picker should show as it is (no credentials, no access)."""
+    """A platform failure retrying won't fix (no credentials, no access)."""
 
 
 def write_json(path: Path, data: Any) -> None:
-    """Atomic replace, so the dashboard never reads a torn file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(orjson.dumps(data, option=orjson.OPT_INDENT_2))
@@ -85,8 +50,6 @@ def timestamp(value: str) -> float:
 
 
 class Platform:
-    """The saved Prime account: platform API reads and a Traces client."""
-
     def __init__(self) -> None:
         self.config = Config()
         if not self.config.api_key:
@@ -105,7 +68,6 @@ class Platform:
         return response.json()
 
     def evaluations(self, limit: int, skip: int) -> dict:
-        """The account's evaluations, newest first: the team's when a team is selected."""
         return self.get("/evaluations/", team_id=self.config.team_id, limit=limit, skip=skip)
 
     def evaluation(self, evaluation_id: str) -> dict:
@@ -115,19 +77,14 @@ class Platform:
         return {"base_url": self.config.base_url, "team_id": self.config.team_id}
 
 
-# ------------------------------------------------------------------ run files
-
-
 def eval_settings(evaluation: dict) -> dict:
-    """The run's sampling shape: hosted evaluations keep it in ``eval_config``,
-    ones a prime-rl eval opened in ``metadata``."""
+    # hosted evaluations keep these in eval_config, ones opened by a prime-rl eval in metadata
     return {**(evaluation.get("metadata") or {}), **(evaluation.get("eval_config") or {})}
 
 
 def env_name(evaluation: dict, run_dir: Path) -> str:
-    """The env the run's episodes are filed under, read off the first one written
-    (``env.name``, or ``env.id`` from producers that recorded no name); before any
-    lands, the platform's name for it. An evaluation covers one env."""
+    """The env the written episodes are filed under (``env.name``, or ``env.id`` on older
+    uploads), else the platform's name for it."""
     index = get_index_path(get_trace_stream(run_dir))
     if index.is_file():
         with index.open("rb") as f:
@@ -146,14 +103,10 @@ def expected_episodes(evaluation: dict) -> int | None:
 
 
 def eval_config(evaluation: dict, name: str) -> dict:
-    """The slice of a prime-rl eval config the dashboard reads, rebuilt from the
-    evaluation: one ``[[source]]`` named for its env, with the platform's group size
-    and, when the evaluation fixed one, its example count."""
     settings = eval_settings(evaluation)
     source: dict[str, Any] = {"name": name, "env": {"taskset": {"id": name}}}
     if isinstance(settings.get("rollouts_per_example"), int):
         source["group_size"] = settings["rollouts_per_example"]
-    # a negative count means the whole taskset, which the dashboard reads as unknown up front
     if expected_episodes(evaluation) is not None:
         source["num_examples"] = settings["num_examples"]
     return {
@@ -164,14 +117,12 @@ def eval_config(evaluation: dict, name: str) -> dict:
 
 
 def write_run_files(run_dir: Path, evaluation: dict) -> None:
-    """Everything but the stream, rewritten each pass so a status change shows up."""
-    # a prime-rl eval epoch records its policy step; a hosted evaluation has one epoch
     step = eval_settings(evaluation).get("step") or 0
     name = env_name(evaluation, run_dir)
     configs = run_dir / "configs"
     write_json(configs / "eval.json", eval_config(evaluation, name))
     write_json(configs / "platform.json", evaluation)
-    # the dashboard dates a run by its config dir: the evaluation's creation, not the sync
+    # the dashboard dates a run by its config dir's mtime
     created = timestamp(evaluation["created_at"])
     os.utime(configs, (created, created))
     if (expected := expected_episodes(evaluation)) is not None:
@@ -190,11 +141,7 @@ def write_run_files(run_dir: Path, evaluation: dict) -> None:
     )
 
 
-# ------------------------------------------------------------------- episodes
-
-
 def written_episode_ids(run_dir: Path) -> list[str]:
-    """The ids already in the stream, in line order."""
     index = get_index_path(get_trace_stream(run_dir))
     if not index.is_file():
         return []
@@ -202,7 +149,6 @@ def written_episode_ids(run_dir: Path) -> list[str]:
 
 
 def list_new_episodes(client: TracesClient, run_id: str, seen: set[str], created_after: datetime | None) -> list:
-    """The run's episodes not written yet, oldest first (the listing is newest first)."""
     episodes, cursor = [], None
     while True:
         page = client.list_episodes(
@@ -219,6 +165,7 @@ def list_new_episodes(client: TracesClient, run_id: str, seen: set[str], created
 
 
 def read_raw(read: Callable[[str], bytes], document_id: str) -> Any:
+    # a stream dropped midway through a large trace is past the SDK's own retries
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         try:
             return orjson.loads(read(document_id))
@@ -228,20 +175,16 @@ def read_raw(read: Callable[[str], bytes], document_id: str) -> Any:
 
 
 def episode_record(client: TracesClient, episode_id: str) -> dict:
-    """The episode as the file monitor would have written it: the stored envelope
-    with each member trace in place of its id."""
+    """The stored envelope with its member traces inlined, as the file monitor writes it."""
     envelope = read_raw(client.get_episode_raw, episode_id)
     envelope["traces"] = [read_raw(client.get_raw, trace_id) for trace_id in envelope.get("traces") or []]
-    # older producers recorded no group; an eval's group is the rollouts of one task
+    # older uploads have no group; an eval's group is the rollouts of one task
     if not envelope.get("group") and (key := (envelope.get("task") or {}).get("key")):
         envelope["group"] = {"id": key}
     return envelope
 
 
 def fetch_records(client: TracesClient, episode_ids: list[str]) -> Iterator[tuple[str, dict | PrimeTracesError]]:
-    """Each episode's record, or the error that kept it from being read, in the order
-    given. One unreadable episode does not hold up the others."""
-
     def fetch(episode_id: str) -> tuple[str, dict | PrimeTracesError]:
         try:
             return episode_id, episode_record(client, episode_id)
@@ -255,9 +198,7 @@ def fetch_records(client: TracesClient, episode_ids: list[str]) -> Iterator[tupl
 def append_episodes(
     run_dir: Path, records: Iterator[tuple[str, dict | PrimeTracesError]], line: int
 ) -> tuple[int, dict[str, str]]:
-    """Append the records read to the stream and its index, flushing each so the
-    dashboard sees the run fill in. Returns how many were written and the errors of
-    the episodes that could not be read."""
+    """Returns how many records were written and the errors of those that weren't."""
     stream_dir = get_trace_stream(run_dir)
     stream = ChunkedJsonl(stream_dir, FileMonitorConfig().chunk_bytes, compress=False)
     written, failed = 0, {}
@@ -276,24 +217,18 @@ def append_episodes(
 
 
 def seal(run_dir: Path, evaluation: dict) -> None:
-    """Mark a finished evaluation's stream complete: its live chunk compressed, and its
-    mtime - where a finished run's duration ends - set to the evaluation's end."""
     stream_dir = get_trace_stream(run_dir)
     ChunkedJsonl(stream_dir, FileMonitorConfig().chunk_bytes, compress=True).close()
+    # a finished run's duration ends at its stream's mtime
     ended = timestamp(evaluation.get("completed_at") or evaluation["updated_at"])
     os.utime(stream_dir, (ended, ended))
 
 
-# ----------------------------------------------------------------------- jobs
-
-
 @dataclass
 class SyncJob:
-    """One evaluation's sync, as the picker shows it."""
-
     evaluation_id: str
     state: str = "starting"  # starting, syncing, following, done, empty, error
-    status: str | None = None  # the evaluation's platform status
+    status: str | None = None
     written: int = 0
     expected: int | None = None
     failed: dict[str, str] = field(default_factory=dict)
@@ -312,8 +247,8 @@ class SyncJob:
 
 
 class PlatformSync:
-    """The dashboard's syncs: at most one per evaluation, each on its own thread for
-    as long as the evaluation runs (or episodes are left to fetch)."""
+    """One background sync per evaluation, running until it has every episode of a
+    finished evaluation."""
 
     def __init__(self, root: Path = PLATFORM_DIR) -> None:
         self.root = root
@@ -330,9 +265,7 @@ class PlatformSync:
         return self.root / evaluation_id
 
     def start(self, evaluation_id: str) -> SyncJob:
-        """The evaluation's sync, started unless one is already going. The run files
-        are written before it returns, so the run is listed from then on; an
-        evaluation the account cannot read fails here rather than in the thread."""
+        """Writes the run files before returning, so the run is listed right away."""
         with self._lock:
             job = self.jobs.get(evaluation_id)
             if job is not None and job.thread is not None and job.thread.is_alive():
@@ -353,17 +286,16 @@ class PlatformSync:
                 newest = self.sync_pass(job, newest)
             except (httpx.HTTPError, PrimeTracesError, PlatformError) as e:
                 job.error = f"{type(e).__name__}: {e}"
-                if isinstance(e, PlatformError):  # lost access: no later pass fixes that
+                if isinstance(e, PlatformError):
                     job.state = "error"
                     return
-                # a later pass resumes from what is on disk
                 time.sleep(POLL_S)
                 continue
             job.error = None
             if job.status in TERMINAL_STATUSES:
                 finished_passes += 1
                 if not job.failed:
-                    # a finished evaluation with nothing in Traces uploaded its samples elsewhere
+                    # nothing in Traces for a finished evaluation: its samples went elsewhere
                     job.state = "done" if job.written else "empty"
                     return
                 if finished_passes >= FINISHED_PASSES:
@@ -372,18 +304,17 @@ class PlatformSync:
             time.sleep(POLL_S)
 
     def sync_pass(self, job: SyncJob, newest: datetime | None) -> datetime | None:
-        """Refresh the run files and append the episodes not written yet. Returns the
-        newest ``created_at`` written so far, which bounds the next pass's listing."""
+        """Appends the episodes not written yet; returns the newest ``created_at`` written."""
         platform = self.platform()
         run_dir = self.run_dir(job.evaluation_id)
-        # read before listing: an evaluation already terminal here has uploaded everything
+        # read the status before listing: a terminal evaluation has uploaded everything
         evaluation = platform.evaluation(job.evaluation_id)
         job.status, job.expected = evaluation["status"], expected_episodes(evaluation)
         finished = job.status in TERMINAL_STATUSES
         job.state = "syncing" if finished or not job.written else "following"
         write_run_files(run_dir, evaluation)
         written_ids = written_episode_ids(run_dir)
-        # an episode that failed last pass is re-listed whatever its age
+        # re-list everything while episodes from the last pass are still missing
         created_after = newest - FOLLOW_MARGIN if newest and not job.failed else None
         episodes = list_new_episodes(platform.traces, job.evaluation_id, set(written_ids), created_after)
         records = fetch_records(platform.traces, [episode.episode_id for episode in episodes])

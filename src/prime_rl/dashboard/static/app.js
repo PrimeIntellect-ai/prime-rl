@@ -147,13 +147,10 @@ async function loadRuns() {
   }
 }
 
-/* a run synced from the platform reads by its evaluation's name, not its id */
 const runLabel = (r) => (r.platform?.source === "traces" && r.platform.name ? `${r.platform.name} · platform` : r.name);
 
 /* ------------------------------------------------------- platform evaluations */
 
-/* the picker lists the account's platform evaluations; opening one syncs it from
-   Prime Traces into a run dir the dashboard serves like any other run */
 const evals = { list: null, error: null, account: null, loadedAt: 0, opening: null, openError: null, syncs: {} };
 const EVALS_TTL_MS = 30000;
 
@@ -220,7 +217,6 @@ async function loadEvals(force = false) {
   if (!$("#evals-menu").hidden) renderEvalsMenu();
 }
 
-/* the server's detail, not the request that carried it */
 function platformMessage(err) {
   const text = String(err.message ?? err);
   const detail = text.match(/"detail":\s*"((?:[^"\\]|\\.)*)"/);
@@ -350,7 +346,7 @@ async function selectRun(name, deferTab = false) {
   applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
-  // a platform evaluation left unfinished (still running, or a sync cut short) picks up again
+  // resume the sync of an unfinished platform evaluation
   if (state.meta?.platform?.source === "traces" && !state.meta.finished) {
     const id = Object.values(state.meta.platform.evaluations ?? {})[0]?.id;
     if (id) startSync(id).catch((err) => console.warn("platform sync did not resume", err));

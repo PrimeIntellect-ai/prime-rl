@@ -142,10 +142,9 @@ isolated = False
 
 
 def tracked_dirs() -> list[Path]:
-    """One dashboard per user serves everything: the dirs it was started with,
-    every dir any launcher (or other dashboard start) has registered, and the
-    platform evaluations opened from the picker. --isolated opts out: only the CLI
-    dirs, no registry."""
+    """One dashboard per user serves everything: the dirs it was started with
+    plus every dir any launcher (or other dashboard start) has registered, and
+    platform evaluations. --isolated opts out: only the CLI dirs, no registry."""
     dirs = list(output_dirs)
     if isolated:
         return dirs
@@ -1928,13 +1927,10 @@ def get_episode(
 
 
 # ------------------------------------------------------------------------ platform
-# Evaluations on the platform, opened from the picker: each is synced from Prime
-# Traces into a run dir under PLATFORM_DIR and served like any other run.
 platform_sync = PlatformSync()
 
 
 def platform_call(call):
-    """A platform read, its failure turned into a message the picker can show."""
     if isolated:
         raise HTTPException(409, "an --isolated dashboard serves only its own dirs")
     try:
@@ -1946,7 +1942,7 @@ def platform_call(call):
 
 
 def local_sync(evaluation_id: str) -> dict | None:
-    """What an earlier sync left on disk, for an evaluation no sync is running for."""
+    """The sync state left on disk, for an evaluation no sync is running for."""
     run_dir = platform_sync.run_dir(evaluation_id)
     if not run_dir.is_dir():
         return None
@@ -1960,7 +1956,6 @@ def local_sync(evaluation_id: str) -> dict | None:
 
 @app.get("/api/platform/evaluations")
 def list_platform_evaluations(limit: int = Query(25, ge=1, le=100), skip: int = Query(0, ge=0)) -> dict:
-    """The account's evaluations, newest first, each with the state of its sync."""
     platform = platform_call(platform_sync.platform)
     page = platform_call(lambda: platform.evaluations(limit, skip))
     jobs = platform_sync.views()
@@ -1985,8 +1980,6 @@ def list_platform_evaluations(limit: int = Query(25, ge=1, le=100), skip: int = 
 
 @app.post("/api/platform/evaluations/{evaluation_id}/sync")
 def sync_platform_evaluation(evaluation_id: str) -> dict:
-    """Open an evaluation: its run dir is written before this returns, so the run
-    list has it, and its episodes follow in the background."""
     job = platform_call(lambda: platform_sync.start(evaluation_id))
     run_dir = platform_sync.run_dir(evaluation_id)
     run = next((name for name, path in scan_runs().items() if path == run_dir), None)
@@ -1995,7 +1988,6 @@ def sync_platform_evaluation(evaluation_id: str) -> dict:
 
 @app.get("/api/platform/syncs")
 def platform_syncs() -> dict:
-    """The state of every sync this dashboard started, keyed by evaluation id."""
     return {"syncs": platform_sync.views()}
 
 
