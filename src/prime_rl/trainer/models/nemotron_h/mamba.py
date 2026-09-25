@@ -14,6 +14,7 @@ from torch import nn
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+from prime_rl.utils.cp import CPContext
 
 
 def sequence_to_head_parallel(
@@ -104,8 +105,8 @@ class NemotronHMamba2(nn.Module):
             bias=config.use_conv_bias,
         )
         self.dt_bias = nn.Parameter(torch.empty(self.num_heads))
-        self.A_log = nn.Parameter(torch.log(torch.arange(1, self.num_heads + 1, dtype=torch.float32)))
-        self.D = nn.Parameter(torch.ones(self.num_heads, dtype=torch.float32))
+        self.A_log = nn.Parameter(torch.arange(1, self.num_heads + 1, dtype=torch.get_default_dtype()).log())
+        self.D = nn.Parameter(torch.ones(self.num_heads))
         self.norm = GatedRMSNorm(
             self.intermediate_size,
             group_size=self.intermediate_size // self.num_groups,
@@ -124,15 +125,7 @@ class NemotronHMamba2(nn.Module):
         with torch.no_grad():
             self.dt_bias.copy_((time_steps + torch.log(-torch.expm1(-time_steps))).to(self.dt_bias.dtype))
 
-    def set_context_parallel_attributes(
-        self,
-        process_group: dist.ProcessGroup,
-        rank: int,
-        world_size: int,
-    ) -> None:
-        self.process_group = process_group
-        self.context_parallel_rank = rank
-        self.context_parallel_world_size = world_size
+        self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
@@ -149,15 +142,16 @@ class NemotronHMamba2(nn.Module):
         conv_weight = self.conv1d.weight
         conv_bias = self.conv1d.bias
         state_decay = -torch.exp(self.A_log.float())
-        skip = self.D
+        skip = self.D.float()
         dt_bias = self.dt_bias
         norm_weight = self.norm.weight
 
-        if hasattr(self, "process_group"):
-            world_size = self.context_parallel_world_size
-            rank = self.context_parallel_rank
-            gate = sequence_to_head_parallel(gate, self.process_group, world_size)
-            time_step = sequence_to_head_parallel(time_step, self.process_group, world_size)
+        if self.cp_context.cp_enabled:
+            cp_group = self.cp_context.cp_group
+            world_size = self.cp_context.cp_world_size
+            rank = self.cp_context.cp_rank
+            gate = sequence_to_head_parallel(gate, cp_group, world_size)
+            time_step = sequence_to_head_parallel(time_step, cp_group, world_size)
 
             recurrent_input, state_input, state_output = torch.split(
                 convolution_input,
@@ -166,9 +160,9 @@ class NemotronHMamba2(nn.Module):
             )
             convolution_input = torch.cat(
                 [
-                    sequence_to_head_parallel(recurrent_input, self.process_group, world_size),
-                    sequence_to_head_parallel(state_input, self.process_group, world_size),
-                    sequence_to_head_parallel(state_output, self.process_group, world_size),
+                    sequence_to_head_parallel(recurrent_input, cp_group, world_size),
+                    sequence_to_head_parallel(state_input, cp_group, world_size),
+                    sequence_to_head_parallel(state_output, cp_group, world_size),
                 ],
                 dim=-1,
             )
@@ -238,11 +232,11 @@ class NemotronHMamba2(nn.Module):
         ).reshape(batch_size, sequence_length, intermediate_size)
         hidden_states = self.norm(hidden_states, gate, weight=norm_weight)
 
-        if hasattr(self, "process_group"):
+        if self.cp_context.cp_enabled:
             hidden_states = head_to_sequence_parallel(
                 hidden_states,
-                self.process_group,
-                self.context_parallel_world_size,
+                self.cp_context.cp_group,
+                self.cp_context.cp_world_size,
             )
         return self.out_proj(hidden_states)
 

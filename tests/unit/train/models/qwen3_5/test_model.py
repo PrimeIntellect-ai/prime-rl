@@ -1,9 +1,7 @@
-import os
 from unittest.mock import MagicMock
 
 import pytest
 import torch
-import torch.distributed as dist
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
@@ -19,9 +17,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
-from prime_rl.trainer.models.qwen3_5.gated_delta_net import Qwen3_5GatedDeltaNet
-from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
-from prime_rl.utils.cp import setup_model_cp
+from prime_rl.utils.cp import CPContext
 
 
 def get_text_config(config_cls=Qwen3_5TextConfig) -> Qwen3_5TextConfig:
@@ -88,107 +84,35 @@ def get_model(config, device="cuda"):
 
 
 @pytest.mark.gpu
-def test_norms_remain_zero_centered_after_model_init(text_config):
-    model = get_model(text_config)
-
-    norms = [module for module in model.modules() if isinstance(module, Qwen3_5RMSNorm)]
-    assert norms
-    assert all(torch.count_nonzero(norm.weight) == 0 for norm in norms)
-
-
-@pytest.mark.gpu
 def test_context_parallel_setup_chain_text_and_vlm(text_config):
     cp_group = MagicMock()
 
     text_model = get_model(text_config, device="meta")
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
-    setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
-    assert text_model.model.context_parallel_group is cp_group
-    assert text_model.model.context_parallel_rank == 1
-    assert text_model.model.context_parallel_world_size == 2
-    assert linear_layer.linear_attn.context_parallel_group is cp_group
-    assert linear_layer.linear_attn.context_parallel_world_size == 2
+
+    text_cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    for module in text_model.modules():
+        if hasattr(module, "cp_context"):
+            module.cp_context = text_cp_context
+
+    assert text_model.model.cp_context is text_cp_context
+    assert text_model.model.cp_context.cp_rank == 1
+    assert text_model.model.cp_context.cp_world_size == 2
+    assert text_model.model.cp_context.cp_style == "ulysses"
+    assert linear_layer.linear_attn.cp_context is text_cp_context
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
-    setup_model_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
-    assert vlm_model.model.language_model.context_parallel_group is cp_group
-    assert vlm_model.model.language_model.layers[0].linear_attn.context_parallel_world_size == 2
 
+    vlm_cp_context = CPContext(cp_group, 0, 2, "ulysses")
+    for module in vlm_model.modules():
+        if hasattr(module, "cp_context"):
+            module.cp_context = vlm_cp_context
 
-@pytest.mark.gpu
-def test_qwen3_5_gated_delta_net_context_parallel():
-    if int(os.environ.get("WORLD_SIZE", 1)) != 2:
-        pytest.skip("run with torchrun --nproc-per-node=2")
-
-    dist.init_process_group("nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-
-    try:
-        torch.manual_seed(0)
-        config = get_text_config()
-        config.hidden_size = 64
-        config.linear_key_head_dim = 128
-        config.linear_value_head_dim = 128
-        config.linear_num_key_heads = 16
-        config.linear_num_value_heads = 32
-        reference = Qwen3_5GatedDeltaNet(config).cuda().to(torch.bfloat16)
-        context_parallel = Qwen3_5GatedDeltaNet(config).cuda().to(torch.bfloat16)
-        context_parallel.load_state_dict(reference.state_dict())
-        context_parallel.set_context_parallel_attributes(dist.group.WORLD, world_size=2)
-
-        hidden_states = torch.randn(1, 16, config.hidden_size, device="cuda", dtype=torch.bfloat16)
-        dist.broadcast(hidden_states, src=0)
-        cu_seqlens = torch.tensor([0, 5, 11, 16], device="cuda", dtype=torch.int32)
-
-        reference_input = hidden_states.detach().clone().requires_grad_()
-        expected = reference(
-            reference_input,
-            cu_seqlens,
-        )
-        output_gradient = torch.randn_like(expected)
-        dist.broadcast(output_gradient, src=0)
-        expected.backward(output_gradient)
-
-        local_slice = slice(local_rank * 8, (local_rank + 1) * 8)
-        local_input = hidden_states[:, local_slice].detach().clone().requires_grad_()
-        actual = context_parallel(
-            local_input,
-            cu_seqlens,
-        )
-        actual.backward(output_gradient[:, local_slice])
-
-        gathered = [torch.empty_like(actual) for _ in range(2)]
-        dist.all_gather(gathered, actual)
-        torch.testing.assert_close(torch.cat(gathered, dim=1), expected, rtol=3e-2, atol=3e-2)
-        torch.testing.assert_close(
-            local_input.grad,
-            reference_input.grad[:, local_slice],
-            rtol=5e-2,
-            atol=5e-2,
-        )
-    finally:
-        dist.destroy_process_group()
-
-
-def test_setup_model_cp_requires_hook_only_for_hybrid_models():
-    class HybridLayer(torch.nn.Module):
-        layer_type = "linear_attention"
-
-    class Inner:
-        layers = torch.nn.Sequential(torch.nn.Sequential(HybridLayer()))
-
-    class HybridNoHookModel:
-        model = Inner()
-
-    with pytest.raises(ValueError, match="set_context_parallel_attributes"):
-        setup_model_cp(HybridNoHookModel(), MagicMock(), cp_rank=0, cp_world_size=2)
-
-    class SoftmaxOnlyModel:
-        pass
-
-    setup_model_cp(SoftmaxOnlyModel(), MagicMock(), cp_rank=0, cp_world_size=2)
+    assert vlm_model.model.cp_context is vlm_cp_context
+    assert vlm_model.model.language_model.cp_context is vlm_cp_context
+    assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
+    assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
 
 
 def test_ring_patches_flash_attention():

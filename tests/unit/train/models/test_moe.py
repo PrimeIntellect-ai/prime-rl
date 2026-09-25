@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
+from prime_rl.trainer.model import is_tt_moe_model
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -12,8 +13,30 @@ from prime_rl.trainer.models.layers.moe import (
     MoE,
     MoEArgs,
 )
+from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5Config,
+    Qwen3_5MoeConfig,
+    Qwen3_5MoeTextConfig,
+    Qwen3_5TextConfig,
+)
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "expected"),
+    [
+        (Qwen3_5TextConfig, False),
+        (Qwen3_5MoeTextConfig, True),
+        (Qwen3_5Config, False),
+        (Qwen3_5MoeConfig, True),
+    ],
+    ids=["dense-text", "moe-text", "dense-vlm", "moe-vlm"],
+)
+def test_moe_detection_for_text_and_vlm(config_cls, expected):
+    model = torch.nn.Module()
+    model.config = config_cls()
+    assert is_tt_moe_model(model) is expected
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])
@@ -33,6 +56,18 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
     assert moe.token_dispatcher.token_group_alignment == moe.experts.compute.token_group_alignment
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
+
+
+def test_mega_moe_dispatch_requires_expert_parallelism():
+    moe = MoE.from_args(MoEArgs(num_experts=2, score_before_experts=False), dim=512, hidden_dim=512, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"moe": {"dispatch": {"type": "mega_moe"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(ValueError, match="expert-parallel group"):
+        configure_moe_runtime(model, config, dims)
 
 
 def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:

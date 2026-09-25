@@ -21,13 +21,27 @@ def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
 
 def episode_kind(rec: dict) -> str:
     """The kind of work an episode did. The file monitor stamps it as the episode
-    lands; a stream written by another producer (a verifiers ``uv run eval`` run) is
-    read off its run info instead."""
+    lands; a record without the stamp is read off its run info instead."""
     for trace in rec.get("traces") or []:
         if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval"):
             return kind
     run = rec.get("run") or {}
     return (run.get("work") or {}).get("type") or run.get("type") or "eval"
+
+
+TRUNCATING_STOPS = frozenset(
+    {"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"}
+)
+"""The stop conditions ``verifiers.v1.Trace.is_truncated`` counts as truncation."""
+
+
+def trace_truncated(trace: dict) -> bool:
+    """``Trace.is_truncated`` for a dumped trace: a framework limit stopped it, or its
+    last successful model call ran out of length."""
+    if trace.get("stop_condition") in TRUNCATING_STOPS:
+        return True
+    last = next((call for call in reversed(trace.get("calls") or []) if call.get("error") is None), None)
+    return bool(last and last.get("finish_reason") == "length")
 
 
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
@@ -36,8 +50,11 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     ``line`` numbers the episode within the stream from 1, so the last of n reads as
     n — it is what a reader sees and what addresses the episode."""
     rewards, advantages = [], []
-    input_tokens = output_tokens = turns = branches = 0
+    input_tokens = rec.get("num_input_tokens")
+    output_tokens = rec.get("num_output_tokens")
+    turns = branches = 0
     stop_condition = None
+    truncated = False
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
@@ -71,19 +88,10 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         if advantage is not None:
             advantages.append(advantage)
         for node in nodes:
-            n_tokens = len(node.get("token_ids") or [])
-            if node.get("sampled"):
-                output_tokens += n_tokens
-            else:
-                input_tokens += n_tokens
             if (node.get("message") or {}).get("role") == "assistant":
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
-        if input_tokens == 0 and output_tokens == 0:  # some eval traces carry no token arrays
-            for call in trace.get("calls") or []:
-                usage = call.get("usage") or {}
-                input_tokens += usage.get("prompt_tokens") or 0
-                output_tokens += usage.get("completion_tokens") or 0
+        truncated = truncated or trace_truncated(trace)
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
@@ -95,7 +103,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "id": rec.get("id"),
         "kind": episode_kind(rec),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
-        "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
+        # the env's name is the orchestrator's key for it (two sources can share a taskset
+        # id); a record without one falls back to the id
+        "env": (rec.get("env") or {}).get("name") or (rec.get("env") or {}).get("id"),
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
         "num_errors": len(rec.get("errors") or []),
@@ -106,8 +116,10 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "turns": turns,
         "branches": branches,
         "stop_condition": stop_condition,
+        "truncated": truncated,
         # when the episode landed and how long it was alive: the stream's x axis,
         # and the one duration worth sorting a stream by
+        "dispatch": (first_info.get("dispatch") or {}).get("time"),
         "arrival": (first_info.get("arrival") or {}).get("time"),
         "duration": _episode_duration(first_info, timing),
     }

@@ -48,7 +48,6 @@ class Qwen3_5RotaryEmbedding(nn.Module):
         device: torch.device | None = None,
         seq_len: int | None = None,
     ) -> tuple[torch.Tensor, float]:
-        del seq_len
         rope_parameters = config.rope_parameters
         rotary_dim = int(config.head_dim * rope_parameters.get("partial_rotary_factor", 1.0))
         positions = torch.arange(0, rotary_dim, 2, dtype=torch.int64, device=device).float()

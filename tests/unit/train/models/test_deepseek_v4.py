@@ -105,7 +105,7 @@ def _torch_rms_norm(monkeypatch):
     The kernel is a project-wide choice that predates this model and drifts from a fp32
     reference by up to ~1e-2 in bf16, which would swamp what the V4-specific math contributes.
     """
-    monkeypatch.setattr(norms, "_get_quack_rmsnorm", lambda: None)
+    monkeypatch.setattr(norms, "get_quack_rmsnorm", lambda: None)
 
 
 def _tid2eid(vocab_size: int, num_experts: int, top_k: int) -> torch.Tensor:

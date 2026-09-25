@@ -8,7 +8,7 @@ from transformers.integrations import use_kernel_forward_from_hub
 
 
 @lru_cache(maxsize=1)
-def _get_quack_rmsnorm():
+def get_quack_rmsnorm():
     """Lazy-load quack rmsnorm. Returns None if unavailable or GPU is pre-Hopper."""
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
         return None
@@ -34,7 +34,7 @@ class RMSNorm(nn.Module):
         self.variance_epsilon = config.eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        quack_fn = _get_quack_rmsnorm() if hidden_states.is_cuda else None
+        quack_fn = get_quack_rmsnorm() if hidden_states.is_cuda else None
         if quack_fn is not None:
             return quack_fn(hidden_states, self.weight, eps=self.variance_epsilon)
         input_dtype = hidden_states.dtype

@@ -6,7 +6,7 @@ import torch
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
-from prime_rl.utils.cp import setup_model_cp
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -114,11 +114,26 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     model.model.layers[0] = torch.nn.Sequential(mamba_layer)
 
     cp_group = MagicMock()
-    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
-    assert mamba_layer.mamba.process_group is cp_group
-    assert mamba_layer.mamba.context_parallel_rank == 1
-    assert mamba_layer.mamba.context_parallel_world_size == 2
+    cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    for module in model.modules():
+        if hasattr(module, "cp_context"):
+            module.cp_context = cp_context
+
+    assert mamba_layer.mamba.cp_context is cp_context
+    assert mamba_layer.mamba.cp_context.cp_rank == 1
+    assert mamba_layer.mamba.cp_context.cp_world_size == 2
+
+
+def test_nemotron_h_mamba_parameters_follow_default_dtype():
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    with torch.device("meta"), default_dtype(torch.bfloat16):
+        model = NemotronHForCausalLM(config)
+
+    mamba = model.model.layers[0].mamba
+    assert isinstance(mamba, NemotronHMamba2)
+    assert mamba.A_log.dtype == torch.bfloat16
+    assert mamba.D.dtype == torch.bfloat16
 
 
 def test_nemotron_h_no_latent_projection():

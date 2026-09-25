@@ -90,6 +90,15 @@ body {
 #tabs button:hover { color: var(--grey-6); }
 #tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 #topbar .toggle { margin-left: auto; }
+#topbar .toggle + .toggle { margin-left: 0; }
+#platform-wrap { margin-left: 14px; }
+/* looks like the run and compare pickers; the arrow says it leaves the page */
+#platform-wrap .platform { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; cursor: pointer; }
+#platform-wrap .platform:hover { color: var(--accent); border-color: var(--accent); }
+#platform-wrap .platform.disabled { color: var(--grey-4); border-color: var(--grey-3); cursor: default; }
+#platform-menu { left: auto; right: 0; min-width: 180px; }
+#platform-menu .dd-opt { display: block; color: var(--grey-5); text-decoration: none; }
+#platform-menu .dd-opt:hover { color: var(--grey-6); }
 
 select, .search, .btn {
   background: transparent;
@@ -297,12 +306,14 @@ main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; 
 
 /* --------------------------------------------------------------- metrics */
 /* stable gutter: no layout shift when collapsing sections hides the scrollbar */
-#metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
+#overview-body, #metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
 .chart-card.dragging { opacity: 0.45; }
 /* one 12px rhythm everywhere: section-to-section, header-to-panes, pane-to-pane */
 details.section { margin-bottom: 12px; }
 /* nested sections (all-mode key tree) indent one step */
 details.section details.section { margin-left: 14px; }
+/* a section's own panes keep the rhythm before the sections nested under them */
+details.section > .chart-grid:not(:last-child) { margin-bottom: 12px; }
 details.section:not([open]) > summary { margin-bottom: 0; }
 /* section headers are full-width bars so the clickable region is obvious */
 details.section > summary {
@@ -336,9 +347,85 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   text-overflow: ellipsis;
 }
 .stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 0; }
-.eval-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.ep-bar { flex: 1; height: 6px; background: var(--grey-2); border: 1px solid var(--hairline); }
-.ep-fill { height: 100%; background: var(--accent); }
+/* eval progress: one cell per expected episode */
+.eval-progress { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.ep-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.ep-row { display: flex; align-items: center; gap: 12px; }
+.ep-row .ep-blocks { flex: 1; }
+.ep-pct { font-size: 13px; color: var(--grey-6); min-width: 4ch; text-align: right; }
+.ep-head .name { font-size: 14px; color: var(--grey-6); }
+.ep-blocks { display: flex; gap: 2px; height: 28px; }
+.ep-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); }
+.ep-cell.done { background: var(--accent); border-color: var(--accent); cursor: pointer; }
+.ep-cell.done.err { background: var(--negative); border-color: var(--negative); }
+.ep-cell.done:hover { filter: brightness(1.2); }
+.ep-cell.live { border-color: var(--accent); background: rgba(182, 255, 60, 0.18); animation: live-pulse 1.6s ease-in-out infinite; cursor: pointer; }
+
+/* distributions: a beeswarm per metric, a faint boxplot behind it, stats on hover */
+#tab-overview { position: relative; }
+.swarm-card .chart-head { cursor: default; }
+.swarm-host { height: var(--pane-h, 150px); margin-top: 6px; }
+.swarm { display: block; }
+.swarm .sw-bg { fill: transparent; }
+.swarm circle { fill: var(--accent); fill-opacity: 0.7; cursor: pointer; }
+.swarm circle.err { fill: var(--negative); }
+.swarm circle:hover { fill-opacity: 1; stroke: var(--grey-6); stroke-width: 1; }
+.sw-axis { stroke: var(--grey-3); stroke-width: 1; }
+.sw-grid { stroke: var(--hairline-faint); stroke-width: 1; }
+.sw-box rect { fill: var(--hairline-faint); stroke: var(--grey-3); stroke-width: 1; }
+.sw-box line { stroke: var(--grey-3); stroke-width: 1; }
+.sw-box .median { stroke: var(--grey-4); stroke-width: 1.5; }
+/* timing pane: breadcrumb, icicle of the zoomed node, per-episode strips, tree legend */
+/* eval metrics sections: flat, a muted heading each */
+.eval-sec { margin-bottom: 18px; }
+.eval-sec-title { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--grey-4); border-bottom: 1px solid var(--hairline); padding-bottom: 4px; margin-bottom: 10px; }
+.phase-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.timing-pane .chart-head { cursor: default; }
+.tm-crumbs { font-size: 12px; color: var(--grey-5); }
+.tm-crumb.current { color: var(--grey-6); }
+.tm-legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 4px 0 14px; font-size: 11px; color: var(--grey-5); }
+.tm-icicle svg { display: block; margin-bottom: 14px; }
+.tm-seg text { fill: #111; font-size: 10px; pointer-events: none; }
+.tm-strip-seg { cursor: pointer; }
+.tm-row-hit { fill: transparent; cursor: pointer; }
+.tm-line.dim { opacity: 0.3; }
+.tm-strip-seg.dim { opacity: 0.2; }
+.tm-strip-seg:hover { filter: brightness(1.25); }
+.tm-line.err { fill: var(--negative); }
+.comp-pane [data-part].dim { opacity: 0.2; }
+.comp-pane .tm-node.dim { opacity: 0.35; }
+/* the summary is one row whatever the count: the tiles share the width equally */
+.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; }
+.sum-tile { cursor: default; padding: 14px 16px; min-height: 96px; display: flex; flex-direction: column; justify-content: center; }
+.sum-tile .stat-label, .sum-tile .stat-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
+.sum-tile.rate-warn .stat-value { color: #ffd166; }
+.sum-tile.rate-bad .stat-value { color: var(--negative); }
+.tm-note { font-size: 10px; margin-top: 4px; }
+.tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.tm-more:hover { color: var(--grey-6); }
+.tm-strips.scroll { max-height: 560px; overflow-y: auto; }
+.tm-node { white-space: nowrap; cursor: default; }
+.tm-node:hover { color: var(--grey-6); }
+/* constants as chips; counted dot plots for few-valued metrics */
+.const-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.const-chip { font-size: 12px; color: var(--grey-6); background: var(--grey-2); border: 1px solid var(--hairline); padding: 4px 10px; }
+.const-chip .k { color: var(--grey-4); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 8px; }
+.dp-count { fill: var(--grey-5); font-size: 10px; }
+#swarm-tip {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 6px 8px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+#swarm-tip .tip-head { color: var(--accent); margin-bottom: 4px; }
+#swarm-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
+#swarm-tip .tip-row span:first-child { color: var(--grey-4); }
 .ep-label {
   font-size: 10px;
   letter-spacing: var(--track-caps);
@@ -443,7 +530,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 
 
 /* metrics regex filter (overview + all) */
-#metrics-search, #config-search, #log-search { flex: 1; max-width: 460px; }
+#overview-search, #metrics-search, #config-search, #log-search { flex: 1; max-width: 460px; }
 
 /* wandb-style resize handles on every chart card: right edge = width, bottom
    edge = height, corner = both. Resizing one pane resizes all of them. */
@@ -633,7 +720,7 @@ mark.hit {
 .sb-cell.eval:hover::after { background: var(--grey-6); }
 #trace-filter-menu {
   right: 0;
-  min-width: 240px;
+  min-width: 320px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -643,7 +730,21 @@ mark.hit {
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
 #episode-table .vpad td { padding: 0; border: 0; }
-#episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+/* fixed columns: a poll that swaps rows in or out never reflows the table. The sized
+   columns hold mono text whose width follows the font, not the window, so they are
+   measured in characters; env and stop take what is left, and below the minimum the
+   wrap scrolls sideways instead of crushing them. */
+#episode-table { width: 100%; min-width: 190ch; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
+#episode-table col.c-line { width: 7.5ch; }
+#episode-table col.c-phase { width: 11.5ch; }
+#episode-table col.c-span { width: 50ch; }
+#episode-table col.c-kind { width: 8.5ch; }
+#episode-table col.c-group { width: 13.5ch; }
+#episode-table col.c-tok { width: 25ch; }
+#episode-table col.c-turns { width: 9ch; }
+#episode-table col.c-branches { width: 12.5ch; }
+#episode-table col.c-reward { width: 10.5ch; }
+#episode-table td, #episode-table th { overflow: hidden; text-overflow: ellipsis; }
 #episode-table th {
   text-align: left;
   font: 400 10px var(--font-mono);
@@ -733,6 +834,7 @@ mark.hit {
 .tm-item.active { background: var(--grey-2); border-color: var(--grey-3); color: var(--grey-6); }
 .tm-item.err { background: rgba(255, 69, 57, 0.08); border-color: var(--negative); }
 .tm-item.err:hover, .tm-item.err.active { background: rgba(255, 69, 57, 0.16); }
+.tm-item.retried { border-left: 2px dotted var(--grey-4); }
 .tm-item .tm-reward { margin-left: auto; }
 .tm-nav { padding: 0 8px; height: 24px; }
 .tm-stephead { justify-content: space-between; background: var(--grey-2); min-height: 40px; }
@@ -1068,7 +1170,7 @@ mark.hit {
 #sg-open-transcript { margin: 0 12px 12px; min-height: 30px; }
 
 /* the banners lead the transcript, so they stand off the first entry */
-.trace-errors { margin-top: auto; padding-top: 12px; margin-bottom: 14px; }
+.trace-errors { margin-top: auto; margin-bottom: 14px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
@@ -1077,6 +1179,39 @@ mark.hit {
 .trace-error-banner + .trace-error-banner { margin-top: 8px; }
 .trace-error-message { padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .trace-error-type { font-weight: 500; color: var(--negative); }
+.trace-error-scope {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  line-height: 11px;
+  letter-spacing: var(--track-mono);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  vertical-align: middle;
+}
+.trace-error-banner .trace-error-scope { color: var(--negative); }
+#tm-episode-errors { padding: 12px 16px 0; border-bottom: 1px solid var(--hairline); }
+#tm-episode-errors .trace-errors { margin-top: 0; margin-bottom: 12px; }
+#tm-episode-errors .trace-recovered { margin-bottom: 12px; }
+.trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
+.trace-recovered > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--grey-4);
+  cursor: pointer;
+  list-style: none;
+}
+.trace-recovered > summary::-webkit-details-marker { display: none; }
+.trace-recovered[open] > summary .entry-chev { transform: rotate(90deg); }
+.trace-recovered-item { border-top: 1px solid var(--grey-3); }
+.trace-recovered-item .trace-error-type { color: var(--grey-4); }
+.trace-recovered-item .trace-error-tb > summary { border-top-color: var(--grey-3); }
+.seg button.err, .seg button.err.active { color: var(--negative); }
 .trace-error-tb > summary {
   display: flex;
   align-items: center;
@@ -1102,6 +1237,7 @@ mark.hit {
 
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
+details.entry.pending { opacity: 0.55; border-style: dashed; }
 details.entry.semantic-origin {
   border-color: var(--accent);
   outline: 1px solid rgba(182, 255, 60, 0.55);
@@ -1523,7 +1659,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 
 
 /* filter & sort popover */
-.dd-filters { min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
+.dd-filters { min-width: 320px; display: flex; flex-direction: column; gap: 6px; }
 .dd-sec {
   text-transform: uppercase;
   font-size: 10px;
@@ -1534,6 +1670,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   margin-top: 2px;
 }
 .dd-filters .dd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
+.dd-filters .seg button { padding: 0 9px; }
 /* controls sit right, sized to their content, so the label reads as the row's subject */
 .dd-filters .dd-row select, .dd-filters .dd-row .dd-select, .dd-filters .dd-row .seg { margin-left: auto; }
 .dd-filters .dd-row .dd-btn { justify-content: space-between; gap: 8px; }
@@ -1589,3 +1726,14 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   background: var(--grey-2);
   border-bottom: 1px solid var(--hairline);
 }
+
+/* in-flight rollouts share the episode table; the phase badge and a pulsing dot in
+   place of their number set them apart */
+.live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: live-pulse 2s ease-out infinite; }
+#episode-table tr.err td:first-child { border-left: 2px solid var(--negative); }
+#episode-table tr.retried td:first-child { border-left: 2px dotted var(--grey-4); }
+#episode-table tr.live.landing .live-dot { animation: none; opacity: 0.45; }
+.badge.stage { font-size: 9px; padding: 2px 5px; line-height: 12px; border-radius: 3px; background: var(--hairline); border-color: transparent; color: var(--accent); }
+#tm-live-label { margin-left: 8px; }
+#log-comp-menu .file-item.sub { padding-left: 22px; }
+#episode-table .day { margin-right: 8px; }

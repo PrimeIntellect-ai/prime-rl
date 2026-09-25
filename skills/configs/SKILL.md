@@ -63,9 +63,9 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.
+Source lists are set in TOML. The CLI has no list-index paths (`--orchestrator.eval.source.0.env.taskset.id` does not parse); a whole list can be passed as JSON (`--orchestrator.eval.source '[{"env": {"taskset": {"id": "reverse-text"}}}]'`), which replaces the list wholesale.
 
-The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server), e.g. `--eval.source.0.env.taskset.id reverse-text`.
+The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server). The `eval` entrypoint flattens it further: `[[source]]`, `[client]`, `[concurrency]`, `num_examples`, `group_size` at the top level, plus the single-source shorthands `uv run eval <taskset-id> --env.<field> <value> -n N -r N -c N -m MODEL` (see the `eval` skill).
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 
@@ -73,7 +73,7 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
-**RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.1`, `adv_tau = 1.0`, and `kl_tau = 1e-3`. Omit the section to use these defaults. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
+**RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.1`, `adv_tau = 1.0`, and `kl_tau = 1e-3`. Omit the section to use these defaults. Set `type = "icepop"` for ratio masking with `ratio_low = 0.2`, `ratio_high = 5.0`, and `adv_tau = 1.0`; IcePop has no separate KL term. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
 
 **Algorithms** — `[orchestrator.algo] type = "grpo" | "max_rl" | "rae" | "hierarchical_grpo" | "opd" | "opsd" | "sft" | "echo"` — the type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). `hierarchical_grpo` is only valid with a proposer-solver env: it compares solvers with attempts on the same proposed problem and proposers with other proposals in the group. There is no preset layer, and no config hook that points at user code — a new algorithm is a named class in the repo (subclass `Algorithm`, register it). Per-source override: `[orchestrator.train.source.algo] type = "opd"` (the source assembles its own algorithm). prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for opd (the frozen model scored against), `[orchestrator.algo.sampling.source]` for sft (the model it samples from), each with `name` + `base_url`. There is no shared `teacher` slot. opsd declares no model — it self-distills against the live policy. See `docs/algorithms.md`.
 

@@ -8,6 +8,7 @@ from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
+    MegaMoeMoEDispatchConfig,
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
@@ -15,6 +16,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
+    FusedTokenDispatcher,
     LocalTokenDispatcher,
     MXFP8TorchTokenDispatcher,
     TorchTokenDispatcher,
@@ -25,6 +27,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
@@ -81,16 +84,37 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     bf16_compute = BF16ExpertCompute()
-    selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
-    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
+    is_mega_moe = isinstance(dispatch, MegaMoeMoEDispatchConfig)
+    # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
+    selected_compute = _resolve_expert_compute(config) if selected_moes and not is_mega_moe else bf16_compute
+    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
+    if ep_mesh is None and is_mega_moe:
+        raise ValueError(
+            "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
+        )
 
     for moe in moe_layers:
-        compute = selected_compute if moe in selected_moes else bf16_compute
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
+        if is_mega_moe:
+            if moe.score_before_experts:
+                raise ValueError(
+                    "Mega MoE dispatch requires `score_before_experts=False` on the MoE layer "
+                    "(router weights are applied at combine time, after both expert GEMMs)."
+                )
+            compute = MegaMoEExpertCompute(
+                moe.experts,
+                num_experts=moe.experts.num_experts,
+                top_k=moe.router.top_k,
+                group=ep_mesh.get_group(),
+                max_tokens_per_rank=dispatch.max_tokens_per_rank,
+                num_reserved_sms=dispatch.num_reserved_sms,
+            )
+        else:
+            compute = selected_compute if moe in selected_moes else bf16_compute
         moe.experts.compute = compute
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
@@ -123,6 +147,8 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
             )
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            token_dispatcher = FusedTokenDispatcher()
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
         moe.set_token_dispatcher(token_dispatcher)
@@ -131,6 +157,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
 
     get_logger().info(
-        f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
+        f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={'mega_moe' if is_mega_moe else type(selected_compute).__name__}, "
         f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )

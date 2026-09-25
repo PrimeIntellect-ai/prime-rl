@@ -85,6 +85,9 @@ class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
+    mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
+    """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
+
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
@@ -255,8 +258,22 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    max_tokens_per_rank: int = Field(8192, ge=1)
+    """Upper bound on routed tokens per rank per forward call, used to size Mega MoE's symmetric
+    buffer once at startup. Must be >= the largest `bs * slen` any rank will pass through a MoE
+    layer; raise it if you hit a "buffer is sized for N tokens/rank" error."""
+
+    num_reserved_sms: int = Field(16, ge=0)
+    """SMs left free for concurrent NCCL kernels (FSDP all-gathers etc.). The Mega MoE kernels are
+    persistent grids that synchronize across ranks; if they occupied every SM while an NCCL kernel
+    on another stream was waiting for a peer, the two would deadlock. Pair with ``NCCL_MAX_CTAS``
+    <= this value in ``env_vars`` so every NCCL kernel fits in the reserved SMs."""
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -418,6 +435,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
@@ -570,14 +589,33 @@ class CheckpointConfig(BaseConfig):
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
-    eps: float = Field(0.1, ge=0)
+    eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
-    kl_tau: float = Field(1e-3, ge=0)
+    kl_tau: float = Field(0.0, ge=0)
     """Temperature for the KL term."""
+
+
+class IcePopLossConfig(BaseConfig):
+    type: Literal["icepop"] = "icepop"
+
+    ratio_low: float = Field(0.2, gt=0)
+    """Lower accepted trainer-to-inference probability ratio."""
+
+    ratio_high: float = Field(5.0, gt=0)
+    """Upper accepted trainer-to-inference probability ratio."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    @model_validator(mode="after")
+    def validate_ratio_bounds(self):
+        if self.ratio_low > self.ratio_high:
+            raise ValueError("ratio_low must not exceed ratio_high")
+        return self
 
 
 class CustomLossConfig(BaseConfig):
@@ -590,7 +628,7 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[IPOLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -627,9 +665,6 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
-
-    quantize_in_weight_transfer: bool = False
-    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):

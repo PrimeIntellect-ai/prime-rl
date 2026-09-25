@@ -6,14 +6,11 @@ import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
 
-from renderers.base import create_renderer
-from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -22,7 +19,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
-from prime_rl.utils.cp import setup_cp_params, shard_for_cp
+from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
@@ -35,7 +32,6 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_processor,
     setup_tokenizer,
-    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -124,25 +120,8 @@ def train(config: SFTConfig):
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
-    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
-    resolve_auto_attn(config.model)
-
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
-        cp_group = parallel_dims.world_mesh["cp"].get_group()
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        if config.model.cp_style == "ring":
-            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        else:
-            from prime_rl.trainer.models.layers.ulysses_attn import (
-                substitute_hf_ulysses_attn,
-                substitute_ulysses_attn,
-            )
-
-            substitute_hf_ulysses_attn(cp_group)
-            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
@@ -163,12 +142,7 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
-        # sparse MLA is softmax (works with both ring and ulysses).
-        setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
-        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
-        if config.model.cp_style == "ulysses":
-            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_context_parallel(model, config.model, parallel_dims)
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
@@ -178,16 +152,6 @@ def train(config: SFTConfig):
     processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
-
-    # Fake data never renders messages, so a model without a hand-coded renderer
-    # can still be used to benchmark step time / memory. Validation data is
-    # always real, so it needs the renderer even when training data is fake.
-    renderer = None
-    if config.data.type != "fake" or config.val is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if processor is not None and hasattr(renderer, "_processor"):
-            renderer._processor = processor
-        logger.debug(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -217,12 +181,19 @@ def train(config: SFTConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
+    dataset = setup_dataset(
+        tokenizer,
+        config.data,
+        config.model.cp,
+        renderer_config=config.renderer,
+        processor=processor,
+        multimodal=multimodal,
+    )
     dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
     if config.val is not None:
-        logger.info(f"Loading validation dataset ({config.val.data.name})")
+        logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
@@ -385,7 +356,8 @@ def train(config: SFTConfig):
             config.model.cp,
             max_epochs=1,
             raw_dataset=val_raw_dataset,
-            renderer=renderer,
+            renderer_config=config.renderer,
+            processor=processor,
             multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
@@ -525,6 +497,8 @@ def train(config: SFTConfig):
                         value /= dist.get_world_size()
                     moe_stats[name] += value / grad_accum_steps
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         if gradient_manager is None:

@@ -2,14 +2,14 @@
 
 This is where the pieces built in `attention.py`, `moe.py`, `hyperconnections.py` and
 `rotary.py` come together. The one structural surprise is the residual: it is not a single
-stream but `hc_mult` parallel ones, carried as `(batch, seq, hc_mult, hidden)` from the
-embedding all the way to `hc_head`, which collapses them back before the final norm.
+stream but `hc_mult` parallel ones, carried as `mhc_states` of shape
+`(batch, seq, hc_mult, hidden)` from the embedding all the way to `hc_head`, which collapses
+them back before the final norm.
 """
 
 from __future__ import annotations
 
 import torch
-import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -20,7 +20,10 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
+    DeepseekV4HyperConnection,
+    DeepseekV4HyperHead,
+)
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -51,35 +54,23 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         self.attn_hc = DeepseekV4HyperConnection(config)
         self.ffn_hc = DeepseekV4HyperConnection(config)
 
-    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        self._cp_group = cp_group
-        self._cp_rank = cp_rank
-        self._cp_world_size = cp_world_size
-        self.self_attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        mhc_states: torch.Tensor,
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
         *,
         packed: PackedContext,
     ) -> torch.Tensor:
-        dtype = hidden_states.dtype
-
-        post, comb, collapsed = self.attn_hc(hidden_states)
+        post, comb, collapsed = self.attn_hc(mhc_states)
         attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
-        hidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
-        post, comb, collapsed = self.ffn_hc(hidden_states)
+        post, comb, collapsed = self.ffn_hc(mhc_states)
         mlp_output = self.mlp(
             self.post_attention_layernorm(collapsed), input_ids=input_ids, routed_experts=routed_experts
         )
-        return post.to(dtype).unsqueeze(-1) * mlp_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        return self.ffn_hc.update_states(post, comb, mlp_output, mhc_states)
 
 
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
@@ -201,13 +192,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         self.post_init()
 
-    def get_cp_rank_and_world_size(self) -> tuple[int, int]:
-        if len(self.layers) == 0:
-            return 0, 1
-
-        layer = self.layers[0]
-        return getattr(layer, "_cp_rank", 0), getattr(layer, "_cp_world_size", 1)
-
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -249,7 +233,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         """
         assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
 
-        cp_rank, cp_world_size = self.get_cp_rank_and_world_size()
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
         assert seq_lens_are_pre_shard == (cp_world_size > 1), (
             f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
         )
@@ -279,17 +263,17 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         if position_ids is not None:
             packed.check_position_ids(position_ids)
 
-        hidden_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states = decoder_layer(
-                hidden_states,
+            mhc_states = decoder_layer(
+                mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
             )
 
-        hidden_states = self.norm(self.hc_head(hidden_states))
+        hidden_states = self.norm(self.hc_head(mhc_states))
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
 
