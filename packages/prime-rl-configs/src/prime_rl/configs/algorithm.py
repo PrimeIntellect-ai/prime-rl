@@ -200,13 +200,18 @@ class BaseAlgoConfig(BaseConfig):
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
-    """GRPO: scalar advantage = reward minus the per-group mean baseline,
-    consumed by the ``rl`` loss component on the rollout's action tokens."""
+    """GRPO: scalar advantage = reward minus the per-group baseline — the group
+    mean, or the trainable-token-weighted mean when ``length_weighted_baseline``
+    is set — consumed by the ``rl`` loss component on the rollout's action
+    tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+
+    length_weighted_baseline: bool = False
+    """Weight the group baseline by rollout length (SWE-2's length-weighted group baseline, https://cognition.com/blog/swe-2): instead of the plain group mean, the baseline becomes ``sum(reward_i * trainable_tokens_i) / sum(trainable_tokens_i)``. A cheap proxy for the optimal REINFORCE baseline, which weights each rollout by its score-gradient norm — empirically correlated with its trainable-token count — reducing gradient variance at no extra cost. Applied to the rewards left after the optional ``length_penalty`` shaping. False keeps the plain group mean."""
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):

@@ -151,9 +151,12 @@ def _scalar(episode: vf.Episode) -> float:
     raise AssertionError("episode has no trainable token")
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
+def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), clients=None)
+    algo = GRPOAlgorithm(
+        GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline),
+        clients=None,
+    )
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
@@ -188,6 +191,41 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[0.0, 0.0])) == pytest.approx([0.0, 0.0])
     # ... and all-success groups center to zero like GRPO
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
+
+
+# --------------------------------------------------------------------------
+# GRPO length-weighted baseline (SWE-2): trainable-token-weighted group mean.
+# --------------------------------------------------------------------------
+
+
+def test_length_weighted_baseline_weights_by_trainable_tokens():
+    """b = sum(R*L)/sum(L): rewards [1, 0] with trainable lengths [1, 3] give
+    b = 0.25, so the long rollout's credit is damped and the trainable-token-
+    weighted advantage sum is zero (not the plain sum)."""
+    advs = _grpo(
+        _make_group(rewards=[1.0, 0.0], completion_lengths=[1, 3]),
+        length_weighted_baseline=True,
+    )
+    assert advs == pytest.approx([0.75, -0.25], abs=1e-6)
+    assert sum(a * l for a, l in zip(advs, [1, 3])) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_length_weighted_baseline_equal_lengths_reduce_to_plain_grpo():
+    """Equal trainable lengths → the weighted baseline equals the plain group mean."""
+    plain = _grpo(_make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 10, 10]))
+    weighted = _grpo(
+        _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 10, 10]),
+        length_weighted_baseline=True,
+    )
+    assert weighted == pytest.approx(plain, abs=1e-6)
+
+
+def test_length_weighted_baseline_off_by_default():
+    """The default config keeps the plain group-mean baseline (SWE-2 baseline is opt-in)."""
+    rewards, lengths = [1.0, 0.0, 0.0], [1, 4, 4]
+    advs = _grpo(_make_group(rewards=rewards, completion_lengths=lengths))
+    baseline = sum(rewards) / len(rewards)
+    assert advs == pytest.approx([reward - baseline for reward in rewards], abs=1e-6)
 
 
 # --------------------------------------------------------------------------
