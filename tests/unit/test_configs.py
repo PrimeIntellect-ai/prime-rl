@@ -74,7 +74,10 @@ def test_eval_min_rollouts_source_override_and_round_trip(monkeypatch):
         }
     )
     assert [source.group_size for source in config.source] == [5, 3]
-    restored = EvalConfig.model_validate(dump_resolved_config(config))
+    resolved = dump_resolved_config(config)
+    assert "min_rollouts" not in resolved
+    assert all("min_rollouts" not in source for source in resolved["source"])
+    restored = EvalConfig.model_validate(resolved)
     assert [source.group_size for source in restored.source] == [5, 3]
 
 
@@ -82,6 +85,8 @@ def test_eval_min_rollouts_rejects_group_size_and_unbounded_taskset(monkeypatch)
     source = {"env": {"taskset": {"id": "gsm8k"}}}
     with pytest.raises(ValidationError, match="Set either group_size or min_rollouts for eval"):
         EvalConfig.model_validate({"group_size": 2, "min_rollouts": 1000, "source": [source]})
+    with pytest.raises(ValidationError, match="Set either group_size or min_rollouts for eval"):
+        EvalConfig.model_validate({"group_size": 2, "min_rollouts": None, "source": [source]})
     with pytest.raises(ValidationError, match="Set either group_size or min_rollouts on an eval source"):
         EvalConfig.model_validate({"source": [{**source, "group_size": 2, "min_rollouts": 1000}]})
 

@@ -297,13 +297,13 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
-    min_rollouts: int | None = Field(None, ge=1)
-    """Minimum total rollouts. Sets ``group_size`` from the selected task count.
-    Cannot be set with ``group_size`` on the same source."""
+    min_rollouts: int | None = Field(None, ge=1, exclude=True)
+    """Minimum total rollouts, sized from the resolved task count. Mutually
+    exclusive with ``group_size`` on the same source."""
 
     @model_validator(mode="after")
     def validate_rollout_count(self):
-        if self.min_rollouts is not None and "group_size" in self.model_fields_set:
+        if {"min_rollouts", "group_size"} <= self.model_fields_set:
             raise ValueError("Set either group_size or min_rollouts on an eval source, not both")
         return self
 
@@ -361,14 +361,14 @@ class EvalSourcesConfig(BaseConfig):
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
-    min_rollouts: int | None = Field(None, ge=1)
-    """Default minimum total rollouts per source. Cannot be set with the global
-    ``group_size``. A source can override either global rollout setting."""
+    min_rollouts: int | None = Field(None, ge=1, exclude=True)
+    """Default minimum total rollouts per source. Mutually exclusive with the
+    global ``group_size``. A source can override either global rollout setting."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env sampling and rollout counts."""
-        if self.min_rollouts is not None and "group_size" in self.model_fields_set:
+        if {"min_rollouts", "group_size"} <= self.model_fields_set:
             raise ValueError("Set either group_size or min_rollouts for eval, not both")
         group_sampling = self.sampling.model_dump()
         counts: dict[tuple[str, int], int] = {}
@@ -380,7 +380,11 @@ class EvalSourcesConfig(BaseConfig):
                 source.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
-            if "group_size" not in source.model_fields_set and "min_rollouts" not in source.model_fields_set:
+            if (
+                "group_size" not in source.model_fields_set
+                and "min_rollouts" not in source.model_fields_set
+                and self.min_rollouts is not None
+            ):
                 source.min_rollouts = self.min_rollouts
             if source.min_rollouts is not None:
                 n = source.num_examples
@@ -398,7 +402,10 @@ class EvalSourcesConfig(BaseConfig):
                 source.min_rollouts = None
             elif "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
+            # Resolved sources can be validated again after the target becomes group_size.
+            source.model_fields_set.discard("min_rollouts")
         self.min_rollouts = None
+        self.model_fields_set.discard("min_rollouts")
         return self
 
     @model_validator(mode="after")

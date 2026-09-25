@@ -67,7 +67,9 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size`, `min_rollouts`, and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
-Set `min_rollouts = 1000` to size each source by its selected task count. For example, 500 tasks get `avg@2`, and 200 get `avg@5`. Set it globally or on one `[[source]]`. Set either `min_rollouts` or `group_size` at each level. A source can override the global choice. The same setting works under `[orchestrator.eval]` in RL and `[eval]` in SFT. Config resolution counts selected tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound. Resolved configs contain the computed `group_size`.
+By default, eval runs every task once. Set `group_size` to run each task a fixed number of times. Set `min_rollouts` to target a total rollout count. PRL uses the resolved task count to choose the smallest `group_size` that reaches the target. For example, 500 tasks get `avg@2` for a target of 1,000, while 200 tasks get `avg@5`.
+
+Set `min_rollouts` globally or on one `[[source]]`. It is mutually exclusive with `group_size` at the same level. A source can override the global rollout setting. The same setting works under `[orchestrator.eval]` in RL and `[eval]` in SFT. Config resolution counts tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound. Resolved configs contain the computed `group_size`.
 
 ## Resume
 
