@@ -1176,7 +1176,7 @@ function summaryTilesHtml(idx, all, scoreEntries) {
   }
   // failure rates count every landed episode, the errors filter notwithstanding
   if (all.length) {
-    const errored = all.filter((i) => series.ok?.[i] === false || (series.num_errors?.[i] ?? 0) > 0).length;
+    const errored = all.filter((i) => series.ok?.[i] === false).length;
     const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
     for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
       const rate = n / all.length;
@@ -3022,10 +3022,12 @@ function fmtSpan(dispatched, arrived, elapsed) {
 }
 
 function episodeRowHtml(ep) {
-  const failed = !ep.ok || !!ep.num_errors;
+  // an ok episode keeps the errors of the attempts it recovered from; they mark the
+  // row as retried, not as failed
+  const failed = !ep.ok;
   const phase = failed ? "error" : "done";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
-  return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
+  return `<tr data-line="${ep.line}" class="${episodeRowClass(ep)}" title="${esc(episodeRowTitle(ep))}">
         <td class="muted">${ep.line}</td>
         <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
@@ -3209,7 +3211,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     semanticExpandedRuns.clear();
     clearSemanticTranscriptOrigin();
     $("#sg-inspector").hidden = true;
-    $("#tm-messages").innerHTML = `<div class="chart-empty">loading live trace…</div>`;
+    resetTranscript(`<div class="chart-empty">loading live trace…</div>`);
     $("#tm-timeline").innerHTML = "";
     $("#tm-meta").innerHTML = "";
   }
@@ -3325,7 +3327,7 @@ function tmItemHtml(item) {
   }
   const e = item;
   return (
-    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""} ${episodeRowClass(e)}" data-line="${e.line}" title="${esc(episodeRowTitle(e))}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -3426,7 +3428,7 @@ async function modalStep(delta) {
     currentLine = null;
     currentEpisode = null;
     renderRolloutList();
-    $("#tm-messages").innerHTML = emptyState("no episodes", "this step has no rollouts for the current filters");
+    resetTranscript(emptyState("no episodes", "this step has no rollouts for the current filters"));
     $("#tm-meta").innerHTML = "";
   }
 }
@@ -3474,6 +3476,15 @@ async function ensureTokens() {
   currentEpisode = episode;
 }
 
+/* Every path that replaces the transcript with a placeholder goes through here, so the
+   previous episode's error strip never outlives its episode. */
+function resetTranscript(html) {
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.hidden = true;
+  episodeErrors.innerHTML = "";
+  $("#tm-messages").innerHTML = html;
+}
+
 async function openEpisode(line, target = {}) {
   currentLive = null;
   $("#tm-live-label").textContent = "";
@@ -3486,7 +3497,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = null;
   renderModalStep();
   renderRolloutList();
-  $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  resetTranscript(`<div class="chart-empty">loading episode…</div>`);
   const timelineTarget = $("#tm-timeline");
   timelineTarget.classList.remove("semantic-canvas");
   delete timelineTarget.dataset.semanticEpisode;
@@ -3940,7 +3951,7 @@ function judgeEvidenceHtml(trace) {
 
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
-  const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
+  const errors = scopedErrorsHtml("trace", scopedErrors(currentEpisode, trace).trace);
   if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
@@ -3980,42 +3991,66 @@ function renderedBoxHtml(tokenCount, body, canCopyText) {
 
 let entriesObserver = null;
 
-function episodeErrors(ep, trace) {
-  // one failure is often recorded twice, on the episode and on its trace; show it
-  // once, keeping whichever copy carries the traceback
-  const byMessage = new Map();
-  for (const error of [...(ep.errors || []), ...(trace?.errors || [])]) {
-    const record = error && typeof error === "object" ? error : { message: String(error) };
-    const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
-    const kept = byMessage.get(key);
-    if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
+/* Errors carried by the episode and by the open trace, each split by what they mean.
+   Verifiers keeps every attempt's errors on the final record and stamps success as `ok`,
+   so the errors of an ok episode or trace are history it recovered from, while a failed
+   one's errors describe its outcome. A failure recorded on both the episode and its
+   trace shows once, as the trace's, keeping whichever copy carries the traceback. */
+function scopedErrors(ep, trace) {
+  const record = (error) => (error && typeof error === "object" ? error : { message: String(error) });
+  const key = (r) => `${r.type ?? "Error"}|${r.message ?? ""}`;
+  const keep = (map, r) => {
+    const kept = map.get(key(r));
+    if (!kept || (!kept.traceback && r.traceback)) map.set(key(r), r);
+  };
+  const onTrace = new Map();
+  for (const error of trace?.errors || []) keep(onTrace, record(error));
+  const onEpisode = new Map();
+  for (const error of ep.errors || []) {
+    const r = record(error);
+    if (onTrace.has(key(r))) keep(onTrace, r);
+    else keep(onEpisode, r);
   }
-  return [...byMessage.values()];
+  const split = (records, ok) => ({ failed: ok ? [] : records, recovered: ok ? records : [] });
+  return { episode: split([...onEpisode.values()], ep.ok), trace: split([...onTrace.values()], trace?.ok) };
 }
 
-function errorBannersHtml(errors) {
-  if (!errors.length) return "";
+function errorEntryHtml(scope, record) {
+  const type = record.type ?? "Error";
+  const message = record.message ?? "No error message";
+  const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
   return (
-    `<div class="trace-errors">` +
-    errors
-      .map((error) => {
-        const record = error && typeof error === "object" ? error : { message: String(error) };
-        const type = record.type ?? "Error";
-        const message = record.message ?? "No error message";
-        const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
-        return (
-          `<section class="trace-error-banner">` +
-          `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
-          (traceback
-            ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
-            : "") +
-          `</section>`
-        );
-      })
-      .join("") +
-    `</div>`
+    `<div class="trace-error-message"><span class="trace-error-scope">${scope} error</span><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+    (traceback
+      ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
+      : "")
   );
 }
+
+function scopedErrorsHtml(scope, { failed, recovered }) {
+  const banners = failed.length
+    ? `<div class="trace-errors">${failed.map((record) => `<section class="trace-error-banner">${errorEntryHtml(scope, record)}</section>`).join("")}</div>`
+    : "";
+  const history = recovered.length
+    ? `<details class="trace-recovered"><summary><span>recovered from ${recovered.length} ${scope} error${recovered.length === 1 ? "" : "s"} in earlier attempts</span><span class="entry-chev">›</span></summary>` +
+      recovered.map((record) => `<section class="trace-recovered-item">${errorEntryHtml(scope, record)}</section>`).join("") +
+      `</details>`
+    : "";
+  return banners + history;
+}
+
+function episodeRowClass(ep) {
+  if (!ep.ok) return "err";
+  return ep.num_errors ? "retried" : "";
+}
+
+function episodeRowTitle(ep) {
+  const n = ep.num_errors || 0;
+  const errors = `${n || 1} error${n === 1 ? "" : "s"}`;
+  if (!ep.ok) return errors;
+  return n ? `recovered from ${errors} in earlier attempts` : "";
+}
+
 
 function normalizedCallUsage(usage = {}) {
   let input = usage.prompt_tokens;
@@ -4036,7 +4071,7 @@ function normalizedCallUsage(usage = {}) {
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
-  const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
+  const errorsHtml = scopedErrorsHtml("trace", scopedErrors(ep, trace).trace);
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
@@ -5487,12 +5522,17 @@ function renderEpisode() {
   const trace = traces[currentTraceIdx];
   const branches = trace ? traceBranches(trace) : [];
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
+  // the episode's own errors sit above the agent and branch selectors: they belong to
+  // the whole episode, not to whichever trace is open
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.innerHTML = scopedErrorsHtml("episode", scopedErrors(ep, trace).episode);
+  episodeErrors.hidden = !episodeErrors.innerHTML;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -6538,7 +6578,7 @@ async function reopenFirstEpisode() {
   currentLine = null;
   currentEpisode = null;
   renderRolloutList();
-  $("#tm-messages").innerHTML = emptyState("no episodes", "nothing here for the current filters");
+  resetTranscript(emptyState("no episodes", "nothing here for the current filters"));
   $("#tm-meta").innerHTML = "";
 }
 

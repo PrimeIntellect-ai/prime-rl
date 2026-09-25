@@ -51,7 +51,7 @@ def test_drop_null_fields_preserves_tool_call_arguments(arguments):
 def test_init_sft_dataset(build_dummy_dataset, dummy_renderer):
     """Tests basic initialization."""
     dataset = build_dummy_dataset("a", 1)
-    sft_dataset = SFTDataset(dataset, dummy_renderer)
+    sft_dataset = SFTDataset(dataset, lambda _: dummy_renderer)
     assert sft_dataset is not None
 
 
@@ -59,7 +59,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = Dataset.from_list([{"text": "a0"}])
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, create_renderer(tokenizer))
+    sft_dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer))
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
 
@@ -70,7 +70,7 @@ def test_sft_first_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: in
     b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
-    dataset = SFTDataset(dataset, dummy_renderer, shuffle=False, max_epochs=max_epochs)
+    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=max_epochs)
     num_samples = 0
     sampling_order = []
     for x in dataset:
@@ -86,7 +86,7 @@ def test_sft_all_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: int)
     b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
-    dataset = SFTDataset(dataset, dummy_renderer, shuffle=False, max_epochs=max_epochs)
+    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=max_epochs)
     num_samples = 0
     sampling_order = []
     for x in dataset:
@@ -120,7 +120,7 @@ def test_sft_all_exhausted_with_probs(build_dummy_dataset, dummy_renderer, probs
     b = build_dummy_dataset("b", int(10e3))
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
-    dataset = SFTDataset(dataset, dummy_renderer, shuffle=False, max_epochs=1)
+    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=1)
     num_samples = 0
     sampling_freq = []
     for x in dataset:
@@ -140,7 +140,7 @@ def test_sft_all_exhausted_with_probs(build_dummy_dataset, dummy_renderer, probs
 def test_sft_dataset_state(build_dummy_dataset, dummy_renderer):
     """Tests the state of the dataset within and across epochs."""
     dataset = build_dummy_dataset("", 4)
-    dataset = SFTDataset(dataset, dummy_renderer, shuffle=False, max_epochs=2)
+    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=2)
     dataiter = iter(dataset)
 
     # Initial state
@@ -166,7 +166,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     """Tests resuming the dataset from checkpoint in between epochs."""
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        dummy_renderer,
+        lambda _: dummy_renderer,
         shuffle=False,
         max_epochs=2,
     )
@@ -186,7 +186,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     del dataset
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        dummy_renderer,
+        lambda _: dummy_renderer,
         shuffle=False,
         max_epochs=2,
     )
@@ -204,7 +204,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     del dataset
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        dummy_renderer,
+        lambda _: dummy_renderer,
         shuffle=False,
         max_epochs=2,
     )
@@ -235,7 +235,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, create_renderer(tokenizer), max_examples=1)
+    dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -298,7 +298,7 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, create_renderer(tokenizer), max_examples=1)
+    dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -325,12 +325,12 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
     messages_dataset = SFTDataset(
         Dataset.from_list([{"messages": messages}]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
     split_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -351,12 +351,12 @@ def test_messages_take_precedence_over_prompt_and_completion():
 
     messages_dataset = SFTDataset(
         Dataset.from_list([row]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -372,12 +372,12 @@ def test_null_messages_falls_back_to_prompt_and_completion():
 
     mixed_row_dataset = SFTDataset(
         Dataset.from_list([{"messages": None, "prompt": prompt, "completion": completion}]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": prompt, "completion": completion}]),
-        create_renderer(tokenizer),
+        lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -399,7 +399,7 @@ def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_rendere
         )
 
     monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
-    dataset = SFTDataset(Dataset.from_list([]), dummy_renderer, seq_len=2, multimodal=True)
+    dataset = SFTDataset(Dataset.from_list([]), lambda _: dummy_renderer, seq_len=2, multimodal=True)
 
     assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
 

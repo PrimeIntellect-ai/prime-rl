@@ -137,6 +137,10 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
+# Needed for private environments hub auth
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
+    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
+
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
 # (#2883); rebuilding against our UCX is the documented fix. Only needed for

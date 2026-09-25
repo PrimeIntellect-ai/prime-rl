@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections.abc import Callable, Iterator, Sequence
 from itertools import islice
@@ -39,6 +40,11 @@ from prime_rl.utils.pathing import env_address_file
 # servers concurrently with the orchestrator, and a server imports its env package
 # before serving.
 ENV_SERVER_STARTUP_TIMEOUT = 600.0
+
+# Fixed seed for shuffle=True sources: the finite taskset is shuffled once at
+# startup and the shuffled order is fixed for the whole run (train curricula and
+# eval selection both consume it).
+TASKSET_SHUFFLE_SEED = 42
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:
@@ -98,11 +104,15 @@ class Env:
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
+            if self.config.shuffle:
+                raise ValueError(f"Env {self.name} has an infinite taskset — cannot shuffle it")
             self.tasks = iter(taskset)
             self.num_tasks = None
         else:
             # Materialize off the event loop — iterating may pull a dataset.
             materialized = await asyncio.to_thread(lambda: list(taskset))
+            if self.config.shuffle:
+                random.Random(TASKSET_SHUFFLE_SEED).shuffle(materialized)
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"

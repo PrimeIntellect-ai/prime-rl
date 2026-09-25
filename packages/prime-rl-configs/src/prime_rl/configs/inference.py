@@ -311,6 +311,9 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
+    request_timeout_secs: int = Field(14400, ge=1)
+    """Maximum lifetime of a routed request, including streamed completions."""
+
     policy: str = "sticky_least_loaded"
     """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 

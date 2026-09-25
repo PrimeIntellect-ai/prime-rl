@@ -834,6 +834,7 @@ mark.hit {
 .tm-item.active { background: var(--grey-2); border-color: var(--grey-3); color: var(--grey-6); }
 .tm-item.err { background: rgba(255, 69, 57, 0.08); border-color: var(--negative); }
 .tm-item.err:hover, .tm-item.err.active { background: rgba(255, 69, 57, 0.16); }
+.tm-item.retried { border-left: 2px dotted var(--grey-4); }
 .tm-item .tm-reward { margin-left: auto; }
 .tm-nav { padding: 0 8px; height: 24px; }
 .tm-stephead { justify-content: space-between; background: var(--grey-2); min-height: 40px; }
@@ -1169,7 +1170,7 @@ mark.hit {
 #sg-open-transcript { margin: 0 12px 12px; min-height: 30px; }
 
 /* the banners lead the transcript, so they stand off the first entry */
-.trace-errors { margin-top: auto; padding-top: 12px; margin-bottom: 14px; }
+.trace-errors { margin-top: auto; margin-bottom: 14px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
@@ -1178,6 +1179,39 @@ mark.hit {
 .trace-error-banner + .trace-error-banner { margin-top: 8px; }
 .trace-error-message { padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .trace-error-type { font-weight: 500; color: var(--negative); }
+.trace-error-scope {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  line-height: 11px;
+  letter-spacing: var(--track-mono);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  vertical-align: middle;
+}
+.trace-error-banner .trace-error-scope { color: var(--negative); }
+#tm-episode-errors { padding: 12px 16px 0; border-bottom: 1px solid var(--hairline); }
+#tm-episode-errors .trace-errors { margin-top: 0; margin-bottom: 12px; }
+#tm-episode-errors .trace-recovered { margin-bottom: 12px; }
+.trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
+.trace-recovered > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--grey-4);
+  cursor: pointer;
+  list-style: none;
+}
+.trace-recovered > summary::-webkit-details-marker { display: none; }
+.trace-recovered[open] > summary .entry-chev { transform: rotate(90deg); }
+.trace-recovered-item { border-top: 1px solid var(--grey-3); }
+.trace-recovered-item .trace-error-type { color: var(--grey-4); }
+.trace-recovered-item .trace-error-tb > summary { border-top-color: var(--grey-3); }
+.seg button.err, .seg button.err.active { color: var(--negative); }
 .trace-error-tb > summary {
   display: flex;
   align-items: center;
@@ -1697,6 +1731,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
    place of their number set them apart */
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: live-pulse 2s ease-out infinite; }
 #episode-table tr.err td:first-child { border-left: 2px solid var(--negative); }
+#episode-table tr.retried td:first-child { border-left: 2px dotted var(--grey-4); }
 #episode-table tr.live.landing .live-dot { animation: none; opacity: 0.45; }
 .badge.stage { font-size: 9px; padding: 2px 5px; line-height: 12px; border-radius: 3px; background: var(--hairline); border-color: transparent; color: var(--accent); }
 #tm-live-label { margin-left: 8px; }

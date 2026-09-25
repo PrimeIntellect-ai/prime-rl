@@ -45,6 +45,7 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     set_default_executor,
 )
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_config_dir
 
@@ -71,10 +72,19 @@ class EvalRunner:
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
+        self.heart: Heartbeat | None = None
 
     async def setup(self, *, skip_first_step: bool = False, is_resumed: bool = False) -> None:
         config = self.config
         set_default_executor()
+
+        # The heartbeat is beaten only by landed episodes — the first episode is its
+        # first beat. No startup ping on purpose: the run-start to first-episode gap
+        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # sit inside the ping stream as an abnormally long silence and flip a healthy
+        # run stale. Until then the heartbeat has simply never been pinged.
+        if config.heartbeat is not None:
+            self.heart = Heartbeat(config.heartbeat.url)
 
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
@@ -114,7 +124,7 @@ class EvalRunner:
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=None,
+            tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=0,
             run_id=self.run_id,
             run_name=self.run_name,
@@ -224,6 +234,8 @@ class EvalRunner:
                 eval_batch = self.eval_sink.fail(item)
             else:
                 stamp_arrival([item], "eval", eval_work(item).step)
+                if self.heart is not None:
+                    self.heart.beat()
                 await self.land(item, pending)
                 continue
             if eval_batch is not None:

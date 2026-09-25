@@ -6,7 +6,6 @@ import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
 
-from renderers.base import create_renderer
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
@@ -154,16 +153,6 @@ def train(config: SFTConfig):
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
 
-    # Fake data never renders messages, so a model without a hand-coded renderer
-    # can still be used to benchmark step time / memory. Validation data is
-    # always real, so it needs the renderer even when training data is fake.
-    renderer = None
-    if config.data.type != "fake" or config.val is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if processor is not None and hasattr(renderer, "_processor"):
-            renderer._processor = processor
-        logger.debug(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
-
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer, gradient_manager = setup_optimizer(
@@ -192,12 +181,19 @@ def train(config: SFTConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
+    dataset = setup_dataset(
+        tokenizer,
+        config.data,
+        config.model.cp,
+        renderer_config=config.renderer,
+        processor=processor,
+        multimodal=multimodal,
+    )
     dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
     if config.val is not None:
-        logger.info(f"Loading validation dataset ({config.val.data.name})")
+        logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
@@ -360,7 +356,8 @@ def train(config: SFTConfig):
             config.model.cp,
             max_epochs=1,
             raw_dataset=val_raw_dataset,
-            renderer=renderer,
+            renderer_config=config.renderer,
+            processor=processor,
             multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)

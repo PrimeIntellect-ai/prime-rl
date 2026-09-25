@@ -125,6 +125,17 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     assert mamba_layer.mamba.cp_context.cp_world_size == 2
 
 
+def test_nemotron_h_mamba_parameters_follow_default_dtype():
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    with torch.device("meta"), default_dtype(torch.bfloat16):
+        model = NemotronHForCausalLM(config)
+
+    mamba = model.model.layers[0].mamba
+    assert isinstance(mamba, NemotronHMamba2)
+    assert mamba.A_log.dtype == torch.bfloat16
+    assert mamba.D.dtype == torch.bfloat16
+
+
 def test_nemotron_h_no_latent_projection():
     """Verify model works without latent projections (moe_latent_size=None)."""
     prime_config = NemotronHConfig(
