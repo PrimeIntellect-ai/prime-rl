@@ -22,8 +22,16 @@ from collections import OrderedDict
 from itertools import groupby
 from pathlib import Path
 
+import httpx
 import orjson
 
+from prime_rl.dashboard.platform import (
+    PLATFORM_DIR,
+    TERMINAL_STATUSES,
+    PlatformError,
+    PlatformSync,
+    written_episode_ids,
+)
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
@@ -134,14 +142,17 @@ isolated = False
 
 
 def tracked_dirs() -> list[Path]:
-    """One dashboard per user serves everything: the dirs it was started with
-    plus every dir any launcher (or other dashboard start) has registered.
-    --isolated opts out: only the CLI dirs, no registry."""
+    """One dashboard per user serves everything: the dirs it was started with,
+    every dir any launcher (or other dashboard start) has registered, and the
+    platform evaluations opened from the picker. --isolated opts out: only the CLI
+    dirs, no registry."""
     dirs = list(output_dirs)
     if isolated:
         return dirs
     known = {d.resolve() for d in dirs}
     dirs.extend(d for d in registered_dirs() if d.resolve() not in known and d.is_dir())
+    if PLATFORM_DIR.is_dir() and PLATFORM_DIR.resolve() not in known:
+        dirs.append(PLATFORM_DIR)
     return dirs
 
 
@@ -1914,6 +1925,78 @@ def get_episode(
         if rendered:
             trace["rendered_tokens"] = rendered_token_text(trace, model)
     return rec
+
+
+# ------------------------------------------------------------------------ platform
+# Evaluations on the platform, opened from the picker: each is synced from Prime
+# Traces into a run dir under PLATFORM_DIR and served like any other run.
+platform_sync = PlatformSync()
+
+
+def platform_call(call):
+    """A platform read, its failure turned into a message the picker can show."""
+    if isolated:
+        raise HTTPException(409, "an --isolated dashboard serves only its own dirs")
+    try:
+        return call()
+    except PlatformError as error:
+        raise HTTPException(403, str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(502, f"platform request failed: {type(error).__name__}: {error}") from error
+
+
+def local_sync(evaluation_id: str) -> dict | None:
+    """What an earlier sync left on disk, for an evaluation no sync is running for."""
+    run_dir = platform_sync.run_dir(evaluation_id)
+    if not run_dir.is_dir():
+        return None
+    written = len(written_episode_ids(run_dir))
+    stream = get_trace_stream(run_dir)
+    if written and stream.is_dir() and not any(stream.glob("*.jsonl")):
+        return {"state": "done", "written": written}
+    finished = read_json(run_dir / "configs" / "platform.json").get("status") in TERMINAL_STATUSES
+    return {"state": "empty" if finished and not written else "partial", "written": written}
+
+
+@app.get("/api/platform/evaluations")
+def list_platform_evaluations(limit: int = Query(25, ge=1, le=100), skip: int = Query(0, ge=0)) -> dict:
+    """The account's evaluations, newest first, each with the state of its sync."""
+    platform = platform_call(platform_sync.platform)
+    page = platform_call(lambda: platform.evaluations(limit, skip))
+    jobs = platform_sync.views()
+    return {
+        "account": platform.account(),
+        "total": page.get("total"),
+        "evaluations": [
+            {
+                "id": evaluation["evaluation_id"],
+                "name": evaluation.get("name"),
+                "status": evaluation.get("status"),
+                "env": ", ".join(evaluation.get("environment_names") or []),
+                "model": evaluation.get("inference_model") or evaluation.get("model_name"),
+                "samples": evaluation.get("total_samples"),
+                "created_at": evaluation.get("created_at"),
+                "sync": jobs.get(evaluation["evaluation_id"]) or local_sync(evaluation["evaluation_id"]),
+            }
+            for evaluation in page.get("evaluations") or []
+        ],
+    }
+
+
+@app.post("/api/platform/evaluations/{evaluation_id}/sync")
+def sync_platform_evaluation(evaluation_id: str) -> dict:
+    """Open an evaluation: its run dir is written before this returns, so the run
+    list has it, and its episodes follow in the background."""
+    job = platform_call(lambda: platform_sync.start(evaluation_id))
+    run_dir = platform_sync.run_dir(evaluation_id)
+    run = next((name for name, path in scan_runs().items() if path == run_dir), None)
+    return {"run": run, "sync": job.view()}
+
+
+@app.get("/api/platform/syncs")
+def platform_syncs() -> dict:
+    """The state of every sync this dashboard started, keyed by evaluation id."""
+    return {"syncs": platform_sync.views()}
 
 
 # --------------------------------------------------------------------- view command

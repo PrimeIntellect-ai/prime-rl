@@ -1737,3 +1737,21 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 #tm-live-label { margin-left: 8px; }
 #log-comp-menu .file-item.sub { padding-left: 22px; }
 #episode-table .day { margin-right: 8px; }
+
+/* platform evaluations picker */
+#evals-menu { width: 460px; padding: 0 0 6px; }
+.pe-head { display: flex; justify-content: space-between; gap: 12px; }
+.pe-open { display: flex; gap: 6px; padding: 6px 10px 8px; }
+.pe-open input { flex: 1; min-width: 0; }
+.pe-list { max-height: 380px; overflow-y: auto; }
+.pe-row { padding: 6px 12px; cursor: pointer; border-top: 1px solid var(--hairline-faint); }
+.pe-row:hover { background: var(--grey-2); }
+.pe-row.opening { opacity: 0.6; cursor: progress; }
+.pe-main { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.pe-name { font-size: 12px; color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-main .badge { flex-shrink: 0; padding: 1px 6px; }
+.pe-sub { display: flex; justify-content: space-between; gap: 10px; margin-top: 3px; font-size: 11px; color: var(--grey-4); }
+.pe-sub > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-sync { flex-shrink: 0; color: var(--accent); }
+.pe-sync.err, .pe-msg.err { color: var(--negative); }
+.pe-msg { padding: 8px 12px; font-size: 11px; }

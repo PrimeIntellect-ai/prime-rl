@@ -136,7 +136,7 @@ async function loadRuns() {
   const current = state.run;
   sel.disabled = !state.runs.length;
   sel.innerHTML = state.runs.length
-    ? state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("")
+    ? state.runs.map((r) => `<option value="${esc(r.name)}">${esc(runLabel(r))}</option>`).join("")
     : `<option>no runs found</option>`;
   if (current && state.runs.some((r) => r.name === current)) sel.value = current;
   syncDressedSelects();
@@ -144,6 +144,128 @@ async function loadRuns() {
   if (fresh && state.meta) {
     Object.assign(state.meta, fresh);
     renderOverview();
+  }
+}
+
+/* a run synced from the platform reads by its evaluation's name, not its id */
+const runLabel = (r) => (r.platform?.source === "traces" && r.platform.name ? `${r.platform.name} · platform` : r.name);
+
+/* ------------------------------------------------------- platform evaluations */
+
+/* the picker lists the account's platform evaluations; opening one syncs it from
+   Prime Traces into a run dir the dashboard serves like any other run */
+const evals = { list: null, error: null, account: null, loadedAt: 0, opening: null, openError: null, syncs: {} };
+const EVALS_TTL_MS = 30000;
+
+function evalStatusClass(status) {
+  if (status === "COMPLETED") return "completed";
+  if (status === "RUNNING" || status === "PENDING") return "running";
+  return "stopped";
+}
+
+function syncText(sync, samples) {
+  if (!sync) return "";
+  const of = sync.expected ?? samples;
+  const count = of ? `${sync.written}/${of}` : `${sync.written}`;
+  if (sync.state === "done") return `synced ${sync.written}`;
+  if (sync.state === "empty") return "not in traces";
+  if (sync.state === "partial") return `partial ${sync.written} · open to resume`;
+  if (sync.state === "error") return `sync failed${sync.written ? ` at ${sync.written}` : ""}`;
+  if (sync.state === "following") return `following · ${sync.written}`;
+  return `syncing ${count}`;
+}
+
+function evalRow(e) {
+  const sync = evals.syncs[e.id] ?? e.sync;
+  const opening = evals.opening === e.id;
+  const note = opening ? "opening…" : syncText(sync, e.samples);
+  const sub = [e.env, e.model, e.samples != null ? `${e.samples} samples` : null, fmtAgo(Date.parse(e.created_at) / 1000)]
+    .filter(Boolean)
+    .map(esc)
+    .join(" · ");
+  const failed = sync?.error ? ` title="${esc(sync.error)}"` : "";
+  return (
+    `<div class="pe-row${opening ? " opening" : ""}" data-eval="${esc(e.id)}">` +
+    `<div class="pe-main"><span class="pe-name" title="${esc(e.name ?? e.id)}">${esc(e.name ?? e.id)}</span>` +
+    `<span class="badge st-${evalStatusClass(e.status)}">${esc((e.status ?? "").toLowerCase())}</span></div>` +
+    `<div class="pe-sub"><span>${sub}</span>${note ? `<span class="pe-sync${sync?.state === "error" ? " err" : ""}"${failed}>${esc(note)}</span>` : ""}</div>` +
+    `</div>`
+  );
+}
+
+function renderEvalsMenu() {
+  const menu = $("#evals-menu");
+  const account = evals.account ? `${new URL(evals.account.base_url).host}${evals.account.team_id ? " · team" : ""}` : "";
+  let body;
+  if (evals.error) body = `<div class="pe-msg err">${esc(evals.error)}</div>`;
+  else if (!evals.list) body = `<div class="pe-msg muted">loading evaluations…</div>`;
+  else if (!evals.list.length) body = `<div class="pe-msg muted">no evaluations on this account</div>`;
+  else body = evals.list.map(evalRow).join("");
+  menu.innerHTML =
+    `<div class="dd-note pe-head"><span>platform evaluations</span><span>${esc(account)}</span></div>` +
+    `<form class="pe-open"><input id="pe-id" class="search" placeholder="evaluation id or URL" autocomplete="off">` +
+    `<button class="btn" type="submit">open</button></form>` +
+    (evals.openError ? `<div class="pe-msg err">${esc(evals.openError)}</div>` : "") +
+    `<div class="pe-list">${body}</div>`;
+}
+
+async function loadEvals(force = false) {
+  if (!force && evals.list && Date.now() - evals.loadedAt < EVALS_TTL_MS) return;
+  try {
+    const data = await api("/api/platform/evaluations");
+    Object.assign(evals, { list: data.evaluations, account: data.account, error: null, loadedAt: Date.now() });
+  } catch (err) {
+    evals.error = platformMessage(err);
+  }
+  if (!$("#evals-menu").hidden) renderEvalsMenu();
+}
+
+/* the server's detail, not the request that carried it */
+function platformMessage(err) {
+  const text = String(err.message ?? err);
+  const detail = text.match(/"detail":\s*"((?:[^"\\]|\\.)*)"/);
+  return detail ? JSON.parse(`"${detail[1]}"`) : text;
+}
+
+async function refreshSyncs() {
+  if ($("#evals-menu").hidden) return;
+  try {
+    evals.syncs = (await api("/api/platform/syncs")).syncs;
+  } catch {
+    return;
+  }
+  for (const row of document.querySelectorAll("#evals-menu .pe-row")) {
+    const e = evals.list?.find((x) => x.id === row.dataset.eval);
+    if (e) row.outerHTML = evalRow(e);
+  }
+}
+setInterval(refreshSyncs, 2000);
+
+async function startSync(id) {
+  const res = await fetch(`/api/platform/evaluations/${encodeURIComponent(id)}/sync`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function openEvaluation(input) {
+  // a pasted platform URL ends in the evaluation id
+  const id = input.trim().replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
+  if (!id) return;
+  evals.opening = id;
+  evals.openError = null;
+  renderEvalsMenu();
+  try {
+    const { run } = await startSync(id);
+    await loadRuns();
+    const name = run ?? state.runs.find((r) => r.name === id || r.name.endsWith(`:${id}`))?.name;
+    if (!name) throw new Error("the run did not appear in the run list");
+    $("#evals-menu").hidden = true;
+    await selectRun(name);
+  } catch (err) {
+    evals.openError = platformMessage(err);
+  } finally {
+    evals.opening = null;
+    if (!$("#evals-menu").hidden) renderEvalsMenu();
   }
 }
 
@@ -228,6 +350,11 @@ async function selectRun(name, deferTab = false) {
   applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
+  // a platform evaluation left unfinished (still running, or a sync cut short) picks up again
+  if (state.meta?.platform?.source === "traces" && !state.meta.finished) {
+    const id = Object.values(state.meta.platform.evaluations ?? {})[0]?.id;
+    if (id) startSync(id).catch((err) => console.warn("platform sync did not resume", err));
+  }
   updateHash();
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   if (!deferTab) await activateTab(state.tab, true);
@@ -6190,6 +6317,14 @@ $("#live-toggle").addEventListener("change", async (e) => {
   state.live = e.target.checked;
   if (state.live) await pollDashboard();
 });
+$("#evals-menu").addEventListener("click", (e) => {
+  const row = e.target.closest(".pe-row");
+  if (row && !evals.opening) openEvaluation(row.dataset.eval);
+});
+$("#evals-menu").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!evals.opening) openEvaluation($("#pe-id").value);
+});
 $("#compare-menu").addEventListener("change", (e) => {
   const box = e.target.closest("[data-compare]");
   if (box) toggleCompare(box.dataset.compare, box.checked);
@@ -6220,6 +6355,11 @@ document.addEventListener("click", () => {
     if (wrap.classList.contains("dd-select")) rebuildSelectMenu(wrap);
     menu.hidden = !menu.hidden;
     if (!menu.hidden && menu.id === "compare-menu") renderCompareMenu();
+    if (!menu.hidden && menu.id === "evals-menu") {
+      renderEvalsMenu();
+      loadEvals();
+      refreshSyncs();
+    }
   }
 });
 

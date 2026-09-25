@@ -5017,6 +5017,7 @@ all = [
 ]
 dashboard = [
     { name = "fastapi" },
+    { name = "prime-traces" },
     { name = "uvicorn" },
 ]
 disagg = [
@@ -5132,6 +5133,7 @@ requires-dist = [
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
     { name = "prime-runs", extras = ["train"], specifier = ">=0.1.3" },
     { name = "prime-sandboxes", specifier = ">=0.3.0" },
+    { name = "prime-traces", marker = "extra == 'dashboard'", specifier = ">=0.0.6" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
@@ -5242,15 +5244,15 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.4"
+version = "0.0.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/5d/d3646fb34d4f3cf4caf2064eb3830c4da5c18a3ecd3292ce9e85eb04398f/prime_traces-0.0.4.tar.gz", hash = "sha256:713b59984292304bd4e99a55998b7d69373f22b5205a7e097ef0d0d8e531561c", size = 50935, upload-time = "2026-09-04T16:51:10.488Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/32/b1051cf620f10c687d364bcd2948ad933b75eb558d5269dbd1bf8d894696/prime_traces-0.0.6.tar.gz", hash = "sha256:1c777028618cce3a727eed59343549ca81e4b5f435952aa8bae853f50007c0ac", size = 56526, upload-time = "2026-09-25T00:53:43.189Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/55/de30cc732631522f5f12cb590b63b80cb1c6ca004ad81762d94ee7dda256/prime_traces-0.0.4-py3-none-any.whl", hash = "sha256:68f2b527d266f9c3d02f6c86a1713309a58a61b81e1be6be43948e1dd2456d8f", size = 38409, upload-time = "2026-09-04T16:51:09.201Z" },
+    { url = "https://files.pythonhosted.org/packages/16/c9/1e6587db4f4ace39089965388ffd8cf31e80a991de975065454222c8d2f2/prime_traces-0.0.6-py3-none-any.whl", hash = "sha256:6b37b20de865a5918c594bd4f1793923fa681771eaaf2ef22c7fe1b994118886", size = 41732, upload-time = "2026-09-25T00:53:41.915Z" },
 ]
 
 [[package]]
