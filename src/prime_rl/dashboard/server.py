@@ -278,7 +278,10 @@ def source_total_episodes(source: dict) -> int | None:
     count = source.get("num_examples") or -1
     if count < 0 and not tasks:
         return None
-    return (count if count >= 0 else len(tasks)) * (source.get("group_size") or 1)
+    count = count if count >= 0 else len(tasks)
+    if min_rollouts := source.get("min_rollouts"):
+        return count * math.ceil(min_rollouts / count) if count else 0
+    return count * (source.get("group_size") or 1)
 
 
 def eval_totals(config: dict) -> dict[str, int | None]:

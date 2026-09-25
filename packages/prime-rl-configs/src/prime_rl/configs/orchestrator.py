@@ -293,8 +293,17 @@ class EvalSourceConfig(EnvConfig):
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    group_size: int = Field(1, ge=1)
-    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
+    group_size: int | None = Field(None, ge=1)
+    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8). Defaults to 1 unless ``min_rollouts`` sizes it; the two are mutually exclusive."""
+
+    min_rollouts: int | None = Field(None, ge=1)
+    """Minimum total rollouts. The eval sizes ``group_size`` from its resolved task count to reach it. Mutually exclusive with ``group_size``."""
+
+    @model_validator(mode="after")
+    def validate_rollout_count(self):
+        if self.group_size is not None and self.min_rollouts is not None:
+            raise ValueError("group_size and min_rollouts are mutually exclusive on an eval source")
+        return self
 
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
@@ -347,13 +356,19 @@ class EvalSourcesConfig(BaseConfig):
     num_examples: int = -1
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    group_size: int = Field(1, ge=1)
-    """Default rollouts per example. Can be overridden per env."""
+    group_size: int | None = Field(None, ge=1)
+    """Default rollouts per example, 1 when neither this nor ``min_rollouts`` is set. Can be overridden per env. Mutually exclusive with ``min_rollouts``."""
+
+    min_rollouts: int | None = Field(None, ge=1)
+    """Default minimum total rollouts per env. Can be overridden per env. Mutually exclusive with ``group_size``."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples and
-        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling, num_examples and the
+        rollout count, ``group_size`` or ``min_rollouts`` (the worker ``pool`` is configured
+        per env, default elastic)."""
+        if self.group_size is not None and self.min_rollouts is not None:
+            raise ValueError("group_size and min_rollouts are mutually exclusive")
         group_sampling = self.sampling.model_dump()
         for source in self.source:
             if "sampling" not in source.model_fields_set:
@@ -363,8 +378,11 @@ class EvalSourcesConfig(BaseConfig):
                 source.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
-            if "group_size" not in source.model_fields_set:
-                source.group_size = self.group_size
+            if source.group_size is None and source.min_rollouts is None:
+                if self.min_rollouts is not None:
+                    source.min_rollouts = self.min_rollouts
+                else:
+                    source.group_size = self.group_size or 1
         return self
 
     @model_validator(mode="after")

@@ -183,7 +183,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 
 ### Online Evals
 
-`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `num_examples` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `num_examples` / `group_size` / `min_rollouts` / sampling overrides — plus an `[inference]` block for the vLLM server:
 
 ```toml
 [eval]

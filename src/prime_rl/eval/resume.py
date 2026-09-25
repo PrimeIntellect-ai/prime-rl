@@ -35,6 +35,7 @@ RESUMABLE = (
     "dashboard",
     "num_examples",
     "group_size",
+    "min_rollouts",
     "concurrency",
     "client",
     "log",
@@ -42,6 +43,7 @@ RESUMABLE = (
     "source.*.num_examples",
     "source.*.shuffle",
     "source.*.group_size",
+    "source.*.min_rollouts",
     "source.*.serve",
 )
 """Config paths a resumed run may change: how many rollouts to run and how to run them,
@@ -145,7 +147,7 @@ def plan(
     for env in eval_envs:
         targets[env.name] = Counter(task.key for task in env.examples)
         for key in targets[env.name]:
-            targets[env.name][key] *= env.config.group_size
+            targets[env.name][key] *= env.group_size
     kept: list[vf.WireEpisode] = []
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     groups: dict[str, dict[str, str]] = defaultdict(dict)
