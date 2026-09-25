@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import numpy as np
 import pybase64
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
+    GenerateResponse,
+    GenerateResponseChoice,
+)
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
+from vllm.multimodal.inputs import PlaceholderRange
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
+    _extract_mm_placeholders,
     _GenerateRoutedExpertsCapture,
 )
 
@@ -58,7 +63,7 @@ def test_serialize_routed_experts_uses_compact_raw_payload():
     np.testing.assert_array_equal(decoded, routed_experts)
 
 
-def test_generate_response_post_process_replaces_upstream_routed_experts():
+def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
     capture = _GenerateRoutedExpertsCapture(_empty_request_outputs())
     capture.routed_experts[0] = compact_routed_experts
@@ -77,12 +82,19 @@ def test_generate_response_post_process_replaces_upstream_routed_experts():
     )
 
     processed = capture.post_process(response)
+    processed.prompt_token_ids = [10, 11, 12, 13]
+    processed.mm_placeholders = _extract_mm_placeholders(
+        {
+            "type": "multimodal",
+            "mm_placeholders": {"image": [PlaceholderRange(offset=1, length=2)]},
+        }
+    )
 
     assert processed.choices[0].routed_experts == compact_routed_experts
     assert processed.model == "test-model"
     assert processed.usage == usage
-    # The compact object form must survive JSON serialization (the parent
-    # declares ``routed_experts`` as a base64 string).
     payload = processed.model_dump(mode="json")
     assert payload["choices"][0]["routed_experts"] == compact_routed_experts
+    assert payload["prompt_token_ids"] == [10, 11, 12, 13]
+    assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
