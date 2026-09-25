@@ -24,8 +24,98 @@ except ImportError:
 
 try:
     from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
+    from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd
 except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
+
+
+# FA4's flash_attn_varlen_func is a Python autograd.Function that Dynamo cannot trace. Inside a
+# checkpointed block that graph break drops the whole block to eager, so FA4 is exposed as an
+# opaque custom op instead, which also lets selective activation checkpointing save its output.
+@torch.library.custom_op("prime_rl_attn::flash_attn_4_varlen", mutates_args=())
+def flash_attn_4_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int | None,
+    window_size_left: int | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    out, lse, _, _ = _flash_attn_fwd(
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=max_seqlen,
+        max_seqlen_k=max_seqlen,
+        causal=True,
+        window_size_left=window_size_left,
+        window_size_right=0 if window_size_left is not None else None,
+        return_lse=True,
+    )
+    return out, lse
+
+
+@flash_attn_4_varlen.register_fake
+def _(q, k, v, cu_seqlens, max_seqlen, window_size_left):
+    out = q.new_empty((*q.shape[:-1], v.shape[-1]))
+    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
+    return out, lse
+
+
+@torch.library.custom_op("prime_rl_attn::flash_attn_4_varlen_backward", mutates_args=())
+def flash_attn_4_varlen_backward(
+    dout: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int | None,
+    window_size_left: int | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    dq, dk, dv = _flash_attn_bwd(
+        q,
+        k,
+        v,
+        out,
+        dout,
+        lse,
+        causal=True,
+        window_size_left=window_size_left,
+        window_size_right=0 if window_size_left is not None else None,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=max_seqlen,
+        max_seqlen_k=max_seqlen,
+    )
+    return dq, dk, dv
+
+
+@flash_attn_4_varlen_backward.register_fake
+def _(dout, q, k, v, out, lse, cu_seqlens, max_seqlen, window_size_left):
+    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+
+
+def _flash_attn_4_varlen_setup_context(ctx, inputs, output) -> None:
+    q, k, v, cu_seqlens, max_seqlen, window_size_left = inputs
+    out, lse = output
+    ctx.save_for_backward(q, k, v, out, lse, cu_seqlens)
+    ctx.max_seqlen = max_seqlen
+    ctx.window_size_left = window_size_left
+
+
+def _flash_attn_4_varlen_autograd(ctx, dout: torch.Tensor, _dlse: torch.Tensor | None):
+    q, k, v, out, lse, cu_seqlens = ctx.saved_tensors
+    dq, dk, dv = flash_attn_4_varlen_backward(
+        dout.contiguous(), q, k, v, out, lse, cu_seqlens, ctx.max_seqlen, ctx.window_size_left
+    )
+    return dq, dk, dv, None, None, None
+
+
+flash_attn_4_varlen.register_autograd(_flash_attn_4_varlen_autograd, setup_context=_flash_attn_4_varlen_setup_context)
 
 
 @dataclass
@@ -105,11 +195,8 @@ class FlashAttention(nn.Module):
         if sliding_window is not None:
             kwargs["window_size"] = (sliding_window - 1, 0)
         if self._flash_attn_version == 4:
-            # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
-            # so cu_seqlens must be passed as keyword args to avoid misalignment.
-            kwargs["cu_seqlens_q"] = cu_seqlens
-            kwargs["cu_seqlens_k"] = cu_seqlens
-            out, _ = self.func(q, k, v, **kwargs)
+            window_size_left = sliding_window - 1 if sliding_window is not None else None
+            out, _ = flash_attn_4_varlen(q, k, v, cu_seqlens, max_seqlen, window_size_left)
         else:
             out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         return out
