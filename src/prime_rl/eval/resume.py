@@ -147,7 +147,7 @@ def plan(
     for env in eval_envs:
         targets[env.name] = Counter(task.key for task in env.examples)
         for key in targets[env.name]:
-            targets[env.name][key] *= env.config.group_size
+            targets[env.name][key] *= env.group_size
     kept: list[vf.WireEpisode] = []
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     groups: dict[str, dict[str, str]] = defaultdict(dict)

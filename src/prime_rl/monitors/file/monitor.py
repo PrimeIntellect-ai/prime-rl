@@ -59,7 +59,7 @@ class FileMonitor(Monitor):
             row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
-    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
+    async def log_eval_plan(self, env_name: str, step: int, expected: int, group_size: int) -> None:
         """Merge the epoch's expected count into ``plan.json`` (atomic replace)."""
         path = get_eval_plan_path(self.output_dir)
         plan = orjson.loads(path.read_bytes()) if path.is_file() else {}

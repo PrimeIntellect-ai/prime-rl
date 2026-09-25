@@ -177,7 +177,7 @@ class PrimeEvalMonitor(Monitor):
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         pass
 
-    def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
+    def open(self, env_name: str, step: int, expected: int | None, group_size: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
         if self.evaluation_id:
             # A hosted launch pre-created the platform evaluation and injected its id -
@@ -207,19 +207,21 @@ class PrimeEvalMonitor(Monitor):
                 "model": self.model,
                 "step": step,
                 "run_id": self.run_id,
-                "num_examples": expected // source.group_size if expected else None,
-                "rollouts_per_example": source.group_size,
+                "num_examples": expected // group_size if expected and group_size else None,
+                "rollouts_per_example": group_size if group_size is not None else source.group_size,
             },
         )
 
-    async def run_for(self, env_name: str, step: int, expected: int | None = None) -> pr.Run | None:
+    async def run_for(
+        self, env_name: str, step: int, expected: int | None = None, group_size: int | None = None
+    ) -> pr.Run | None:
         """The epoch's evaluation, opened on first use."""
         key = (env_name, step)
         async with self._lock:
             if key in self.runs:
                 return self.runs[key]
             try:
-                run = await asyncio.to_thread(self.open, env_name, step, expected)
+                run = await asyncio.to_thread(self.open, env_name, step, expected, group_size)
             except Exception as e:
                 self.logger.warning(f"Failed to open the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
                 self.runs[key] = None
@@ -238,8 +240,8 @@ class PrimeEvalMonitor(Monitor):
                 write_platform_record(self.output_dir, record)
         return run
 
-    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
-        await self.run_for(env_name, step, expected)
+    async def log_eval_plan(self, env_name: str, step: int, expected: int, group_size: int) -> None:
+        await self.run_for(env_name, step, expected, group_size)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Every eval episode as it lands (the ``all`` subset is the arrival stream)."""

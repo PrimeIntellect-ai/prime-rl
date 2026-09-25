@@ -65,8 +65,8 @@ class EvalConfig(ServedEvalConfig):
     num_examples: int = Field(-1, validation_alias=AliasChoices("num_examples", "n"))
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
-    """Default rollouts per example. Can be overridden per env."""
+    group_size: int | None = Field(None, ge=1, validation_alias=AliasChoices("group_size", "r"))
+    """Default rollouts per example, 1 when unset. Can be overridden per env. Mutually exclusive with ``min_rollouts``."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""

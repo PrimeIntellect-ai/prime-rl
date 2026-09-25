@@ -15,9 +15,7 @@ def _task(key: str) -> SimpleNamespace:
 
 
 def _env(name: str, task_keys: list[str], *, group_size: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(
-        name=name, examples=[_task(key) for key in task_keys], config=SimpleNamespace(group_size=group_size)
-    )
+    return SimpleNamespace(name=name, examples=[_task(key) for key in task_keys], group_size=group_size)
 
 
 def _record(env: str, key: str, *, ok: bool = True, group: str | None = None) -> dict:

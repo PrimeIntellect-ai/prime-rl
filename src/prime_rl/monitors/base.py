@@ -62,9 +62,10 @@ class Monitor(ABC):
         each delta as it arrived, ``{"done": trace_id}`` when a trace's episode finished.
         Monitors that only carry finished work ignore it."""
 
-    async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
-        """Log how many episodes the eval epoch of ``env_name`` at ``step`` will produce,
-        known once its tasks are counted. Monitors that only carry results ignore it."""
+    async def log_eval_plan(self, env_name: str, step: int, expected: int, group_size: int) -> None:
+        """Log how many episodes the eval epoch of ``env_name`` at ``step`` will produce and
+        the rollouts per example behind that count, known once its tasks are counted.
+        Monitors that only carry results ignore it."""
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
         """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,

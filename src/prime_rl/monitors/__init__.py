@@ -139,11 +139,11 @@ async def log_annotations(updates: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def log_eval_plan(env_name: str, step: int, expected: int) -> None:
+async def log_eval_plan(env_name: str, step: int, expected: int, group_size: int) -> None:
     """Log an eval epoch's expected episode count to all registered monitors."""
     for monitor in MONITORS:
         try:
-            await monitor.log_eval_plan(env_name, step, expected)
+            await monitor.log_eval_plan(env_name, step, expected, group_size)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
