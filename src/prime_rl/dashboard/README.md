@@ -22,7 +22,7 @@ cluster head node, a laptop against a mounted outputs dir:
 uv sync --extra dashboard && uv run dashboard [output_dir ...]
 ```
 
-**Platform evals** in the top bar lists the evaluations of the saved Prime
+**Evals** in the top bar lists the platform evaluations of the saved Prime
 account (`prime login`; the selected team's when one is set) and opens any of
 them, or one pasted by id or URL, as a run. Opening an evaluation syncs it from
 Prime Traces in the background into

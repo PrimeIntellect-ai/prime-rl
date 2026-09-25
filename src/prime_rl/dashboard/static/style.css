@@ -1739,6 +1739,11 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 #episode-table .day { margin-right: 8px; }
 
 /* platform evaluations picker */
+#evals-btn, #platform-wrap .platform { white-space: nowrap; }
+@media (max-width: 1400px) {
+  #topbar { gap: 10px; }
+  #topbar .dd-select .dd-btn { max-width: 220px; }
+}
 #evals-menu { width: 460px; padding: 0 0 6px; }
 .pe-head { display: flex; justify-content: space-between; gap: 12px; }
 .pe-open { display: flex; gap: 6px; padding: 6px 10px 8px; }
