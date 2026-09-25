@@ -73,6 +73,7 @@ gpu = [
 dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "prime-traces>=0.0.6",
 ]
 dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
