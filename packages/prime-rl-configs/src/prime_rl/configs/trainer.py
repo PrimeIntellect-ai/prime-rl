@@ -277,7 +277,7 @@ class ModelConfig(BaseModelConfig):
     """Sequence length the model is trained on."""
 
     attn: AttnImplementation = "auto"
-    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
+    """Attention implementation. ``auto`` selects FA4 on datacenter Blackwell (SM100/SM103), FA3 on Hopper (SM90), and FA2 elsewhere (e.g. workstation Blackwell SM120/121 such as RTX PRO 6000, Ampere SM86 such as RTX 3090). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""

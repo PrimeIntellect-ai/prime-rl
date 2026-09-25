@@ -117,7 +117,7 @@ CP shards a single sequence across multiple GPUs along the token dimension — f
 ```toml
 [trainer.model]
 impl = "custom"
-attn = "auto"                # auto = FA3 on Hopper, FA4 on Blackwell; or flash_attention_2/3/4
+attn = "auto"                # auto = FA4 on datacenter Blackwell, FA3 on Hopper, FA2 elsewhere; or flash_attention_2/3/4
 cp = 2                       # CP degree
 cp_style = "ulysses"         # "ring"
 ```
