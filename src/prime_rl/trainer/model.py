@@ -1,12 +1,7 @@
 import logging
-import os
 import time
 from pathlib import Path
 from typing import cast
-
-# Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
-# modules with implementations that have incompatible CUDA requirements.
-os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
