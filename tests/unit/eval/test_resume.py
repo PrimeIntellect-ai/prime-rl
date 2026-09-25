@@ -69,14 +69,25 @@ def test_check_config_allows_selection_changes_only() -> None:
         "model": "a",
         "num_examples": 8,
         "group_size": 2,
+        "min_rollouts": None,
         "sampling": {"temperature": 1.0},
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "serve": {"address": None}}],
+        "source": [
+            {"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "min_rollouts": None, "serve": {"address": None}}
+        ],
     }
     resized = {
         **previous,
         "num_examples": 16,
         "group_size": 4,
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+        "min_rollouts": 1000,
+        "source": [
+            {
+                "env": {"taskset": {"id": "gsm8k"}},
+                "group_size": 8,
+                "min_rollouts": 1000,
+                "serve": {"address": "tcp://x"},
+            }
+        ],
     }
     resume.check_config(previous, resized)
 

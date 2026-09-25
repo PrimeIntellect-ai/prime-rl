@@ -69,7 +69,7 @@ Per-source `num_examples`, `group_size`, `min_rollouts`, and `sampling` override
 
 By default, eval runs every task once. Set `group_size` to run each task a fixed number of times. Set `min_rollouts` to target a total rollout count. PRL uses the resolved task count to choose the smallest `group_size` that reaches the target. For example, 500 tasks get `avg@2` for a target of 1,000, while 200 tasks get `avg@5`.
 
-Set `min_rollouts` globally or on one `[[source]]`. It is mutually exclusive with `group_size` at the same level. A source can override the global rollout setting. The same setting works under `[orchestrator.eval]` in RL and `[eval]` in SFT. Config resolution counts tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound. Resolved configs contain the computed `group_size`.
+Set `min_rollouts` globally or on one `[[source]]`. It is mutually exclusive with `group_size` at the same level. A source can override the global rollout setting. The same setting works under `[orchestrator.eval]` in RL and `[eval]` in SFT. The eval runtime chooses `group_size` after it loads and selects tasks. An infinite taskset needs a positive `num_examples` bound.
 
 ## Resume
 

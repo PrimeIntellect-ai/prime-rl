@@ -1,10 +1,9 @@
 import warnings
-from itertools import islice
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_serializer, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -297,7 +296,7 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
-    min_rollouts: int | None = Field(None, ge=1, exclude=True)
+    min_rollouts: int | None = Field(None, ge=1)
     """Minimum total rollouts, sized from the resolved task count. Mutually
     exclusive with ``group_size`` on the same source."""
 
@@ -306,6 +305,12 @@ class EvalSourceConfig(EnvConfig):
         if {"min_rollouts", "group_size"} <= self.model_fields_set:
             raise ValueError("Set either group_size or min_rollouts on an eval source, not both")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_rollout_count(self, handler):
+        data = handler(self)
+        data.pop("group_size" if self.min_rollouts is not None else "min_rollouts", None)
+        return data
 
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
@@ -361,17 +366,16 @@ class EvalSourcesConfig(BaseConfig):
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
-    min_rollouts: int | None = Field(None, ge=1, exclude=True)
+    min_rollouts: int | None = Field(None, ge=1)
     """Default minimum total rollouts per source. Mutually exclusive with the
     global ``group_size``. A source can override either global rollout setting."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env sampling and rollout counts."""
+        """Resolve per-env sampling and rollout settings."""
         if {"min_rollouts", "group_size"} <= self.model_fields_set:
             raise ValueError("Set either group_size or min_rollouts for eval, not both")
         group_sampling = self.sampling.model_dump()
-        counts: dict[tuple[str, int], int] = {}
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
@@ -386,27 +390,15 @@ class EvalSourcesConfig(BaseConfig):
                 and self.min_rollouts is not None
             ):
                 source.min_rollouts = self.min_rollouts
-            if source.min_rollouts is not None:
-                n = source.num_examples
-                key = (source.env.taskset.model_dump_json(), n)
-                if key not in counts:
-                    taskset = vf.load_taskset(source.env.taskset)
-                    if type(taskset).INFINITE and n < 0:
-                        raise ValueError(f"{source.resolved_name}: infinite taskset needs num_examples")
-                    tasks = iter(taskset)
-                    count = sum(1 for _ in (islice(tasks, n) if n >= 0 else tasks))
-                    if count == 0:
-                        raise ValueError(f"{source.resolved_name}: no tasks selected for evaluation")
-                    counts[key] = count
-                source.group_size = (source.min_rollouts + counts[key] - 1) // counts[key]
-                source.min_rollouts = None
-            elif "group_size" not in source.model_fields_set:
+            if source.min_rollouts is None and "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
-            # Resolved sources can be validated again after the target becomes group_size.
-            source.model_fields_set.discard("min_rollouts")
-        self.min_rollouts = None
-        self.model_fields_set.discard("min_rollouts")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_rollout_count(self, handler):
+        data = handler(self)
+        data.pop("group_size" if self.min_rollouts is not None else "min_rollouts", None)
+        return data
 
     @model_validator(mode="after")
     def validate_non_empty_sources(self):
