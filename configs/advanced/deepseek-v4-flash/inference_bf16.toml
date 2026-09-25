@@ -1,0 +1,21 @@
+# Standalone bf16 serving pre-flight, run directly on one already-allocated 8xH200 node, no [slurm] block:
+#
+#   uv run inference @ configs/advanced/deepseek-v4-flash/inference_bf16.toml
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[server]
+port = 8000
+
+[vllm]
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 8192
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
