@@ -384,7 +384,11 @@ def list_runs() -> dict:
         meta["name"] = run_id
         runs.append(meta)
     runs.sort(key=lambda r: r["mtime"], reverse=True)
-    return {"output_dir": ", ".join(str(d.resolve()) for d in output_dirs), "runs": runs}
+    return {
+        "output_dir": ", ".join(str(d.resolve()) for d in output_dirs),
+        "runs": runs,
+        "platform_evals": not isolated,
+    }
 
 
 @app.get("/api/runs/{run}")

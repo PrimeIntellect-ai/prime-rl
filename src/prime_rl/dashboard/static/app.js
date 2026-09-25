@@ -132,6 +132,7 @@ async function loadRuns() {
   const data = await api("/api/runs");
   state.runs = data.runs;
   state.outputDir = data.output_dir;
+  $("#evals-wrap").hidden = !data.platform_evals;
   const sel = $("#run-select");
   const current = state.run;
   sel.disabled = !state.runs.length;

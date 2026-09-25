@@ -314,8 +314,9 @@ class PlatformSync:
         job.state = "syncing" if finished or not job.written else "following"
         write_run_files(run_dir, evaluation)
         written_ids = written_episode_ids(run_dir)
-        # re-list everything while episodes from the last pass are still missing
-        created_after = newest - FOLLOW_MARGIN if newest and not job.failed else None
+        # re-list everything to retry failed episodes, and before sealing to catch late
+        # uploads outside the follow window
+        created_after = newest - FOLLOW_MARGIN if newest and not job.failed and not finished else None
         episodes = list_new_episodes(platform.traces, job.evaluation_id, set(written_ids), created_after)
         records = fetch_records(platform.traces, [episode.episode_id for episode in episodes])
         written, job.failed = append_episodes(run_dir, records, len(written_ids))
