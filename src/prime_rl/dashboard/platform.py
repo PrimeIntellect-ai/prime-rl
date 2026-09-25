@@ -19,7 +19,7 @@ the dashboard read it as completed.
 import argparse
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,7 +27,7 @@ from typing import Any
 
 import httpx
 import orjson
-from prime_traces import PrimeTracesError, TracesClient
+from prime_traces import PrimeTracesError, TracesClient, TransportError
 from prime_traces.core.config import Config
 
 from prime_rl.configs.monitors import FileMonitorConfig
@@ -49,6 +49,10 @@ episodes that sort later."""
 
 FETCH_WORKERS = 8
 """Episodes fetched concurrently: each is one request plus one per member trace."""
+
+FETCH_ATTEMPTS = 3
+"""Tries per stored document. A raw read streams, and one the connection drops midway
+(a trace can be tens of MB) is past the SDK's own retries."""
 
 OPTS = orjson.OPT_APPEND_NEWLINE
 
@@ -171,11 +175,20 @@ def list_new_episodes(client: TracesClient, run_id: str, seen: set[str], created
     return sorted(episodes, key=lambda episode: (episode.created_at, episode.episode_id))
 
 
+def read_raw(read: Callable[[str], bytes], document_id: str) -> Any:
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return orjson.loads(read(document_id))
+        except TransportError:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+
+
 def episode_record(client: TracesClient, episode_id: str) -> dict:
     """The episode as the file monitor would have written it: the stored envelope
     with each member trace in place of its id."""
-    envelope = orjson.loads(client.get_episode_raw(episode_id))
-    envelope["traces"] = [orjson.loads(client.get_raw(trace_id)) for trace_id in envelope.get("traces") or []]
+    envelope = read_raw(client.get_episode_raw, episode_id)
+    envelope["traces"] = [read_raw(client.get_raw, trace_id) for trace_id in envelope.get("traces") or []]
     # older producers recorded no group; an eval's group is the rollouts of one task
     if not envelope.get("group") and (key := (envelope.get("task") or {}).get("key")):
         envelope["group"] = {"id": key}
