@@ -67,6 +67,8 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
+Set `min_rollouts_per_source = 1000` to size each source by its selected task count. The launcher sets `group_size = ceil(1000 / selected_tasks)`. For example, 500 tasks get `avg@2`, and 200 get `avg@5`. This setting overrides fixed `group_size` values. The launcher counts tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound.
+
 ## Resume
 
 An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes and the ones the interruption cut off run again.
