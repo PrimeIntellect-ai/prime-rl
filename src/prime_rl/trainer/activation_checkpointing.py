@@ -42,6 +42,7 @@ DEFAULT_SELECTIVE_SAVE_NAMESPACES = frozenset(
         "_c10d_functional",
         "flash_attn",
         "flash_attn_3",
+        "prime_rl_attn",
         "prime_rl_collectives",
         "prime_rl_ring",
     }
