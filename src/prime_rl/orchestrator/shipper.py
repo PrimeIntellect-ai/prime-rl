@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from prime_rl import monitors as default_monitors
-from prime_rl.configs.orchestrator import CheckpointConfig, ShipperConfig
+from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_batch
 from prime_rl.orchestrator.ckpt import CheckpointManager
@@ -39,8 +39,8 @@ TARGET_LAG = 1
 class Shipper:
     def __init__(
         self,
-        config: ShipperConfig,
         *,
+        max_steps: int | None,
         packer: BatchPacker,
         sender: BatchSender,
         ckpt_manager: CheckpointManager,
@@ -48,7 +48,7 @@ class Shipper:
         train_source: TrainSource,
         heart: Heartbeat | None = None,
     ) -> None:
-        self.config = config
+        self.max_steps = max_steps
         self.packer = packer
         self.sender = sender
         self.ckpt_manager = ckpt_manager
@@ -117,7 +117,6 @@ class Shipper:
         ships past ``max_steps``."""
         if self.draining.is_set():
             return
-        config = self.config
         step = self.progress.step
         now = time.perf_counter()
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
@@ -125,8 +124,8 @@ class Shipper:
 
         # A resume can start past the end (checkpoint written at the final step, or a
         # lowered ``max_steps``): never ship beyond the budget.
-        if config.max_steps is not None and step > config.max_steps:
-            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
+        if self.max_steps is not None and step > self.max_steps:
+            await self.start_draining(f"Step {step} exceeds max_steps={self.max_steps}")
             return
         if not batch.samples:
             get_logger().warning(
@@ -174,7 +173,7 @@ class Shipper:
         self.progress.total_problems += self.num_tasks(batch)
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        if config.max_steps is not None and step >= config.max_steps:
+        if self.max_steps is not None and step >= self.max_steps:
             await self.wait_for_version(step, "before shutdown")
             # Drain right after the final batch: waiting for another to fill would burn
             # inference on data that can never train.
@@ -225,7 +224,7 @@ class Shipper:
         if self.ckpt_config is None or not self.ckpt_config.interval:
             return 0.0
         # The final step's checkpoint is written once at teardown (``save_final``).
-        if self.config.max_steps is not None and step >= self.config.max_steps:
+        if self.max_steps is not None and step >= self.max_steps:
             return 0.0
         if step % self.ckpt_config.interval != 0:
             return 0.0

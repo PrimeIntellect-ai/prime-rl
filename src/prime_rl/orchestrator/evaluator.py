@@ -11,12 +11,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import verifiers.v1 as vf
 
 from prime_rl import monitors as default_monitors
-from prime_rl.configs.orchestrator import EvaluatorConfig
 from prime_rl.orchestrator.annotations import stamp_batch
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -25,6 +25,20 @@ from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.types import DispatchResult, EvalBatch
 from prime_rl.orchestrator.utils import eval_work
 from prime_rl.utils.logger import format_time, get_logger
+
+
+@dataclass(frozen=True)
+class EvaluatorConfig:
+    """``max_steps`` is the final step, whose eval fires every env regardless of
+    interval. A resumed run re-fires the evals due at ``resume_step`` only when
+    ``retrigger_on_resume`` is set. ``upload_epochs`` hands each finished epoch to
+    the monitors whole (``log_eval_epoch``), the way ``uv run eval`` publishes to
+    the platform."""
+
+    max_steps: int | None = None
+    retrigger_on_resume: bool = True
+    resume_step: int | None = None
+    upload_epochs: bool = False
 
 
 class Evaluator:

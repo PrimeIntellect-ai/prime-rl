@@ -1,8 +1,10 @@
 # Orchestrator
 
 The orchestrator process is a set of components under `src/prime_rl/orchestrator/`.
-Each one lives in one file, takes one config, and talks to its neighbours only through
-hooks bound with `bind(...)`. The `Orchestrator` builds them in `setup()`, connects
+Each one lives in one file, takes its settings as plain constructor arguments or an
+internal dataclass built from the user config, and talks to its neighbours only through
+hooks bound with `bind(...)`. The TOML schema stays the user's contract: a component's
+settings can change without a config change. The `Orchestrator` builds them in `setup()`, connects
 every edge in `wire()`, and `start()` runs their tasks until the pipeline drains. It has
 no loop and no pipeline logic of its own, so every component constructs alone and
 replays in a unit test (`tests/unit/orchestrator`, with fakes in `fakes.py`).
@@ -13,15 +15,15 @@ Inbound is what others call on a component. Outbound is what it calls through ho
 A hook is a plain callable; a provider is a hook that returns state (`step()`,
 `version()`) so no component holds a reference to another's fields.
 
-| Component | File | Config | Inbound | Outbound hooks |
+| Component | File | Settings | Inbound | Outbound hooks |
 |---|---|---|---|---|
-| `Dispatcher` | `dispatcher.py` | `DispatcherConfig` (`[orchestrator.dispatcher]`, `[dispatcher]` in eval) | `start`, `stop`, `set_limit(n)`, `cancel_inflight(n)`, `gate(open)`, `switch_mode(mode)`, `on_version_pending(step)`, `on_new_version(step)`, `drain_train(reason)`, `cancel_eval_step(step)` | `step()`, `version()`, `on_train(result)`, `on_eval(result)`, `on_episode_complete(env, kind, tokens, seconds)`, `monitors` |
+| `Dispatcher` | `dispatcher.py` | `dispatch_per_minute` (top level in both the orchestrator and eval configs); the admission burst window, fraction and floor are constants in the file | `start`, `stop`, `set_limit(n)`, `cancel_inflight(n)`, `gate(open)`, `switch_mode(mode)`, `on_version_pending(step)`, `on_new_version(step)`, `drain_train(reason)`, `cancel_eval_step(step)` | `step()`, `version()`, `on_train(result)`, `on_eval(result)`, `on_episode_complete(env, kind, tokens, seconds)`, `monitors` |
 | `ConcurrencyController` | `concurrency.py` | `ConcurrencyConfig` (`[orchestrator.concurrency]`) | `record_episode(...)`, `observe(samples)` | `set_limit(n)`, `get_inflight()`, `on_overload(excess)` |
-| `InferenceMetricsCollector` | `inference_metrics.py` | `InferenceMetricsConfig` (`[orchestrator.inference_metrics]`) | `probe`, `start`, `stop` | `on_load(samples)`, `monitors` |
+| `InferenceMetricsCollector` | `inference_metrics.py` | `collect_inference_metrics`, `inference_metrics_roles` (orchestrator only; evals always log) | `probe`, `start`, `stop` | `on_load(samples)`, `monitors` |
 | `TrainSink` | `train_sink.py` | none | `ingest(result)` | `on_group(FinalizedGroup)`, `admit(group) -> bool` |
-| `Queue` | `queue.py` | `QueueConfig` (derived from `batch_size`, `token_batch_size`, `max_off_policy_steps`, `constant_trainer_batch_size`, `seq_len`) | `put(group)` | `step()`, `on_batch(TrainBatch)` |
-| `Shipper` | `shipper.py` | `ShipperConfig` (derived from `max_steps`) | `on_batch(TrainBatch)`, `on_version(step)`, `resume(step, progress)`, `save_final()` | `version()`, `wait_for_version(v, reason)`, `gate(open)`, `on_drain(reason)`, `monitors` |
-| `Evaluator` | `evaluator.py` | `EvaluatorConfig` (derived from `max_steps`, `eval.retrigger_on_resume`, the resume step) | `trigger(step)`, `ingest(result)`, `restore(episode)` | `prefer_eval(reason)`, `monitors` |
+| `Queue` | `queue.py` | `QueueConfig` (internal, built from `batch_size`, `token_batch_size`, `max_off_policy_steps`, `constant_trainer_batch_size`, `seq_len`) | `put(group)` | `step()`, `on_batch(TrainBatch)` |
+| `Shipper` | `shipper.py` | `max_steps` | `on_batch(TrainBatch)`, `on_version(step)`, `resume(step, progress)`, `save_final()` | `version()`, `wait_for_version(v, reason)`, `gate(open)`, `on_drain(reason)`, `monitors` |
+| `Evaluator` | `evaluator.py` | `EvaluatorConfig` (internal, built from `max_steps`, `eval.retrigger_on_resume`, the resume step) | `trigger(step)`, `ingest(result)`, `restore(episode)` | `prefer_eval(reason)`, `monitors` |
 | `EvalSink` | `eval_sink.py` | none | `ingest(result) -> EvalBatch \| None` | none (owned by the `Evaluator`) |
 | `TrainSource` / `EvalSource` | `train_source.py`, `eval_source.py` | env configs | `next_task(step)`, `on_result(group)`, `trigger(step)`, `state_dict()` | none |
 | `WeightWatcher` | `watcher.py` | none | `sync_startup(step, timeout)`, `apply(step)`, `wait_for(v)`, `start`, `stop`, `version` | `on_version_pending[]`, `on_new_version[]` |

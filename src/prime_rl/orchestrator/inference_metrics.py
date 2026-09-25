@@ -6,12 +6,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import mean, median
+from typing import Literal
 
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
 from prime_rl import monitors as default_monitors
-from prime_rl.configs.orchestrator import InferenceMetricsConfig
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
@@ -275,9 +275,15 @@ class InferenceMetricsCollector:
     names.
     """
 
-    def __init__(self, config: InferenceMetricsConfig, admin_clients: list[AsyncClient]):
-        self.config = config
-        self.endpoints = build_metrics_endpoints(admin_clients, roles=config.roles)
+    def __init__(
+        self,
+        admin_clients: list[AsyncClient],
+        *,
+        roles: list[Literal["prefill", "decode"]] | None = None,
+        log: bool = True,
+    ):
+        self.log = log
+        self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.max_model_len_by_endpoint: dict[str, int] = {}
         self.task: asyncio.Task | None = None
@@ -345,7 +351,7 @@ class InferenceMetricsCollector:
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
-        metrics = self.build_metrics(samples) if self.config.log else {}
+        metrics = self.build_metrics(samples) if self.log else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
             self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)

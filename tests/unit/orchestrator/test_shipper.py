@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from prime_rl.configs.orchestrator import CheckpointConfig, ShipperConfig
+from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.shipper import Shipper
 from prime_rl.orchestrator.types import TrainBatch
@@ -32,14 +32,14 @@ class FakeSender:
         pass
 
 
-def make_shipper(tmp_path, *, version=0, **config):
+def make_shipper(tmp_path, *, version=0, max_steps=None):
     hooks, monitors = RecordingHooks(), RecordingMonitors()
     sender = FakeSender()
     saved = []
     ckpt_manager = SimpleNamespace(save=lambda step, progress, source: saved.append((step, progress.step)))
     train_source = SimpleNamespace(metrics=lambda: {}, env_names=["env"], state_dict=lambda: {})
     shipper = Shipper(
-        ShipperConfig(**config),
+        max_steps=max_steps,
         packer=SimpleNamespace(pack=lambda samples: [[samples]]),
         sender=sender,
         ckpt_manager=ckpt_manager,

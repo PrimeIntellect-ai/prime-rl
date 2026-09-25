@@ -1,6 +1,5 @@
 import pytest
 
-from prime_rl.configs.orchestrator import InferenceMetricsConfig
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector, parse_prometheus_text
 from tests.unit.orchestrator.fakes import RecordingHooks, RecordingMonitors
 
@@ -53,7 +52,7 @@ def test_parse_exposition_keeps_gauges_counters_and_cache_config():
 @pytest.mark.asyncio
 async def test_collect_feeds_load_samples_and_logs_metrics():
     client = FakeAdminClient()
-    collector = InferenceMetricsCollector(InferenceMetricsConfig(), [client])
+    collector = InferenceMetricsCollector([client])
     hooks, monitors = RecordingHooks(), RecordingMonitors()
     collector.bind(on_load=hooks.record("on_load"), monitors=monitors)
     await collector.collect_and_log()
@@ -73,7 +72,7 @@ async def test_collect_feeds_load_samples_and_logs_metrics():
 
 @pytest.mark.asyncio
 async def test_log_false_still_feeds_the_controller():
-    collector = InferenceMetricsCollector(InferenceMetricsConfig(log=False), [FakeAdminClient()])
+    collector = InferenceMetricsCollector([FakeAdminClient()], log=False)
     hooks, monitors = RecordingHooks(), RecordingMonitors()
     collector.bind(on_load=hooks.record("on_load"), monitors=monitors)
     assert await collector.probe(attempts=1)

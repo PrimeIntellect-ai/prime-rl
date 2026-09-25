@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import QueueConfig
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, FinalizedGroup, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, min_fresh_version, train_work
@@ -55,6 +55,26 @@ def prune_zero_advantages(sample: TrainingSample) -> bool:
     has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
     has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
     return has_rl or has_ce or has_ref_kl
+
+
+@dataclass(frozen=True)
+class QueueConfig:
+    """Set exactly one of ``batch_size`` (traces per batch) / ``token_batch_size``
+    (tokens per batch). ``constant_trainer_batch_size`` prunes zero-advantage
+    tokens as groups are queued so a batch is exactly the target with signal; off,
+    the prune happens at the cut and the batch may shrink. ``seq_len`` is the
+    assumed cost of a group that returned no trace, so the zero-output warning
+    fires at the same rate under token batching."""
+
+    batch_size: int | None = None
+    token_batch_size: int | None = None
+    max_off_policy_steps: int = 8
+    constant_trainer_batch_size: bool = True
+    seq_len: int = 2048
+
+    def __post_init__(self) -> None:
+        if (self.batch_size is None) == (self.token_batch_size is None):
+            raise ValueError("Exactly one of batch_size / token_batch_size must be set")
 
 
 class Queue:

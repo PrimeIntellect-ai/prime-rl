@@ -1,7 +1,6 @@
 import pytest
 
-from prime_rl.configs.orchestrator import QueueConfig
-from prime_rl.orchestrator.queue import Queue
+from prime_rl.orchestrator.queue import Queue, QueueConfig
 from prime_rl.orchestrator.types import FinalizedGroup, TrainBatch
 from tests.unit.orchestrator.fakes import RecordingHooks, make_cancellation, make_episode, make_failure, make_sample
 

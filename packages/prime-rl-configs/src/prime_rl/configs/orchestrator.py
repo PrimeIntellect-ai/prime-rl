@@ -506,84 +506,6 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
-class DispatcherConfig(BaseConfig):
-    """Episode admission (``[orchestrator.dispatcher]``, ``[dispatcher]`` for evals)."""
-
-    dispatch_per_minute: int | None = Field(None, ge=1)
-    """Rate limit on episode dispatch, shared by train and eval: one episode is one token. None disables it."""
-
-    admission_window: float = Field(5.0, gt=0)
-    """Seconds per admission window: the in-flight pool grows by at most ``admission_fraction`` of its cap per window; replacing a completed episode is free."""
-
-    admission_fraction: float = Field(0.1, gt=0, le=1)
-    """Share of the in-flight cap the pool may grow by per window."""
-
-    min_burst: int = Field(8, ge=1)
-    """Floor on admissions per window; a train env's ``group_size`` raises it."""
-
-
-class InferenceMetricsConfig(BaseConfig):
-    """The ``/metrics`` poll of the inference engines (``[orchestrator.inference_metrics]``). It
-    always runs — it feeds the concurrency controller; ``log`` decides whether the scraped
-    metrics also reach the monitors."""
-
-    roles: list[Literal["prefill", "decode"]] | None = None
-    """Role of each admin client when collecting P/D inference metrics."""
-
-    log: bool = True
-    """Mirror the scraped metrics to the monitors."""
-
-
-class QueueConfig(BaseConfig):
-    """The buffer of compiled groups between the sink and the trainer; derived from the
-    orchestrator's top-level fields, not a TOML block."""
-
-    batch_size: int | None = Field(None, ge=1)
-    """Traces per batch. Set this OR ``token_batch_size``."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens per batch. Set this OR ``batch_size``."""
-
-    max_off_policy_steps: int = Field(8, ge=0)
-    """Queued traces older than this many policy versions are dropped before every cut."""
-
-    constant_trainer_batch_size: bool = True
-    """Prune zero-advantage tokens as groups are queued, so a batch is exactly ``batch_size`` traces with signal; off, prune at the cut instead and let the batch shrink."""
-
-    seq_len: int = 2048
-    """Tokens a group that returned no trace is assumed to have cost, so the zero-output warning fires at the same rate under token batching."""
-
-    @model_validator(mode="after")
-    def validate_target(self):
-        if (self.batch_size is None) == (self.token_batch_size is None):
-            raise ValueError("Exactly one of batch_size / token_batch_size must be set")
-        return self
-
-
-class ShipperConfig(BaseConfig):
-    """Shipping of cut batches to the trainer; derived from the orchestrator's top-level
-    fields, not a TOML block."""
-
-    max_steps: int | None = None
-    """Training steps to ship; None ships forever."""
-
-
-class EvaluatorConfig(BaseConfig):
-    """Eval epoch triggering and reporting; derived by the launchers, not a TOML block."""
-
-    max_steps: int | None = None
-    """The final step, whose eval fires every env regardless of interval."""
-
-    retrigger_on_resume: bool = True
-    """Re-fire the resume step's evals on a resumed run."""
-
-    resume_step: int | None = None
-    """The step a resumed run continues from."""
-
-    upload_epochs: bool = False
-    """Hand each finished epoch to the monitors whole (``log_eval_epoch``), the way ``uv run eval`` publishes to the platform."""
-
-
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
@@ -627,8 +549,11 @@ class OrchestratorConfig(BaseConfig):
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
-    inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
-    """The ``/metrics`` poll of the policy engines (``[orchestrator.inference_metrics]``)."""
+    collect_inference_metrics: bool = True
+    """Mirror inference-server metrics to the monitors. The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
+
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each policy admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -657,8 +582,8 @@ class OrchestratorConfig(BaseConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
-    dispatcher: DispatcherConfig = DispatcherConfig()
-    """Episode admission: rate limit and burst smoothing (``[orchestrator.dispatcher]``)."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: one episode is one token. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""

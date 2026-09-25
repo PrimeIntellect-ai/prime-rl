@@ -22,14 +22,13 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
-from prime_rl.configs.orchestrator import EvaluatorConfig
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.evaluator import Evaluator
+from prime_rl.orchestrator.evaluator import Evaluator, EvaluatorConfig
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -111,7 +110,7 @@ class EvalRunner:
         fallback_cost = max((source.sampling.max_completion_tokens or 0) for source in config.source) or 8192
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=fallback_cost)
         self.dispatcher = Dispatcher(
-            config.dispatcher,
+            dispatch_per_minute=config.dispatch_per_minute,
             train_envs=None,
             eval_envs=self.eval_envs,
             train_source=None,
@@ -122,7 +121,7 @@ class EvalRunner:
             run_id=run_id,
             run_name=run_name,
         )
-        self.inference_metrics = InferenceMetricsCollector(config.inference_metrics, self.admin_plane.clients)
+        self.inference_metrics = InferenceMetricsCollector(self.admin_plane.clients)
         self.periodic_logger = PeriodicLogger(name="Eval", interval=config.log.interval)
         self.wire()
 

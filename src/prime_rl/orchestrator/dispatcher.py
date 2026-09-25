@@ -40,7 +40,6 @@ import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl import monitors as default_monitors
-from prime_rl.configs.orchestrator import DispatcherConfig
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival
 from prime_rl.orchestrator.clients import InferenceClient
@@ -62,6 +61,11 @@ from prime_rl.utils.logger import get_logger
 
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
+# Admission smoothing: per window the in-flight pool may grow by at most this
+# share of its cap (floored at MIN_BURST, or a train env's group_size).
+ADMISSION_WINDOW = 5.0
+ADMISSION_FRACTION = 0.1
+MIN_BURST = 8
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
 
 
@@ -133,8 +137,8 @@ class Dispatcher:
 
     def __init__(
         self,
-        config: DispatcherConfig,
         *,
+        dispatch_per_minute: int | None,
         train_envs: TrainEnvs | None,
         eval_envs: EvalEnvs | None,
         train_source: TrainSource | None,
@@ -146,7 +150,6 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
     ) -> None:
-        self.config = config
         self.train_envs = train_envs
         self.eval_envs = eval_envs
         # Train rollouts go to the env's generation source; eval always
@@ -174,7 +177,7 @@ class Dispatcher:
         self.max_inflight = initial_max_inflight
         self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
-            AsyncLimiter(config.dispatch_per_minute, time_period=60) if config.dispatch_per_minute else None
+            AsyncLimiter(dispatch_per_minute, time_period=60) if dispatch_per_minute else None
         )
         # Admission smoothing: the pool may only GROW by ``burst_cap`` per
         # window. Replacing a completed episode is always free (each natural
@@ -184,7 +187,7 @@ class Dispatcher:
         # steady state.
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0
-        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=config.min_burst)
+        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=MIN_BURST)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.live_events: list[dict[str, Any]] = []
@@ -306,10 +309,10 @@ class Dispatcher:
     def admission_budget(self) -> int:
         """Admissions still allowed in the current burst window."""
         now = time.monotonic()
-        if now - self.admission_window_start >= self.config.admission_window:
+        if now - self.admission_window_start >= ADMISSION_WINDOW:
             self.admission_window_start = now
             self.admissions_in_window = 0
-        burst_cap = max(self.min_burst, int(self.max_inflight * self.config.admission_fraction))
+        burst_cap = max(self.min_burst, int(self.max_inflight * ADMISSION_FRACTION))
         return burst_cap - self.admissions_in_window
 
     @property

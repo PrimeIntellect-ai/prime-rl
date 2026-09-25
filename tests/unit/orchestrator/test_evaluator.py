@@ -1,8 +1,7 @@
 import pytest
 
-from prime_rl.configs.orchestrator import EvaluatorConfig
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.evaluator import Evaluator
+from prime_rl.orchestrator.evaluator import Evaluator, EvaluatorConfig
 from tests.unit.orchestrator.fakes import FakeEnv, FakeEnvs, RecordingHooks, RecordingMonitors, make_episode, make_task
 
 

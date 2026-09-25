@@ -6,9 +6,7 @@ from pydantic import AliasChoices, Field, model_validator
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
 from prime_rl.configs.orchestrator import (
     ConcurrencyConfig,
-    DispatcherConfig,
     EvalSourcesConfig,
-    InferenceMetricsConfig,
     ScheduledEvalConfig,
 )
 from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
@@ -27,11 +25,9 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    dispatcher: DispatcherConfig = DispatcherConfig()
-    """Episode admission: rate limit and burst smoothing (``[dispatcher]``)."""
-
-    inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
-    """The ``/metrics`` poll of the inference engines (``[inference_metrics]``)."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch: one episode is one token. Use it for sandbox-backed
+    environments to pace provisioning during autoscaling. None disables it."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: one ping per landed episode — the first

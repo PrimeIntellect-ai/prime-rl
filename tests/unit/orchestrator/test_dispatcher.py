@@ -3,7 +3,6 @@ import asyncio
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import DispatcherConfig
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
@@ -11,7 +10,7 @@ from tests.unit.orchestrator.fakes import FakeClients, FakeEnv, FakeEnvs, FakeSo
 
 
 class Harness:
-    def __init__(self, *, envs: FakeEnvs, max_inflight=4, limit=None, eval_envs=None, step=1, version=0, **config):
+    def __init__(self, *, envs: FakeEnvs, max_inflight=4, limit=None, eval_envs=None, step=1, version=0):
         self.clients = FakeClients()
         for env in envs:
             env.generation_source.clients = self.clients
@@ -22,7 +21,7 @@ class Harness:
         self.state = {"step": step, "version": version}
         self.eval_source = EvalSource(eval_envs) if eval_envs is not None else None
         self.dispatcher = Dispatcher(
-            DispatcherConfig(**config),
+            dispatch_per_minute=None,
             train_envs=envs,
             eval_envs=eval_envs,
             train_source=FakeSource(envs, limit=limit),

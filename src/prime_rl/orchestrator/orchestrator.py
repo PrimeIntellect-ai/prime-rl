@@ -29,14 +29,14 @@ from verifiers.v1.runtimes import set_base_sandbox_labels
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
-from prime_rl.configs.orchestrator import EvaluatorConfig, OrchestratorConfig, QueueConfig, ShipperConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.evaluator import Evaluator
+from prime_rl.orchestrator.evaluator import Evaluator, EvaluatorConfig
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
@@ -44,7 +44,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.queue import Queue
+from prime_rl.orchestrator.queue import Queue, QueueConfig
 from prime_rl.orchestrator.shipper import Shipper
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -192,7 +192,7 @@ class Orchestrator:
         train_source = TrainSource(self.train_envs)
         ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.shipper = Shipper(
-            ShipperConfig(max_steps=config.max_steps),
+            max_steps=config.max_steps,
             packer=packer,
             sender=self.sender,
             ckpt_manager=ckpt_manager,
@@ -258,7 +258,7 @@ class Orchestrator:
 
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
-            config.dispatcher,
+            dispatch_per_minute=config.dispatch_per_minute,
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
             train_source=train_source,
@@ -270,7 +270,9 @@ class Orchestrator:
             run_id=run_id,
             run_name=run_name,
         )
-        self.inference_metrics = InferenceMetricsCollector(config.inference_metrics, self.admin_plane.clients)
+        self.inference_metrics = InferenceMetricsCollector(
+            self.admin_plane.clients, roles=config.inference_metrics_roles, log=config.collect_inference_metrics
+        )
         self.sink = TrainSink(self.train_envs)
         self.queue = Queue(
             QueueConfig(
