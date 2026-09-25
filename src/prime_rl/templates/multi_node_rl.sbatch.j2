@@ -396,6 +396,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
+        # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
+        # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
+        export VLLM_USE_BREAKABLE_CUDAGRAPH=0
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
