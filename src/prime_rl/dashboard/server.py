@@ -2285,6 +2285,7 @@ def main() -> None:
         # this instance's dirs join the per-user registry, and it serves the union -
         # one dashboard per host per user covers every run
         register_dirs(output_dirs)
+        PLATFORM_DIR.mkdir(parents=True, exist_ok=True)  # the evals picker works with no local runs
     if not tracked_dirs():
         raise SystemExit("no existing output dir given" + ("" if isolated else " (and none registered)"))
     set_proc_title("Dashboard")
