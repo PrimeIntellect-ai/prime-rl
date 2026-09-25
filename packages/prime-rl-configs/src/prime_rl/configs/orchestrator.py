@@ -294,7 +294,7 @@ class EvalSourceConfig(EnvConfig):
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
     group_size: int | None = Field(None, ge=1)
-    """Rollouts generated per example, 1 when unset. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8). Mutually exclusive with ``min_rollouts``."""
+    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8). Defaults to 1 unless ``min_rollouts`` sizes it; the two are mutually exclusive."""
 
     min_rollouts: int | None = Field(None, ge=1)
     """Minimum total rollouts. The eval sizes ``group_size`` from its resolved task count to reach it. Mutually exclusive with ``group_size``."""
@@ -357,7 +357,7 @@ class EvalSourcesConfig(BaseConfig):
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
     group_size: int | None = Field(None, ge=1)
-    """Default rollouts per example, 1 when unset. Can be overridden per env. Mutually exclusive with ``min_rollouts``."""
+    """Default rollouts per example, 1 when neither this nor ``min_rollouts`` is set. Can be overridden per env. Mutually exclusive with ``min_rollouts``."""
 
     min_rollouts: int | None = Field(None, ge=1)
     """Default minimum total rollouts per env. Can be overridden per env. Mutually exclusive with ``group_size``."""
@@ -379,8 +379,10 @@ class EvalSourcesConfig(BaseConfig):
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
             if source.group_size is None and source.min_rollouts is None:
-                source.group_size = self.group_size
-                source.min_rollouts = self.min_rollouts
+                if self.min_rollouts is not None:
+                    source.min_rollouts = self.min_rollouts
+                else:
+                    source.group_size = self.group_size or 1
         return self
 
     @model_validator(mode="after")

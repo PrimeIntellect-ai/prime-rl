@@ -184,7 +184,8 @@ class EvalEnv(Env):
         super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
-        self.group_size = config.group_size or 1
+        self.group_size: int = 1
+        """Rollouts per example, resolved at ``start()`` once the examples are counted."""
 
     async def start(self) -> None:
         await super().start()
@@ -198,6 +199,10 @@ class EvalEnv(Env):
             if not tasks:
                 raise ValueError(f"Eval env {self.name} selected no tasks to spread min_rollouts over")
             self.group_size = math.ceil(self.config.min_rollouts / len(tasks))
+        else:
+            # The config validator leaves exactly one of min_rollouts and group_size set.
+            assert self.config.group_size is not None
+            self.group_size = self.config.group_size
 
 
 EnvT = TypeVar("EnvT", bound=Env)
