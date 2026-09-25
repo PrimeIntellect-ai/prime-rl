@@ -11,7 +11,7 @@ from prime_rl.configs.orchestrator import (
     InferenceMetricsConfig,
     ScheduledEvalConfig,
 )
-from prime_rl.configs.shared import ClientConfig, LogConfig, RunConfig
+from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import default_output_dir
 
@@ -32,6 +32,13 @@ class ServedEvalConfig(EvalSourcesConfig):
 
     inference_metrics: InferenceMetricsConfig = InferenceMetricsConfig()
     """The ``/metrics`` poll of the inference engines (``[inference_metrics]``)."""
+
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat for the run: one ping per landed episode — the first
+    landed episode is the first beat, so the run's boot never shows up as a
+    stale-prone silence. When episodes stop landing, the pings stop and the heartbeat
+    goes stale on Better Stack after its grace period. Size that period + grace above
+    the longest legitimate gap between episodes."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:

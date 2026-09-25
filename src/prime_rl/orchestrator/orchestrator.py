@@ -376,6 +376,8 @@ class Orchestrator:
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
+            # Saved before finalize, which tells the launcher the run is done.
+            self.shipper.save_final()
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must stop
@@ -388,7 +390,6 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            self.shipper.save_final()
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")

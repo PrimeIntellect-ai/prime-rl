@@ -1,0 +1,40 @@
+clean = true
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
+
+[model]
+name = "zai-org/GLM-5.3-BF16"
+impl = "custom"
+attn = "flash_attention_2"
+cp = 8
+ep = 8
+optim_cpu_offload = true
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[optim]
+type = "sign_sgd"
+lr = 5e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[renderer]
+name = "glm-5.3"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+
+[slurm]
+job_name = "glm53-sft"
+partition = "all"

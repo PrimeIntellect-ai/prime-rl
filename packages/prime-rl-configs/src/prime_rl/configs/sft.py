@@ -91,6 +91,9 @@ class SFTDataConfig(BaseDataConfig):
     name: str = "PrimeIntellect/Reverse-Text-SFT"
     """HF dataset name or path."""
 
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
 

@@ -37,6 +37,7 @@ from prime_rl.orchestrator.patches import (
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.utils import intercept_vf_logging, set_default_executor
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_config_dir
 
@@ -61,10 +62,19 @@ class EvalRunner:
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
+        self.heart: Heartbeat | None = None
 
     async def setup(self, *, skip_first_step: bool = False, is_resumed: bool = False) -> None:
         config = self.config
         set_default_executor()
+
+        # The heartbeat is beaten only by landed episodes — the first episode is its
+        # first beat. No startup ping on purpose: the run-start to first-episode gap
+        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # sit inside the ping stream as an abnormally long silence and flip a healthy
+        # run stale. Until then the heartbeat has simply never been pinged.
+        if config.heartbeat is not None:
+            self.heart = Heartbeat(config.heartbeat.url)
 
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
@@ -140,11 +150,16 @@ class EvalRunner:
         # a cut only blocks admission until the pool drains.
         self.concurrency.bind(set_limit=dispatcher.set_limit, get_inflight=lambda: dispatcher.current_inflight)
         self.inference_metrics.bind(on_load=self.concurrency.observe)
-        dispatcher.bind(on_eval=evaluator.ingest, on_episode_complete=self.concurrency.record_episode)
+        dispatcher.bind(on_eval=self.on_eval, on_episode_complete=self.concurrency.record_episode)
         evaluator.bind(prefer_eval=lambda reason: dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason))
         self.periodic_logger.register(status=evaluator.status)
         self.periodic_logger.register(status=self.status, gauges=dispatcher.gauges)
         self.periodic_logger.register(gauges=self.concurrency.gauges)
+
+    async def on_eval(self, item) -> None:
+        if self.heart is not None and isinstance(item, vf.Episode):
+            self.heart.beat()
+        await self.evaluator.ingest(item)
 
     def status(self) -> str:
         assert self.dispatcher is not None
