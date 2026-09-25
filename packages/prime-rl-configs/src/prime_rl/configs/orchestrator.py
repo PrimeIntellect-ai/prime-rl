@@ -1,4 +1,5 @@
 import warnings
+from itertools import islice
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -296,6 +297,16 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
+    min_rollouts: int | None = Field(None, ge=1)
+    """Minimum total rollouts. Sets ``group_size`` from the selected task count.
+    Cannot be set with ``group_size`` on the same source."""
+
+    @model_validator(mode="after")
+    def validate_rollout_count(self):
+        if self.min_rollouts is not None and "group_size" in self.model_fields_set:
+            raise ValueError("Set either group_size or min_rollouts on an eval source, not both")
+        return self
+
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
@@ -350,11 +361,17 @@ class EvalSourcesConfig(BaseConfig):
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
+    min_rollouts: int | None = Field(None, ge=1)
+    """Default minimum total rollouts per source. Cannot be set with the global
+    ``group_size``. A source can override either global rollout setting."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples and
-        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        """Resolve per-env sampling and rollout counts."""
+        if self.min_rollouts is not None and "group_size" in self.model_fields_set:
+            raise ValueError("Set either group_size or min_rollouts for eval, not both")
         group_sampling = self.sampling.model_dump()
+        counts: dict[tuple[str, int], int] = {}
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
@@ -363,8 +380,25 @@ class EvalSourcesConfig(BaseConfig):
                 source.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
-            if "group_size" not in source.model_fields_set:
+            if "group_size" not in source.model_fields_set and "min_rollouts" not in source.model_fields_set:
+                source.min_rollouts = self.min_rollouts
+            if source.min_rollouts is not None:
+                n = source.num_examples
+                key = (source.env.taskset.model_dump_json(), n)
+                if key not in counts:
+                    taskset = vf.load_taskset(source.env.taskset)
+                    if type(taskset).INFINITE and n < 0:
+                        raise ValueError(f"{source.resolved_name}: infinite taskset needs num_examples")
+                    tasks = iter(taskset)
+                    count = sum(1 for _ in (islice(tasks, n) if n >= 0 else tasks))
+                    if count == 0:
+                        raise ValueError(f"{source.resolved_name}: no tasks selected for evaluation")
+                    counts[key] = count
+                source.group_size = (source.min_rollouts + counts[key] - 1) // counts[key]
+                source.min_rollouts = None
+            elif "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
+        self.min_rollouts = None
         return self
 
     @model_validator(mode="after")

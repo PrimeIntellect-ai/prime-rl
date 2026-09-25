@@ -1,10 +1,8 @@
 import json
 
 import pytest
-import verifiers.v1 as vf
 
-from prime_rl.configs.eval import EvalConfig
-from prime_rl.entrypoints.eval import expand_shorthands, resolve_rollout_targets
+from prime_rl.entrypoints.eval import expand_shorthands
 
 
 def test_expand_shorthands_folds_taskset_and_env_into_one_source() -> None:
@@ -60,51 +58,3 @@ def test_expand_shorthands_requires_a_value() -> None:
     with pytest.raises(SystemExit, match="needs a value"):
         expand_shorthands(["gsm8k", "--env.agent.harness.id"])
     assert "--env.agent.max_turns" not in expand_shorthands(["gsm8k", "--env.agent.max-turns", "-1"])
-
-
-def test_rollout_target_uses_selected_task_count(monkeypatch) -> None:
-    loads = []
-
-    class Taskset:
-        INFINITE = False
-
-        def __iter__(self):
-            return iter(range(500))
-
-    def load_taskset(config):
-        loads.append(config.id)
-        return Taskset()
-
-    monkeypatch.setattr(vf, "load_taskset", load_taskset)
-    config = EvalConfig.model_validate(
-        {
-            "min_rollouts_per_source": 1000,
-            "source": [
-                {"name": "all-bash", "env": {"taskset": {"id": "gsm8k"}}, "group_size": 34},
-                {"name": "first-200", "env": {"taskset": {"id": "gsm8k"}}, "num_examples": 200},
-                {"name": "first-30", "env": {"taskset": {"id": "gsm8k"}}, "num_examples": 30},
-                {"name": "all-rlm", "env": {"taskset": {"id": "gsm8k"}}},
-            ],
-        }
-    )
-
-    resolve_rollout_targets(config)
-
-    assert [source.group_size for source in config.source] == [2, 5, 34, 2]
-    assert loads == ["gsm8k"] * 3
-
-
-def test_rollout_target_requires_bound_for_infinite_taskset(monkeypatch) -> None:
-    class Taskset:
-        INFINITE = True
-
-        def __iter__(self):
-            return iter(range(500))
-
-    monkeypatch.setattr(vf, "load_taskset", lambda config: Taskset())
-    config = EvalConfig.model_validate(
-        {"min_rollouts_per_source": 1000, "source": [{"env": {"taskset": {"id": "gsm8k"}}}]}
-    )
-
-    with pytest.raises(ValueError, match="infinite taskset needs num_examples"):
-        resolve_rollout_targets(config)

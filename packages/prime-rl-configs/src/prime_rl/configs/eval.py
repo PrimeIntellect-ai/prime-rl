@@ -68,11 +68,6 @@ class EvalConfig(ServedEvalConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
 
-    min_rollouts_per_source: int | None = Field(None, ge=1)
-    """Minimum total rollouts per source. The launcher counts selected tasks and sets
-    ``group_size`` to the smallest value that reaches this target. This overrides
-    fixed source and top-level ``group_size`` values."""
-
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 

@@ -35,7 +35,6 @@ RESUMABLE = (
     "dashboard",
     "num_examples",
     "group_size",
-    "min_rollouts_per_source",
     "concurrency",
     "client",
     "log",

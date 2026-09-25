@@ -38,7 +38,7 @@ Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurre
 
 ## Configuration
 
-Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `num_examples`, `group_size` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
+Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `num_examples`, `group_size`, `min_rollouts` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
 
 ```toml
 model = "Qwen/Qwen3-4B"
@@ -65,9 +65,9 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+Per-source `num_examples`, `group_size`, `min_rollouts`, and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
-Set `min_rollouts_per_source = 1000` to size each source by its selected task count. The launcher sets `group_size = ceil(1000 / selected_tasks)`. For example, 500 tasks get `avg@2`, and 200 get `avg@5`. This setting overrides fixed `group_size` values. The launcher counts tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound.
+Set `min_rollouts = 1000` to size each source by its selected task count. For example, 500 tasks get `avg@2`, and 200 get `avg@5`. Set it globally or on one `[[source]]`. Set either `min_rollouts` or `group_size` at each level. A source can override the global choice. The same setting works under `[orchestrator.eval]` in RL and `[eval]` in SFT. Config resolution counts selected tasks before dry runs and live runs. An infinite taskset needs a positive `num_examples` bound. Resolved configs contain the computed `group_size`.
 
 ## Resume
 

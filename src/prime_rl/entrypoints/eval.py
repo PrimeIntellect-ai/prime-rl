@@ -12,7 +12,6 @@ import signal
 import sys
 import tomllib
 import uuid
-from itertools import islice
 from pathlib import Path
 from subprocess import Popen
 from typing import Any
@@ -101,30 +100,6 @@ def toml_defines_source(path: Path) -> bool:
         return "source" in tomllib.load(f)
 
 
-def resolve_rollout_targets(config: EvalConfig) -> None:
-    """Set each source's group size from the tasks selected for this eval."""
-    target = config.min_rollouts_per_source
-    if target is None:
-        return
-
-    import verifiers.v1 as vf
-
-    counts: dict[tuple[str, int], int] = {}
-    for source in config.source:
-        n = source.num_examples
-        key = (source.env.taskset.model_dump_json(), n)
-        if key not in counts:
-            taskset = vf.load_taskset(source.env.taskset)
-            if taskset.INFINITE and n < 0:
-                raise ValueError(f"{source.resolved_name}: infinite taskset needs num_examples")
-            tasks = iter(taskset)
-            count = sum(1 for _ in (islice(tasks, n) if n >= 0 else tasks))
-            if count == 0:
-                raise ValueError(f"{source.resolved_name}: no tasks selected for evaluation")
-            counts[key] = count
-        source.group_size = (target + counts[key] - 1) // counts[key]
-
-
 def main():
     set_proc_title("Eval")
     argv = sys.argv[1:]
@@ -164,8 +139,6 @@ def main():
     log_file = log_dir / "eval.log"
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file)
     logger.info("Starting eval")
-
-    resolve_rollout_targets(config)
 
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))

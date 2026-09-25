@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 import pytest
 import tomli_w
+import verifiers.v1 as vf
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
@@ -16,6 +17,83 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
+
+
+def test_eval_min_rollouts_resolves_for_eval_rl_and_sft(monkeypatch):
+    loads = []
+
+    class Taskset:
+        INFINITE = False
+
+        def __iter__(self):
+            return iter(range(500))
+
+    def load_taskset(config):
+        loads.append(config.id)
+        return Taskset()
+
+    monkeypatch.setattr(vf, "load_taskset", load_taskset)
+    eval_data = {
+        "min_rollouts": 1000,
+        "source": [
+            {"name": "all", "env": {"taskset": {"id": "gsm8k"}}},
+            {"name": "first-200", "env": {"taskset": {"id": "gsm8k"}}, "num_examples": 200},
+            {"name": "first-30", "env": {"taskset": {"id": "gsm8k"}}, "num_examples": 30},
+            {"name": "fixed", "env": {"taskset": {"id": "gsm8k"}}, "group_size": 7},
+            {"name": "larger-target", "env": {"taskset": {"id": "gsm8k"}}, "min_rollouts": 1500},
+        ],
+    }
+    configs = [
+        EvalConfig.model_validate(eval_data),
+        RLConfig.model_validate({"trainer": {}, "orchestrator": {"eval": eval_data}}).orchestrator.eval,
+        SFTConfig.model_validate({"eval": eval_data}).eval,
+    ]
+    for config in configs:
+        assert config is not None
+        assert [source.group_size for source in config.source] == [2, 5, 34, 7, 3]
+        assert config.min_rollouts is None
+        assert all(source.min_rollouts is None for source in config.source)
+    assert loads == ["gsm8k"] * 9
+
+
+def test_eval_min_rollouts_source_override_and_round_trip(monkeypatch):
+    class Taskset:
+        INFINITE = False
+
+        def __iter__(self):
+            return iter(range(200))
+
+    monkeypatch.setattr(vf, "load_taskset", lambda config: Taskset())
+    config = EvalConfig.model_validate(
+        {
+            "group_size": 3,
+            "source": [
+                {"name": "target", "env": {"taskset": {"id": "gsm8k"}}, "min_rollouts": 1000},
+                {"name": "fixed", "env": {"taskset": {"id": "gsm8k"}}},
+            ],
+        }
+    )
+    assert [source.group_size for source in config.source] == [5, 3]
+    restored = EvalConfig.model_validate(dump_resolved_config(config))
+    assert [source.group_size for source in restored.source] == [5, 3]
+
+
+def test_eval_min_rollouts_rejects_group_size_and_unbounded_taskset(monkeypatch):
+    source = {"env": {"taskset": {"id": "gsm8k"}}}
+    with pytest.raises(ValidationError, match="Set either group_size or min_rollouts for eval"):
+        EvalConfig.model_validate({"group_size": 2, "min_rollouts": 1000, "source": [source]})
+    with pytest.raises(ValidationError, match="Set either group_size or min_rollouts on an eval source"):
+        EvalConfig.model_validate({"source": [{**source, "group_size": 2, "min_rollouts": 1000}]})
+
+    class InfiniteTaskset:
+        INFINITE = True
+
+        def __iter__(self):
+            return iter(range(500))
+
+    monkeypatch.setattr(vf, "load_taskset", lambda config: InfiniteTaskset())
+    with pytest.raises(ValidationError, match="infinite taskset needs num_examples"):
+        EvalConfig.model_validate({"min_rollouts": 1000, "source": [source]})
 
 # All config config classes
 CONFIG_CLASSES = [
