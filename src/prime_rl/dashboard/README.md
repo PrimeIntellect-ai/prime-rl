@@ -22,6 +22,19 @@ cluster head node, a laptop against a mounted outputs dir:
 uv sync --extra dashboard && uv run dashboard [output_dir ...]
 ```
 
+`uv run dashboard-sync <evaluation id>` brings a platform evaluation (hosted, or
+one a prime-rl eval uploaded) into the dashboard. It reads the episodes from
+Prime Traces with the saved Prime credentials and writes a run directory under
+`~/.cache/prime-rl/dashboard/platform/<evaluation id>/` in the file monitor's
+layout: the trace stream and its index, an `eval.json` rebuilt from the
+evaluation (model, env, expected episodes), the evaluation record itself as
+`platform.json`, and the `view on platform` link. It registers that output dir
+and starts a dashboard like a launcher does. A rerun fetches only the episodes
+it has not written yet; `--follow` polls until the evaluation finishes, and a
+finished evaluation's stream is sealed so it reads as completed. The platform
+keeps no metrics rows, logs or live traces for an evaluation, so those views
+stay empty.
+
 The trace viewer's **Messages** mode keeps structured `message.content` and
 `trace.tools` visibly separate. **Rendered** decodes each selected branch's
 recorded post-renderer `token_ids` as one sequence, retaining special tokens;

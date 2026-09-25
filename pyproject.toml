@@ -46,6 +46,7 @@ orchestrator = "prime_rl.entrypoints.orchestrator:main"
 eval = "prime_rl.entrypoints.eval:main"
 env-server = "prime_rl.entrypoints.env_server:main"
 dashboard = "prime_rl.entrypoints.dashboard:main"
+dashboard-sync = "prime_rl.dashboard.platform:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
