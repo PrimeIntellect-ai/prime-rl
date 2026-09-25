@@ -100,3 +100,19 @@ Pass several output directories to track parallel experiments side by side (`uv 
 Both RL configs ship without `[ckpt]` — add a `[ckpt]` overlay (e.g. `interval = 100`) for periodic checkpoints. To resume, re-run the same command with `--resume` (latest checkpoint) or `--resume.step <N>`, a stable `--run.name`, and a `--max-steps` at least the target final step. Trainer checkpoints are DCP-sharded; export HF-format weights with `tools/convert_dcp_to_bf16.py`. See [Training](../../../docs/training.md) for the full resume and export reference.
 
 See [Scaling](../../../docs/scaling.md) for SLURM details and [Inference](../../../docs/inference.md) for the disaggregated-inference and router reference.
+
+
+# SFT
+
+You can run SFT with the following command:
+
+```bash
+uv run sft @ examples/advanced/glm-5.3/sft.toml @ examples/advanced/glm-5.3/sft-math-10k.toml
+```
+
+This will start a SFT run with the following configuration:
+
+- The model is `zai-org/GLM-5.3-BF16`
+- The data is `PrimeIntellect/INTELLECT-3-SFT-10K`
+
+you can use the same dashboard to monitor the SFT run.
