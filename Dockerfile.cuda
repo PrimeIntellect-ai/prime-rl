@@ -137,9 +137,14 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
-# Needed for private environments hub auth
+# Needed for private environments hub auth. Installed as an isolated uv tool, not
+# into /app/.venv: prime pins verifiers==0.2.0 (and pulls openai 3.x, PyPI
+# prime-pydantic-config, ...), which `uv pip install` into the app venv silently
+# swapped in over the workspace packages. The shim lands in /app/.venv/bin so
+# `uv run --no-sync prime env install ...` still resolves and installs into /app/.venv.
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
+    UV_TOOL_DIR=/app/.tools UV_TOOL_BIN_DIR=/app/.venv/bin uv tool install 'prime>=0.7' \
+    && /app/.venv/bin/python -c 'from importlib.metadata import distribution as d; assert "deps/verifiers" in (d("verifiers").read_text("direct_url.json") or ""), "workspace verifiers was replaced"'
 
 # Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
 # ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
