@@ -8,6 +8,7 @@ import triton.language as tl
 
 FP8_MAX = tl.constexpr(448.0)
 FP8_MIN = tl.constexpr(-448.0)
+FP8_MAX_RECIPROCAL = tl.constexpr(1.0 / 448.0)
 MIN_SCALE = 1e-4
 GROUP_ALIGNMENT = 128
 
@@ -28,26 +29,25 @@ def ue8m0_for_device(device: torch.device | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def build_grouped_layout(offs: torch.Tensor, *, total_m: int | None = None):
+def build_grouped_layout(offs: torch.Tensor, padded_total_m: int):
+    """Map groups ending at `offs` onto 128-row blocks of a `padded_total_m`-row buffer, without a host sync.
+
+    Rows and blocks past the last group are marked -1, so DeepGEMM and the grouped casts skip them.
+    `padded_total_m` must cover every group rounded up to 128 rows; a device-side assert checks it.
+    """
     assert offs.dim() == 1
     assert offs.dtype == torch.int32
-    device = offs.device
-    total_m = (total_m if total_m is not None else int(offs[-1].item())) if offs.numel() else 0
-    starts_tensor = torch.empty_like(offs)
-    if offs.numel() > 0:
-        starts_tensor[0] = 0
-        if offs.numel() > 1:
-            starts_tensor[1:] = offs[:-1]
+    assert padded_total_m % GROUP_ALIGNMENT == 0
+    starts_tensor = torch.cat((offs.new_zeros(1), offs[:-1]))[: offs.numel()]
     actual_ms_tensor = offs - starts_tensor
     aligned_ms_tensor = ((actual_ms_tensor + GROUP_ALIGNMENT - 1) // GROUP_ALIGNMENT) * GROUP_ALIGNMENT
     padded_ends = aligned_ms_tensor.cumsum(0)
     block_starts_tensor = (padded_ends - aligned_ms_tensor) // GROUP_ALIGNMENT
     ks_tensor = aligned_ms_tensor.contiguous()
-    padded_total_m = int(padded_ends[-1].item()) if offs.numel() else 0
-    total_blocks = padded_total_m // GROUP_ALIGNMENT
-    grouped_layout = torch.empty((padded_total_m,), dtype=torch.int32, device=device)
-    block_to_group = torch.empty((total_blocks,), dtype=torch.int32, device=device)
+    grouped_layout = torch.full((padded_total_m,), -1, dtype=torch.int32, device=offs.device)
+    block_to_group = torch.full((padded_total_m // GROUP_ALIGNMENT,), -1, dtype=torch.int32, device=offs.device)
     if offs.numel():
+        torch._assert_async(padded_ends[-1] <= padded_total_m)
         _build_grouped_layout_triton(
             grouped_layout,
             block_to_group,
@@ -57,8 +57,6 @@ def build_grouped_layout(offs: torch.Tensor, *, total_m: int | None = None):
             block_starts_tensor,
         )
     return (
-        total_m,
-        padded_total_m,
         grouped_layout,
         block_to_group,
         ks_tensor,
@@ -115,49 +113,6 @@ def _build_grouped_layout_kernel(
         tl.store(grouped_layout_ptr + dst_start + row_offsets, values)
         tl.store(block_to_group_ptr + block_start + block_idx, pid_g)
         block_idx += 1
-
-
-@triton.jit
-def _unpack_grouped_rows_kernel(
-    x_ptr,
-    block_to_group_ptr,
-    starts_ptr,
-    actual_ms_ptr,
-    block_starts_ptr,
-    out_ptr,
-    cols,
-    stride_xm,
-    stride_xn,
-    stride_ym,
-    stride_yn,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    GROUP_BLOCK_M: tl.constexpr,
-):
-    pid_blk = tl.program_id(axis=0)
-    pid_sub = tl.program_id(axis=1)
-    pid_n = tl.program_id(axis=2)
-    pid_g = tl.load(block_to_group_ptr + pid_blk)
-    block_start = tl.load(block_starts_ptr + pid_g)
-    dst_start = tl.load(starts_ptr + pid_g)
-    actual_m = tl.load(actual_ms_ptr + pid_g)
-    row_offsets = (pid_blk - block_start) * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)
-    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    src_rows_i64 = (pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
-    dst_rows_i64 = (dst_start + row_offsets).to(tl.int64)
-    col_offsets_i64 = col_offsets.to(tl.int64)
-    valid_rows = row_offsets < actual_m
-    valid_cols = col_offsets < cols
-    x = tl.load(
-        x_ptr + src_rows_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
-        mask=valid_rows[:, None] & valid_cols[None, :],
-        other=0.0,
-    )
-    tl.store(
-        out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
-        x,
-        mask=valid_rows[:, None] & valid_cols[None, :],
-    )
 
 
 @triton.jit
@@ -226,7 +181,8 @@ def _grouped_per_token_fp8_kernel(
     pid_blk = tl.program_id(axis=0)
     pid_sub = tl.program_id(axis=1)
     pid_k = tl.program_id(axis=2)
-    pid_g = tl.load(block_to_group_ptr + pid_blk)
+    block_group = tl.load(block_to_group_ptr + pid_blk)
+    pid_g = tl.maximum(block_group, 0)
     src_start = tl.load(starts_ptr + pid_g)
     actual_m = tl.load(actual_ms_ptr + pid_g)
     block_start = tl.load(block_starts_ptr + pid_g)
@@ -236,7 +192,7 @@ def _grouped_per_token_fp8_kernel(
     src_rows_i64 = (src_start + row_offsets).to(tl.int64)
     dst_rows_i64 = (pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
     col_offsets_i64 = col_offsets.to(tl.int64)
-    valid_rows = row_offsets < actual_m
+    valid_rows = (row_offsets < actual_m) & (block_group >= 0)
     valid_cols = col_offsets < cols
     x = tl.load(
         x_ptr + src_rows_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
@@ -355,11 +311,11 @@ def _grouped_per_block_fp8_kernel(
         mask=mask,
         other=0.0,
     ).to(tl.float32)
-    amax = tl.max(tl.abs(x))
-    scale = tl.maximum(amax / FP8_MAX, 1e-4)
+    amax = tl.maximum(tl.max(tl.abs(x)), 1e-4)
+    scale = amax * FP8_MAX_RECIPROCAL
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale
+    y = x * (1.0 / scale)
     tl.store(
         out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
         y.to(tl.float8e4nv),
@@ -371,38 +327,6 @@ def _grouped_per_block_fp8_kernel(
 # ---------------------------------------------------------------------------
 # Public quantization functions
 # ---------------------------------------------------------------------------
-
-
-def unpack_rows_triton(
-    x: torch.Tensor,
-    total_m: int,
-    block_to_group: torch.Tensor,
-    starts_tensor: torch.Tensor,
-    actual_ms_tensor: torch.Tensor,
-    block_starts_tensor: torch.Tensor,
-) -> torch.Tensor:
-    out = torch.empty((total_m, x.size(1)), device=x.device, dtype=x.dtype)
-    if total_m == 0:
-        return out
-    grid = (block_to_group.numel(), GROUP_ALIGNMENT // 32, ceil_div(x.size(1), 128))
-    _unpack_grouped_rows_kernel[grid](
-        x,
-        block_to_group,
-        starts_tensor,
-        actual_ms_tensor,
-        block_starts_tensor,
-        out,
-        x.size(1),
-        x.stride(0),
-        x.stride(1),
-        out.stride(0),
-        out.stride(1),
-        BLOCK_M=32,
-        BLOCK_N=128,
-        GROUP_BLOCK_M=GROUP_ALIGNMENT,
-        num_warps=4,
-    )
-    return out
 
 
 def per_token_cast_to_fp8_triton(
