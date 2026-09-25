@@ -24,7 +24,6 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.models.layers.mega_moe import natural_mega_moe_weight_layout, set_mega_moe_weight_layout
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -405,8 +404,6 @@ def train(config: SFTConfig):
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
         weight_sender.broadcast(model, startup_version)
 
-    set_mega_moe_weight_layout(model, [optimizer], interleaved=True)
-
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
@@ -546,8 +543,7 @@ def train(config: SFTConfig):
         if ckpt_manager is not None and is_ckpt_step and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            with natural_mega_moe_weight_layout(model, [optimizer]):
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
@@ -556,8 +552,7 @@ def train(config: SFTConfig):
         if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
-            with natural_mega_moe_weight_layout(model, [optimizer]):
-                weight_sender.broadcast(model, step=progress.step)
+            weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
         # Optionally, dump memory snapshot
@@ -688,15 +683,13 @@ def train(config: SFTConfig):
     # Write final checkpoint
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        with natural_mega_moe_weight_layout(model, [optimizer]):
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
     # Broadcast the final weights so the evals process can run its forced final epoch
     if weight_sender is not None:
         logger.info("Broadcasting final weights")
-        with natural_mega_moe_weight_layout(model, [optimizer]):
-            weight_sender.broadcast(model, step=progress.step)
+        weight_sender.broadcast(model, step=progress.step)
 
     if gradient_manager is not None:
         gradient_manager.close()

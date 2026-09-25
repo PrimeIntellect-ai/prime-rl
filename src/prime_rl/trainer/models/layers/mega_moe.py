@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -21,11 +21,16 @@ def mega_moe_available() -> bool:
         return False
     if not torch.cuda.is_available():
         return False
-    return (
-        torch.cuda.get_device_capability() >= (10, 0)
-        and hasattr(deep_gemm, "bf16_mega_moe")
-        and hasattr(deep_gemm, "bf16_mega_moe_backward")
+    if torch.cuda.get_device_capability() < (10, 0):
+        return False
+    return all(
+        _accepts_natural_layout(getattr(deep_gemm, name, None)) for name in ("bf16_mega_moe", "bf16_mega_moe_backward")
     )
+
+
+def _accepts_natural_layout(kernel) -> bool:
+    """Whether a Mega MoE kernel takes L1 weights in the natural ``[gate | up]`` layout."""
+    return kernel is not None and "l1_natural_layout" in inspect.signature(kernel).parameters
 
 
 def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
@@ -40,83 +45,6 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
 class MegaMoeExpertWeights:
     l1: torch.Tensor
     l2: torch.Tensor
-
-
-def prepare_mega_moe_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMoeExpertWeights:
-    import deep_gemm
-
-    l1, l2 = deep_gemm.transform_weights_for_mega_moe(
-        gate_up_proj.to(torch.bfloat16).contiguous(), down_proj.to(torch.bfloat16).contiguous()
-    )
-    return MegaMoeExpertWeights(l1=l1, l2=l2)
-
-
-# Mega MoE's BF16 L1 layout interleaves gate/up rows in groups of 8 ([g0..7, u0..7, g8..15, ...])
-# instead of [gate | up]; L2 is used as is. Storing the fused `gate_up_proj` parameter in that
-# layout makes the weight transform a no-op, so the kernels read the (FSDP-unsharded) parameter
-# directly instead of a per-layer ~1.5 GiB copy, and the backward writes dW1 in the same layout.
-MEGA_MOE_INTERLEAVE_GRAN = 8
-
-
-def _interleave_gate_up(t: torch.Tensor, inverse: bool = False) -> torch.Tensor:
-    num_experts, n, *rest = t.shape
-    half = n // 2
-    grouped = t.view(num_experts, half // MEGA_MOE_INTERLEAVE_GRAN, 2, MEGA_MOE_INTERLEAVE_GRAN, *rest)
-    natural = t.view(num_experts, 2, half // MEGA_MOE_INTERLEAVE_GRAN, MEGA_MOE_INTERLEAVE_GRAN, *rest)
-    return (natural.transpose(1, 2) if not inverse else grouped.transpose(1, 2)).reshape(t.shape)
-
-
-def _reorder_gate_up_(tensor: torch.Tensor, inverse: bool) -> None:
-    from torch.distributed.tensor import Shard
-
-    if isinstance(tensor, DTensor):
-        if any(isinstance(p, Shard) and p.dim == 1 for p in tensor.placements):
-            raise ValueError(
-                "Mega MoE's interleaved gate_up layout requires expert weights sharded on dim 0 "
-                "(disable `model.fusions.shard_fused_on_dim1`)."
-            )
-        tensor = tensor.to_local()
-    if tensor.numel() == 0:
-        return
-    tensor.copy_(_interleave_gate_up(tensor, inverse=inverse))
-
-
-def _mega_moe_experts(model: torch.nn.Module):
-    from prime_rl.trainer.models.layers.moe import GroupedExperts
-
-    for module in model.modules():
-        if isinstance(module, GroupedExperts) and isinstance(module.compute, MegaMoEExpertCompute):
-            if module.gate_up_proj is not None:
-                yield module
-
-
-@torch.no_grad()
-def set_mega_moe_weight_layout(
-    model: torch.nn.Module, optimizers: list[torch.optim.Optimizer], interleaved: bool
-) -> None:
-    """Reorder every Mega MoE layer's fused `gate_up_proj` (and its same-shaped optimizer state)
-    between the natural [gate | up] layout used by checkpoints/weight broadcasts and the kernel's
-    interleaved layout used during training. Idempotent per layer."""
-    for experts in _mega_moe_experts(model):
-        if getattr(experts, "mega_moe_interleaved", False) == interleaved:
-            continue
-        param = experts.gate_up_proj
-        _reorder_gate_up_(param, inverse=not interleaved)
-        for optimizer in optimizers:
-            for value in getattr(optimizer, "state", {}).get(param, {}).values():
-                if isinstance(value, torch.Tensor) and value.shape == param.shape:
-                    _reorder_gate_up_(value, inverse=not interleaved)
-        experts.mega_moe_interleaved = interleaved
-
-
-@contextmanager
-def natural_mega_moe_weight_layout(model: torch.nn.Module, optimizers: list[torch.optim.Optimizer]):
-    """Temporarily restore the natural [gate | up] layout (for checkpoint saves and weight broadcasts)."""
-    set_mega_moe_weight_layout(model, optimizers, interleaved=False)
-    try:
-        yield
-    finally:
-        set_mega_moe_weight_layout(model, optimizers, interleaved=True)
 
 
 def reserve_sms_for_comm(num_reserved_sms: int) -> None:
@@ -180,7 +108,9 @@ def mega_moe_forward(
     num_tokens, hidden = x.shape
     _stage_inputs(buffer, x, topk_idx, topk_weights)
     y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
-    deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
+    deep_gemm.bf16_mega_moe(
+        y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp, l1_natural_layout=True
+    )
     return y
 
 
@@ -221,9 +151,9 @@ def mega_moe_backward(
     weights: MegaMoeExpertWeights,
     buffer,
     dw_dtype: torch.dtype,
-    dw_natural_layout: bool = True,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Backward of :func:`mega_moe_forward`. Weights and ``dw1`` use the natural ``[gate | up]`` layout."""
     import deep_gemm
 
     num_tokens, hidden = x.shape
@@ -241,8 +171,9 @@ def mega_moe_backward(
         weights.l1,
         weights.l2,
         buffer,
-        dw_natural_layout=dw_natural_layout,
         activation_clamp=activation_clamp,
+        dw_natural_layout=True,
+        l1_natural_layout=True,
     )
     return dx, dw1, dw2, dtopk
 
@@ -273,24 +204,19 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
         gate_up_proj: torch.Tensor,
         down_proj: torch.Tensor,
         buffer,
-        interleaved: bool,
         activation_clamp: float | None,
     ) -> torch.Tensor:
         x_bf16 = x.to(torch.bfloat16).contiguous()
         topk_idx = selected_experts_indices.to(torch.int64)
         topk_weights = top_scores.to(torch.float32)
-        if interleaved:
-            weights = MegaMoeExpertWeights(
-                l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
-            )
-        else:
-            weights = prepare_mega_moe_weights(gate_up_proj, down_proj)
+        weights = MegaMoeExpertWeights(
+            l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
+        )
         y = torch.ops.prime_rl.mega_moe_forward(
             x_bf16, topk_idx, topk_weights, weights.l1, weights.l2, register_mega_moe_buffer(buffer), activation_clamp
         )
         ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
         ctx.buffer = buffer
-        ctx.interleaved = interleaved
         ctx.activation_clamp = activation_clamp
         ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
         ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
@@ -307,7 +233,6 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             MegaMoeExpertWeights(l1=l1, l2=l2),
             ctx.buffer,
             ctx.dw_dtype,
-            dw_natural_layout=not ctx.interleaved,
             activation_clamp=ctx.activation_clamp,
         )
         return (
@@ -316,7 +241,6 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
             None,
             dl1,
             dl2,
-            None,
             None,
             None,
         )
@@ -340,8 +264,8 @@ class MegaMoEExpertCompute:
     ) -> None:
         if not mega_moe_available():
             raise RuntimeError(
-                "Mega MoE requires DeepGEMM's Mega MoE kernels (SM100+/Blackwell and a "
-                "deep_gemm build with `bf16_mega_moe` and `bf16_mega_moe_backward`)."
+                "Mega MoE requires DeepGEMM's Mega MoE kernels (SM100+/Blackwell and a deep_gemm build "
+                "whose `bf16_mega_moe` and `bf16_mega_moe_backward` accept `l1_natural_layout`)."
             )
         if experts.gate_proj is None and experts.gate_up_proj is None:
             raise ValueError("Mega MoE requires gated experts (SwiGLU gate+up), got non-gated experts.")
@@ -370,10 +294,8 @@ class MegaMoEExpertCompute:
             )
         if experts.gate_up_proj is not None:
             gate_up_proj = _to_local(experts.gate_up_proj)
-            interleaved = getattr(experts, "mega_moe_interleaved", False)
         else:
             gate_up_proj = torch.cat([_to_local(experts.gate_proj), _to_local(experts.up_proj)], dim=1)
-            interleaved = False
         return _MegaMoeRoutedExperts.apply(
             x,
             top_scores,
@@ -381,6 +303,5 @@ class MegaMoEExpertCompute:
             gate_up_proj,
             _to_local(experts.down_proj),
             self.buffer,
-            interleaved,
             self.activation_clamp,
         )
