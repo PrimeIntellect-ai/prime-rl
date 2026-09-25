@@ -193,6 +193,9 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
+    loss_normalization: Literal["token", "sample"] = "token"
+    """Average SFT loss over trainable tokens or over original samples before packing."""
+
     env_vars: EnvVars = {}
     """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""
 

@@ -8,11 +8,21 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields, sample_loss_weights
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
 _STOP_TOKEN_ID = 1
+
+
+def test_sample_loss_weights_equalize_packed_samples():
+    loss_mask = torch.tensor([[True, True, False, True, False, False]])
+    seq_lens = torch.tensor([3, 3])
+    weights = sample_loss_weights(loss_mask, seq_lens)
+    token_losses = torch.tensor([[2.0, 4.0, 0.0, 8.0, 0.0, 0.0]])
+
+    assert torch.allclose(weights[loss_mask], torch.tensor([0.5, 0.5, 1.0]))
+    assert torch.allclose((token_losses * weights)[loss_mask].sum() / len(seq_lens), torch.tensor(5.5))
 
 
 def _sample_token_ids(value: str) -> list[int]:

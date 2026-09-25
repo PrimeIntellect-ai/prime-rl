@@ -621,6 +621,16 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
+def sample_loss_weights(loss_mask: Tensor, seq_lens: Tensor) -> Tensor:
+    """Give each packed sample total weight one across its trainable tokens."""
+    sample_masks = loss_mask.flatten().split(seq_lens.tolist())
+    counts = torch.tensor([mask.sum() for mask in sample_masks], dtype=torch.float32, device=loss_mask.device)
+    if (counts == 0).any():
+        raise ValueError("Each packed sample must have at least one trainable token")
+    weights = torch.repeat_interleave(counts.reciprocal(), seq_lens, output_size=loss_mask.numel())
+    return weights.view_as(loss_mask)
+
+
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
     if not isinstance(data, SFTDataConfig):
         return
