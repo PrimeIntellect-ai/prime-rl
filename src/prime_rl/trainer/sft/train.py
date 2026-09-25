@@ -40,6 +40,7 @@ from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
+    sample_loss_weights,
     setup_dataloader,
     setup_dataset,
 )
@@ -237,12 +238,19 @@ def train(config: SFTConfig):
     cp_size = parallel_dims.cp
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        """Forward pass returning the weighted loss sum and its normalizer count."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
         seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        if config.loss_normalization == "sample":
+            loss_weights = sample_loss_weights(micro_batch["loss_mask"], micro_batch["seq_lens"]).to(
+                "cuda", non_blocking=True
+            )
+            normalizer_count = torch.tensor(len(micro_batch["seq_lens"]), dtype=torch.int64, device="cuda")
+        else:
+            loss_weights = None
         mm_kwargs = micro_batch.get("mm_kwargs")
         if mm_kwargs is not None:
             mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
@@ -271,11 +279,14 @@ def train(config: SFTConfig):
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            if loss_weights is not None:
+                loss_weights = shard_for_cp(loss_weights, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
-        token_count = loss_mask.sum(dtype=torch.int64)
+        if loss_weights is None:
+            normalizer_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if isinstance(config.model.fused_lm_head_token_chunk_size, int):
@@ -294,7 +305,10 @@ def train(config: SFTConfig):
                     mm_token_type_ids=mm_type_ids,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                 )
-                loss_sum = -out["logprobs"][loss_mask].sum()
+                token_loss = -out["logprobs"][loss_mask]
+                loss_sum = (
+                    (token_loss * loss_weights[loss_mask]).sum() if loss_weights is not None else token_loss.sum()
+                )
             else:
                 out = forward(
                     model,
@@ -308,18 +322,21 @@ def train(config: SFTConfig):
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-                loss_sum = token_loss[loss_mask].sum()
+                token_loss = token_loss[loss_mask]
+                loss_sum = (
+                    (token_loss * loss_weights[loss_mask]).sum() if loss_weights is not None else token_loss.sum()
+                )
                 del logits
 
         del out
-        return loss_sum, token_count
+        return loss_sum, normalizer_count
 
     maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns the configured global mean loss."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_normalizer_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
@@ -335,18 +352,22 @@ def train(config: SFTConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, normalizer_count = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
-                    total_token_count += token_count
+                    total_normalizer_count += normalizer_count
                 else:
                     nan_count += 1
 
         dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(total_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
+        if config.loss_normalization == "sample":
+            total_normalizer_count //= cp_size
 
-        mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
+        mean_loss = (
+            (total_loss_sum / total_normalizer_count).item() if total_normalizer_count.item() > 0 else float("nan")
+        )
         return mean_loss, nan_count.item()
 
     def run_validation(step: int) -> None:
@@ -443,16 +464,21 @@ def train(config: SFTConfig):
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+            step_local_normalizer_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
-            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item() // cp_size
+            local_normalizer_count = sum(
+                len(micro_batch["seq_lens"])
+                if config.loss_normalization == "sample"
+                else int(micro_batch["loss_mask"].sum())
+                for micro_batch in micro_batches
+            )
+            global_normalizer_count = torch.tensor(local_normalizer_count, dtype=torch.int64, device="cuda")
+            dist.all_reduce(global_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_normalizer_count_val = global_normalizer_count.item() // cp_size
             grad_scale = (
-                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                if global_token_count_val > 0
+                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_normalizer_count_val
+                if global_normalizer_count_val > 0
                 else 1.0
             )
             prepare_gradient_offload(
@@ -468,10 +494,10 @@ def train(config: SFTConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, batch_token_count = compute_loss(micro_batch)
+                local_loss_sum, batch_normalizer_count = compute_loss(micro_batch)
 
             if gradient_manager is None:
-                step_local_token_count += batch_token_count
+                step_local_normalizer_count += batch_normalizer_count
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -500,11 +526,13 @@ def train(config: SFTConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         if gradient_manager is None:
-            global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item()
-            if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+            global_normalizer_count = step_local_normalizer_count.clone()
+            dist.all_reduce(global_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_normalizer_count_val = global_normalizer_count.item()
+            if config.loss_normalization == "sample":
+                global_normalizer_count_val //= cp_size
+            if global_normalizer_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_normalizer_count_val
                 scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
@@ -515,8 +543,8 @@ def train(config: SFTConfig):
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        if global_token_count_val > 0:
-            batch_loss = (step_loss_sum / global_token_count_val).item()
+        if global_normalizer_count_val > 0:
+            batch_loss = (step_loss_sum / global_normalizer_count_val).item()
         else:
             batch_loss = 0.0
         nan_loss_count = nan_loss_count.item()
