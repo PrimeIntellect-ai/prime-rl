@@ -252,6 +252,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         PORT=$PREFILL_PORT
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
 
+        # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
+        # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
+        export VLLM_USE_BREAKABLE_CUDAGRAPH=0
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
