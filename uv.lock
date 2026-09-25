@@ -44,6 +44,7 @@ members = [
     "aime25",
     "aime26",
     "alphabet-sort",
+    "apex-agents",
     "apex-shortlist",
     "arxivmath",
     "bfcl-v3",
@@ -415,6 +416,24 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/80/963c991934a4eb0fa0c0178f51963333fe14a96b732009da642b6bf6b42e/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a8b845c8dff498fb981c1dda36c954549204191b485a385845e604966594d0b2", size = 2513121, upload-time = "2026-05-04T17:48:03.43Z" },
     { url = "https://files.pythonhosted.org/packages/4d/18/95569107ee83619d61a3bb0d28743a0599f85c5161981e3e098c82c2b185/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2843f084cdc94dedacd8b257a395a2b71b8a3dc7fc99711b148bf1d161983128", size = 2697683, upload-time = "2026-05-04T17:48:05.222Z" },
 ]
+
+[[package]]
+name = "apex-agents"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/tool_use/apex_agents" }
+dependencies = [
+    { name = "harbor" },
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "harbor", specifier = "==0.21.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev137" },
+]
+
+[package.metadata.requires-dev]
+dev = []
 
 [[package]]
 name = "apex-shortlist"
@@ -1527,7 +1546,7 @@ wheels = [
 
 [[package]]
 name = "discover-and-prove"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/discover_and_prove" }
 dependencies = [
     { name = "lean-common" },
@@ -1995,7 +2014,7 @@ wheels = [
 
 [[package]]
 name = "formalmath"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/formalmath" }
 dependencies = [
     { name = "lean-common" },
@@ -3052,7 +3071,7 @@ wheels = [
 
 [[package]]
 name = "kimina"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/lean/kimina" }
 dependencies = [
     { name = "lean-common" },
@@ -3207,7 +3226,7 @@ wheels = [
 
 [[package]]
 name = "lean-common"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/packages/lean_common" }
 dependencies = [
     { name = "verifiers" },
@@ -3472,7 +3491,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "matholympiadbench"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/lean/matholympiadbench" }
 dependencies = [
     { name = "lean-common" },
@@ -3585,7 +3604,7 @@ wheels = [
 
 [[package]]
 name = "minif2f"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/lean/minif2f" }
 dependencies = [
     { name = "lean-common" },
@@ -4091,7 +4110,7 @@ wheels = [
 
 [[package]]
 name = "numina"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/lean/numina" }
 dependencies = [
     { name = "lean-common" },
@@ -5564,7 +5583,7 @@ wheels = [
 
 [[package]]
 name = "proverbench"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/lean/proverbench" }
 dependencies = [
     { name = "lean-common" },
