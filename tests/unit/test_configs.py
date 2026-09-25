@@ -1,5 +1,4 @@
 import os
-from copy import deepcopy
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -17,35 +16,6 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
-
-
-def test_eval_rollout_timeout_overrides_sources_and_round_trips():
-    eval_data = {
-        "rollout_timeout": 1800,
-        "source": [
-            {"name": "default", "env": {"taskset": {"id": "gsm8k"}}},
-            {
-                "name": "explicit",
-                "env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"rollout": 3600}}},
-            },
-        ],
-    }
-    configs = [
-        EvalConfig.model_validate(deepcopy(eval_data)),
-        RLConfig.model_validate({"trainer": {}, "orchestrator": {"eval": deepcopy(eval_data)}}).orchestrator.eval,
-        SFTConfig.model_validate({"eval": deepcopy(eval_data)}).eval,
-    ]
-    for config in configs:
-        assert config is not None
-        assert [source.env.agent.timeout.rollout for source in config.source] == [1800, 1800]
-        restored = type(config).model_validate(dump_resolved_config(config))
-        assert [source.env.agent.timeout.rollout for source in restored.source] == [1800, 1800]
-
-    config = EvalConfig.model_validate(
-        {"source": [{"env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"rollout": 3600}}}}]}
-    )
-    assert config.source[0].env.agent.timeout.rollout == 3600
-
 
 # All config config classes
 CONFIG_CLASSES = [

@@ -362,10 +362,6 @@ class EvalSourcesConfig(BaseConfig):
     min_rollouts: int | None = Field(None, ge=1)
     """Default minimum total rollouts per env. Can be overridden per env. Mutually exclusive with ``group_size``."""
 
-    rollout_timeout: float | None = Field(None, ge=0)
-    """Override each eval agent's rollout timeout in seconds. None keeps the
-    timeout configured on each source or task."""
-
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_examples and the
@@ -387,10 +383,6 @@ class EvalSourcesConfig(BaseConfig):
                     source.min_rollouts = self.min_rollouts
                 else:
                     source.group_size = self.group_size or 1
-            if self.rollout_timeout is not None:
-                for agent in vars(source.env).values():
-                    if isinstance(agent, vf.AgentConfig):
-                        agent.timeout.rollout = self.rollout_timeout
         return self
 
     @model_validator(mode="after")

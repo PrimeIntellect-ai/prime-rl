@@ -38,7 +38,7 @@ Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurre
 
 ## Configuration
 
-Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `num_examples`, `group_size`, `min_rollouts`, `rollout_timeout` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
+Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `num_examples`, `group_size`, `min_rollouts` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
 
 ```toml
 model = "Qwen/Qwen3-4B"
@@ -68,8 +68,6 @@ env.agent.runtime.type = "subprocess"
 Per-source `num_examples`, `group_size`, `min_rollouts`, and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 By default every task runs once. Size the eval up by raising `group_size`, a fixed number of rollouts per task, or by setting `min_rollouts`, a target total. With a target, the eval picks the smallest `group_size` whose rollouts over the resolved tasks reach it: 1,000 rollouts over 500 tasks is `avg@2`, over 200 tasks `avg@5`. Both settings work at the top level and per `[[source]]`, and are mutually exclusive at each level. The same settings apply to online evals under `[orchestrator.eval]` in RL and `[eval]` in SFT.
-
-Set `rollout_timeout` at the eval level to cap each agent rollout in seconds. It overrides `env.<agent>.timeout.rollout` on every source. Omit it to keep each source or task timeout.
 
 ## Resume
 
