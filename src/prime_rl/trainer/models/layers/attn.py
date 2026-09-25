@@ -22,43 +22,52 @@ try:
 except ImportError:
     flash_attn_3_varlen_func = None  # type: ignore
 
+# flash-attention-4
+# flash_attn_4_varlen_func stays the raw kernel: gpt_oss and afmoe import it from here.
 try:
     from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
     from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd
 except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
+    _flash_attn_fwd = None  # type: ignore
+    _flash_attn_bwd = None  # type: ignore
 
 
 # FA4's flash_attn_varlen_func is a Python autograd.Function that Dynamo cannot trace. Inside a
-# checkpointed block that graph break drops the whole block to eager, so FA4 is exposed as an
-# opaque custom op instead, which also lets selective activation checkpointing save its output.
+# checkpointed block that graph break drops the whole block to eager, so FA4's kernels are exposed
+# as opaque custom ops with FA2/FA3's varlen signature and dispatched through FlashAttention._funcs.
+# That keeps _compute_attention version-free and lets selective AC save the op output.
 @torch.library.custom_op("prime_rl_attn::flash_attn_4_varlen", mutates_args=())
 def flash_attn_4_varlen(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    cu_seqlens: torch.Tensor,
-    max_seqlen: int | None,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int | None,
+    max_seqlen_k: int | None,
+    causal: bool,
     window_size_left: int | None,
+    window_size_right: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     out, lse, _, _ = _flash_attn_fwd(
         q,
         k,
         v,
-        cu_seqlens_q=cu_seqlens,
-        cu_seqlens_k=cu_seqlens,
-        max_seqlen_q=max_seqlen,
-        max_seqlen_k=max_seqlen,
-        causal=True,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+        causal=causal,
         window_size_left=window_size_left,
-        window_size_right=0 if window_size_left is not None else None,
+        window_size_right=window_size_right,
         return_lse=True,
     )
     return out, lse
 
 
 @flash_attn_4_varlen.register_fake
-def _(q, k, v, cu_seqlens, max_seqlen, window_size_left):
+def _(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size_left, window_size_right):
     out = q.new_empty((*q.shape[:-1], v.shape[-1]))
     lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
     return out, lse
@@ -72,9 +81,13 @@ def flash_attn_4_varlen_backward(
     v: torch.Tensor,
     out: torch.Tensor,
     lse: torch.Tensor,
-    cu_seqlens: torch.Tensor,
-    max_seqlen: int | None,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int | None,
+    max_seqlen_k: int | None,
+    causal: bool,
     window_size_left: int | None,
+    window_size_right: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     dq, dk, dv = _flash_attn_bwd(
         q,
@@ -83,39 +96,98 @@ def flash_attn_4_varlen_backward(
         out,
         dout,
         lse,
-        causal=True,
+        causal=causal,
         window_size_left=window_size_left,
-        window_size_right=0 if window_size_left is not None else None,
-        cu_seqlens_q=cu_seqlens,
-        cu_seqlens_k=cu_seqlens,
-        max_seqlen_q=max_seqlen,
-        max_seqlen_k=max_seqlen,
+        window_size_right=window_size_right,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
     )
     return dq, dk, dv
 
 
 @flash_attn_4_varlen_backward.register_fake
-def _(dout, q, k, v, out, lse, cu_seqlens, max_seqlen, window_size_left):
+def _(
+    dout,
+    q,
+    k,
+    v,
+    out,
+    lse,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    max_seqlen_q,
+    max_seqlen_k,
+    causal,
+    window_size_left,
+    window_size_right,
+):
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
 def _flash_attn_4_varlen_setup_context(ctx, inputs, output) -> None:
-    q, k, v, cu_seqlens, max_seqlen, window_size_left = inputs
+    q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size_left, window_size_right = (
+        inputs
+    )
     out, lse = output
-    ctx.save_for_backward(q, k, v, out, lse, cu_seqlens)
-    ctx.max_seqlen = max_seqlen
+    ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k)
+    ctx.max_seqlen_q = max_seqlen_q
+    ctx.max_seqlen_k = max_seqlen_k
+    ctx.causal = causal
     ctx.window_size_left = window_size_left
+    ctx.window_size_right = window_size_right
 
 
 def _flash_attn_4_varlen_autograd(ctx, dout: torch.Tensor, _dlse: torch.Tensor | None):
-    q, k, v, out, lse, cu_seqlens = ctx.saved_tensors
+    q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
     dq, dk, dv = flash_attn_4_varlen_backward(
-        dout.contiguous(), q, k, v, out, lse, cu_seqlens, ctx.max_seqlen, ctx.window_size_left
+        dout.contiguous(),
+        q,
+        k,
+        v,
+        out,
+        lse,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        ctx.max_seqlen_q,
+        ctx.max_seqlen_k,
+        ctx.causal,
+        ctx.window_size_left,
+        ctx.window_size_right,
     )
-    return dq, dk, dv, None, None, None
+    return dq, dk, dv, None, None, None, None, None, None, None
 
 
 flash_attn_4_varlen.register_autograd(_flash_attn_4_varlen_autograd, setup_context=_flash_attn_4_varlen_setup_context)
+
+
+def _flash_attn_4_varlen_func(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int | None,
+    max_seqlen_k: int | None,
+    causal: bool = False,
+    window_size: tuple[int, int] = (-1, -1),
+) -> torch.Tensor:
+    """FA4 with the same call convention as FA2/FA3's flash_attn_varlen_func, for _funcs dispatch."""
+    window_size_left, window_size_right = window_size
+    out, _ = flash_attn_4_varlen(
+        q,
+        k,
+        v,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        causal,
+        None if window_size_left == -1 else window_size_left,
+        None if window_size_right == -1 else window_size_right,
+    )
+    return out
 
 
 @dataclass
@@ -145,7 +217,7 @@ class FlashAttention(nn.Module):
     _funcs = {
         2: flash_attn_varlen_func,
         3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_func,
+        4: _flash_attn_4_varlen_func if _flash_attn_fwd is not None else None,
     }
 
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
@@ -194,12 +266,7 @@ class FlashAttention(nn.Module):
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
             kwargs["window_size"] = (sliding_window - 1, 0)
-        if self._flash_attn_version == 4:
-            window_size_left = sliding_window - 1 if sliding_window is not None else None
-            out, _ = flash_attn_4_varlen(q, k, v, cu_seqlens, max_seqlen, window_size_left)
-        else:
-            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
-        return out
+        return self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
 
     def forward(
         self,
