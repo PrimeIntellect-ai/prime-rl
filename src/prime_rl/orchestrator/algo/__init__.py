@@ -6,7 +6,7 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.generation_source.GenerationSource`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
-  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
+  ``hierarchical_grpo``, ``cripo_s``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
   class owns its scoring hooks
   (``score_episode`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
+from prime_rl.orchestrator.algo.cripo import CriPOSAlgorithm
 from prime_rl.orchestrator.algo.debug import DebugAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 # each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
+    "cripo_s": CriPOSAlgorithm,
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
@@ -66,6 +68,7 @@ def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
 
 __all__ = [
     "Algorithm",
+    "CriPOSAlgorithm",
     "DebugAlgorithm",
     "EchoAlgorithm",
     "GRPOAlgorithm",
