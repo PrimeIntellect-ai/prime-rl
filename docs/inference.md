@@ -14,6 +14,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Routing policies](#routing-policies)
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
+    - [Expert Load Balancing](#expert-load-balancing)
     - [KV Cache Offload](#kv-cache-offload)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
@@ -211,6 +212,38 @@ The controller's idea is to treat the engines as ground truth and probe, instead
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
 
 ## Advanced Configuration
+
+### Expert Load Balancing
+
+RL supports vLLM expert parallel load balancing (EPLB) with NCCL weight updates.
+Reloads preserve the current expert placement and refresh every local replica.
+MoE kernels retain references to the weight and scale storage used by EPLB.
+Asynchronous EPLB transfers are drained before a reload so pending transfers cannot
+overwrite the incoming policy weights.
+
+```toml
+[weight_broadcast]
+type = "nccl"
+
+[inference.vllm]
+enable_expert_parallel = true
+enable_eplb = true
+
+[inference.vllm.eplb_config]
+communicator = "nixl"
+use_async = true
+num_redundant_experts = 8
+```
+
+Choose a redundant expert count that makes the total physical expert count
+divisible by the expert parallel size. EPLB's `use_async`, `window_size`, and
+`step_interval` options are passed through to vLLM. The EPLB communicator moves
+experts between inference ranks independently of the NCCL policy-weight transfer.
+For NIXL, set `UCX_NET_DEVICES` to the appropriate InfiniBand device ports on each
+node (for example, `mlx5_0:1,mlx5_1:1`).
+
+See the [two-node math debug config](../configs/debug/eplb/README.md) for an RL
+reload check with online FP8 quantization and asynchronous EPLB.
 
 ### KV Cache Offload
 
