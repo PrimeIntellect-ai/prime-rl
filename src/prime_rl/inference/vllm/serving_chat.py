@@ -68,8 +68,14 @@ class PrimeRlServingChat(OpenAIServingChat):
             self.training_renderer_config = _resolve_renderer_config(
                 self.training_tokenizer, self.training_renderer_config
             )
-            kwargs = {**self.default_chat_template_kwargs, **(request.chat_template_kwargs or {})}
             template_fields = self.training_renderer_config.template_field_names()
+            # vLLM defaults may include template options for unrelated models.
+            kwargs = {
+                key: value
+                for key, value in self.default_chat_template_kwargs.items()
+                if self.training_renderer_config._allow_opaque_template_kwargs or key in template_fields
+            }
+            kwargs.update(request.chat_template_kwargs or {})
             if request.reasoning_effort is not None:
                 if "reasoning_effort" in template_fields:
                     kwargs.setdefault("reasoning_effort", request.reasoning_effort)
@@ -100,7 +106,7 @@ class PrimeRlServingChat(OpenAIServingChat):
             request._prime_response_renderer = (renderer, tools)
             request._prime_training_metadata = {
                 "message_spans": rendered.message_token_spans(),
-                "is_content": rendered.is_content,
+                "is_content": rendered.is_content or None,
                 "mm_token_type_id_map": renderer.mm_token_type_id_map if is_multimodal(renderer) else None,
                 "multi_modal_data": base64.b64encode(
                     msgpack.packb(mmd, default=msgpack_encoder, use_bin_type=True)
