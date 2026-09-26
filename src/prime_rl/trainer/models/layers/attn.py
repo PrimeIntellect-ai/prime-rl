@@ -197,6 +197,10 @@ def substitute_ring_attn(
         )
         return out
 
+    # Ring attention reads per-batch metadata from ring_flash_attn's global DATA_PARAMS. Traced by
+    # Dynamo, those values become guards and every new batch recompiles the whole block, so keep this
+    # call out of the compiled graph.
+    _ring_compute_attention = torch._dynamo.disable(_ring_compute_attention)
     FlashAttention._compute_attention = _ring_compute_attention
 
     from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention

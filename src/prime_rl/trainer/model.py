@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +19,9 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult, resolve_shard_placement
+from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
+from torch.distributed.tensor import Shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -467,6 +471,22 @@ def setup_processor(config: ModelConfig):
     return processor
 
 
+def _expert_mesh_shard_placement_fn(
+    expert_params: set[nn.Parameter],
+    expert_mesh_info: FSDPMeshInfo,
+    shard_placement_fn: Callable[[nn.Parameter], Shard | None] | None,
+) -> Callable[[nn.Parameter], Shard | ShardPlacementResult | None]:
+    """Place ``expert_params`` on ``expert_mesh_info`` and every other parameter as ``shard_placement_fn`` does."""
+
+    def placement_fn(param: nn.Parameter) -> Shard | ShardPlacementResult | None:
+        placement = shard_placement_fn(param) if shard_placement_fn is not None else None
+        if param in expert_params:
+            return resolve_shard_placement(placement, expert_mesh_info)
+        return placement
+
+    return placement_fn
+
+
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
@@ -504,10 +524,14 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
+        block_shard_placement_fn = shard_placement_fn
         if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, MoE):
-            fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
-
-            block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+            # Shard the routed experts over the EP-complement mesh as a separate param group of the
+            # block's FSDP unit rather than as a nested unit: FSDP hooks are opaque to Dynamo, so a
+            # nested unit inside a compiled, checkpointed block drops the whole block to eager.
+            block_shard_placement_fn = _expert_mesh_shard_placement_fn(
+                set(block_mlp.experts.parameters()), _get_mesh_info(dp_mod_ep_mesh), shard_placement_fn
+            )
 
         if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
             # Own FSDP unit with an fp32 policy so the gate weight is not cast to
@@ -526,8 +550,10 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
-            **fsdp_config,
+            **{**fsdp_config, "shard_placement_fn": block_shard_placement_fn},
         )
+        if block_shard_placement_fn is not shard_placement_fn:
+            transformer_block.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
 
@@ -581,7 +607,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 prefetch_modules = [next_transformer_block]
                 if isinstance(next_mlp.router, FSDPModule):
                     prefetch_modules.append(next_mlp.router)
-                prefetch_modules.append(next_mlp.experts)
                 transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
@@ -598,7 +623,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         prefetch_modules = [last_transformer_block]
         last_mlp = getattr(last_transformer_block, "mlp", None)
         if last_mlp is not None and isinstance(last_mlp, MoE):
-            prefetch_modules.append(last_mlp.experts)
             if isinstance(last_mlp.router, FSDPModule):
                 prefetch_modules.append(last_mlp.router)
 
@@ -611,7 +635,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if prev_transformer_block is not None:
             prev_mlp = getattr(prev_transformer_block, "mlp", None)
             if prev_mlp is not None and isinstance(prev_mlp, MoE):
-                prefetch_modules = [prev_transformer_block, prev_mlp.experts]
+                prefetch_modules = [prev_transformer_block]
                 if isinstance(prev_mlp.router, FSDPModule):
                     prefetch_modules.append(prev_mlp.router)
                 transformer_block.set_modules_to_backward_prefetch(prefetch_modules)
@@ -833,6 +857,10 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
     language_model = get_language_model(model)
+    if any(isinstance(module, MoE) for module in language_model.modules()):
+        # MoE token dispatch sizes its all-to-all outputs from routing counts; without this, Dynamo
+        # breaks the graph there, which drops a checkpointed block to eager.
+        torch._dynamo.config.capture_dynamic_output_shape_ops = True
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
         language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
