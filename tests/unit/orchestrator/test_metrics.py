@@ -212,6 +212,22 @@ def test_solve_rates():
     assert rates == (0.25, 0.25, 0.5)
 
 
+def test_solve_rates_with_negative_rewards():
+    # A zero-sum group: one trace solved the task, so the group is not "solved none"
+    out = train_wandb([mk(reward=1.0, group_id="A"), mk(reward=-1.0, group_id="A")])
+    rates = (
+        out["train/agg/all/agent/solved_all"],
+        out["train/agg/all/agent/solved_none"],
+        out["train/agg/all/agent/solved_some"],
+    )
+    assert rates == (0.0, 0.0, 1.0)
+
+    # No trace scored above zero, so the group solved none
+    out = train_wandb([mk(reward=-1.0, group_id="A"), mk(reward=-1.0, group_id="A")])
+    assert out["train/agg/all/agent/solved_none"] == 1.0
+    assert out["train/agg/all/agent/solved_some"] == 0.0
+
+
 def test_stop_condition_breakdown():
     truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns", "prompt_too_long")]
     out = train_wandb(truncated + [mk(stop_condition=None)])
