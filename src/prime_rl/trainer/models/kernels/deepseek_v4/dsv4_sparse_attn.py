@@ -30,6 +30,7 @@ LOG2E = 1.44269504
 # The forward tiles the gather-slot axis at `block_I = 64` and the backward at `block_size = 32`,
 # so the slot count must be a multiple of `lcm(64, 32) = 64`.
 SLOT_TILE = 64
+BWD_SLOT_TILE = 32
 
 
 def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
@@ -45,6 +46,20 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     if remainder == 0:
         return indices
     return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
+
+
+def num_tiles_covering_valid_slots(indices: torch.Tensor, tile_size: int) -> torch.Tensor:
+    """Per query, the number of leading tiles of `tile_size` slots it takes to contain every valid slot.
+
+    `indices` is `(batch, seq_len, num_kv_heads, n_slots)` and the result is
+    `(batch, seq_len, num_kv_heads)`, both int32.
+    """
+    n_slots = indices.shape[-1]
+    assert n_slots % tile_size == 0, f"n_slots must be a multiple of tile_size {tile_size}, got {n_slots}"
+    slot_idxs = torch.arange(n_slots, device=indices.device, dtype=torch.int32)
+    is_valid_slot = indices >= 0
+    last_valid_slot_idx = torch.where(is_valid_slot, slot_idxs, -1).amax(dim=-1)
+    return last_valid_slot_idx // tile_size + 1
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
@@ -107,13 +122,14 @@ def dsv4_sparse_attn(
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
+    assert SLOT_TILE % block_I == 0, (
+        f"the slot axis is padded to a multiple of {SLOT_TILE}, so block_I must divide it, got {block_I}"
+    )
     indices = _pad_slots_to_tile(indices)
-    topk = indices.shape[-1]
 
     kernel = dsv4_sparse_attn_fwd(
         heads,
         dim,
-        topk,
         kv_group,
         sm_scale,
         True,
@@ -121,7 +137,9 @@ def dsv4_sparse_attn(
         num_stages=num_stages,
         threads=threads,
     )
-    out, lse = kernel(q, kv, indices, sinks.float().contiguous())
+    tiled_indices = indices.view(batch, seq_len, kv_group, -1, block_I)
+    tile_counts = num_tiles_covering_valid_slots(indices, block_I)
+    out, lse = kernel(q, kv, tiled_indices, sinks.float().contiguous(), tile_counts)
     return out, lse
 
 
@@ -166,15 +184,16 @@ def dsv4_sparse_attn_backward(
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
     indices = _pad_slots_to_tile(indices)
-    topk = indices.shape[-1]
 
     preprocess_kernel = preprocess(heads, dim)
-    bwd_kernel = bwd(heads, dim, topk, kv_group, sm_scale, True)
+    bwd_kernel = bwd(heads, dim, kv_group, sm_scale, True, block_size=BWD_SLOT_TILE)
     postprocess_kernel = postprocess(dim, kv_group)
 
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
+    tiled_indices = indices.view(batch, seq_len, kv_group, -1, BWD_SLOT_TILE)
+    tile_counts = num_tiles_covering_valid_slots(indices, BWD_SLOT_TILE)
+    dq = bwd_kernel(q, kv, grad_out, tiled_indices, lse, delta, tile_counts, dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv, delta

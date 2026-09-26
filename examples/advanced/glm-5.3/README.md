@@ -100,3 +100,18 @@ Pass several output directories to track parallel experiments side by side (`uv 
 Both RL configs ship without `[ckpt]` — add a `[ckpt]` overlay (e.g. `interval = 100`) for periodic checkpoints. To resume, re-run the same command with `--resume` (latest checkpoint) or `--resume.step <N>`, a stable `--run.name`, and a `--max-steps` at least the target final step. Trainer checkpoints are DCP-sharded; export HF-format weights with `tools/convert_dcp_to_bf16.py`. See [Training](../../../docs/training.md) for the full resume and export reference.
 
 See [Scaling](../../../docs/scaling.md) for SLURM details and [Inference](../../../docs/inference.md) for the disaggregated-inference and router reference.
+
+## SFT
+
+The SFT configs live under [`sft/h200/`](sft/h200) — they are tuned for 8-GPU H200 nodes. Compose the base config with a data overlay:
+
+```bash
+uv run sft @ examples/advanced/glm-5.3/sft/h200/base.toml @ examples/advanced/glm-5.3/sft/h200/math-10k.toml
+```
+
+This will start a SFT run with the following configuration:
+
+- The model is `zai-org/GLM-5.3-BF16`
+- The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split)
+
+For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead. You can use the same dashboard to monitor the SFT run.
