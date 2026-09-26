@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from prime_rl.orchestrator.algo.cripo import _add_branch_bonus, criterion_advantages
 
 
@@ -17,10 +19,9 @@ def test_criterion_advantages_keep_rubric_components_separate():
         _trace(correctness=0.0, style=0.0),
     ]
 
-    assert criterion_advantages(traces) == {
-        "correctness": [2 / 3, -1 / 3, -1 / 3],
-        "style": [-1 / 3, 2 / 3, -1 / 3],
-    }
+    advantages = criterion_advantages(traces)
+    assert advantages["correctness"] == pytest.approx([2 / 3, -1 / 3, -1 / 3])
+    assert advantages["style"] == pytest.approx([-1 / 3, 2 / 3, -1 / 3])
 
 
 def test_branch_bonus_does_not_touch_shared_context_tokens():
