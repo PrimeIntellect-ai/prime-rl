@@ -142,7 +142,8 @@ class AdminPlane:
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
-        # (router) endpoint - it only starts serving once its workers are healthy.
+        # (router) endpoint. vllm-router itself starts serving once any worker is
+        # healthy; the SLURM launchers start it only once all of them are.
         self._router_clients = (
             setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
             if client_config.admin_base_url
