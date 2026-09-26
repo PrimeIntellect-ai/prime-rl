@@ -428,6 +428,13 @@ class Orchestrator:
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
+            # ``progress.step`` points at the next (unshipped) step; the last finished step is
+            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
+            # first ship). Saved before finalize, which tells the launcher the run is done.
+            if self.config.ckpt is not None and self.progress.step > 1:
+                self.progress.step -= 1
+                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
+                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -441,13 +448,6 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            # ``progress.step`` points at the next (unshipped) step; the last finished step is
-            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
-            # first ship).
-            if self.config.ckpt is not None and self.progress.step > 1:
-                self.progress.step -= 1
-                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")

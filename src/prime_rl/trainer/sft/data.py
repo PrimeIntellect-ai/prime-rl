@@ -1,11 +1,14 @@
 import json
+import time
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
+from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
@@ -19,6 +22,7 @@ from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 
 
 class Sample(TypedDict):
@@ -617,18 +621,41 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
+def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if not isinstance(data, SFTDataConfig):
+        return
+    if Path(data.name).exists():
+        get_logger().info(f"Data {data.name} found at local path, skipping download")
+        return
+
+    dataset_name = data.name
+    t0 = time.perf_counter()
+    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
+    snapshot = snapshot_download(
+        repo_id=dataset_name,
+        repo_type="dataset",
+        revision=data.revision,
+        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    )
+    data.name = snapshot
+    get_logger().debug(
+        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
+    )
+
+
 def setup_and_interleave_datasets(
     dataset_name: str,
     subsets_and_splits: list[tuple[str | None, str]],
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
+    revision: str | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -657,6 +684,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -665,6 +693,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -673,6 +702,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -682,6 +712,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
 
 

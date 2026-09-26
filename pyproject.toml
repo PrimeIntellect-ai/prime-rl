@@ -172,10 +172,13 @@ members = [
     "deps/verifiers/environments/wordle",
 ]
 # tau2-synth and tau3-bench pin `tau2` forks/revs that conflict with the
-# canonical tau2-bench; a workspace shares one lock, so these can't coexist.
+# canonical tau2-bench; apex-agents pins `verifiers` as a git rev instead of
+# the editable workspace member. A workspace shares one lock, so these can't
+# coexist.
 exclude = [
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
+    "deps/prime-envs/environments/tool_use/apex_agents",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
