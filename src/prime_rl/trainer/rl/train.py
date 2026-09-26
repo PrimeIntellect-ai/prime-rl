@@ -42,7 +42,7 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     setup_model,
     is_tt_moe_model,
-    get_load_balance_stats,
+    get_global_moe_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -542,18 +542,9 @@ def train(config: TrainerConfig):
 
             annotation_writer.export(micro_batch, out)
 
-            # Append the per-microstep global stat so tensor stats aggregate microsteps, not pooled routing counts
             if is_moe_model:
-                for name, values in get_load_balance_stats(model, group=ep_group).items():
-                    if values is None:
-                        continue
-                    value = values.max() if name == "max_vio" else values.mean()
-                    if name == "max_vio":
-                        dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
-                    else:
-                        dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-                        value /= dist.get_world_size(dp_cp_group)
-                    tensors[name].append(value.reshape(1).to("cpu"))
+                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                    tensors[name].append(value.reshape(1))
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():

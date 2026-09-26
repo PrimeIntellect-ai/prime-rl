@@ -28,6 +28,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
     setup_processor,
@@ -492,16 +493,7 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                for name, values in get_load_balance_stats(model, group=ep_group).items():
-                    if values is None:
-                        continue
-                    value = values.max() if name == "max_vio" else values.mean()
-                    if name == "max_vio":
-                        dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
-                    else:
-                        dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-                        value /= dist.get_world_size(dp_cp_group)
-                    value = value.to("cpu")
+                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
                     moe_stats[f"{name}/mean"] += value / grad_accum_steps
                     if name == "max_vio":
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)

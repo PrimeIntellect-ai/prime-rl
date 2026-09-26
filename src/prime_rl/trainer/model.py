@@ -242,8 +242,6 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 def get_load_balance_stats(
     model: nn.Module,
-    reset_stats: bool = True,
-    try_to_avoid_padding_experts: bool = True,
     group: dist.ProcessGroup | None = None,
 ) -> dict[str, Tensor | None]:
     """Compute routing stats after summing raw counts across the group, if given."""
@@ -270,8 +268,7 @@ def get_load_balance_stats(
 
     for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        if try_to_avoid_padding_experts:
-            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
+        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.detach())
@@ -279,13 +276,32 @@ def get_load_balance_stats(
         routing_confidence = routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
-        if reset_stats:
-            block_mlp.tokens_per_expert.zero_()
-            block_mlp.routing_confidence_sum.zero_()
+        block_mlp.tokens_per_expert.zero_()
+        block_mlp.routing_confidence_sum.zero_()
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
     }
+
+
+def get_global_moe_stats(
+    model: nn.Module,
+    ep_group: dist.ProcessGroup | None,
+    dp_cp_group: dist.ProcessGroup,
+) -> dict[str, Tensor]:
+    """Reduce one microstep's routing stats across EP, then DP and CP ranks."""
+    stats = {}
+    for name, values in get_load_balance_stats(model, group=ep_group).items():
+        if values is None:
+            continue
+        value = values.max() if name == "max_vio" else values.mean()
+        if name == "max_vio":
+            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
+        else:
+            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            value /= dist.get_world_size(dp_cp_group)
+        stats[name] = value.to("cpu")
+    return stats
 
 
 def get_model(
