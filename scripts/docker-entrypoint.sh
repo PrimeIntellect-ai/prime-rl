@@ -32,16 +32,12 @@ if [ -n "$PRIME_RL_REF" ]; then
     export GIT_CONFIG_COUNT=1
     export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
     export GIT_CONFIG_VALUE_0="git@github.com:"
-    if [ ! -d "$DEST/.git" ]; then
-        rm -rf "$DEST"
-        git init --quiet "$DEST"
-        git -C "$DEST" remote add origin "$PRIME_RL_REPO"
-    fi
+    rm -rf "$DEST"
+    git init --quiet "$DEST"
+    git -C "$DEST" remote add origin "$PRIME_RL_REPO"
     # Depth-1 fetch of the ref itself: GitHub serves branches, tags and
     # full commit shas alike (abbreviated shas are not fetchable), and
     # prime-rl's history (~700 MB of .git) is not needed to run it.
-    # Re-fetching a branch picks up new commits between restarts; a sha
-    # is immutable.
     echo "[prime-rl] fetching ${PRIME_RL_REF} from ${PRIME_RL_REPO}"
     git -C "$DEST" fetch --quiet --depth 1 origin "$PRIME_RL_REF"
     git -C "$DEST" checkout --quiet --force --detach FETCH_HEAD
@@ -55,17 +51,19 @@ if [ -n "$PRIME_RL_REF" ]; then
     export PRIME_RL_SOURCE_COMMIT
     echo "[prime-rl] source overlay at ${PRIME_RL_SOURCE_COMMIT}"
 
-    # Same pretend versions the image build gives the editables
-    # (Dockerfile.cuda; git describe, else the highest `>=` floor any
-    # pyproject declares). The shallow submodule clones carry no tags, so
-    # hatch-vcs would otherwise stamp them 0.0.1.dev1 and every
-    # `verifiers>=…` floor in the tree would be unmet. Exported through
-    # setuptools-scm's per-dist variables, which hatch-vcs honors ahead of
-    # git metadata.
+    # Give the verifiers/renderers editables the same versions the image
+    # build does (Dockerfile.cuda): resolve them with the repo's script
+    # (git describe, else the highest `>=` floor any pyproject declares),
+    # then bake them into hatch-vcs's fallback-version and drop the
+    # submodules' git metadata so the fallback is what gets used. The
+    # shallow clones carry no tags, so hatch-vcs would otherwise stamp
+    # them 0.0.1.dev1 and every `verifiers>=…` floor in the tree would be
+    # unmet, letting the CLI install below swap the editable for a wheel.
     if [ -f "$DEST/scripts/docker-editable-pretend-versions.sh" ]; then
         eval "$(bash "$DEST/scripts/docker-editable-pretend-versions.sh" --shell "$DEST")"
-        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS="$VERIFIERS_PRETEND_VERSION"
-        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS="$RENDERERS_PRETEND_VERSION"
+        rm -f "$DEST/deps/verifiers/.git" "$DEST/deps/renderers/.git"
+        sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERIFIERS_PRETEND_VERSION}\"/" "$DEST/deps/verifiers/pyproject.toml"
+        sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" "$DEST/deps/renderers/pyproject.toml"
     fi
 
     # Wheels the in-place sync cannot rebuild: a lockfile that pins any of
@@ -119,10 +117,11 @@ HEAVY_PINS_PY
     # Replay the image's post-sync step (Dockerfile.cuda): the prime CLI
     # pulls prime-traces / prime-sandboxes / openai past the lock's pins,
     # and the --locked sync above just rolled them back, which leaves
-    # `prime env install` unable to import. Its `verifiers==` pin also
-    # wins over the editable here, exactly as it does in the image.
-    echo "[prime-rl] reinstalling the prime CLI's dependencies"
-    uv pip install 'prime>=0.7'
+    # `prime env install` unable to import. PRIME_CLI_SPEC overrides the
+    # requirement (keep the default in sync with the Dockerfile).
+    PRIME_CLI_SPEC="${PRIME_CLI_SPEC:-prime>=0.7}"
+    echo "[prime-rl] installing ${PRIME_CLI_SPEC}"
+    uv pip install "$PRIME_CLI_SPEC"
     # The chart's `uv run --no-sync <entrypoint>` commands resolve the
     # project from the cwd; the venv itself stays /app/.venv via
     # UV_PROJECT_ENVIRONMENT above.
