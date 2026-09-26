@@ -223,3 +223,38 @@ def test_online_eval_shares_trainer_run_dir_and_merges_records(tmp_path):
     assert merged["kind"] == "train"  # the train link survives
     assert merged["id"] == "run-1"
     assert merged["evaluations"]["rev"]["id"] == "ev-1"
+
+
+def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
+    """The record lock must NEVER unlink its lock file: a writer waiting on
+    the flock can still hold the unlinked inode's lock while a later writer
+    creates and locks a fresh file - two simultaneous "exclusive" locks and
+    a lost merge. The lock file must persist with the SAME inode across
+    acquisitions, and the locked update helper must serialize two writers
+    into one merged record."""
+    import os
+
+    from prime_rl.monitors.prime import _platform_record_lock, update_platform_record
+    from prime_rl.utils.pathing import get_platform_run_path
+
+    lock_path = get_platform_run_path(tmp_path).with_suffix(".json.lock")
+    inodes = []
+    for _ in range(2):
+        with _platform_record_lock(tmp_path):
+            # The lock file exists DURING the critical section, always.
+            assert lock_path.is_file()
+            inodes.append(os.stat(lock_path).st_ino)
+
+    # The lock file SURVIVES release, and every acquisition locked the same inode.
+    assert lock_path.is_file()
+    assert len(set(inodes)) == 1
+
+    # Two sequential locked updates merge instead of clobbering.
+    update_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
+    update_platform_record(tmp_path, {"evaluations": {"rev": {"step": 5, "id": "ev-1", "url": "https://x/ev-1"}}})
+    from prime_rl.monitors.prime import read_platform_record
+
+    record = read_platform_record(tmp_path)
+    assert record["kind"] == "train"
+    assert record["id"] == "run-1"
+    assert record["evaluations"]["rev"]["id"] == "ev-1"

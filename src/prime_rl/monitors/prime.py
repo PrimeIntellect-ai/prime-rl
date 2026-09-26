@@ -55,8 +55,11 @@ def _platform_record_lock(output_dir: Path) -> Iterator[None]:
     """Cross-process read-modify-write lock for the platform record: the
     trainer and the online-eval process merge into the SAME run.json, and an
     unlocked read-modify-write lets one clobber the other's snapshot. POSIX
-    flock on a sibling .lock file; released (and the lockfile unlinked) on
-    exit. One writer per process at a time is plenty for this cadence."""
+    flock on a sibling .lock file. The lock file is NEVER unlinked: a waiting
+    writer can still hold the unlinked inode's lock while a new writer
+    creates and locks a fresh file — two simultaneous "exclusive" locks and a
+    lost merge. A stable lock inode is the whole guarantee; releasing is
+    enough. One writer per process at a time is plenty for this cadence."""
     path = get_platform_run_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -66,7 +69,6 @@ def _platform_record_lock(output_dir: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    lock_path.unlink(missing_ok=True)
 
 
 def update_platform_record(output_dir: Path, update: dict[str, Any]) -> dict[str, Any]:
