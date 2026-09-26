@@ -42,7 +42,7 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     setup_model,
     is_tt_moe_model,
-    get_load_balance_stats,
+    get_global_moe_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -192,6 +192,9 @@ def train(config: TrainerConfig):
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
+
+    is_moe_model = is_tt_moe_model(model)
+    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
     # carries no adapter weights); a checkpoint resume below overwrites it.
@@ -539,11 +542,9 @@ def train(config: TrainerConfig):
 
             annotation_writer.export(micro_batch, out)
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    if v is not None:
-                        tensors[k].append(v)
+            if is_moe_model:
+                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                    tensors[name].append(value.reshape(1))
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
@@ -553,10 +554,6 @@ def train(config: TrainerConfig):
             micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
             if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"
-            if "routing_confidence" in tensors:
-                micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         annotation_writer.flush()

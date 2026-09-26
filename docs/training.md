@@ -251,7 +251,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `optim/grad_norm` — spikes precede divergence.
 - `optim/lr` — LR schedule.
-- For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
+- For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
 
 **Performance:**
 
