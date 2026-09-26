@@ -349,10 +349,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
-        """Trust remote code only if the model is from HF."""
-        if self.trust_remote_code:
-            if self.impl not in ("hf", "auto"):
-                raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
+        """Trust remote code only for HF loading or a custom VLM vision tower."""
+        if self.trust_remote_code and self.impl not in ("hf", "auto") and self.vlm is None:
+            raise ValueError(
+                "Trust remote code is only supported with the HF implementation, auto mode, or a custom VLM."
+            )
         return self
 
     @model_validator(mode="after")

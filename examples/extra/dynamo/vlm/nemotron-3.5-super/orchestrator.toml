@@ -1,0 +1,68 @@
+max_steps = 3
+seq_len = 2048
+batch_size = 4
+group_size = 4
+num_train_workers = 4
+pad_to_multiple_of = 1
+collect_inference_metrics = false
+constant_trainer_batch_size = true
+
+[algo.length_penalty]
+num_output_tokens_weight = 0.25
+num_input_tokens_weight = 0.0
+num_turns_weight = 0.0
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3.5-Super-EA-09112026"
+trust_remote_code = true
+
+[tokenizer]
+name = "nvidia/NVIDIA-Nemotron-3.5-Super-EA-09112026"
+trust_remote_code = true
+
+[model.client]
+base_url = "http://127.0.0.1:8000/v1"
+wait_for_ready_timeout = 7200
+
+[model.client.dynamo]
+enabled = true
+discovery_url = "http://127.0.0.1:8001"
+
+[renderer]
+name = "nemotron-3.5"
+enable_thinking = false
+
+[monitors.wandb]
+project = "nemotron35-vlm-rl"
+name = "nemotron35-dynamo-vllm-3step-orchestrator"
+
+[concurrency]
+initial_inflight = 4
+min_inflight = 4
+max_inflight = 4
+
+[train.sampling]
+temperature = 2.0
+top_k = 50
+top_p = 1.0
+max_completion_tokens = 64
+
+[[train.source]]
+name = "color-codeword"
+serve.address = "tcp://127.0.0.1:5000"
+env.taskset.id = "color-codeword"
+env.taskset.images_per_turn = 1
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[weight_broadcast]
+type = "nccl"
+host = "127.0.0.1"
+port = 29501
+timeout = 7200
+inference_world_size = 4
+
+[rollout_transport]
+type = "zmq"
+host = "0.0.0.0"
+port = 5555

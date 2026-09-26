@@ -1,0 +1,52 @@
+max_steps = 3
+dist_timeout_seconds = 7200
+enable_router_replay = true
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3.5-Super-EA-09112026"
+trust_remote_code = true
+impl = "custom"
+seq_len = 2048
+cp = 1
+ep = 4
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+moe_router_dtype = "float32"
+optim_cpu_offload = true
+fused_lm_head_token_chunk_size = 1024
+compile = "None"
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.vlm]
+vision_encoder_attr = "model.vision_model"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[model.fusions]
+enabled = []
+
+[monitors.wandb]
+project = "nemotron35-vlm-rl"
+name = "nemotron35-dynamo-vllm-3step-trainer"
+
+[optim]
+type = "sign_sgd"
+weight_decay = 0.0
+lr = 3e-6
+
+[weight_broadcast]
+type = "nccl"
+host = "127.0.0.1"
+port = 29501
+timeout = 7200
+inference_world_size = 4
+
+[rollout_transport]
+type = "zmq"
+host = "127.0.0.1"
+port = 5555

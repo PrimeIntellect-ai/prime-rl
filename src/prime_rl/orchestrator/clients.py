@@ -231,6 +231,15 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
 
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path, *, step: int) -> str:
+        """Load a filesystem adapter and return the model name used for inference.
+
+        Native Prime-RL vLLM workers replace the adapter in place, so their
+        request model remains unchanged.
+        """
+        await load_lora_adapter(self, lora_name, lora_path)
+        return lora_name
+
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
