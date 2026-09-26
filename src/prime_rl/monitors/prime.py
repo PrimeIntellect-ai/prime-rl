@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 import orjson
 import prime_runs as pr
@@ -15,6 +16,7 @@ from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorC
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_platform_run_path
 from prime_rl.utils.utils import sanitize
 
@@ -50,6 +52,12 @@ def read_platform_record(output_dir: Path) -> dict[str, Any] | None:
     return orjson.loads(path.read_bytes()) if path.is_file() else None
 
 
+# Bounded wait for the record lock: a blocking flock(LOCK_EX) would stall the
+# async event-loop thread for as long as the other writer holds the lock.
+RECORD_LOCK_TIMEOUT = 10.0
+RECORD_LOCK_POLL = 0.05
+
+
 @contextmanager
 def _platform_record_lock(output_dir: Path) -> Iterator[None]:
     """Cross-process read-modify-write lock for the platform record: the
@@ -59,28 +67,64 @@ def _platform_record_lock(output_dir: Path) -> Iterator[None]:
     writer can still hold the unlinked inode's lock while a new writer
     creates and locks a fresh file — two simultaneous "exclusive" locks and a
     lost merge. A stable lock inode is the whole guarantee; releasing is
-    enough. One writer per process at a time is plenty for this cadence."""
+    enough.
+
+    Acquisition is BOUNDED (`RECORD_LOCK_TIMEOUT`): contention is retried
+    with non-blocking flock instead of blocking the async event-loop thread
+    indefinitely; `TimeoutError` past the bound. Storage errors that make
+    locking impossible here (e.g. ENOLCK on a filesystem without flock
+    support) raise immediately instead of retrying.
+
+    Storage footprint: exactly one empty .lock file next to the run.json it
+    guards, for the run directory's whole lifetime — the run-dir lifecycle
+    already bounds it (deleting the run dir deletes the lock); no per-write
+    files are ever created."""
     path = get_platform_run_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with open(lock_path, "a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + RECORD_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"platform record lock at {lock_path} still held after {RECORD_LOCK_TIMEOUT}s")
+                time.sleep(RECORD_LOCK_POLL)
         try:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def update_platform_record(output_dir: Path, update: dict[str, Any]) -> dict[str, Any]:
-    """Locked read-modify-write of the platform record: `update` overlays the
-    current record (preserving keys it doesn't set). Use for every writer
-    that shares the file — a naive overwrite drops concurrent writers'
-    keys."""
-    with _platform_record_lock(output_dir):
-        record = read_platform_record(output_dir) or {}
-        record.update(update)
-        write_platform_record(output_dir, record)
-        return record
+def _merge_platform_record(
+    output_dir: Path,
+    merge: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """Best-effort locked read-modify-write of the platform record: run
+    `merge` on the current record under the record lock and atomically
+    replace the file. The record only backs the dashboard's "view on
+    platform" link, so a lock or storage failure (TimeoutError, ENOLCK, ...)
+    is logged and SKIPPED, never fatal to training; the dashboard just misses
+    the link for that run."""
+    try:
+        with _platform_record_lock(output_dir):
+            write_platform_record(output_dir, merge(read_platform_record(output_dir) or {}))
+    except OSError:
+        get_logger().warning(
+            f"Failed to persist the platform record at {get_platform_run_path(output_dir)} "
+            f"(lock or storage error); the dashboard's platform link may be missing. "
+            f"Training continues."
+        )
+
+
+def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
+    """Best-effort locked read-modify-write of the platform record: `update`
+    overlays the current record (preserving keys it doesn't set). Use for
+    every writer that shares the file — a naive overwrite drops concurrent
+    writers' keys."""
+    _merge_platform_record(output_dir, lambda record: {**record, **update})
 
 
 def _base_url() -> str | None:
@@ -96,8 +140,12 @@ class PrimeTrainMonitor(Monitor):
     The run handle owns what ``TrainRun`` used to do by hand: the RFT
     lifecycle (register or attach, finalize), the per-step metrics POSTs, the
     every-10th-step Parquet sample uploads (presign -> PUT -> confirm), and
-    the terminal status — a process that exits without finalizing is reported
-    crashed by the SDK's atexit hook, replacing the old ``_mark_failed`` one.
+    the terminal status. Delivery is BEST-EFFORT: the SDK's atexit hook
+    reports a process that exits without finalizing, but an abrupt kill
+    (SIGKILL, OOM, node loss) skips the hook and a lost finalize is not
+    retried here — the platform owns the terminal state of attached
+    ($RUN_ID) and managed runs. `FINISH_TIMEOUT` bounds the queued-upload
+    drain, not the SDK's finalize HTTP retries.
 
     ``init``/``finish`` do network I/O and run in worker threads; the log
     calls are queue puts onto the SDK's uploader thread, which owns retries
@@ -111,8 +159,9 @@ class PrimeTrainMonitor(Monitor):
         init_kwargs: dict[str, Any]
         if run_id := os.getenv("RUN_ID"):
             # A managed launch pre-created the platform run and injected its id -
-            # attach instead of registering a duplicate. The backend owns the run's
-            # failure marking then; a clean finish() still marks it completed.
+            # attach instead of registering a duplicate. The platform owns the
+            # attached run's failure/completion marking; a clean finish() is
+            # delivered best-effort and does not by itself mark it completed.
             init_kwargs = {"id": run_id}
         elif isinstance(config, SFTConfig):
             # SFT trains on a dataset, not on environments, and has no rollouts - the
@@ -242,9 +291,7 @@ class PrimeEvalMonitor(Monitor):
                         return record
                     return {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
 
-                with _platform_record_lock(output_dir):
-                    record = read_platform_record(output_dir) or {}
-                    write_platform_record(output_dir, _eval_init_update(record))
+                _merge_platform_record(output_dir, _eval_init_update)
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
@@ -314,9 +361,7 @@ class PrimeEvalMonitor(Monitor):
                     }
                     return record
 
-                with _platform_record_lock(self.output_dir):
-                    record = read_platform_record(self.output_dir) or {}
-                    write_platform_record(self.output_dir, _eval_epoch_update(record))
+                _merge_platform_record(self.output_dir, _eval_epoch_update)
         return run
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:

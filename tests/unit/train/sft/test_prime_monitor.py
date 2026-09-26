@@ -230,8 +230,10 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     the flock can still hold the unlinked inode's lock while a later writer
     creates and locks a fresh file - two simultaneous "exclusive" locks and
     a lost merge. The lock file must persist with the SAME inode across
-    acquisitions, and the locked update helper must serialize two writers
-    into one merged record."""
+    acquisitions, and the locked update helper must merge two sequential
+    writers into one record. (Interprocess contention is exercised by the
+    two-process update_platform_record probe; here the writers are
+    sequential.)"""
     import os
 
     from prime_rl.monitors.prime import _platform_record_lock, update_platform_record
@@ -258,3 +260,39 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     assert record["kind"] == "train"
     assert record["id"] == "run-1"
     assert record["evaluations"]["rev"]["id"] == "ev-1"
+
+
+def test_platform_record_lock_acquisition_is_bounded(tmp_path, monkeypatch):
+    """flock(LOCK_EX) must never block the event-loop thread indefinitely:
+    while another process holds the lock, acquisition retries
+    non-blockingly and raises TimeoutError past the bound instead of
+    hanging."""
+    import fcntl
+
+    import prime_rl.monitors.prime as prime_module
+
+    monkeypatch.setattr(prime_module, "RECORD_LOCK_TIMEOUT", 0.2)
+    lock_path = prime_module.get_platform_run_path(tmp_path).with_suffix(".json.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError, match="still held"):
+            with prime_module._platform_record_lock(tmp_path):
+                pass
+
+
+def test_platform_record_persistence_is_best_effort(tmp_path, monkeypatch):
+    """A storage failure on the OPTIONAL dashboard record (e.g. ENOLCK on a
+    filesystem without flock support) must not abort training: the write is
+    skipped with a warning, and no record is left behind."""
+    import errno
+
+    import prime_rl.monitors.prime as prime_module
+
+    def enolck(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(prime_module.fcntl, "flock", enolck)
+    # Must not raise: the platform record is best-effort.
+    prime_module.update_platform_record(tmp_path, {"kind": "train", "id": "run-1", "url": "https://x/run-1"})
+    assert prime_module.read_platform_record(tmp_path) is None

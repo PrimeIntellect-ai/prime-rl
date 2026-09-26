@@ -392,7 +392,7 @@ Or set it in TOML:
 name = "my-experiment"
 ```
 
-The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. A process that exits without finishing is reported as crashed. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
+The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. Finalization is best-effort SDK delivery: a process that exits without finishing is reported crashed when the SDK's atexit hook runs, but an abrupt kill (SIGKILL, OOM, node loss) skips the report and a lost finalize is not retried — the platform owns the terminal state of attached (`RUN_ID`) and managed runs. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
