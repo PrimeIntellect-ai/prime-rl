@@ -27,6 +27,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     TransportConfig,
     VLMConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -514,6 +515,13 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        # The orchestrator ships up to ``max_off_policy_steps + 1`` batches ahead of the
+        # trainer, and a ZMQ PUB drops messages past the high-water mark silently: keep
+        # every socket's mark above that lead.
+        hwm = self.orchestrator.max_off_policy_steps + 2
+        for transport in (self.rollout_transport, self.trainer.rollout_transport, self.orchestrator.rollout_transport):
+            if isinstance(transport, ZMQTransportConfig):
+                transport.hwm = max(transport.hwm, hwm)
         return self
 
     @model_validator(mode="after")

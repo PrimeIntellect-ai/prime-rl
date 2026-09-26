@@ -9,7 +9,7 @@ from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
-from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.orchestrator.types import env_of
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -58,7 +58,7 @@ class OPSDAlgorithm(Algorithm):
         if demonstration is None:
             demonstration = getattr(trace.task.data, self.demo_key, None)
         if demonstration is None:
-            env_name = episode_env_name(episode)
+            env_name = env_of(episode)
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
                 f"(env '{env_name}', task {trace.task.data.idx})."

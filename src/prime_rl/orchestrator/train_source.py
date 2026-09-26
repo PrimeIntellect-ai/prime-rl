@@ -10,8 +10,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.types import TaskRequest
-from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.orchestrator.types import TaskRequest, env_of
 
 
 class TrainSource:
@@ -43,14 +42,14 @@ class TrainSource:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
-        env_name = episode_env_name(group[0])
-        admitted = self.curricula[env_name].on_result(group)
+        name = env_of(group[0])
+        admitted = self.curricula[name].on_result(group)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
         if admitted:
-            self._admitted[env_name] += 1
+            self._admitted[name] += 1
         else:
-            self._rejected[env_name] += 1
+            self._rejected[name] += 1
         return admitted
 
     def metrics(self) -> dict[str, float]:
