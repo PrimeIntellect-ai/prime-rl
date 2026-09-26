@@ -193,6 +193,9 @@ def train(config: TrainerConfig):
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
 
+    is_moe_model = is_tt_moe_model(model)
+    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
+
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
     # carries no adapter weights); a checkpoint resume below overwrites it.
     if config.model.lora is not None:
@@ -539,11 +542,18 @@ def train(config: TrainerConfig):
 
             annotation_writer.export(micro_batch, out)
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    if v is not None:
-                        tensors[k].append(v)
+            # Append the per-microstep global stat so tensor stats aggregate microsteps, not pooled routing counts
+            if is_moe_model:
+                for name, values in get_load_balance_stats(model, group=ep_group).items():
+                    if values is None:
+                        continue
+                    value = values.max() if name == "max_vio" else values.mean()
+                    if name == "max_vio":
+                        dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
+                    else:
+                        dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+                        value /= dist.get_world_size(dp_cp_group)
+                    tensors[name].append(value.reshape(1).to("cpu"))
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
@@ -553,10 +563,6 @@ def train(config: TrainerConfig):
             micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
             if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"
-            if "routing_confidence" in tensors:
-                micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         annotation_writer.flush()

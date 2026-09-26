@@ -10,6 +10,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
@@ -240,17 +241,34 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+    model: nn.Module,
+    reset_stats: bool = True,
+    try_to_avoid_padding_experts: bool = True,
+    group: dist.ProcessGroup | None = None,
 ) -> dict[str, Tensor | None]:
+    """Compute routing stats after summing raw counts across the group, if given."""
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     language_model = get_language_model(model)
+    block_mlps = []
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
         block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
-            continue
-        tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        if block_mlp is not None and hasattr(block_mlp, "tokens_per_expert"):
+            block_mlps.append(block_mlp)
+    if not block_mlps:
+        return {"max_vio": None, "routing_confidence": None}
+
+    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
+    if group is not None:
+        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
+        packed_stats = torch.cat(
+            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
+        )
+        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
+        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
+
+    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
@@ -258,14 +276,12 @@ def get_load_balance_stats(
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.detach())
 
-        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        routing_confidence = routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
             block_mlp.routing_confidence_sum.zero_()
-    if len(per_layer_max_vio) == 0:
-        return {"max_vio": None, "routing_confidence": None}
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
@@ -889,6 +905,7 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
+            module.routing_confidence_sum.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:
