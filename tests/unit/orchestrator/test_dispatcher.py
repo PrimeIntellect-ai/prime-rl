@@ -5,7 +5,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
+from prime_rl.orchestrator.types import CANCELLED, cancel_reason, is_cancelled
 from tests.unit.orchestrator.fakes import FakeClients, FakeEnv, FakeEnvs, FakeSource, RecordingMonitors, make_task
 
 
@@ -114,15 +114,17 @@ async def test_set_limit_raises_the_cap_and_gate_stops_train_scheduling():
 
 
 @pytest.mark.asyncio
-async def test_failed_requests_become_dispatch_failures():
+async def test_failed_requests_become_blank_errored_episodes():
     env = FakeEnv("env", group_size=2, fail_every=2)
     h = Harness(envs=FakeEnvs(env), limit=1)
     await h.run_until(lambda: len(h.train) == 2)
-    kinds = sorted(type(item).__name__ for item in h.train)
-    assert kinds == ["DispatchFailure", "Episode"]
-    failure = next(item for item in h.train if isinstance(item, DispatchFailure))
-    assert failure.error.type == "RuntimeError"
-    assert h.dispatcher.gauges()["dispatcher/errored/train"] == 1
+    failed = [item for item in h.train if not item.ok]
+    (failure,) = failed
+    assert failure.traces == [] and failure.last_error.type == "RuntimeError"
+    assert not is_cancelled(failure)
+    assert failure.group.id == h.train[0].group.id and failure.run.work.step == 1
+    # the failure reached the ``all`` stream like any other arrival
+    assert len(h.monitors.episodes) == 2
 
 
 @pytest.mark.asyncio
@@ -135,8 +137,9 @@ async def test_pending_version_drops_stale_train_groups():
     # step 5 trains v4; max_off_policy_steps=1 means v0 groups are past the bound
     await h.dispatcher.on_version_pending(5)
     await asyncio.sleep(0.05)
-    assert len(h.train) == 1 and isinstance(h.train[0], GroupCancellation)
-    assert h.train[0].reason == "stale" and h.train[0].count == 2
+    assert len(h.train) == 2 and all(cancel_reason(item) == "stale" for item in h.train)
+    assert {item.group.id for item in h.train} == {h.train[0].group.id}
+    assert h.monitors.episodes == []  # cancelled blanks never reach the trace stream
     assert h.dispatcher.policy_update_pending
     await h.dispatcher.on_new_version(5)
     assert not h.dispatcher.policy_update_pending
@@ -169,8 +172,9 @@ async def test_cancel_eval_step_covers_queued_and_active_groups():
     cancelled = await h.dispatcher.cancel_eval_step(4)
     await asyncio.sleep(0.05)
     assert cancelled == 6
-    assert sum(item.count for item in h.eval if isinstance(item, GroupCancellation)) == 6
-    assert all(item.reason == "superseded" for item in h.eval)
+    assert len(h.eval) == 6 and all(cancel_reason(item) == "superseded" for item in h.eval)
+    assert all(item.run.work.type == "eval" and item.run.work.step == 4 for item in h.eval)
+    assert all(item.last_error.type == CANCELLED for item in h.eval)
     await h.dispatcher.stop()
     assert task.done()
 

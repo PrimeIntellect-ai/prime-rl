@@ -1,34 +1,43 @@
 import pytest
 
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.evaluator import Evaluator, EvaluatorConfig
-from tests.unit.orchestrator.fakes import FakeEnv, FakeEnvs, RecordingHooks, RecordingMonitors, make_episode, make_task
+from prime_rl.orchestrator.evaluator import Evaluator
+from tests.unit.orchestrator.fakes import (
+    FakeEnv,
+    FakeEnvs,
+    RecordingHooks,
+    RecordingMonitors,
+    make_blank,
+    make_episode,
+    make_task,
+)
 
 
-def make_evaluator(*, intervals=None, examples=2, group_size=1, **config):
+def make_evaluator(*, intervals=None, examples=2, group_size=1, **settings):
     env = FakeEnv("env", group_size=group_size, examples=[make_task(i) for i in range(examples)])
     envs = FakeEnvs(env)
     source = EvalSource(envs, intervals=intervals)
-    evaluator = Evaluator(EvaluatorConfig(**config), eval_source=source, eval_envs=envs)
+    evaluator = Evaluator(eval_source=source, eval_envs=envs, **settings)
     hooks, monitors = RecordingHooks(), RecordingMonitors()
     evaluator.bind(prefer_eval=hooks.record("prefer_eval"), monitors=monitors)
     return evaluator, source, hooks, monitors
 
 
 @pytest.mark.asyncio
-async def test_trigger_queues_the_epoch_and_prefers_eval():
+async def test_trigger_opens_the_epoch_and_prefers_eval():
     evaluator, source, hooks, monitors = make_evaluator()
     assert await evaluator.trigger(0) == ["env"]
     assert len(source) == 2
     assert monitors.plans == [("env", 0, 2)]
     assert hooks["prefer_eval"] == [("eval was triggered at step 0",)]
     assert evaluator.is_pending(0, ["env"])
+    assert evaluator.status() == "env 0/2 (0.0%)"
     # a step fires once
     assert await evaluator.trigger(0) == []
 
 
 @pytest.mark.asyncio
-async def test_epoch_finalizes_with_metrics_once_every_rollout_lands():
+async def test_epoch_reports_once_every_attempt_lands():
     evaluator, _, _, monitors = make_evaluator(examples=2)
     await evaluator.trigger(0)
     await evaluator.ingest(make_episode(kind="eval", step=0, reward=1.0))
@@ -39,7 +48,20 @@ async def test_epoch_finalizes_with_metrics_once_every_rollout_lands():
     ((metrics, step),) = monitors.metrics
     assert step == 0 and metrics["eval/env/policy_version"] == 0.0
     assert metrics["eval/env/effective/agent/reward/mean"] == 0.5
+    assert metrics["eval/env/all/cancelled/mean"] == 0.0
     assert monitors.epochs == []  # not uploaded unless asked
+
+
+@pytest.mark.asyncio
+async def test_cancelled_attempts_count_toward_the_epoch_and_its_metrics():
+    evaluator, _, _, monitors = make_evaluator(examples=2)
+    await evaluator.trigger(0)
+    await evaluator.ingest(make_episode(kind="eval", step=0, reward=1.0))
+    await evaluator.ingest(make_blank(kind="eval", step=0, group_id="g"))
+    assert not evaluator.is_pending(0, ["env"])
+    ((metrics, _),) = monitors.metrics
+    assert metrics["eval/env/all/cancelled/mean"] == 0.5
+    assert metrics["eval/env/effective/agent/reward/mean"] == 1.0
 
 
 @pytest.mark.asyncio

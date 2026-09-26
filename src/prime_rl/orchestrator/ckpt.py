@@ -62,9 +62,3 @@ class CheckpointManager:
             state = torch.load(f, weights_only=False)
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
         return state["progress"], state["train_source"]
-
-
-def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
-    """The checkpoint manager always exists: ``resume`` decides whether it loads,
-    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
-    return CheckpointManager(output_dir, config or CheckpointConfig())

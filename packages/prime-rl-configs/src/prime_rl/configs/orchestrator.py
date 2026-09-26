@@ -570,14 +570,9 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
-
-    constant_trainer_batch_size: bool = True
-    """Require each batch to reach its effective sample target."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
+    batch_size: int = Field(128, ge=1)
+    """Traces to train on per step. Only traces with training signal count: zero-advantage
+    tokens are pruned as groups finish, and a trace left with nothing to train is replaced."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
@@ -731,16 +726,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
-        if self.batch_size is not None and self.batch_size % self.group_size != 0:
+        if self.batch_size % self.group_size != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
 
         for field in ("max_inflight", "initial_inflight"):

@@ -17,7 +17,7 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, TaskRequest, WorkKind
+from prime_rl.orchestrator.types import CANCELLED, Group, Kind, TaskRequest
 from prime_rl.transports.batch import TrainingSample
 
 
@@ -89,7 +89,7 @@ def make_episode(
     group_id: str | None = None,
     reward: float = 1.0,
     sampled_tokens: int = 3,
-    kind: WorkKind = "train",
+    kind: Kind = "train",
     step: int = 1,
     policy: tuple[int, int] | None = (0, 0),
     task: vf.Task | None = None,
@@ -136,24 +136,52 @@ def make_episode(
     return episode
 
 
-def make_failure(*, env_name: str = "env", group_id: str, kind: WorkKind = "train", step: int = 1) -> DispatchFailure:
-    return DispatchFailure(
-        kind=kind,
-        env_name=env_name,
-        group_id=group_id,
-        step=step,
-        policy_version=0,
-        task_type="Task",
-        task_key="k",
-        task_hash="h",
-        error=vf.Error(type="Boom", message="boom"),
+def make_blank(
+    *,
+    env_name: str = "env",
+    group_id: str,
+    kind: Kind = "train",
+    step: int = 1,
+    policy: tuple[int, int] | None = (0, 0),
+    error: vf.Error | None = None,
+    task: vf.Task | None = None,
+) -> vf.Episode:
+    """A trace-less episode as the dispatcher synthesizes it for an attempt that returned
+    none: a failed request (``error``) or a cancelled one (the default)."""
+    task = task or make_task()
+    span = vf.PolicySpan(start=policy[0], end=policy[1]) if policy is not None else None
+    work = vf.EvalWorkInfo(step=step, policy=span) if kind == "eval" else vf.TrainWorkInfo(step=step, policy=span)
+    episode = vf.Episode(
+        env=vf.EnvInfo(id=env_name, name=env_name),
+        task=vf.TraceTask(type=type(task).__name__, data=task.data, key=task.key, hash=task.hash),
+        group=vf.GroupInfo(id=group_id),
+        ok=False,
+        errors=[error or vf.Error(type=CANCELLED, message="stale")],
     )
+    episode.record_run(vf.TrainRunInfo(id="run", name="run", work=work))
+    return episode
 
 
-def make_cancellation(
-    *, env_name: str = "env", group_id: str, count: int, reason: str = "stale", kind: WorkKind = "train", step: int = 1
-) -> GroupCancellation:
-    return GroupCancellation(kind=kind, env_name=env_name, group_id=group_id, step=step, count=count, reason=reason)
+def make_group(
+    n: int,
+    *,
+    env_name: str = "env",
+    group_id: str | None = None,
+    policy: tuple[int, int] | None = (0, 0),
+    step: int = 1,
+    tokens: int = 3,
+    reward: float = 1.0,
+    samples: bool = True,
+    admitted: bool = True,
+) -> Group:
+    """A finished train group of ``n`` single-trace episodes, compiled (``samples``) or not."""
+    gid = group_id or uuid.uuid4().hex
+    episodes = [
+        make_episode(env_name=env_name, group_id=gid, policy=policy, step=step, sampled_tokens=tokens, reward=reward)
+        for _ in range(n)
+    ]
+    payload = {ep.traces[0].id: [make_sample(tokens, env_name=env_name)] for ep in episodes} if samples else {}
+    return Group(env_name, gid, step, episodes, admitted=admitted, samples=payload)
 
 
 def make_sample(tokens: int = 3, advantage: float = 1.0, env_name: str = "env") -> TrainingSample:

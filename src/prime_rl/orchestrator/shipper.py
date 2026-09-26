@@ -1,11 +1,11 @@
 """Shipper: the trainer-facing end of the pipeline.
 
-Takes each cut ``TrainBatch``, holds it until inference serves a recent enough
-policy, packs and sends it, advances the step, checkpoints, and reports the step's
-metrics. It owns ``Progress`` (the step every other component reads) and the lag
-gate: dispatch pauses while the batch being collected runs more than
-``TARGET_LAG`` versions ahead of the policy inference serves. After the final
-batch it asks the pipeline to drain."""
+Takes each cut ``Batch``, holds it until inference serves a recent enough policy,
+packs and sends it, advances the step, checkpoints, and reports the step's metrics.
+It owns ``Progress`` (the step every other component reads), the batch transport,
+the checkpoint manager, and the lag gate: dispatch pauses while the batch being
+collected runs more than ``max_off_policy_steps`` versions ahead of the policy
+inference serves. After the final batch it asks the pipeline to drain."""
 
 from __future__ import annotations
 
@@ -15,48 +15,49 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from prime_rl import monitors as default_monitors
-from prime_rl.configs.orchestrator import CheckpointConfig
+from prime_rl.configs.orchestrator import CheckpointConfig, OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_batch
 from prime_rl.orchestrator.ckpt import CheckpointManager
-from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import Episodes
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.types import DispatchFailure, Progress, TrainBatch
-from prime_rl.orchestrator.utils import episode_group_id, episode_staleness, trim_process_memory
-from prime_rl.transports.batch.base import BatchSender
+from prime_rl.orchestrator.types import Batch, Progress, cancel_reason, staleness, work_of
+from prime_rl.orchestrator.utils import trim_process_memory
+from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 
-# Batches the orchestrator may run ahead of the policy inference serves. Past it
-# dispatch pauses, and a batch ships only once inference serves v{step-1-TARGET_LAG}.
-# The staleness bound alone cannot replace it: staleness is measured at the ship
-# step, so batches shipped far ahead of the trainer would train later, and staler,
-# than measured.
-TARGET_LAG = 1
-
 
 class Shipper:
-    def __init__(
-        self,
-        *,
-        max_steps: int | None,
-        packer: BatchPacker,
-        sender: BatchSender,
-        ckpt_manager: CheckpointManager,
-        ckpt_config: CheckpointConfig | None,
-        train_source: TrainSource,
-        heart: Heartbeat | None = None,
-    ) -> None:
-        self.max_steps = max_steps
-        self.packer = packer
-        self.sender = sender
-        self.ckpt_manager = ckpt_manager
-        self.ckpt_config = ckpt_config
+    def __init__(self, config: OrchestratorConfig, *, train_source: TrainSource, resume_step: int | None) -> None:
+        self.max_steps = config.max_steps
+        self.max_off_policy_steps = config.max_off_policy_steps
         self.train_source = train_source
-        self.heart = heart
+        self.ckpt_config = config.ckpt
+        self.ckpt = CheckpointManager(config.output_dir, config.ckpt or CheckpointConfig())
 
         self.progress = Progress()
+        if resume_step is not None:
+            resume = config.resume
+            path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            loaded = self.ckpt.load(resume_step, path=path)
+            if loaded is not None:
+                self.progress, state = loaded
+                train_source.load_state_dict(state)
+                get_logger().info(f"Resumed curriculum state for {', '.join(state['envs'])}")
+            # The checkpoint finished ``resume_step``; the step derives from it (not the
+            # loaded counter) so it stays coordinated with the trainer even when
+            # ``ckpt.skip_progress`` leaves the counter unrestored.
+            self.progress.step = resume_step + 1
+
+        self.packer = BatchPacker(config)
+        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
+        self.sender = setup_batch_sender(
+            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+        )
+        self.heart = Heartbeat(config.heartbeat.url) if config.heartbeat is not None else None
+
         self.draining = asyncio.Event()
         # Previous batch arrival, reset every ship so ``time/step`` is sink-to-sink cycle time.
         self.last_batch_at: float | None = None
@@ -90,21 +91,16 @@ class Shipper:
         if monitors is not None:
             self.monitors = monitors
 
-    # ── state others read ──────────────────────────────────────────────────
-
     def step(self) -> int:
         """The batch being collected, 1-indexed and advanced right after a ship."""
         return self.progress.step
 
-    def resume(self, step: int, progress: Progress | None) -> None:
-        """Continue after checkpoint ``step``: restore the counters and collect ``step + 1``."""
-        if progress is not None:
-            self.progress = progress
-        self.progress.step = step + 1
-
     def start_clock(self) -> None:
         """Anchor the step clock so the first step measures startup to first batch."""
         self.last_batch_at = time.perf_counter()
+
+    def close(self) -> None:
+        self.sender.close()
 
     # ── inbound ────────────────────────────────────────────────────────────
 
@@ -112,7 +108,7 @@ class Shipper:
         """Re-check the lag gate after inference applied a new policy."""
         self.update_gate()
 
-    async def on_batch(self, batch: TrainBatch) -> None:
+    async def on_batch(self, batch: Batch) -> None:
         """Ship one batch; a batch arriving while draining is dropped so nothing
         ships past ``max_steps``."""
         if self.draining.is_set():
@@ -127,51 +123,49 @@ class Shipper:
         if self.max_steps is not None and step > self.max_steps:
             await self.start_draining(f"Step {step} exceeds max_steps={self.max_steps}")
             return
-        if not batch.samples:
+        episodes = Episodes(batch.groups)
+        shipped = episodes.sampled
+        n_trainable = sum(is_trainable(trace) for trace in shipped.traces)
+        if n_trainable / shipped.num_traces <= 0.1:
             get_logger().warning(
-                f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
-            )
-            return
-        effective = batch.cohort.effective
-        n_trainable = sum(is_trainable(record.trace) for record in effective.records)
-        if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
-            get_logger().warning(
-                f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
-                f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
+                f"Only {n_trainable}/{shipped.num_traces} shipped traces are trainable "
+                f"({n_trainable / shipped.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}: fast
-        # envs fill batches from buffered rollouts and would race arbitrarily far ahead
-        # of the trainer otherwise. Always satisfiable: the trainer broadcasts every version.
-        required_version = step - 1 - TARGET_LAG
-        if self._version() < required_version:
-            hold_start = time.perf_counter()
-            await self.wait_for_version(required_version, f"to ship batch {step}")
-            self.wait_for_policy_time += time.perf_counter() - hold_start
+        # Ship batch ``step`` only once inference serves v{step-1-max_off_policy_steps}:
+        # fast envs fill batches from buffered rollouts and would race arbitrarily far
+        # ahead of the trainer otherwise. Always satisfiable: the trainer broadcasts every version.
+        hold_start = time.perf_counter()
+        await self.wait_for_version(step - 1 - self.max_off_policy_steps, f"to ship batch {step}")
+        self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # The effective (clean, trained-on) subset is logged at ship time as annotation
-        # records against each trace's arrival record — never a second episode copy.
-        await self.monitors.log(effective.vf_episodes, step, "train", "effective")
-        await self.monitors.log_annotations(stamp_batch(effective.vf_episodes, step))
+        # The shipped subset is logged at ship time as annotation records against each
+        # trace's arrival record — never a second episode copy.
+        await self.monitors.log(shipped.vf_episodes, step, "train", "effective")
+        await self.monitors.log_annotations(stamp_batch(shipped.vf_episodes, step))
 
-        pack_start_time = time.perf_counter()
+        pack_start = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
-        pack_time = time.perf_counter() - pack_start_time
+        pack_time = time.perf_counter() - pack_start
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_gate()
         save_ckpt_time = self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        await self.monitors.log(self.step_metrics(batch, step, step_time, pack_time, save_ckpt_time), step=step)
-        self.warn_discards(batch, step_time)
+        num_tasks = len({group.id for group in batch.groups})
+        await self.monitors.log(
+            self.step_metrics(batch, step, step_time=step_time, pack_time=pack_time, save_ckpt_time=save_ckpt_time),
+            step=step,
+        )
+        self.warn_discards(episodes, step_time)
         self.wait_for_policy_time = 0.0
         if self.heart is not None:
             self.heart.beat()
-        self.progress.total_tokens += batch.episodes.num_total_tokens
-        self.progress.total_samples += batch.episodes.num_traces
-        self.progress.total_problems += self.num_tasks(batch)
-        self.log_train_batch(batch, step=step, step_time=step_time)
+        self.progress.total_tokens += episodes.num_total_tokens
+        self.progress.total_samples += episodes.num_traces
+        self.progress.total_problems += num_tasks
+        self.log_train_batch(episodes, step=step, step_time=step_time)
 
         if self.max_steps is not None and step >= self.max_steps:
             await self.wait_for_version(step, "before shutdown")
@@ -190,16 +184,16 @@ class Shipper:
         await self._wait_for_version(version, reason=reason)
 
     def update_gate(self) -> None:
-        """Pause dispatch while the batch being collected runs more than ``TARGET_LAG``
-        ahead of the policy inference serves. Steps are 1-indexed while versions are
-        0-indexed, so the shipped-batch count is ``step - 1``."""
+        """Pause dispatch while the batch being collected runs more than
+        ``max_off_policy_steps`` ahead of the policy inference serves. Steps are
+        1-indexed while versions are 0-indexed, so the shipped-batch count is ``step - 1``."""
         version = self._version()
         lead = (self.progress.step - 1) - version
-        if lead > TARGET_LAG:
+        if lead > self.max_off_policy_steps:
             if self.gate_open:
                 get_logger().info(
                     f"Pausing dispatcher until inference applies policy "
-                    f"v{self.progress.step - 1 - TARGET_LAG} (currently v{version})"
+                    f"v{self.progress.step - 1 - self.max_off_policy_steps} (currently v{version})"
                 )
                 self.gate_closed_at = time.perf_counter()
             self.gate_open = False
@@ -236,7 +230,7 @@ class Shipper:
     def save_ckpt(self, step: int) -> None:
         # Synchronous on purpose: the payload is tiny, and snapshotting on the event loop
         # keeps the dispatcher from mutating the train source mid-save
-        self.ckpt_manager.save(step, self.progress, self.train_source.state_dict())
+        self.ckpt.save(step, self.progress, self.train_source.state_dict())
 
     def save_final(self) -> None:
         """``progress.step`` points at the next (unshipped) step; checkpoint the last
@@ -247,43 +241,27 @@ class Shipper:
         get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
         self.save_ckpt(self.progress.step)
 
-    @staticmethod
-    def num_tasks(batch: TrainBatch) -> int:
-        group_ids = {episode_group_id(episode) for episode in batch.episodes}
-        group_ids.update(failure.group_id for failure in batch.failures)
-        return len(group_ids)
+    # ── reporting ──────────────────────────────────────────────────────────
 
     def step_metrics(
-        self, batch: TrainBatch, step: int, step_time: float, pack_time: float, save_ckpt_time: float
+        self, batch: Batch, step: int, *, step_time: float, pack_time: float, save_ckpt_time: float
     ) -> dict[str, float]:
         """Episode metrics over the {agg,<env>} × {all,effective} matrix plus progress,
         timing, staleness and env-share accounting for one shipped step."""
-        effective = batch.cohort.effective
+        episodes = Episodes(batch.groups)
+        shipped = episodes.sampled
         metrics: dict[str, float] = {}
-        for subset, pool in (("all", batch.episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
+        for subset, pool in (("all", episodes), ("effective", shipped)):
+            metrics |= pool.train_metrics("train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
-                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
-        total_attempts = len(batch.episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
-        failures_by_env: dict[str, list[DispatchFailure]] = {}
-        for failure in batch.failures:
-            failures_by_env.setdefault(failure.env_name, []).append(failure)
-        episodes_by_env = batch.episodes.by_env()
-        for env_name in set(episodes_by_env) | set(failures_by_env):
-            env_failures = failures_by_env.get(env_name, [])
-            env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
-            metrics |= dispatch_failure_metrics(
-                env_failures, prefix=f"train/{env_name}/all", total_attempts=env_attempts
-            )
+                metrics |= env_pool.train_metrics(f"train/{env_name}", subset=subset)
 
-        num_tokens = batch.episodes.num_total_tokens
         metrics |= {
-            "progress/tokens": num_tokens,
-            "progress/input_tokens": sum(record.trace.num_input_tokens for record in effective.records),
-            "progress/output_tokens": sum(record.trace.num_output_tokens for record in effective.records),
-            "progress/rollouts": batch.episodes.num_traces,
-            "progress/tasks": self.num_tasks(batch),
+            "progress/tokens": episodes.num_total_tokens,
+            "progress/input_tokens": sum(trace.num_input_tokens for trace in shipped.traces),
+            "progress/output_tokens": sum(trace.num_output_tokens for trace in shipped.traces),
+            "progress/rollouts": episodes.num_traces,
+            "progress/tasks": len({group.id for group in batch.groups}),
             "progress/total_tokens": self.progress.total_tokens,
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
@@ -293,26 +271,28 @@ class Shipper:
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
-        # Staleness of the shipped cohort, decomposed into its in-flight and in-queue
-        # shares; ``dropped`` counts queued traces the sweep voided since the last ship.
-        staleness = [episode_staleness(episode, step) for episode in effective]
-        if staleness:
-            totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
-            metrics |= {
-                "off_policy/mean": sum(totals) / len(totals),
-                "off_policy/max": float(max(totals)),
-                "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
-                "off_policy/in_flight/max": float(max(in_flight)),
-                "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
-                "off_policy/in_queue/max": float(max(in_queue)),
-            }
-        metrics["off_policy/dropped"] = float(batch.stale_drops)
-        for env_name, env_pool in episodes_by_env.items():
-            metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
+        # Staleness of the shipped cohort, decomposed into its in-flight share (weight
+        # updates during generation) and the time spent queued between completion and ship.
+        totals, in_flight = [], []
+        for episode in shipped:
+            total = staleness(episode, step)
+            span = work_of(episode).policy
+            totals.append(total)
+            in_flight.append(min(total, span.drift) if span is not None else 0)
+        if totals:
+            in_queue = [total - flight for total, flight in zip(totals, in_flight, strict=True)]
+            for name, values in (("", totals), ("/in_flight", in_flight), ("/in_queue", in_queue)):
+                metrics[f"off_policy{name}/mean"] = sum(values) / len(values)
+                metrics[f"off_policy{name}/max"] = float(max(values))
+        metrics["off_policy/dropped"] = float(
+            sum(len(episode.traces) for episode in episodes if cancel_reason(episode) == "stale")
+        )
+        for env_name, env_pool in episodes.by_env().items():
+            metrics[f"batch/{env_name}"] = env_pool.num_traces / episodes.num_traces
         metrics |= self.train_source.metrics()
         return metrics
 
-    def warn_discards(self, batch: TrainBatch, step_time: float) -> None:
+    def warn_discards(self, episodes: Episodes, step_time: float) -> None:
         active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
         if step_time > 0 and self.wait_for_policy_time >= active_step_time:
             get_logger().warning(
@@ -320,71 +300,41 @@ class Shipper:
                 f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more trainer nodes."
             )
-        shipped_episode_ids = {episode.id for episode in batch.cohort}
-        discarded = [
-            episode
-            for episode in batch.episodes
-            if episode.id not in shipped_episode_ids and episode.id not in batch.buffered_episode_ids
-        ]
-        stale_episodes = sum(episode.id in batch.episodes.cancelled for episode in discarded)
-        errored_episodes = sum(
-            episode.id not in batch.episodes.cancelled
-            and (not episode.ok or any(trace.has_error for trace in episode.traces))
-            for episode in discarded
-        )
-        num_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled_attempts
-        num_discarded = len(discarded) + len(batch.failures) + batch.cancelled_attempts
-        num_stale = stale_episodes + batch.stale_attempts
-        num_errored = errored_episodes + len(batch.failures)
-        num_no_signal = num_discarded - num_stale - num_errored
-        if num_attempts and num_discarded / num_attempts > 0.5:
+        attempts = len(episodes)
+        discarded = attempts - len(episodes.sampled)
+        stale = int(sum(episodes.cancelled.values))
+        errored = int(sum(episodes.has_error.values))
+        if attempts and discarded / attempts > 0.5:
             get_logger().warning(
-                f"Discarded {num_discarded}/{num_attempts} episodes ({num_discarded / num_attempts:.1%}): "
-                f"stale={num_stale}, errored={num_errored}, no_signal={num_no_signal}. Review max_off_policy_steps, "
-                "episode errors, and reward signal."
+                f"Discarded {discarded}/{attempts} episodes ({discarded / attempts:.1%}): "
+                f"stale={stale}, errored={errored}, no_signal={discarded - stale - errored}. "
+                "Review max_off_policy_steps, episode errors, and reward signal."
             )
 
-    def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
+    def log_train_batch(self, episodes: Episodes, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         Quality metrics (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) are
-        over exactly the traces shipped this step (``batch.cohort``); ``Error``, ``Cancelled``
-        and ``Ratio`` describe the step's full arrival window."""
-        episodes = batch.episodes
-        effective = batch.cohort.effective
-        eff = effective.metrics
-        n_generated = episodes.num_traces
-        n_effective = effective.num_traces
-        n_trainable = sum(is_trainable(record.trace) for record in effective.records)
-        trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        over exactly the traces shipped this step; ``Error``, ``Cancelled`` and ``Ratio``
+        describe the step's full arrival window."""
 
-        head = (
-            f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
-            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%}"
-        )
-        if len(self.train_source.env_names) <= 1:
-            get_logger().success(head)
-            return
-
-        window_by_env = episodes.by_env()
-        shipped_by_env = effective.by_env()
-        env_names = sorted(set(window_by_env) | set(shipped_by_env))
-        name_width = max((len(name) for name in env_names), default=0)
-        lines = [head]
-        for env_name in env_names:
-            pool = window_by_env.get(env_name, TrainEpisodes())
-            env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
-            env_eff = env_eff_pool.metrics
-            ratio = (pool.num_traces / n_generated) if n_generated else 0.0
-            lines.append(
-                f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
-                f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
-                f"Truncation {env_eff.is_truncated.mean():.1%}"
+        def line(window: Episodes, head: str) -> str:
+            shipped = window.sampled
+            n_trainable = sum(is_trainable(trace) for trace in shipped.traces)
+            n_shipped = shipped.num_traces
+            max_staleness = max((staleness(episode, step) for episode in shipped), default=0)
+            return (
+                f"{head} | Reward {shipped.reward.mean():.4f} | "
+                f"Trainable {n_trainable}/{n_shipped} ({(n_trainable / n_shipped) if n_shipped else 0.0:.1%}) | "
+                f"Turns {shipped.num_turns.mean():.1f} | Branches {shipped.num_branches.mean():.1f} | "
+                f"Max Off-Policy {max_staleness} | Error {window.has_error.mean():.1%} | "
+                f"Cancelled {window.cancelled.mean():.1%} | Truncation {shipped.is_truncated.mean():.1%}"
             )
+
+        lines = [line(episodes, f"Step {step} | {format_time(step_time):>7}")]
+        by_env = episodes.by_env()
+        if len(by_env) > 1:
+            width = max(len(name) for name in by_env)
+            for env_name, pool in by_env.items():
+                ratio = pool.num_traces / episodes.num_traces if episodes.num_traces else 0.0
+                lines.append(line(pool, f"╰─ {env_name:<{width}} | Ratio {ratio:.1%}"))
         get_logger().success("\n\t\t ".join(lines))

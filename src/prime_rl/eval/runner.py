@@ -28,7 +28,7 @@ from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.evaluator import Evaluator, EvaluatorConfig
+from prime_rl.orchestrator.evaluator import Evaluator
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -100,9 +100,10 @@ class EvalRunner:
             is_resumed=is_resumed,
         )
         self.evaluator = Evaluator(
-            EvaluatorConfig(max_steps=config.max_steps if online else None, upload_epochs=True),
             eval_source=self.eval_source,
             eval_envs=self.eval_envs,
+            max_steps=config.max_steps if online else None,
+            upload_epochs=True,
         )
 
         # Pessimistic per-episode token cost for the controller's starting cap,
@@ -164,7 +165,7 @@ class EvalRunner:
         assert self.dispatcher is not None
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))
         return (
-            f"{self.dispatcher.inflight_eval_count} inflight episodes "
+            f"{self.dispatcher.inflight_count('eval')} inflight episodes "
             f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"
             + (f" - {stages}" if stages else "")
         )

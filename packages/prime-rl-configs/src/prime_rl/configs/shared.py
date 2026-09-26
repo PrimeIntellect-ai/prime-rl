@@ -249,7 +249,9 @@ class ZMQTransportConfig(BaseTransportConfig):
     """Base port for ZMQ transport."""
 
     hwm: int = 10
-    """High-water mark (max in-flight messages per ZMQ socket)."""
+    """High-water mark (max in-flight messages per ZMQ socket). The ``rl`` entrypoint raises it
+    above ``orchestrator.max_off_policy_steps + 1``, the most batches the orchestrator ships ahead
+    of the trainer; a standalone orchestrator and trainer must agree on a value at least that high."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
