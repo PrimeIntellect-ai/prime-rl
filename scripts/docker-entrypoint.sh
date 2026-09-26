@@ -55,6 +55,19 @@ if [ -n "$PRIME_RL_REF" ]; then
     export PRIME_RL_SOURCE_COMMIT
     echo "[prime-rl] source overlay at ${PRIME_RL_SOURCE_COMMIT}"
 
+    # Same pretend versions the image build gives the editables
+    # (Dockerfile.cuda; git describe, else the highest `>=` floor any
+    # pyproject declares). The shallow submodule clones carry no tags, so
+    # hatch-vcs would otherwise stamp them 0.0.1.dev1 and every
+    # `verifiers>=…` floor in the tree would be unmet. Exported through
+    # setuptools-scm's per-dist variables, which hatch-vcs honors ahead of
+    # git metadata.
+    if [ -f "$DEST/scripts/docker-editable-pretend-versions.sh" ]; then
+        eval "$(bash "$DEST/scripts/docker-editable-pretend-versions.sh" --shell "$DEST")"
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS="$VERIFIERS_PRETEND_VERSION"
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS="$RENDERERS_PRETEND_VERSION"
+    fi
+
     # Wheels the in-place sync cannot rebuild: a lockfile that pins any of
     # these differently from the image needs a real image build. Fail here
     # rather than minutes later inside a half-installed torch.
@@ -103,6 +116,13 @@ HEAVY_PINS_PY
         --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 \
         --extra flash-attn-cute --extra disagg --extra quack --extra kernels \
         --group mamba-ssm )
+    # Replay the image's post-sync step (Dockerfile.cuda): the prime CLI
+    # pulls prime-traces / prime-sandboxes / openai past the lock's pins,
+    # and the --locked sync above just rolled them back, which leaves
+    # `prime env install` unable to import. Its `verifiers==` pin also
+    # wins over the editable here, exactly as it does in the image.
+    echo "[prime-rl] reinstalling the prime CLI's dependencies"
+    uv pip install 'prime>=0.7'
     # The chart's `uv run --no-sync <entrypoint>` commands resolve the
     # project from the cwd; the venv itself stays /app/.venv via
     # UV_PROJECT_ENVIRONMENT above.
