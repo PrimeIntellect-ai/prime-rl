@@ -278,7 +278,9 @@ class TrainSink:
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
         for trace in survivors:
-            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            samples = await asyncio.to_thread(
+                trace_to_samples, trace, env_name=env_name, require_logprobs=env.algorithm.action_loss_type != "ce"
+            )
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_sampling_masks and sample.sampling_mask is None:

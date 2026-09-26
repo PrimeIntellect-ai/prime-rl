@@ -37,7 +37,7 @@ env.agent.runtime.type = "subprocess"
 max_completion_tokens = 512
 
 # Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
 
 [trainer.optim]

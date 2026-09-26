@@ -19,7 +19,4 @@ env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[renderer]
-name = "prime-qwen3"
-
 [ckpt] # Checkpoint at the end of training

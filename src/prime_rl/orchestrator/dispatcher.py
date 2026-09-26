@@ -540,17 +540,13 @@ class Dispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the env's generation source via the
-        # renderer/token train client. Eval always evaluates the policy and
-        # goes through the eval client (chat-completions) so eval scores stay
-        # comparable.
         if group.kind == "eval":
             clients, model_name = self.policy_clients, self.policy.model_name
             live_sourced = True
         else:
             clients, model_name, live_sourced = self._train_generation_for(group.env_name)
 
-        client = clients.eval_client if group.kind == "eval" else clients.train_client
+        client = clients.client
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:

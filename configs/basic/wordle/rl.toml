@@ -35,5 +35,5 @@ max_completion_tokens = 1024
 [inference] # single inference GPU (no data parallelism)
 
 # Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"

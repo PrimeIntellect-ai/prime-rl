@@ -110,5 +110,5 @@ env.agent.runtime.type = "subprocess"
 
 [inference.vllm]
 tensor_parallel_size = 8
-[orchestrator.renderer]
+[inference.renderer]
 name = "default"

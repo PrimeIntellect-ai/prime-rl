@@ -34,5 +34,5 @@ max_completion_tokens = 128
 
 [inference]
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"

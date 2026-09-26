@@ -32,6 +32,6 @@ seq_len = 16384
 
 [inference.vllm]
 max_model_len = 8192
-[orchestrator.renderer]
+[inference.renderer]
 name = "default"
 reasoning_parser = "think"

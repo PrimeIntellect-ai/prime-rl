@@ -419,6 +419,41 @@ def test_echo_weights_observations_by_role():
     asyncio.run(algo.score_episode(episode))
     assert trace_to_samples(trace)[0].ce_weights is None
 
+    # Later calls can re-render the same message history into a new physical branch.
+    episode = _two_turn_episode()
+    trace = episode.traces[0]
+    original = list(trace.nodes)
+    for i, node in enumerate(original):
+        trace.nodes.append(
+            node.model_copy(
+                update={
+                    "parent": None if node.parent is None else len(original) + node.parent,
+                    "sampled": i == len(original) - 1,
+                    "token_ids": [token + 100 for token in node.token_ids],
+                    "mask": node.mask if i == len(original) - 1 else [False] * len(node.token_ids),
+                    "logprobs": node.logprobs if i == len(original) - 1 else [],
+                }
+            )
+        )
+    # Keep the first response's genuine sample; the second response is sampled in
+    # the re-rendered branch. Its tool observation still follows a real response.
+    del trace.nodes[2 : len(original)]
+    trace.nodes[3].parent = 2
+    trace.nodes[4].parent = 3
+    trace.nodes[5].parent = 4
+    algo = _echo_algorithm()
+    asyncio.run(algo.score_episode(episode))
+    samples = trace_to_samples(trace)
+    assert len(samples) == 2
+    assert samples[0].token_ids == [1, 2, 3, 4]
+    assert samples[1].token_ids == [101, 102, 103, 104, 105, 106, 107, 108]
+    assert samples[1].mask == [False] * 6 + [True, True]
+    assert samples[1].ce_weights == [0.0] * 4 + [0.1, 0.1, 0.0, 0.0]
+    trace.nodes[-1].logprobs = []
+    with pytest.raises(ValueError, match="logprob for every sampled token"):
+        trace_to_samples(trace)
+    assert trace_to_samples(trace, require_logprobs=False)
+
 
 def test_echo_weights_only_content_tokens_when_is_content_present():
     # The observation node [5,6] carries per-token is_content: the first token is

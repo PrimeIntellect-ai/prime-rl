@@ -1,6 +1,6 @@
 # Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
-#     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL --renderer.name prime-qwen3 \
 #     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
 # Then:
 #   uv run rl @ configs/debug/algo/sft_distill_lora.toml
@@ -27,12 +27,8 @@ type = "sft"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 
-# The student's renderer tokenizes the teacher's messages into the student's
-# token space (backfill). Use `prime-qwen3` — it matches this PrimeIntellect
-# Qwen3 model's chat template token-for-token (single-turn + system), keeping the
-# CE target faithful, without the empty `<think></think>` block the stock `qwen3`
-# renderer injects (which this model's template never emits).
-[orchestrator.renderer]
+# Match the policy chat template. The frozen generation server also owns its renderer.
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

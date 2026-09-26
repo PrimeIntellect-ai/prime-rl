@@ -3,6 +3,8 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Callable
 
+from verifiers.v1.graph import _node_key
+
 from prime_rl.configs.algorithm import EchoAlgoConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
@@ -40,8 +42,7 @@ class EchoAlgorithm(GRPOAlgorithm):
 
     def _weight_observations(self, trace: vf.Trace) -> None:
         """Write graph-native ``ce`` weights over the env-provided
-        observation tokens of later turns. Provenance is structural under v1:
-        within a branch, the non-sampled nodes that follow the first model
+        observation tokens of later turns. Non-sampled messages after a model
         response (tool output, user feedback) are the env-provided
         observations — each such node's tokens get its message role's weight,
         narrowed by the optional user filter. The initial prompt (before the
@@ -57,6 +58,19 @@ class EchoAlgorithm(GRPOAlgorithm):
         fall back to weighting the whole non-sampled span."""
         trainable_branches = [branch for branch, _ in iter_trainable_branches(trace)]
         filter_masks = self._filter_masks(trace, trainable_branches) if self.filter_fn is not None else None
+        # A re-rendered history may have different tokens and therefore fork the
+        # physical graph. Match message paths to retain actual response provenance.
+        paths = {}
+        path_by_node = {}
+        sampled_paths = set()
+        weighted_nodes = {}
+        for node in trace.nodes:
+            parent = path_by_node[id(trace.nodes[node.parent])] if node.parent is not None else None
+            key = _node_key(parent, node.message, node.tools)
+            path = paths.setdefault(key, len(paths))
+            path_by_node[id(node)] = path
+            if node.sampled:
+                sampled_paths.add(path)
         for branch_idx, branch in enumerate(trainable_branches):
             weights = [0.0] * len(branch.token_ids)
             offset = 0
@@ -64,7 +78,14 @@ class EchoAlgorithm(GRPOAlgorithm):
             for node in branch.nodes:
                 span = len(node.token_ids)
                 role = node.message.role
-                if seen_response and not node.sampled and role in self.role_weights:
+                path = path_by_node[id(node)]
+                is_response = path in sampled_paths
+                if (
+                    seen_response
+                    and not is_response
+                    and role in self.role_weights
+                    and weighted_nodes.get(path, id(node)) == id(node)
+                ):
                     weight = self.role_weights[role]
                     keep_mask = filter_masks[branch_idx] if filter_masks is not None else None
                     # Per-token content granularity when the renderer attributed it; otherwise
@@ -75,7 +96,8 @@ class EchoAlgorithm(GRPOAlgorithm):
                             continue
                         if keep_mask is None or keep_mask[i]:
                             weights[i] = weight
-                if node.sampled:
+                            weighted_nodes[path] = id(node)
+                if is_response:
                     seen_response = True
                 offset += span
             offset = 0

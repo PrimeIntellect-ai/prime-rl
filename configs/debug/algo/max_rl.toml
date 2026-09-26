@@ -15,7 +15,7 @@ group_size = 16
 [orchestrator.algo]
 type = "max_rl"
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"
 
 [orchestrator.train.sampling]

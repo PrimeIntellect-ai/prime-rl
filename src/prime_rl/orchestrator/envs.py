@@ -244,7 +244,6 @@ class TrainEnvs(Envs[TrainEnv]):
         config_dir: Path,
         *,
         clients,
-        renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -254,7 +253,7 @@ class TrainEnvs(Envs[TrainEnv]):
                 config,
                 addresses[("train", config.resolved_name)],
                 env_address_file(config_dir, "train", config.resolved_name),
-                GenerationSource(config.algo.sampling, clients, renderer_config),
+                GenerationSource(config.algo.sampling, clients),
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
