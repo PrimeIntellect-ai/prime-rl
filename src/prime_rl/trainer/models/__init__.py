@@ -20,6 +20,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and
 from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+from prime_rl.trainer.models.nemotron_h_omni import NemotronHOmniForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -106,6 +107,7 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
 _CUSTOM_VLM_MAPPING: dict[str, type] = {
     "qwen3_5": Qwen3_5ForCausalLM,
     "qwen3_5_moe": Qwen3_5ForCausalLM,
+    "nemotron_h_omni": NemotronHOmniForCausalLM,
 }
 
 

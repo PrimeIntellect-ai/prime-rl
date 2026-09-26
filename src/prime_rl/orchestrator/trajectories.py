@@ -32,6 +32,47 @@ def _to_numpy(val) -> np.ndarray:
     return np.ascontiguousarray(val)
 
 
+_NEMOTRON_IMAGE_KEYS = frozenset({"pixel_values", "imgs_sizes", "num_tokens", "num_patches"})
+
+
+def _validate_nemotron_image_item(arrays: dict[str, np.ndarray]) -> None:
+    pixel_values = arrays["pixel_values"]
+    if pixel_values.dtype.kind != "f":
+        raise ValueError("Nemotron-H Omni pixel_values must use a floating-point dtype")
+    if (
+        pixel_values.ndim != 4
+        or pixel_values.shape[0] != 1
+        or pixel_values.shape[1] <= 0
+        or pixel_values.shape[2] <= 0
+        or pixel_values.shape[3] <= 0
+    ):
+        raise ValueError(
+            "Nemotron-H Omni pixel_values must have shape (1, positive channels, positive height, positive width)"
+        )
+
+    imgs_sizes = arrays["imgs_sizes"]
+    num_tokens = arrays["num_tokens"]
+    num_patches = arrays["num_patches"]
+    for name, value, shape in (
+        ("imgs_sizes", imgs_sizes, (1, 2)),
+        ("num_tokens", num_tokens, (1,)),
+        ("num_patches", num_patches, (1,)),
+    ):
+        if value.dtype.kind not in "iu":
+            raise ValueError(f"Nemotron-H Omni {name} must use an integer dtype")
+        if value.shape != shape:
+            raise ValueError(f"Nemotron-H Omni {name} must have shape {shape}")
+        if np.any(value <= 0):
+            raise ValueError(f"Nemotron-H Omni {name} values must be positive")
+    if int(num_patches[0]) != 1:
+        raise ValueError("Nemotron-H Omni image inputs require one patch group per image")
+
+    height, width = (int(value) for value in imgs_sizes[0])
+    expected_values = pixel_values.shape[1] * height * width
+    if pixel_values.size != expected_values or pixel_values.shape[-2:] != (height, width):
+        raise ValueError("Nemotron-H Omni pixel_values element count does not match imgs_sizes")
+
+
 def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTensor] | None:
     """Concatenate the branch's per-image renderer items into the flat `mm_kwargs` the trainer
     forwards — one `EncodedTensor` per kwarg key (e.g. `pixel_values`, `image_grid_thw`), images
@@ -40,8 +81,14 @@ def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTenso
     bins: dict[str, list[np.ndarray]] = {}
     for items in mm_items.values():  # per modality
         for item in items:  # per image
-            for key, val in item.items():
-                bins.setdefault(key, []).append(_to_numpy(val))
+            arrays = {key: _to_numpy(value) for key, value in item.items()}
+            is_nemotron_image = _NEMOTRON_IMAGE_KEYS <= arrays.keys()
+            if is_nemotron_image:
+                _validate_nemotron_image_item(arrays)
+            for key, arr in arrays.items():
+                if is_nemotron_image and key == "pixel_values":
+                    arr = arr.reshape(-1)
+                bins.setdefault(key, []).append(arr)
     encoded: dict[str, EncodedTensor] = {}
     for key, arrs in bins.items():
         arr = np.concatenate(arrs, axis=0)

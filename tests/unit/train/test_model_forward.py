@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
+import prime_rl.trainer.model as trainer_model
 from prime_rl.trainer.model import forward
 
 
@@ -84,3 +86,35 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+
+
+@pytest.mark.parametrize("freeze_vision_encoder,expected", [(True, False), (False, True)])
+def test_setup_fsdp_keeps_frozen_vision_encoder_unsharded_after_forward(
+    monkeypatch: pytest.MonkeyPatch, freeze_vision_encoder: bool, expected: bool
+):
+    vision_encoder = object()
+    language_model = SimpleNamespace(layers=[], embed_tokens=object(), norm=object())
+    model = SimpleNamespace(config=SimpleNamespace(tie_word_embeddings=False), lm_head=object())
+    config = SimpleNamespace(
+        reduce_dtype="bfloat16",
+        fsdp_cpu_offload=False,
+        fusions=SimpleNamespace(shard_fused_on_dim1=False),
+        reshard_after_forward=True,
+        vlm=SimpleNamespace(
+            vision_encoder_attr="vision",
+            language_model_attr="language",
+            freeze_vision_encoder=freeze_vision_encoder,
+        ),
+        moe_router_dtype="bfloat16",
+    )
+    parallel_dims = SimpleNamespace(ep_enabled=False, get_mesh=lambda _: object())
+    shard_calls = []
+
+    monkeypatch.setattr(trainer_model, "get_vision_encoder", lambda *_args, **_kwargs: vision_encoder)
+    monkeypatch.setattr(trainer_model, "get_language_model", lambda *_args, **_kwargs: language_model)
+    monkeypatch.setattr(trainer_model, "fully_shard", lambda target, **kwargs: shard_calls.append((target, kwargs)))
+
+    trainer_model.setup_fsdp(model, config, parallel_dims)
+
+    vision_kwargs = next(kwargs for target, kwargs in shard_calls if target is vision_encoder)
+    assert vision_kwargs["reshard_after_forward"] is expected

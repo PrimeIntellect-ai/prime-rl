@@ -153,10 +153,13 @@ def _flatten_mm_items(mm_items: dict[str, list[dict[str, Any]]]) -> dict[str, Te
     out: dict[str, Tensor] = {}
     for items in mm_items.values():
         for item in items:
+            is_nemotron_image = {"pixel_values", "imgs_sizes", "num_tokens", "num_patches"} <= item.keys()
             for key, value in item.items():
-                if not isinstance(value, (np.ndarray, Tensor)):
+                if not is_nemotron_image and not isinstance(value, (np.ndarray, Tensor)):
                     continue
                 tensor = torch.as_tensor(value)
+                if is_nemotron_image and key == "pixel_values":
+                    tensor = tensor.reshape(-1)
                 out[key] = torch.cat([out[key], tensor], dim=0) if key in out else tensor
     return out
 
