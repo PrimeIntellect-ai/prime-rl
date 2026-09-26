@@ -5,6 +5,38 @@
    all nodes for regular mode; for disaggregated mode all prefill nodes across
    replicas, then all decode nodes (matching the logical node order in
    endpoints.yaml). #}
+{%- if router.type != "llm-d" %}
+# wait_for_workers <timeout_s> <worker_args...>: block until every worker URL in the
+# router's worker args answers /health; exit non-zero after timeout_s.
+wait_for_workers() {
+    python3 - "$@" <<'WAIT_FOR_WORKERS_PY'
+import http.client
+import sys
+import time
+import urllib.request
+
+timeout = float(sys.argv[1])
+pending = [arg for arg in sys.argv[2:] if arg.startswith("http")]
+num_workers, start = len(pending), time.monotonic()
+
+
+def is_healthy(url):
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=5):
+            return True
+    except (OSError, http.client.HTTPException):
+        return False
+
+
+print(f"Waiting for {num_workers} workers to become healthy before starting the router", flush=True)
+while pending := [url for url in pending if not is_healthy(url)]:
+    if time.monotonic() - start > timeout:
+        sys.exit(f"{len(pending)}/{num_workers} workers not healthy after {timeout:.0f}s: {' '.join(pending)}")
+    time.sleep(5)
+print(f"All {num_workers} workers healthy after {time.monotonic() - start:.0f}s", flush=True)
+WAIT_FOR_WORKERS_PY
+}
+{% endif %}
 # launch_router <mode:pd|regular> <worker_args> <port> <policy> <log>
 launch_router() {
     local mode="$1" worker_args="$2" port="$3" policy="$4" log="$5"
@@ -71,16 +103,21 @@ LLMD_EOF
 {%- else %}
     local tag="vllm-router"; [ "$mode" = pd ] && tag="vllm-router (PD)"
     echo "Starting $tag on $LOCAL_IP:$port" | tee "$log"
+    local startup_timeout=4200
     local -a cmd=(vllm-router --policy "$policy" --host 0.0.0.0 --port "$port"
         --request-id-headers x-session-id
         --request-timeout-secs {{ router.request_timeout_secs }}
         --prometheus-port "$((port + 21000))"
-        --worker-startup-timeout-secs 4200 --log-level debug)
+        --worker-startup-timeout-secs "$startup_timeout" --log-level debug)
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else
         cmd+=(--worker-urls $worker_args)
     fi
-    "${cmd[@]}" >> "$log" 2>&1 &
+    # vllm-router stops waiting at the first healthy worker and reads every worker's model
+    # only then: a model's requests reach just the workers that answered until its next
+    # model refresh minutes later, so late workers sit idle while sessions pin to early
+    # ones. Start it once all workers are healthy; exec keeps the router as the job.
+    ( wait_for_workers "$startup_timeout" $worker_args && exec "${cmd[@]}" ) >> "$log" 2>&1 &
 {%- endif %}
 }
