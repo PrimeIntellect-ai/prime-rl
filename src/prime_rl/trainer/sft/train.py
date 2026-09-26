@@ -6,8 +6,6 @@ import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
 
-from torch.nn import CrossEntropyLoss
-
 # Import environment before any other imports
 # ruff: noqa: I001
 
@@ -21,6 +19,7 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -277,39 +276,21 @@ def train(config: SFTConfig):
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
+        # Labels without a temperature make the LM head return the summed cross-entropy directly.
+        labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
+
         with maybe_activation_offloading(config.model.ac_offloading):
-            if isinstance(config.model.fused_lm_head_token_chunk_size, int):
-                # Same path as the RL trainer: the chunked LM head computes per-token
-                # logprobs without materializing the [N, V] logits, and per-token
-                # cross-entropy is the negative target logprob.
-                temperature = torch.ones_like(target_ids, dtype=torch.float32)
-                out = forward(
-                    model,
-                    input_ids,
-                    position_ids,
-                    seq_lens=seq_lens,
-                    labels=target_ids,
-                    temperature=temperature,
-                    mm_kwargs=mm_kwargs,
-                    mm_token_type_ids=mm_type_ids,
-                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-                )
-                loss_sum = -out["logprobs"][loss_mask].sum()
-            else:
-                out = forward(
-                    model,
-                    input_ids,
-                    position_ids,
-                    mm_kwargs=mm_kwargs,
-                    mm_token_type_ids=mm_type_ids,
-                    seq_lens=seq_lens,
-                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-                )
-                logits = out["logits"]
-                B, L, V = logits.shape
-                token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
-                loss_sum = token_loss[loss_mask].sum()
-                del logits
+            out = forward(
+                model,
+                input_ids,
+                position_ids,
+                seq_lens=seq_lens,
+                labels=labels,
+                mm_kwargs=mm_kwargs,
+                mm_token_type_ids=mm_type_ids,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
+            loss_sum = out["loss"]
 
         del out
         return loss_sum, token_count
