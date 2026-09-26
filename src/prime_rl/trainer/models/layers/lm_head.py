@@ -5,6 +5,7 @@ from typing import TypedDict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 from prime_rl.utils.logger import get_logger
@@ -38,12 +39,16 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
 
 
 class FusedOutputLinear(torch.nn.Linear):
+    """Chunked LM head that never materializes the full [N, V] logits.
+
+    With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
+    as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
+    With ``temperature`` it returns per-token ``logprobs`` and ``entropy``.
+    """
+
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
-        self.return_loss = False
-        """Return the summed cross-entropy over labels != IGNORE_INDEX as ``loss`` instead of per-token
-        logprobs and entropy. Gradients are computed in the forward pass, chunk by chunk."""
 
     def forward(
         self,
@@ -58,12 +63,11 @@ class FusedOutputLinear(torch.nn.Linear):
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
 
-        if self.return_loss:
-            assert temperature is None and sampling_mask is None, "return_loss computes plain cross-entropy"
+        if temperature is None:
+            assert sampling_mask is None, "sampling-mask replay requires per-token temperatures"
             loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size)
             return PrimeLmOutput(loss=loss)
 
-        assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
         if sampling_mask is not None:
             sampling_mask = sampling_mask.reshape(b * s, sampling_mask.shape[-1]).contiguous()
@@ -78,6 +82,9 @@ class FusedOutputLinear(torch.nn.Linear):
 
 
 class VanillaOutputLinear(torch.nn.Linear):
+    """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
+    cross-entropy over labels != IGNORE_INDEX as ``loss``."""
+
     def __init__(self, in_features: int, out_features: int):
         super().__init__(in_features, out_features, bias=False)
 
@@ -88,9 +95,18 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
-        # VanillaOutputLinear just returns logits. train.py applies temperature
-        # scaling and sampling-mask replay.
-        return PrimeLmOutput(logits=super().forward(hidden_states))
+        logits = super().forward(hidden_states)
+        if labels is not None and temperature is None:
+            return PrimeLmOutput(loss=cross_entropy_sum(logits, labels))
+        # train.py applies temperature scaling and sampling-mask replay to the logits.
+        return PrimeLmOutput(logits=logits)
+
+
+def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
+    """Summed fp32 cross-entropy over labels != IGNORE_INDEX."""
+    return F.cross_entropy(
+        logits.view(-1, logits.shape[-1]).float(), labels.reshape(-1), ignore_index=IGNORE_INDEX, reduction="sum"
+    )
 
 
 def _online_logsumexp_and_weighted_update(
@@ -284,7 +300,11 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     Per chunk of ``chunk_size`` tokens: one full-vocab logits GEMM, the loss, and the gradient
     (softmax minus one-hot) folded straight into ``grad_hidden`` and ``grad_weight``. Only one chunk's
     logits are alive at a time and backward does no recompute: it scales the stored gradients by the
-    incoming scalar. Same approach as torchtitan's ChunkedLossWrapper.
+    incoming scalar. That drops the head's matmul passes from four to three (forward logits, dX, dW).
+    Same approach as torchtitan's ChunkedLossWrapper.
+
+    Backward only accepts a scalar upstream gradient (e.g. ``loss_sum / k``). Per-token weighted losses
+    must pass a temperature and go through the logprob path instead.
     """
 
     @staticmethod
@@ -352,7 +372,7 @@ def inject_prime_lm_head(
     Args:
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
-            logprob/entropy computation.
+            loss/logprob/entropy computation.
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
