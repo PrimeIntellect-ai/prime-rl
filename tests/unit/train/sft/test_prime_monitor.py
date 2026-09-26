@@ -262,6 +262,47 @@ def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
     assert record["evaluations"]["rev"]["id"] == "ev-1"
 
 
+def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkeypatch):
+    """The record merge (bounded flock retry included) must run in a worker
+    thread via asyncio.to_thread, not on the event loop thread: contention
+    for the full lock bound would otherwise freeze the loop."""
+    import threading
+    from pathlib import Path
+
+    import prime_rl.monitors.prime as prime_module
+
+    seen_threads = []
+    real_merge = prime_module._merge_platform_record
+
+    def spy(output_dir, merge):
+        seen_threads.append(threading.get_ident())
+        return real_merge(output_dir, merge)
+
+    monkeypatch.setattr(prime_module, "_merge_platform_record", spy)
+
+    config = _sft_config({"monitors": {"prime": {}}})
+    asyncio.run(PrimeTrainMonitor(config.monitors.prime).init(config=config, output_dir=tmp_path))
+
+    assert seen_threads, "the record merge never ran"
+    assert threading.get_ident() not in seen_threads, "record merge ran on the caller thread"
+
+    # All three async write sites (train init, eval init, eval epoch) go
+    # through to_thread; only the sync helper stays callable directly.
+    import re
+
+    import prime_rl
+
+    src = Path(prime_rl.__path__[0], "monitors", "prime.py").read_text()
+    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 2
+    assert re.search(r"asyncio\.to_thread\(\s*update_platform_record", src)
+
+    from prime_rl.monitors.prime import read_platform_record
+
+    record = read_platform_record(tmp_path)
+    assert record["kind"] == "train"
+    assert record["id"] == "run-123"
+
+
 def test_platform_record_lock_acquisition_is_bounded(tmp_path, monkeypatch):
     """flock(LOCK_EX) must never block the event-loop thread indefinitely:
     while another process holds the lock, acquisition retries

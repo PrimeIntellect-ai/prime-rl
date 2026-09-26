@@ -215,9 +215,14 @@ class PrimeTrainMonitor(Monitor):
             if output_dir is not None:
                 # Merge, not overwrite: a concurrent eval process (SFT
                 # online evals share the trainer's run dir) may already
-                # have written its evaluations record. Locked RMW: the
-                # eval process merges into the same file.
-                update_platform_record(output_dir, {"kind": "train", "id": self.run.id, "url": self.run.url})
+                # have written its evaluations record. Locked RMW, run
+                # off the event loop: the bounded flock retry, the merge
+                # and the atomic replace must not stall the loop.
+                await asyncio.to_thread(
+                    update_platform_record,
+                    output_dir,
+                    {"kind": "train", "id": self.run.id, "url": self.run.url},
+                )
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
@@ -291,7 +296,9 @@ class PrimeEvalMonitor(Monitor):
                         return record
                     return {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
 
-                _merge_platform_record(output_dir, _eval_init_update)
+                # Off the event loop: the bounded flock retry, the merge
+                # and the atomic replace must not stall the loop.
+                await asyncio.to_thread(_merge_platform_record, output_dir, _eval_init_update)
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
@@ -361,7 +368,9 @@ class PrimeEvalMonitor(Monitor):
                     }
                     return record
 
-                _merge_platform_record(self.output_dir, _eval_epoch_update)
+                # Off the event loop: the bounded flock retry, the merge
+                # and the atomic replace must not stall the loop.
+                await asyncio.to_thread(_merge_platform_record, self.output_dir, _eval_epoch_update)
         return run
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:
