@@ -172,7 +172,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          # Pin to the exact SHA prepare resolved: checking out the mutable
+          # ref could build a moved branch head while prepare's sha/tag
+          # (commit-<sha>, org.opencontainers.image.revision) still labels
+          # the prepared SHA.
+          ref: ${{ needs.prepare.outputs.full_sha }}
           fetch-depth: 0
           submodules: false
 

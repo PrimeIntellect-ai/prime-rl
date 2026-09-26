@@ -137,9 +137,20 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
-# Needed for private environments hub auth
+# Needed for private environments hub auth. The CLI gets its OWN venv: the
+# PyPI `prime` package pins verifiers==0.2.0, and installing it into
+# /app/.venv downgraded the locked verifiers>=0.3.1 and broke every
+# verifiers v1 import in the training env (v1.SingleAgentEnvConfig).
+# The symlink shim keeps the hosted bootstrap command
+# `uv run --no-sync prime env install ...` (and direct `prime` calls via
+# PATH=/app/.venv/bin) resolving to the CLI, whose shebang runs it against
+# the isolated deps. `prime env install` still targets the training venv:
+# it resolves the workspace interpreter from VIRTUAL_ENV /
+# UV_PROJECT_ENVIRONMENT, never from its own interpreter.
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
+    uv venv /app/.cli-venv \
+    && VIRTUAL_ENV=/app/.cli-venv uv pip install 'prime>=0.7' \
+    && ln -s /app/.cli-venv/bin/prime /app/.venv/bin/prime
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
@@ -291,6 +302,14 @@ ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRA
 # HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
 ENV HF_HUB_ETAG_TIMEOUT=500
 ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+
+# Functional import smoke: fail the build (never publish) if the training
+# env is import-broken. `prime_rl.trainer.sft.data` pulls in prime_rl.configs
+# and with it the verifiers v1 API — the exact import that failed when an
+# unconstrained CLI install downgraded verifiers to 0.2.0. Also proves the
+# `prime` shim resolves to the isolated CLI venv.
+RUN uv run --no-sync python -c "from prime_rl.trainer.sft import data; from prime_rl.utils import pathing" \
+    && /app/.venv/bin/prime --version
 
 # Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
