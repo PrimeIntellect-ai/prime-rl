@@ -386,14 +386,15 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded == config
 
 
-def test_env_algo_overrides_top_level():
+@pytest.mark.parametrize("algorithm_type", ["grpo", "cripo_s"])
+def test_env_algo_overrides_top_level(algorithm_type):
     config = OrchestratorConfig.model_validate(
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
             "train": {
                 "source": [
-                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
+                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": algorithm_type}},
                     {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
                 ]
             },
@@ -401,13 +402,13 @@ def test_env_algo_overrides_top_level():
     )
     env_a, env_b = config.train.source
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
-    assert env_a.algo is not None and env_a.algo.type == "grpo"
+    assert env_a.algo is not None and env_a.algo.type == algorithm_type
     assert env_b.algo is not None and env_b.algo.type == "echo"
 
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == algorithm_type
 
     with pytest.raises(ValidationError, match="env"):
         OrchestratorConfig.model_validate(

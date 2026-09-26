@@ -1,7 +1,7 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
+on ``type`` (``grpo``, ``cripo_s``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
 ``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
@@ -226,6 +226,39 @@ class EchoAlgoConfig(GRPOAlgoConfig):
     """Optional user-supplied filter narrowing the role-selected tokens."""
 
 
+class CriPOSAlgoConfig(GRPOAlgoConfig):
+    type: Literal["cripo_s"] = "cripo_s"  # type: ignore[assignment]
+    """CriPO-S: GRPO with criterion-localized advantage replacement.
+
+    Requires binary, positively weighted rubric rewards and explicit criterion
+    text. Only the suppressed-criteria branch is implemented; this does not
+    add CriPO's forward-KL behavior-injection loss.
+    """
+
+    criteria_key: str = Field("criteria", min_length=1)
+    """Key for a nonempty ``{reward_name: criterion_text}`` mapping, read from
+    ``trace.info`` first and then ``trace.task.data``. All cohort members must
+    agree on the mapping and the associated reward weights."""
+
+    max_criteria: int = Field(3, ge=1)
+    """Keep the highest-weight suppressed criteria satisfied by each candidate
+    trace, combining them into one counterfactual prompt per branch."""
+
+    flip_threshold: float = Field(0.1, gt=0, le=1, allow_inf_nan=False)
+    """Select only tokens whose counterfactual probability is strictly below
+    this fraction of the teacher's most likely next-token probability."""
+
+    flip_advantage: float = Field(0.1, gt=0, allow_inf_nan=False)
+    """Positive advantage that replaces the original credit on selected tokens."""
+
+    flip_zero_advantage: bool = False
+    """Also rescue zero-advantage traces. False follows the paper's negative-only
+    update; True extends it to rare criteria with zero total group credit."""
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Hint renderer using the live policy's tokenizer. Match the policy renderer."""
+
+
 class MaxRLAlgoConfig(BaseAlgoConfig):
     type: Literal["max_rl"] = "max_rl"
     """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
@@ -393,6 +426,7 @@ class DebugAlgoConfig(BaseAlgoConfig):
 
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
+    | CriPOSAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
     | RAEAlgoConfig
@@ -408,6 +442,7 @@ assignment and loss routing, fused). The ``type`` selects the algorithm, and
 its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+- ``cripo_s`` — GRPO with counterfactual advantage flips for suppressed rubric criteria.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
 - ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
