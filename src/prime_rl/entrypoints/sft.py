@@ -9,6 +9,7 @@ from subprocess import Popen
 from threading import Event, Thread
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -72,6 +73,16 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
+def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
+    """The online-eval process's monitors: same W&B and file config as the trainer's,
+    with the platform monitor switched to the evaluation flavor under the same name."""
+    return EvalMonitorsConfig(
+        wandb=monitors.wandb,
+        file=monitors.file,
+        prime=PrimeEvalMonitorConfig(name=monitors.prime.name) if monitors.prime is not None else None,
+    )
+
+
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
@@ -85,9 +96,15 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
+        # Same run dir as the trainer: the dashboard reads the online
+        # eval's file-monitor artifacts (traces, eval plan) from the run
+        # directory, so a separate output dir would hide them. The
+        # platform-record collision (train vs eval shapes in one
+        # run.json) is resolved by record MERGING in
+        # prime_rl.monitors.prime, not by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        monitors=config.monitors,
+        monitors=build_online_eval_monitors(config.monitors),
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
