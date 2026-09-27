@@ -58,9 +58,10 @@ def expand_shorthands(argv: list[str]) -> list[str]:
     out: list[str] = []
     source: dict[str, Any] = {}
     rest = list(argv)
+    positional = bool(rest) and not rest[0].startswith(("-", "@"))
     sources_in_toml = any(toml_defines_source(path) for path in root_config_files(argv))
-    shared_env = sources_in_toml and not (rest and not rest[0].startswith(("-", "@")))
-    if rest and not rest[0].startswith(("-", "@")):
+    shared_env = sources_in_toml and not positional
+    if positional:
         set_nested(source, ["env", "taskset", "id"], rest.pop(0))
     i = 0
     while i < len(rest):
