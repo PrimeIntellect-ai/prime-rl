@@ -518,7 +518,7 @@ def sft(config: SFTConfig):
     if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
         raise ValueError(
             "NCCL weight broadcast requires launcher-managed inference. "
-            "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
+            "Add an [inference] block or set weight_broadcast.type = 'debug_fs'."
         )
 
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are

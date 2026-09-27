@@ -1,5 +1,6 @@
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -41,6 +42,56 @@ class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer. The trainer
     fails the run when no consumer acknowledges an offered version in time."""
+
+
+DEBUG_FS_WEIGHT_BROADCAST_TYPE = "debug_fs"
+"""The debug-only filesystem weight broadcast: the trainer materializes a full HF checkpoint
+(or PEFT adapter) on the shared filesystem every broadcast, and consumers reload it from disk."""
+
+DEPRECATED_FILESYSTEM_WEIGHT_BROADCAST_TYPE = "filesystem"
+"""Deprecated alias for ``debug_fs``. It keeps parsing during the deprecation window
+(rewritten and warned about at config init) but will be removed in a future release."""
+
+_DEBUG_FS_GUIDANCE = (
+    "The filesystem weight broadcast is a debug-only transport: it materializes a full HF "
+    "checkpoint (or PEFT adapter) on the shared filesystem every broadcast, so it is slow "
+    "and disk-hungry. It exists for debugging, LoRA/PEFT runs (which require it), externally "
+    "managed inference, and eval setups that reload weights from disk — use "
+    "weight_broadcast.type = 'nccl' (default) or 'nixl' for production weight sync."
+)
+
+DEPRECATED_FILESYSTEM_WEIGHT_BROADCAST_WARNING = (
+    "weight_broadcast.type = 'filesystem' is deprecated: the filesystem weight broadcast was "
+    "renamed to 'debug_fs' to make its debug-only nature obvious. "
+    + _DEBUG_FS_GUIDANCE
+    + " This run continues with type = 'debug_fs'; the 'filesystem' alias will be removed in a "
+    "future release."
+)
+
+DEBUG_FS_WEIGHT_BROADCAST_WARNING = (
+    "weight_broadcast.type = 'debug_fs' selects the debug-only filesystem weight broadcast. " + _DEBUG_FS_GUIDANCE
+)
+
+
+def deprecate_filesystem_weight_broadcast(config: BaseConfig, *, warn_on_explicit_debug_fs: bool = True) -> BaseConfig:
+    """Rewrite the deprecated ``type = 'filesystem'`` weight broadcast onto ``debug_fs`` and
+    warn that the transport is debug-only.
+
+    The warnings only fire for a ``type`` the user actually wrote (``model_fields_set``): the
+    auto-fallbacks (LoRA, no inference, online evals) construct the config without an explicit
+    ``type`` and stay silent, since those flows require the disk transport by design.
+    ``warn_on_explicit_debug_fs=False`` silences the explicit-selection warning for components
+    that resolve the transport from elsewhere (the inference server, whose standalone config
+    defaults to the disk transport and gets its type propagated by the rl/sft configs).
+    """
+    if "type" not in config.model_fields_set:
+        return config
+    if config.type == DEPRECATED_FILESYSTEM_WEIGHT_BROADCAST_TYPE:
+        warnings.warn(DEPRECATED_FILESYSTEM_WEIGHT_BROADCAST_WARNING, stacklevel=2)
+        config.type = DEBUG_FS_WEIGHT_BROADCAST_TYPE
+    elif config.type == DEBUG_FS_WEIGHT_BROADCAST_TYPE and warn_on_explicit_debug_fs:
+        warnings.warn(DEBUG_FS_WEIGHT_BROADCAST_WARNING, stacklevel=2)
+    return config
 
 
 class RunConfig(BaseConfig):

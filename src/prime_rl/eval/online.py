@@ -81,7 +81,7 @@ class OnlineEval:
 
         # Rendezvous with the trainer's startup broadcast (v0 fresh, the checkpoint step
         # on resume) — always, for every transport: an in-memory trainer blocks inside
-        # its startup broadcast until this receive, and for filesystem it guarantees the
+        # its startup broadcast until this receive, and for debug_fs it guarantees the
         # served weights match the trainer's incoming policy.
         startup_step = config.resume_step or 0
         await self.receiver.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)

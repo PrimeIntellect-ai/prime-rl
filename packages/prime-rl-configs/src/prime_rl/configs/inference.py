@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
+from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig, deprecate_filesystem_weight_broadcast
 from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -217,8 +217,20 @@ class VllmConfig(BaseConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
-    """Weight broadcast transport."""
+    type: Literal["nccl", "debug_fs", "nixl", "filesystem"] = "debug_fs"
+    """Weight broadcast transport. ``debug_fs`` is debug-only: it reloads a full HF checkpoint
+    (or PEFT adapter) from the shared filesystem every broadcast — slow and disk-hungry. Use
+    ``nccl`` (default) or ``nixl`` for production weight sync."""
+
+    @model_validator(mode="after")
+    def deprecate_filesystem(self):
+        """Rename the deprecated ``filesystem`` type to ``debug_fs`` and warn that the transport is debug-only.
+
+        No warning for an explicitly selected ``debug_fs``: the standalone inference server
+        defaults to the disk transport (it watches the broadcasts dir), and the rl/sft configs
+        propagate the already-warned type from their shared ``weight_broadcast`` block.
+        """
+        return deprecate_filesystem_weight_broadcast(self, warn_on_explicit_debug_fs=False)
 
 
 class CPUOffloadTier(BaseConfig):

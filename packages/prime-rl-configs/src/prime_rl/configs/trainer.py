@@ -16,6 +16,7 @@ from prime_rl.configs.shared import (
     TrainerLogConfig,
     TransportConfig,
     ZMQTransportConfig,
+    deprecate_filesystem_weight_broadcast,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -627,7 +628,15 @@ class DataLoaderConfig(BaseConfig):
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
+    type: Literal["debug_fs", "filesystem"] = "debug_fs"
+    """Debug-only filesystem weight broadcast: saves a full HF checkpoint (or PEFT adapter)
+    to the shared filesystem every broadcast — slow and disk-hungry. Use ``nccl`` (default)
+    or ``nixl`` for production weight sync."""
+
+    @model_validator(mode="after")
+    def deprecate_filesystem(self):
+        """Rename the deprecated ``filesystem`` type to ``debug_fs`` and warn that the transport is debug-only."""
+        return deprecate_filesystem_weight_broadcast(self)
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -795,7 +804,7 @@ class TrainerConfig(BaseConfig):
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
             raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+                "LoRA requires weight_broadcast.type = 'debug_fs': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
             )
         if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:

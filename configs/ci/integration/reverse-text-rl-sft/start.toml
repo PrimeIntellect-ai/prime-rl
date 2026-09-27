@@ -9,9 +9,9 @@ seq_len = 2048
 
 [weight_broadcast]
 # TEMP: NCCL weight broadcast currently crashes the trainer on CI GPU runners
-# (trainer exits during NCCL init). Use filesystem transport until the NCCL
-# path is fixed. See CI RL integration test failures on main.
-type = "filesystem"
+# (trainer exits during NCCL init). Use the debug filesystem transport (debug_fs)
+# until the NCCL path is fixed. See CI RL integration test failures on main.
+type = "debug_fs"
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"

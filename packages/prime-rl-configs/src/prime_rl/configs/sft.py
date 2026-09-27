@@ -216,7 +216,7 @@ class SFTConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig | None = None
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
-    LoRA and external inference use filesystem broadcast."""
+    LoRA and external inference use the debug filesystem broadcast (``debug_fs``)."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -384,16 +384,16 @@ class SFTConfig(BaseConfig):
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem":
+        if self.weight_broadcast.type != "debug_fs":
             if self.weight_broadcast.type == "nixl":
                 raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
             if self.model.lora is not None:
                 raise ValueError(
                     "LoRA training is not yet supported with in-memory weight broadcast. "
-                    "Set weight_broadcast.type = 'filesystem'."
+                    "Set weight_broadcast.type = 'debug_fs'."
                 )
             if self.eval.retrigger_on_resume:
-                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
+                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'debug_fs'.")
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
@@ -439,7 +439,7 @@ class SFTConfig(BaseConfig):
             warnings.warn(
                 "Online evals are configured without an [inference] block - the launcher will not "
                 f"start an inference server. Make sure one is running at eval.client.base_url "
-                f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
+                f"({self.eval.client.base_url}) with weight_broadcast.type = 'debug_fs', "
                 "otherwise the online-eval process will hang waiting for it. If a router fronts the "
                 "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
                 "(pause/update_weights/resume) must bypass the router.",

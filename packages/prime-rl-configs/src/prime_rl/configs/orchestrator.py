@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     TransportConfig,
     ZMQTransportConfig,
+    deprecate_filesystem_weight_broadcast,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -442,7 +443,15 @@ class CheckpointConfig(BaseConfig):
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
+    type: Literal["debug_fs", "filesystem"] = "debug_fs"
+    """Debug-only filesystem weight broadcast: saves a full HF checkpoint (or PEFT adapter)
+    to the shared filesystem every broadcast — slow and disk-hungry. Use ``nccl`` (default)
+    or ``nixl`` for production weight sync."""
+
+    @model_validator(mode="after")
+    def deprecate_filesystem(self):
+        """Rename the deprecated ``filesystem`` type to ``debug_fs`` and warn that the transport is debug-only."""
+        return deprecate_filesystem_weight_broadcast(self)
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):

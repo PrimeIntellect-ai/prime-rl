@@ -27,6 +27,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     TransportConfig,
     VLMConfig,
+    deprecate_filesystem_weight_broadcast,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -160,10 +161,18 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
 
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
-    type: Literal["filesystem"] = "filesystem"
+    type: Literal["debug_fs", "filesystem"] = "debug_fs"
+    """Debug-only filesystem weight broadcast: saves a full HF checkpoint (or PEFT adapter)
+    to the shared filesystem every broadcast — slow and disk-hungry. Use ``nccl`` (default)
+    or ``nixl`` for production weight sync."""
 
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer."""
+
+    @model_validator(mode="after")
+    def deprecate_filesystem(self):
+        """Rename the deprecated ``filesystem`` type to ``debug_fs`` and warn that the transport is debug-only."""
+        return deprecate_filesystem_weight_broadcast(self)
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
@@ -441,17 +450,17 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
+        the debug filesystem transport (``debug_fs``) when LoRA is enabled (not yet supported
+        by in-memory transfer) or when no inference server is configured.
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
+        if self.weight_broadcast.type != "debug_fs" and self.trainer.model.lora is not None:
             raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+                "LoRA requires weight_broadcast.type = 'debug_fs': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
@@ -480,7 +489,7 @@ class RLConfig(BaseConfig):
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
-        elif self.weight_broadcast.type == "filesystem":
+        elif self.weight_broadcast.type == "debug_fs":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
                 timeout=self.weight_broadcast.timeout
             )

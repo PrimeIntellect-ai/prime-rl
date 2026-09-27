@@ -227,10 +227,10 @@ def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
         patch.object(admin, "ensure_topology_current", new=AsyncMock()) as ensure_topology,
         patch.object(AdminPlane, "update_weights", new=AsyncMock()) as update_weights,
     ):
-        asyncio.run(admin.update_weights(tmp_path, transport="filesystem", step=1))
+        asyncio.run(admin.update_weights(tmp_path, transport="debug_fs", step=1))
 
     ensure_topology.assert_awaited_once_with()
-    update_weights.assert_awaited_once_with(tmp_path, transport="filesystem", step=1, on_paused=None)
+    update_weights.assert_awaited_once_with(tmp_path, transport="debug_fs", step=1, on_paused=None)
     asyncio.run(admin.aclose())
 
 

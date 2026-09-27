@@ -330,7 +330,7 @@ class DynamoAdminPlane(AdminPlane):
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["debug_fs", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
