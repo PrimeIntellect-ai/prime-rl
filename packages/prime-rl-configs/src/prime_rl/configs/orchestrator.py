@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, ValidationError, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -194,21 +194,20 @@ class EnvConfig(BaseConfig):
         return self
 
 
-def merge_group_env(cls: type[BaseModel], data: Any) -> Any:
+def merge_group_env(data: Any) -> Any:
     """Shared ``mode="before"`` body for source groups: layer the group's ``env`` block
-    under the ``env`` block of each raw source, then narrow the group block itself."""
+    under the ``env`` block of each raw source."""
     if not isinstance(data, dict) or data.get("env") is None:
         return data
-    # Merge the raw block: a validated one marks every role default as set, which
-    # would override the role defaults of a source's own env class.
-    group = data["env"]
-    if isinstance(group, BaseModel):
-        group = group.model_dump(exclude_unset=True)
+    try:
+        shared = vf.SharedEnvConfig.model_validate(data["env"])
+    except ValidationError:
+        return data  # the ``env`` field reports the errors once, not once per source
     data["source"] = [
-        {**source, "env": vf.merge_env_defaults(group, source.get("env"))} if isinstance(source, dict) else source
+        {**source, "env": vf.merge_env_defaults(shared, source.get("env"))} if isinstance(source, dict) else source
         for source in data.get("source") or []
     ]
-    return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
+    return data
 
 
 class StandardSamplerConfig(BaseConfig):
@@ -325,10 +324,9 @@ class TrainConfig(BaseConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
 
-    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
-    """Env fields that every training source inherits (e.g. ``retries`` or
-    ``agent.runtime.labels``). A source's own ``env`` values win. Narrowed like a
-    source's ``env``, so taskset-specific fields need ``taskset.id``."""
+    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
+    """Env knobs that every training source inherits: the fields every env and taskset
+    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
@@ -336,7 +334,7 @@ class TrainConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def resolve_group_env(cls, data):
-        return merge_group_env(cls, data)
+        return merge_group_env(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -368,10 +366,9 @@ class EvalSourcesConfig(BaseConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
-    """Env fields that every eval source inherits (e.g. ``retries`` or
-    ``agent.timeout.rollout``). A source's own ``env`` values win. Narrowed like a
-    source's ``env``, so taskset-specific fields need ``taskset.id``."""
+    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
+    """Env knobs that every eval source inherits: the fields every env and taskset
+    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
@@ -385,7 +382,7 @@ class EvalSourcesConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def resolve_group_env(cls, data):
-        return merge_group_env(cls, data)
+        return merge_group_env(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):

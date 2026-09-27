@@ -96,14 +96,6 @@ class EvalConfig(ServedEvalConfig):
     monitors: EvalMonitorsConfig = EvalMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def resolve_env_as_source(cls, data):
-        """With no sources, the run evaluates its ``env`` block as its only source."""
-        if isinstance(data, dict) and data.get("env") and not data.get("source"):
-            data["source"] = [{}]
-        return data
-
     @property
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction

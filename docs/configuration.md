@@ -171,12 +171,13 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` table that each of its sources inherits. A source's own `env` values win. The table validates like a source's `env`: without a `taskset.id`, it takes only the fields that every taskset shares, such as `retries`, `timeout`, `max_concurrent_agents`, and the `agent` limits, timeouts, retries, harness and runtime. Put shared settings there instead of repeating them in every source:
+Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` block that each of its sources inherits. A source's own `env` values win. The block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source:
 
 ```toml
-[orchestrator.train.env]
-agent.runtime.labels = ["my-run"]
+[orchestrator.eval.env]
 retries.max_retries = 3
+retries.include = ["ProviderError", "SandboxError"]
+timeout.episode = 7200
 ```
 
 `ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire (inherited from the group-level `interval` when unset); a standalone eval has neither.

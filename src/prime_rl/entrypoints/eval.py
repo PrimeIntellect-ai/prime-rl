@@ -14,8 +14,7 @@ import tomllib
 import uuid
 from pathlib import Path
 from subprocess import Popen
-
-from verifiers.v1.cli.resolve import narrow_config, plugin_errors, with_positional_taskset
+from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.utils.config import cli, dump_resolved_config
@@ -27,41 +26,67 @@ usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c 
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
 
 Shorthands:
-  <taskset-id>             the taskset of the run's only source (--env.taskset.id)
-  --env.<field> <value>    a field of the env block every source inherits (e.g. --env.agent.harness.id bash)
+  <taskset-id>             the taskset of the run's only source
+  --env.<field> <value>    a field of that source's env block (e.g. --env.agent.harness.id bash); next to a
+                           TOML with [[source]] blocks, a field of the shared env block (e.g. --env.retries.max-retries 3)
   -c N                     pin the concurrency band (concurrency.min_inflight = max_inflight = N)
 """
 
 NUMBER = re.compile(r"-?\d+(\.\d+)?")
 
 
+def set_nested(target: dict[str, Any], keys: list[str], value: Any) -> None:
+    for key in keys[:-1]:
+        target = target.setdefault(key, {})
+    target[keys[-1]] = value
+
+
+def parse_value(raw: str) -> Any:
+    """A JSON list/object stays structured; every other value is left to pydantic."""
+    return json.loads(raw) if raw.startswith(("[", "{")) else raw
+
+
 def expand_shorthands(argv: list[str]) -> list[str]:
     """Rewrite the shorthands into flags ``EvalConfig`` parses.
 
-    ``<taskset-id>`` becomes ``--env.taskset.id``; a run without ``[[source]]`` blocks
-    evaluates the env block as its only source. ``-c N`` pins the concurrency band.
-    Everything else, ``--env.*`` included, passes through untouched.
+    ``<taskset-id>`` and ``--env.<path> <value>`` describe the run's only source and fold
+    into one JSON ``--source`` flag (pydantic-config has no list-index paths, so
+    ``--source.0.env...`` cannot address it). Next to a config file that defines
+    ``[[source]]`` blocks, ``--env.*`` flags pass through to the shared ``env`` block.
+    ``-c N`` pins the concurrency band. Everything else passes through untouched.
     """
-    if argv and not argv[0].startswith(("-", "@")) and any(toml_defines_source(p) for p in root_config_files(argv)):
-        raise SystemExit(
-            "The <taskset-id> shorthand names the run's only source and cannot be combined "
-            "with a config file that defines [[source]] blocks - use one or the other"
-        )
-    rest = with_positional_taskset(argv)
     out: list[str] = []
+    source: dict[str, Any] = {}
+    rest = list(argv)
+    sources_in_toml = any(toml_defines_source(path) for path in root_config_files(argv))
+    shared_env = sources_in_toml and not (rest and not rest[0].startswith(("-", "@")))
+    if rest and not rest[0].startswith(("-", "@")):
+        set_nested(source, ["env", "taskset", "id"], rest.pop(0))
     i = 0
     while i < len(rest):
-        flag, has_value, value = rest[i].partition("=")
-        if flag != "-c":
-            out.append(rest[i])
-        else:
-            if not has_value:
-                if i + 1 >= len(rest) or (rest[i + 1].startswith("-") and not NUMBER.fullmatch(rest[i + 1])):
-                    raise SystemExit("-c needs a value")
-                i += 1
-                value = rest[i]
+        arg = rest[i]
+        flag, has_value, value = arg.partition("=")
+        if not has_value and (flag.startswith("--env.") or flag == "-c"):
+            if i + 1 >= len(rest) or (rest[i + 1].startswith("-") and not NUMBER.fullmatch(rest[i + 1])):
+                raise SystemExit(f"{flag} needs a value")
+            i += 1
+            value = rest[i]
+        if flag.startswith("--env.") and shared_env:
+            out += [flag, value]
+        elif flag.startswith("--env."):
+            set_nested(source, [key.replace("-", "_") for key in flag[2:].split(".")], parse_value(value))
+        elif flag == "-c":
             out += ["--concurrency.min_inflight", value, "--concurrency.max_inflight", value]
+        else:
+            out.append(arg)
         i += 1
+    if source:
+        if sources_in_toml:
+            raise SystemExit(
+                "The <taskset-id> shorthand describes a single source and cannot be combined "
+                "with a config file that defines [[source]] blocks - use one or the other"
+            )
+        out += ["--source", json.dumps([source])]
     return out
 
 
@@ -87,14 +112,11 @@ def main():
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        with plugin_errors():
-            cli(narrow_config(EvalConfig, with_positional_taskset(argv)))
+        cli(EvalConfig)
         return
     # The typed parse sees the expanded flags; the launch artifacts keep the command as typed.
-    expanded = expand_shorthands(argv)
-    sys.argv = [sys.argv[0], *expanded]
-    with plugin_errors():
-        config = cli(narrow_config(EvalConfig, expanded))
+    sys.argv = [sys.argv[0], *expand_shorthands(argv)]
+    config = cli(EvalConfig)
     sys.argv = [sys.argv[0], *argv]
 
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
