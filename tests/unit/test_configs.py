@@ -34,12 +34,12 @@ CONFIG_CLASSES = [
 
 def test_rendezvous_ports_are_distinct_and_skip_bound_ports():
     with socket.socket() as occupied:
-        occupied.bind(("0.0.0.0", 0))
+        occupied.bind(("127.0.0.1", 0))
         port = occupied.getsockname()[1]
         with pytest.raises(RuntimeError, match="Could not find"):
-            find_available_ports(1, start=port, stop=port + 1)
+            find_available_ports("127.0.0.1", 1, start=port, stop=port + 1)
 
-    ports = find_available_ports(2, excluded=[29501], start=29500, stop=29505)
+    ports = find_available_ports("127.0.0.1", 2, excluded=[29501], start=29500, stop=29505)
     assert len(set(ports)) == 2
     assert 29501 not in ports
 

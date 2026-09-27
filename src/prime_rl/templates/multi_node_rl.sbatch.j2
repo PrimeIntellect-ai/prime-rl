@@ -244,7 +244,7 @@ CLEANUP_SH
 discover_rendezvous_ports() {
     local host="$1" count="$2" attempt output
     for attempt in 1 2 3 4 5; do
-        if output=$(srun --nodes=1 --ntasks=1 --nodelist="$host" uv run python -m prime_rl.utils.ports "$count" {{ reserved_rendezvous_ports | join(' ') }}); then
+        if output=$(srun --nodes=1 --ntasks=1 --nodelist="$host" uv run python -m prime_rl.utils.ports "$host" "$count" {{ reserved_rendezvous_ports | join(' ') }}); then
             if [[ "$output" =~ ^[0-9]+(\ [0-9]+)*$ ]]; then
                 set -- $output
                 if [ "$#" -eq "$count" ]; then
