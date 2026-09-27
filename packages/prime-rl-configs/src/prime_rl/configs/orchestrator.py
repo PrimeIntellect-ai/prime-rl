@@ -309,12 +309,6 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
-    rollouts_per_source: int | None = Field(None, ge=1)
-    """Target rollouts for this source. When set, it replaces ``num_examples`` and
-    ``group_size``: the source takes up to this many examples and repeats each example
-    until it reaches the target (``group_size = ceil(target / examples)``). The eval
-    resolves both counts when it loads the taskset."""
-
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
@@ -382,10 +376,6 @@ class EvalSourcesConfig(BaseConfig):
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
-    rollouts_per_source: int | None = Field(None, ge=1)
-    """Default target rollouts per environment. When set, it replaces ``num_examples``
-    and ``group_size`` for every source that sets none of the three itself."""
-
     @model_validator(mode="before")
     @classmethod
     def resolve_group_env(cls, data):
@@ -393,19 +383,15 @@ class EvalSourcesConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples,
-        group_size and rollouts_per_source (the worker ``pool`` is configured per env,
-        default elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling, num_examples and
+        group_size (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
-        counts = {"num_examples", "group_size", "rollouts_per_source"}
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
-            if self.rollouts_per_source is not None and not counts & source.model_fields_set:
-                source.rollouts_per_source = self.rollouts_per_source
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
             if "group_size" not in source.model_fields_set:

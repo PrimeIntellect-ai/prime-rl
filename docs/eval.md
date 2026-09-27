@@ -71,8 +71,6 @@ env.agent.runtime.type = "subprocess"
 
 Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. The top-level `[env]` block holds env fields that every source inherits; a source's own `env` values win. A run without sources evaluates its `[env]` block as its only source.
 
-`rollouts_per_source = N` replaces `num_examples` and `group_size`. Each source takes up to `N` examples and repeats each example until it reaches `N` rollouts (`group_size = ceil(N / examples)`). For example, `N = 1000` runs 1,000 examples once from a large taskset, and 30 examples 34 times from a 30-task taskset. A source that sets `num_examples`, `group_size` or `rollouts_per_source` itself keeps its own counts.
-
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 ## Resume

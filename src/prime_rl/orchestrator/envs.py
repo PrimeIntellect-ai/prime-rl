@@ -20,7 +20,6 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
-import math
 import random
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -187,13 +186,9 @@ class EvalEnv(Env):
 
     async def start(self) -> None:
         await super().start()
-        rollouts = self.config.rollouts_per_source
-        if self.num_tasks is None and (rollouts is not None or self.config.num_examples < 0):
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
-        if rollouts is not None:
-            self.config.num_examples = min(rollouts, self.num_tasks)
-            self.config.group_size = math.ceil(rollouts / self.config.num_examples)
         n = self.config.num_examples
+        if self.num_tasks is None and n < 0:
+            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
         self.examples = tasks

@@ -273,14 +273,8 @@ def eval_env(config: dict) -> str | None:
 
 def source_total_episodes(source: dict) -> int | None:
     """What one ``[[source]]`` will produce, from its config alone: ``num_examples = -1``
-    and ``rollouts_per_source`` depend on the taskset size, unknown up front unless the
-    source names its tasks."""
+    means the whole taskset, unknown up front unless the source names its tasks."""
     tasks = ((source.get("env") or {}).get("taskset") or {}).get("tasks")
-    if rollouts := source.get("rollouts_per_source"):
-        if not tasks:
-            return None
-        examples = min(rollouts, len(tasks))
-        return examples * math.ceil(rollouts / examples)
     count = source.get("num_examples") or -1
     if count < 0 and not tasks:
         return None
