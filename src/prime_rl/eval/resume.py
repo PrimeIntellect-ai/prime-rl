@@ -8,9 +8,9 @@ ones the interruption cut off are owed again.
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
-kept episodes are matched to the new selection and the rest is owed. What defines the
-measurement itself - the model, the sampling, each source's env - must not change
-(``check_config``).
+kept episodes are matched to the new selection and the rest is owed. The rollout
+timeout may change for owed episodes. The model, sampling, and other source
+settings must not change (``check_config``).
 """
 
 from __future__ import annotations
@@ -43,9 +43,9 @@ RESUMABLE = (
     "source.*.shuffle",
     "source.*.group_size",
     "source.*.serve",
+    "source.*.env.agent.timeout.rollout",
 )
-"""Config paths a resumed run may change: how many rollouts to run and how to run them,
-never what is measured."""
+"""Config paths a resumed run may change, including the time budget for owed rollouts."""
 
 
 CONFIG_NAME = "eval.json"

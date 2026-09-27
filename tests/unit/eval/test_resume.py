@@ -64,19 +64,31 @@ def test_trigger_queues_only_owed_rollouts() -> None:
     ]
 
 
-def test_check_config_allows_selection_changes_only() -> None:
+def test_check_config_allows_selection_and_rollout_timeout_changes() -> None:
     previous = {
         "model": "a",
         "num_examples": 8,
         "group_size": 2,
         "sampling": {"temperature": 1.0},
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "serve": {"address": None}}],
+        "source": [
+            {
+                "env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"rollout": 7200, "setup": 60}}},
+                "group_size": None,
+                "serve": {"address": None},
+            }
+        ],
     }
     resized = {
         **previous,
         "num_examples": 16,
         "group_size": 4,
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+        "source": [
+            {
+                "env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"rollout": 21600, "setup": 60}}},
+                "group_size": 8,
+                "serve": {"address": "tcp://x"},
+            }
+        ],
     }
     resume.check_config(previous, resized)
 
@@ -84,6 +96,22 @@ def test_check_config_allows_selection_changes_only() -> None:
         resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
     with pytest.raises(ValueError, match="source"):
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
+    with pytest.raises(ValueError, match="source.0.env.agent.timeout.setup"):
+        resume.check_config(
+            previous,
+            {
+                **previous,
+                "source": [
+                    {
+                        **previous["source"][0],
+                        "env": {
+                            **previous["source"][0]["env"],
+                            "agent": {"timeout": {"rollout": 21600, "setup": 120}},
+                        },
+                    }
+                ],
+            },
+        )
 
 
 def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
