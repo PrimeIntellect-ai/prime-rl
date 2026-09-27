@@ -114,14 +114,16 @@ HEAVY_PINS_PY
         --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 \
         --extra flash-attn-cute --extra disagg --extra quack --extra kernels \
         --group mamba-ssm )
-    # Replay the image's post-sync step (Dockerfile.cuda): the prime CLI
-    # pulls prime-traces / prime-sandboxes / openai past the lock's pins,
-    # and the --locked sync above just rolled them back, which leaves
-    # `prime env install` unable to import. PRIME_CLI_SPEC overrides the
-    # requirement (keep the default in sync with the Dockerfile).
-    PRIME_CLI_SPEC="${PRIME_CLI_SPEC:-prime>=0.7}"
-    echo "[prime-rl] installing ${PRIME_CLI_SPEC}"
-    uv pip install "$PRIME_CLI_SPEC"
+    # Replay the image's post-sync step (Dockerfile.cuda; keep the two in
+    # sync): the prime CLI pulls prime-traces / prime-sandboxes / openai
+    # past the lock's pins, and the --locked sync above just rolled them
+    # back, which leaves `prime env install` unable to import. The CLI
+    # also pins verifiers==0.2.0, which would swap the editable for the
+    # PyPI wheel and break prime-rl's imports; override that one
+    # requirement until the CLI drops its verifiers dependency.
+    echo "[prime-rl] installing the prime CLI"
+    printf 'verifiers\n' > /tmp/prime-cli-overrides.txt
+    uv pip install --overrides /tmp/prime-cli-overrides.txt 'prime>=0.7'
     # The chart's `uv run --no-sync <entrypoint>` commands resolve the
     # project from the cwd; the venv itself stays /app/.venv via
     # UV_PROJECT_ENVIRONMENT above.
