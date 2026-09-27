@@ -1,7 +1,16 @@
+import math
+
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CISPOLossConfig, CustomLossConfig, IcePopLossConfig, IPOLossConfig, PPOLossConfig
+from prime_rl.configs.trainer import (
+    CISPOLossConfig,
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    IPOV2LossConfig,
+    PPOLossConfig,
+)
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
@@ -179,6 +188,46 @@ def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
     assert all(torch.isfinite(value) for value in result.metrics.values())
     result.loss.backward()
     torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-1e4, 0.0, 0.0], device="cuda"))
+
+
+def test_ipo_v2_tangent_cap_gate_and_entropy_gradient():
+    ratios = torch.tensor([1.0, 4.0, 5.0, 20.0, 100.0], device="cuda")
+    trainer_logprobs = torch.cat(
+        [-12 + ratios.log(), torch.tensor([math.log(0.6), float("nan")], device="cuda")]
+    ).requires_grad_()
+    inference_logprobs = torch.tensor([-12.0] * 5 + [math.log(0.1), float("nan")], device="cuda")
+    entropy = torch.arange(7, dtype=torch.float32, device="cuda").mul(0.1).requires_grad_()
+    advantages = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0], device="cuda")
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=torch.tensor([True] * 6 + [False], device="cuda"),
+        entropy=entropy,
+    )
+
+    loss_fn = setup_rl_loss_fn(IPOV2LossConfig(entropy_lambda_init=0.2))
+    result = loss_fn.loss(inputs)
+    surrogate = torch.tensor([1.0, 4.0, 5.0, 5 * (1 + math.log(4)), 5 * (1 + math.log(20))], device="cuda")
+    expected_loss = -(advantages[:5] * surrogate).sum() - 0.2 * entropy[:6].sum()
+    torch.testing.assert_close(result.loss, expected_loss)
+    torch.testing.assert_close(result.metrics["is_masked"], torch.tensor(1 / 6, device="cuda"))
+    torch.testing.assert_close(result.metrics["ratio_saturated"], torch.tensor(2 / 5, device="cuda"))
+
+    result.loss.backward()
+    torch.testing.assert_close(
+        trainer_logprobs.grad, torch.tensor([-1.0, 4.0, -5.0, 5.0, -5.0, 0.0, 0.0], device="cuda")
+    )
+    torch.testing.assert_close(entropy.grad, torch.tensor([-0.2] * 6 + [0.0], device="cuda"))
+
+
+def test_ipo_v2_entropy_multiplier_update():
+    loss_fn = setup_rl_loss_fn(IPOV2LossConfig(entropy_floor=0.15, entropy_lambda_init=0.01, entropy_lambda_lr=0.1))
+    loss_fn.update_entropy_lambda(0.05)
+    assert loss_fn.entropy_lambda == pytest.approx(0.02)
+    loss_fn.update_entropy_lambda(0.35)
+    assert loss_fn.entropy_lambda == 0.0
 
 
 def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():

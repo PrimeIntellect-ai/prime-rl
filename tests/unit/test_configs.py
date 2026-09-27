@@ -181,7 +181,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
+def test_optional_loss_configs_and_bounds():
     default_config = TrainerConfig()
     assert default_config.loss.type == "ipo"
 
@@ -195,9 +195,14 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
     assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+    ipo_v2 = TrainerConfig.model_validate({"loss": {"type": "ipo_v2"}}).loss
+    assert ipo_v2.ratio_cap == 5.0
+    assert ipo_v2.entropy_floor == 0.15
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
+    with pytest.raises(ValidationError, match="ratio_cap"):
+        TrainerConfig.model_validate({"loss": {"type": "ipo_v2", "ratio_cap": 1.0}})
 
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():

@@ -584,6 +584,26 @@ class IPOLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
+class IPOV2LossConfig(BaseConfig):
+    type: Literal["ipo_v2"] = "ipo_v2"
+
+    eps: float = Field(0.3, ge=0, allow_inf_nan=False)
+    """Maximum absolute probability change before a token is masked."""
+
+    ratio_cap: float = Field(5.0, gt=1, allow_inf_nan=False)
+    """Importance coefficient saturates at this value without dropping its gradient."""
+
+    adv_tau: float = Field(1.0, ge=0, allow_inf_nan=False)
+    kl_tau: float = Field(0.0, ge=0, allow_inf_nan=False)
+
+    entropy_floor: float = Field(0.15, ge=0, allow_inf_nan=False)
+    """Target minimum mean full-vocabulary entropy over eligible RL tokens."""
+
+    entropy_lambda_init: float = Field(0.01, ge=0, allow_inf_nan=False)
+    entropy_lambda_lr: float = Field(0.01, gt=0, allow_inf_nan=False)
+    """Dual-ascent step size for the nonnegative entropy multiplier."""
+
+
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
@@ -649,7 +669,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | IPOV2LossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
