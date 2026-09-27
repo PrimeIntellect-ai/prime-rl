@@ -171,7 +171,7 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` table that each of its sources inherits. A source's own `env` values win. Put shared settings there instead of repeating them in every source:
+Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` table that each of its sources inherits. A source's own `env` values win. The table validates like a source's `env`: without a `taskset.id`, it takes only the fields that every taskset shares, such as `retries`, `timeout`, `max_concurrent_agents`, and the `agent` limits, timeouts, retries, harness and runtime. Put shared settings there instead of repeating them in every source:
 
 ```toml
 [orchestrator.train.env]
