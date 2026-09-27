@@ -8,17 +8,14 @@ ones the interruption cut off are owed again.
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
-kept episodes are matched to the new selection and the rest is owed. The solver and
-judge models may move to another endpoint or name serving the same weights. What
-defines the measurement itself - the sampling, each source's env - must not change
-(``check_config``).
+kept episodes are matched to the new selection and the rest is owed. The resumed
+config is not checked against the interrupted one: any of it may be overridden.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterator
-from fnmatch import fnmatch
 from pathlib import Path
 
 import orjson
@@ -29,80 +26,16 @@ from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.utils.pathing import get_file_monitor_dir
 
-RESUMABLE = (
-    "resume",
-    "clean",
-    "dry_run",
-    "dashboard",
-    "num_examples",
-    "group_size",
-    "concurrency",
-    "tasks_per_minute",
-    "model",
-    "client",
-    "log",
-    "monitors",
-    "source.*.num_examples",
-    "source.*.shuffle",
-    "source.*.group_size",
-    "source.*.serve",
-    "source.*.env.judge.model",
-    "source.*.env.judge.client",
-)
-"""Config paths a resumed run may change: how many rollouts to run and how to run them,
-and where the solver and judges are served, never what is measured. A model change is
-trusted to serve the same weights under another name."""
-
-
 CONFIG_NAME = "eval.json"
 """The resolved config an attempt stamps into its file monitor directory once it is
-running, beside the episodes it produces: a resume validates against the config those
-episodes were measured with, never against an attempt that was rejected or dry."""
+running, beside the episodes it produces, recording the config those episodes were
+measured with."""
 
 
 def stamp_config(run_dir: Path, config: dict) -> None:
     directory = get_file_monitor_dir(run_dir)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / CONFIG_NAME).write_bytes(orjson.dumps(config, option=orjson.OPT_INDENT_2))
-
-
-def previous_config(run_dir: Path) -> dict:
-    """The config stamped beside the run's landed episodes: the current file monitor
-    directory's, else the newest archive's."""
-    for directory in [get_file_monitor_dir(run_dir), *reversed(archives(run_dir))]:
-        if (directory / CONFIG_NAME).is_file():
-            return orjson.loads((directory / CONFIG_NAME).read_bytes())
-    raise FileNotFoundError(f"Nothing to resume: {run_dir} holds no attempt that ran")
-
-
-def config_diff(previous, current, prefix: str = "") -> list[str]:
-    """Dotted paths at which two resolved configs differ (list items by index)."""
-    if isinstance(previous, dict) and isinstance(current, dict):
-        return [
-            path
-            for key in sorted(set(previous) | set(current))
-            for path in config_diff(previous.get(key), current.get(key), f"{prefix}.{key}" if prefix else key)
-        ]
-    if isinstance(previous, list) and isinstance(current, list) and len(previous) == len(current):
-        return [
-            path
-            for index, (before, after) in enumerate(zip(previous, current, strict=True))
-            for path in config_diff(before, after, f"{prefix}.{index}")
-        ]
-    return [] if previous == current else [prefix]
-
-
-def check_config(previous: dict, current: dict) -> None:
-    changed = [
-        path
-        for path in config_diff(previous, current)
-        if not any(fnmatch(path, pattern) or fnmatch(path, f"{pattern}.*") for pattern in RESUMABLE)
-    ]
-    if changed:
-        raise ValueError(
-            f"The run cannot resume with a different {', '.join(changed)} - the landed episodes would not "
-            "measure the same thing. Relaunch with --clean to start over."
-        )
 
 
 def read_records(stream: Path) -> Iterator[dict]:
