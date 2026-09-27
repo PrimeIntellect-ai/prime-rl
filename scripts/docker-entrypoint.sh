@@ -68,8 +68,9 @@ if [ -n "$PRIME_RL_REF" ]; then
 
     # Wheels the in-place sync cannot rebuild: a lockfile that pins any of
     # these differently from the image needs a real image build. Fail here
-    # rather than minutes later inside a half-installed torch.
-    python - "$DEST/uv.lock" /app/uv.lock <<'HEAVY_PINS_PY'
+    # rather than minutes later inside a half-installed torch. Stdlib only;
+    # --project /app pins the interpreter to the baked venv whatever the cwd.
+    uv run --no-sync --project /app python - "$DEST/uv.lock" /app/uv.lock <<'HEAVY_PINS_PY'
 import sys
 import tomllib
 
