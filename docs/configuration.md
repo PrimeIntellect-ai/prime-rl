@@ -93,7 +93,7 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. The `eval` entrypoint's `[[source]]` list is the exception: each `@` file adds its sources. For arrays of tables, see [Environments](#environments).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
 
 ### Dicts
 

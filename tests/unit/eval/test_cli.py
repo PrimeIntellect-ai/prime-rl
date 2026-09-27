@@ -5,7 +5,7 @@ import pytest
 from prime_rl.entrypoints.eval import expand_shorthands
 
 
-def test_expand_shorthands_folds_taskset_into_a_source_and_env_into_the_group() -> None:
+def test_expand_shorthands_folds_taskset_and_env_into_the_env_block() -> None:
     argv = [
         "gsm8k",
         "-n",
@@ -21,13 +21,11 @@ def test_expand_shorthands_folds_taskset_into_a_source_and_env_into_the_group() 
         "smoke",
     ]
     expanded = expand_shorthands(argv)
-    assert json.loads(expanded[1]) == [{"env": {"taskset": {"id": "gsm8k"}}}]
-    assert json.loads(expanded[-1]) == {
+    assert json.loads(expanded[expanded.index("--env") + 1]) == {
+        "taskset": {"id": "gsm8k", "tasks": ["fix-git"]},
         "agent": {"harness": {"id": "bash"}, "max_turns": "5"},
-        "taskset": {"tasks": ["fix-git"]},
     }
-    assert expanded[0] == "--source"
-    assert expanded[2:-2] == [
+    assert expanded[: expanded.index("--env")] == [
         "-n",
         "4",
         "--concurrency.min_inflight",
@@ -37,12 +35,19 @@ def test_expand_shorthands_folds_taskset_into_a_source_and_env_into_the_group() 
         "--run.name",
         "smoke",
     ]
-    assert expanded[-2] == "--env"
 
 
 def test_expand_shorthands_passes_through_without_shorthands() -> None:
     argv = ["@", "eval.toml", "--model", "x", "--resume"]
     assert expand_shorthands(argv) == argv
+
+
+def test_expand_shorthands_refuses_taskset_next_to_source_toml(tmp_path) -> None:
+    toml = tmp_path / "eval.toml"
+    toml.write_text('[[source]]\nenv.taskset.id = "gsm8k"\n')
+    with pytest.raises(SystemExit, match="cannot be combined"):
+        expand_shorthands(["wordle", "@", toml.as_posix()])
+    assert expand_shorthands(["@", toml.as_posix(), "--env.agent.harness.id", "bash"])[-2] == "--env"
 
 
 def test_expand_shorthands_requires_a_value() -> None:
