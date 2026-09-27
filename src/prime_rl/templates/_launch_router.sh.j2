@@ -81,6 +81,29 @@ LLMD_EOF
     else
         cmd+=(--worker-urls $worker_args)
     fi
-    "${cmd[@]}" >> "$log" 2>&1 &
+    if [ "$mode" = regular ]; then
+        (
+            read -ra workers <<< "$worker_args"
+            deadline=$((SECONDS + 4200))
+            while true; do
+                ready=1
+                for url in "${workers[@]}"; do
+                    if ! curl -fsS --max-time 5 -o /dev/null "$url/v1/models"; then
+                        ready=0
+                        break
+                    fi
+                done
+                if [ "$ready" -eq 1 ]; then break; fi
+                if [ "$SECONDS" -ge "$deadline" ]; then
+                    echo "Timed out waiting for all inference workers before starting router" >&2
+                    exit 1
+                fi
+                sleep 5
+            done
+            exec "${cmd[@]}"
+        ) >> "$log" 2>&1 &
+    else
+        "${cmd[@]}" >> "$log" 2>&1 &
+    fi
 {%- endif %}
 }
