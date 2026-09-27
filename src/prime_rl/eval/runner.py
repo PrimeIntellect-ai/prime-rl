@@ -304,7 +304,7 @@ class EvalRunner:
             f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
-            f"Timeout {eff.is_timeout.mean():.1%}"
+            f"Timeout {full.is_timeout.mean():.1%}"
         )
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

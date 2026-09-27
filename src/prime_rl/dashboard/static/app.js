@@ -423,7 +423,7 @@ function rowsChartHere() {
 }
 
 const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
-const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "effective/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
+const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
