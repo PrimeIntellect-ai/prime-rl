@@ -137,12 +137,16 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
-# Needed for private environments hub auth. The CLI pins verifiers==0.2.0,
-# which replaced the editable verifiers synced above with the PyPI wheel and
-# left prime-rl's own entrypoints unable to import; override that one
-# requirement until the CLI drops its verifiers dependency. Keep in sync
-# with scripts/docker-entrypoint.sh, which replays this step for the runtime
-# source overlay. The import check pins the editable in place.
+# Needed for private environments hub auth.
+#
+# FIXME(prime#940): workaround, remove once the prime CLI drops verifiers as
+# a dependency (https://github.com/PrimeIntellect-ai/prime/pull/940). The CLI
+# pins verifiers==0.2.0, which replaced the editable verifiers synced above
+# with the PyPI wheel and left prime-rl's own entrypoints unable to import;
+# the --overrides file ignores that one requirement. When removing it, drop
+# the overrides file and the --overrides flag, keep the import assertion, and
+# make the same change in scripts/docker-entrypoint.sh, which replays this
+# step for the runtime source overlay.
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     printf 'verifiers\n' > /tmp/prime-cli-overrides.txt \
     && VIRTUAL_ENV=/app/.venv uv pip install --overrides /tmp/prime-cli-overrides.txt 'prime>=0.7' \
