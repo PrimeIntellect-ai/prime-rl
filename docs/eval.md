@@ -109,6 +109,7 @@ Eval metrics mirror the training rollout hierarchy under the `eval/<env>` scope:
 |---|---|
 | `eval/<env>/all/<agent>/reward/mean` | mean reward over the epoch |
 | `eval/<env>/all/<agent>/is_truncated/mean` | share of rollouts cut by the length limit |
+| `eval/<env>/all/<agent>/is_timeout/mean` | share of rollouts stopped by a stage deadline (`<stage>_timeout`) |
 | `eval/<env>/all/<agent>/has_error/mean` | share of rollouts that raised |
 | `eval/<env>/all/seq_len/mean` | mean episode length in tokens |
 

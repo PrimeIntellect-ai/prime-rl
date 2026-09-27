@@ -118,6 +118,7 @@ Pulled from the console logs and mirrored to W&B.
 
 - `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
 - `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
+- `is_timeout/{all,env}/mean` — share of rollouts stopped by a stage deadline (`setup`/`agent`/`finalize`/`scoring` `_timeout`); a timed-out rollout is scored, not errored.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
 - `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.

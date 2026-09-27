@@ -883,7 +883,7 @@ class Orchestrator:
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
             f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%}"
+            f"Truncation {eff.is_truncated.mean():.1%} | Timeout {eff.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
@@ -904,7 +904,7 @@ class Orchestrator:
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
-                f"Truncation {env_eff.is_truncated.mean():.1%}"
+                f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {env_eff.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
@@ -952,7 +952,8 @@ class Orchestrator:
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Timeout {eff.is_timeout.mean():.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

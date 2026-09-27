@@ -40,6 +40,7 @@ COMMON_METRICS = [
 COMMON_REGEXES = [
     "all/[^/]+/has_error/mean",
     "effective/[^/]+/is_truncated/mean",
+    "effective/[^/]+/is_timeout/mean",
 ]
 
 STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]

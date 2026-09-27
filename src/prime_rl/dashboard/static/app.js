@@ -423,7 +423,7 @@ function rowsChartHere() {
 }
 
 const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
-const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/has_error/mean"];
+const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "effective/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
@@ -628,11 +628,11 @@ function evalProgressHtml(env, idx, live) {
     cells =
       idx
         .map((i) => {
-          const err = series.ok?.[i] === false;
+          const mark = outcomeClass(series, i);
           const reward = series.reward?.[i];
           return (
-            `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}" ` +
-            `title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`
+            `<span class="ep-cell done ${mark}" data-line="${series.line?.[i]}" ` +
+            `title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${mark === "err" ? " · error" : mark === "timeout" ? " · timeout" : ""}"></span>`
           );
         })
         .join("") +
@@ -745,7 +745,7 @@ function dotPlotSvg(entry, W, H) {
         const col = Math.floor(j / perCol), rowN = j % perCol;
         const cx = x0 + col * (2 * r + 1);
         const cy = top + plotH - r - rowN * (2 * r + 1);
-        return `<circle data-i="${i}" class="${p.err ? "err" : ""}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
+        return `<circle data-i="${i}" class="${markClass(p)}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
       })
       .join("");
     const n = counts.get(v);
@@ -829,7 +829,7 @@ function swarmSvg(entry, W, H) {
     stacks.set(column, k + 1);
     const offset = Math.ceil(k / 2) * d * (k % 2 ? -1 : 1);
     const y = Math.max(r, Math.min(plotH - r, mid + offset));
-    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+    return `<circle data-i="${i}" class="${markClass(points[i])}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
   // the x axis: a baseline under the plot, round-valued ticks with grid lines
   const label = (v) => tickLabel(v, entry.fmt);
@@ -868,6 +868,16 @@ function drawSwarms() {
 
 const SWARM_STAT_ROWS = ["min", "p10", "median", "p90", "max"];
 
+/* an episode's outcome mark: a timeout reads yellow, an error red, a clean one unmarked */
+function outcomeClass(series, i) {
+  if (series.timeout?.[i] === true) return "timeout";
+  return series.ok?.[i] === false ? "err" : "";
+}
+
+function markClass(point) {
+  return point.timeout ? "timeout" : point.err ? "err" : "";
+}
+
 function swarmTipHtml(entry, point) {
   const row = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   if (point) {
@@ -875,6 +885,7 @@ function swarmTipHtml(entry, point) {
       ? [row("rollouts", point.n), row(entry.label, entry.fmt(point.v))]
       : [row(entry.label, entry.fmt(point.v)), ...(point.reward != null ? [row("reward", fmtReward(point.reward))] : [])];
     if (point.err) rows.push(row("errors", point.group ? "in a rollout" : "yes"));
+    if (point.timeout) rows.push(row("timeout", point.group ? "in a rollout" : "yes"));
     rows.push(row("", point.group ? "click opens its first rollout" : "click opens the trace"));
     return `<div class="tip-head">${point.group ? `task ${esc(point.group.slice(0, 8))}` : `episode #${point.line}`}</div>${rows.join("")}`;
   }
@@ -907,15 +918,16 @@ function evalScoreEntries(idx, filter) {
     const reward = series.reward?.[i] ?? (series.ok?.[i] === false ? 0 : null);
     if (reward == null) continue;
     const task = series.group?.[i] ?? String(i);
-    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
+    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false, timeout: false });
     const t = byTask.get(task);
     t.rewards.push(reward);
     if (series.ok?.[i] === false) t.err = true;
+    if (series.timeout?.[i] === true) t.timeout = true;
   }
   const tasks = [...byTask.values()];
   if (!tasks.length) return entries;
   const k = Math.max(...tasks.map((t) => t.rewards.length));
-  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err });
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err, timeout: t.timeout });
   if (!filter || filter.test("avg@k"))
     entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
   if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
@@ -1015,7 +1027,7 @@ function timingPaneHtml(idx) {
       if (total == null) return null;
       const parts = leaves.map((p) => ({ name: p.split("/").pop(), v: series[`timing/${p}`]?.[i] ?? 0 }));
       parts.push({ name: "other", v: Math.max(0, total - parts.reduce((a, p) => a + p.v, 0)) });
-      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total, parts };
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, timeout: series.timeout?.[i] === true, total, parts };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
@@ -1037,7 +1049,7 @@ function tokensPaneHtml(idx) {
     .map((i) => {
       const input = series.input_tokens?.[i] ?? 0, output = series.output_tokens?.[i] ?? 0;
       if (!input && !output) return null;
-      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total: input + output, parts: [{ name: "input", v: input }, { name: "output", v: output }] };
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, timeout: series.timeout?.[i] === true, total: input + output, parts: [{ name: "input", v: input }, { name: "output", v: output }] };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
@@ -1113,7 +1125,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
       const t = tip(
         `<div class="tip-head">episode #${r.line} · ${fmt(r.total)}</div>` +
           parts.map((p) => rowTip(p.name, `${fmt(p.v)} · ${Math.round((p.v / (r.total || 1)) * 100)}%`)).join("") +
-          `${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
+          `${r.err ? rowTip("errors", "yes") : ""}${r.timeout ? rowTip("timeout", "yes") : ""}${rowTip("", "click opens the trace")}`
       );
       const segs = parts
         .map((p) => {
@@ -1126,7 +1138,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
         .join("");
       return (
         `<rect class="tm-row-hit" data-tip="${t}" data-row="${n}" data-line="${r.line}" x="0" y="${y - GAP / 2}" width="${W}" height="${SH + GAP}"></rect>` +
-        `<text class="hax tm-line${r.err ? " err" : ""}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
+        `<text class="hax tm-line ${markClass(r)}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
       );
     })
     .join("");
@@ -1174,13 +1186,19 @@ function summaryTilesHtml(idx, all, scoreEntries) {
     const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
     tile(entry.label, entry.headline, `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} tasks</div>${rows.map(([k, v]) => rowTip(k, v)).join("")}`, { cls: " score" });
   }
-  // failure rates count every landed episode, the errors filter notwithstanding
+  // failure rates count every landed episode, the errors filter notwithstanding;
+  // the timeout rate reads yellow as soon as any episode timed out
   if (all.length) {
     const errored = all.filter((i) => series.ok?.[i] === false).length;
     const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
-    for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
+    const timedOut = all.filter((i) => series.timeout?.[i] === true).length;
+    for (const [label, n, what, cls] of [
+      ["error rate", errored, "errored", rateClass],
+      ["truncation rate", truncated, "truncated", rateClass],
+      ["timeout rate", timedOut, "timed out", (rate) => (rate > 0 ? " rate-timeout" : "")],
+    ]) {
       const rate = n / all.length;
-      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: rateClass(rate) });
+      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: cls(rate) });
     }
   }
   const turns = distStats(idx.map((i) => series.turns?.[i]));
@@ -1236,6 +1254,7 @@ function renderEvalPane(body) {
         line: series.line?.[i],
         reward: series.reward?.[i],
         err: series.ok?.[i] === false,
+        timeout: series.timeout?.[i] === true,
       })),
       fmt,
       opts
@@ -4040,6 +4059,7 @@ function scopedErrorsHtml(scope, { failed, recovered }) {
 }
 
 function episodeRowClass(ep) {
+  if (ep.timeout) return "timeout";
   if (!ep.ok) return "err";
   return ep.num_errors ? "retried" : "";
 }
@@ -4047,7 +4067,9 @@ function episodeRowClass(ep) {
 function episodeRowTitle(ep) {
   const n = ep.num_errors || 0;
   const errors = `${n || 1} error${n === 1 ? "" : "s"}`;
-  if (!ep.ok) return errors;
+  const timeout = ep.timeout ? `timed out (${ep.stop_condition ?? "timeout"})` : "";
+  if (!ep.ok) return [timeout, errors].filter(Boolean).join(" · ");
+  if (timeout) return timeout;
   return n ? `recovered from ${errors} in earlier attempts` : "";
 }
 
@@ -4340,6 +4362,7 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
     parts.push(metaRow("is_truncated", traceTruncated(trace)));
+    parts.push(metaRow("is_timeout", !!trace.is_timeout));
     parts.push(metaRow("ok", trace.ok));
 
     const durations = [];
@@ -5532,7 +5555,7 @@ function renderEpisode() {
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.is_timeout ? " timeout" : trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");

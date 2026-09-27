@@ -15,6 +15,7 @@
 
   --accent: #b6ff3c;
   --negative: #ff4539;
+  --timeout: #ffd166;
   --positive: #b6ff3c;
   --infra: #4a9eff;
   --risk: #ff6b4a;
@@ -358,6 +359,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .ep-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); }
 .ep-cell.done { background: var(--accent); border-color: var(--accent); cursor: pointer; }
 .ep-cell.done.err { background: var(--negative); border-color: var(--negative); }
+.ep-cell.done.timeout { background: var(--timeout); border-color: var(--timeout); }
 .ep-cell.done:hover { filter: brightness(1.2); }
 .ep-cell.live { border-color: var(--accent); background: rgba(182, 255, 60, 0.18); animation: live-pulse 1.6s ease-in-out infinite; cursor: pointer; }
 
@@ -369,6 +371,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .swarm .sw-bg { fill: transparent; }
 .swarm circle { fill: var(--accent); fill-opacity: 0.7; cursor: pointer; }
 .swarm circle.err { fill: var(--negative); }
+.swarm circle.timeout { fill: var(--timeout); }
 .swarm circle:hover { fill-opacity: 1; stroke: var(--grey-6); stroke-width: 1; }
 .sw-axis { stroke: var(--grey-3); stroke-width: 1; }
 .sw-grid { stroke: var(--hairline-faint); stroke-width: 1; }
@@ -392,6 +395,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tm-strip-seg.dim { opacity: 0.2; }
 .tm-strip-seg:hover { filter: brightness(1.25); }
 .tm-line.err { fill: var(--negative); }
+.tm-line.timeout { fill: var(--timeout); }
 .comp-pane [data-part].dim { opacity: 0.2; }
 .comp-pane .tm-node.dim { opacity: 0.35; }
 /* the summary is one row whatever the count: the tiles share the width equally */
@@ -401,6 +405,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
+.sum-tile.rate-timeout .stat-value { color: var(--timeout); }
 .tm-note { font-size: 10px; margin-top: 4px; }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }
@@ -834,6 +839,8 @@ mark.hit {
 .tm-item.active { background: var(--grey-2); border-color: var(--grey-3); color: var(--grey-6); }
 .tm-item.err { background: rgba(255, 69, 57, 0.08); border-color: var(--negative); }
 .tm-item.err:hover, .tm-item.err.active { background: rgba(255, 69, 57, 0.16); }
+.tm-item.timeout { background: rgba(255, 209, 102, 0.08); border-color: var(--timeout); }
+.tm-item.timeout:hover, .tm-item.timeout.active { background: rgba(255, 209, 102, 0.16); }
 .tm-item.retried { border-left: 2px dotted var(--grey-4); }
 .tm-item .tm-reward { margin-left: auto; }
 .tm-nav { padding: 0 8px; height: 24px; }
@@ -936,6 +943,7 @@ mark.hit {
 .tl-state { border: 1px solid var(--grey-3); padding: 1px 5px; white-space: nowrap; }
 .tl-state.completed { color: var(--positive); }
 .tl-state.failed { color: var(--negative); }
+.tl-state.timeout { color: var(--timeout); }
 .tl-state.running { color: var(--infra); }
 .tl-tooltip {
   position: fixed;
@@ -1212,6 +1220,7 @@ mark.hit {
 .trace-recovered-item .trace-error-type { color: var(--grey-4); }
 .trace-recovered-item .trace-error-tb > summary { border-top-color: var(--grey-3); }
 .seg button.err, .seg button.err.active { color: var(--negative); }
+.seg button.timeout, .seg button.timeout.active { color: var(--timeout); }
 .trace-error-tb > summary {
   display: flex;
   align-items: center;
@@ -1731,6 +1740,7 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
    place of their number set them apart */
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: live-pulse 2s ease-out infinite; }
 #episode-table tr.err td:first-child { border-left: 2px solid var(--negative); }
+#episode-table tr.timeout td:first-child { border-left: 2px solid var(--timeout); }
 #episode-table tr.retried td:first-child { border-left: 2px dotted var(--grey-4); }
 #episode-table tr.live.landing .live-dot { animation: none; opacity: 0.45; }
 .badge.stage { font-size: 9px; padding: 2px 5px; line-height: 12px; border-radius: 3px; background: var(--hairline); border-color: transparent; color: var(--accent); }
