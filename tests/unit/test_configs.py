@@ -198,6 +198,8 @@ def test_optional_loss_configs_and_bounds():
     ipo_v2 = TrainerConfig.model_validate({"loss": {"type": "ipo_v2"}}).loss
     assert ipo_v2.ratio_cap == 5.0
     assert ipo_v2.entropy_floor == 0.15
+    assert ipo_v2.entropy_lambda_init == 0.0
+    assert ipo_v2.entropy_lambda_lr == 0.0
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})

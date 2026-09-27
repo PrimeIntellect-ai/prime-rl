@@ -599,9 +599,9 @@ class IPOV2LossConfig(BaseConfig):
     entropy_floor: float = Field(0.15, ge=0, allow_inf_nan=False)
     """Target minimum mean full-vocabulary entropy over eligible RL tokens."""
 
-    entropy_lambda_init: float = Field(0.01, ge=0, allow_inf_nan=False)
-    entropy_lambda_lr: float = Field(0.01, gt=0, allow_inf_nan=False)
-    """Dual-ascent step size for the nonnegative entropy multiplier."""
+    entropy_lambda_init: float = Field(0.0, ge=0, allow_inf_nan=False)
+    entropy_lambda_lr: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """Dual-ascent step size; zero disables entropy control."""
 
 
 class IcePopLossConfig(BaseConfig):

@@ -223,6 +223,10 @@ def test_ipo_v2_tangent_cap_gate_and_entropy_gradient():
 
 
 def test_ipo_v2_entropy_multiplier_update():
+    disabled_loss_fn = setup_rl_loss_fn(IPOV2LossConfig())
+    disabled_loss_fn.update_entropy_lambda(0.05)
+    assert disabled_loss_fn.entropy_lambda == 0.0
+
     loss_fn = setup_rl_loss_fn(IPOV2LossConfig(entropy_floor=0.15, entropy_lambda_init=0.01, entropy_lambda_lr=0.1))
     loss_fn.update_entropy_lambda(0.05)
     assert loss_fn.entropy_lambda == pytest.approx(0.02)
