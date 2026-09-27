@@ -137,9 +137,17 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     && \
     /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
-# Needed for private environments hub auth
+# Needed for private environments hub auth. The CLI pins verifiers==0.2.0,
+# which replaced the editable verifiers synced above with the PyPI wheel and
+# left prime-rl's own entrypoints unable to import; override that one
+# requirement until the CLI drops its verifiers dependency. Keep in sync
+# with scripts/docker-entrypoint.sh, which replays this step for the runtime
+# source overlay. The import check pins the editable in place.
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    VIRTUAL_ENV=/app/.venv uv pip install 'prime>=0.7'
+    printf 'verifiers\n' > /tmp/prime-cli-overrides.txt \
+    && VIRTUAL_ENV=/app/.venv uv pip install --overrides /tmp/prime-cli-overrides.txt 'prime>=0.7' \
+    && rm /tmp/prime-cli-overrides.txt \
+    && /app/.venv/bin/python -c 'import pathlib, verifiers; assert pathlib.Path(verifiers.__file__).is_relative_to("/app/deps/verifiers"), verifiers.__file__'
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
