@@ -384,6 +384,7 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
     cleanup_rules = [
         (get_batch_dir(output_dir), lambda step: step > resume_step),
         (get_broadcast_dir(output_dir), lambda step: step >= resume_step),
+        (output_dir / "policy_sync", lambda step: step > resume_step),
     ]
 
     for directory, should_delete in cleanup_rules:

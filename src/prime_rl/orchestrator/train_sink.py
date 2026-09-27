@@ -33,6 +33,8 @@ def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None)
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
+    if sample.value_mask is not None and any(sample.value_mask):
+        return True
     if sample.advantages is None:
         return True
 
@@ -279,6 +281,7 @@ class TrainSink:
         temperature = env.sampling_args["temperature"]
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            await env.algorithm.score_samples(trace, samples)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_sampling_masks and sample.sampling_mask is None:

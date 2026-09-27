@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
+#SBATCH --nodes={{ num_train_nodes + num_infer_nodes + num_value_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
@@ -28,6 +28,7 @@ set -e
 # Configs
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
+export NUM_VALUE_NODES={{ num_value_nodes }}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -62,9 +63,12 @@ export LAUNCHER_DIR={{ launcher_dir }}
 export LOG_DIR={{ log_dir }}
 export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
 export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
-mkdir -p $LOG_DIR/trainer $LOG_DIR/inference
+mkdir -p $LOG_DIR/trainer $LOG_DIR/inference{% if num_value_nodes > 0 %} $LOG_DIR/value{% endif %}
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
+{% if num_value_nodes > 0 -%}
+ln -sfn value/node_0.log $LOG_DIR/value.log
+{% endif -%}
 
 # Clean exits do not trigger srun --kill-on-bad-exit. Each terminal component
 # publishes its successful exit through the shared launcher directory. Every node
@@ -83,7 +87,12 @@ export WANDB_SHARED_MODE=1
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
+TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$NUM_TRAIN_NODES} )
+{% if num_value_nodes > 0 -%}
+VALUE_HOSTS=( ${HOSTNAMES[@]:$((NUM_INFER_NODES + NUM_TRAIN_NODES)):$NUM_VALUE_NODES} )
+export VALUE_ADDR="${VALUE_HOSTS[0]}"
+export VALUE_SERVICE_PORT={{ value_service_port }}
+{% endif -%}
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 
 {% if num_infer_nodes > 0 -%}
@@ -133,6 +142,9 @@ echo "ADMIN_URLS=${ADMIN_URLS}"
 
 echo "HOSTNAMES=${HOSTNAMES[*]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
+{% if num_value_nodes > 0 -%}
+echo "VALUE_HOSTS=${VALUE_HOSTS[*]}"
+{% endif -%}
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
@@ -493,6 +505,9 @@ else
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
+{% if num_value_nodes > 0 %}
+if [ "$TRAIN_NODE_RANK" -lt "$NUM_TRAIN_NODES" ]; then
+{% endif %}
 
     # Trainer env vars: launcher defaults + [env_vars] + [trainer.env_vars]
 {%- for key, value in trainer_env_vars.items() %}
@@ -524,7 +539,41 @@ else
         fi
         exit "$COMPONENT_CODE"
     ) &
+{% if num_value_nodes > 0 %}fi{% endif %}
 {% if num_infer_nodes > 0 %}    fi{% endif %}
+{% if num_value_nodes > 0 %}
+if [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
+    VALUE_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES - NUM_TRAIN_NODES))
+{%- for key, value in value_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
+    echo $HOSTNAMES_STR | tee $LOG_DIR/value/node_${VALUE_NODE_RANK}.log
+
+    (
+        WANDB_SHARED_LABEL=value uv run torchrun \
+            --role=value \
+            --nnodes=$NUM_VALUE_NODES \
+            --nproc-per-node=$GPUS_PER_NODE \
+            --node-rank=$VALUE_NODE_RANK \
+            --rdzv-endpoint=$VALUE_ADDR:$((MASTER_PORT + 1)) \
+            --rdzv-id=value_$SLURM_JOB_ID \
+            --log-dir=$LOG_DIR/value/torchrun \
+            --tee=3 \
+            --redirects=3 \
+            -m prime_rl.trainer.rl.value \
+            @ $CONFIG_DIR/value.json \
+            --service-host 0.0.0.0 \
+            --rollout-transport.host $ORCH_ADDR \
+            2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/value/node_${VALUE_NODE_RANK}.log
+        COMPONENT_CODE=$?
+        if [ "$COMPONENT_CODE" -eq 0 ]; then
+            echo "Value trainer exited before the run completed" >&2
+            exit 1
+        fi
+        exit "$COMPONENT_CODE"
+    ) &
+fi
+{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on the node ORCH_ADDR points at (see the ORCH_PROCID
 # computation above). Top-level (after the role if/else) so the wait -n teardown
@@ -563,6 +612,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif use_nixl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
         {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
+        {% endif %}{% if num_value_nodes > 0 %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --value-rollout-transport.host $ORCH_ADDR --value-service-url http://$VALUE_ADDR:$VALUE_SERVICE_PORT"
         {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?

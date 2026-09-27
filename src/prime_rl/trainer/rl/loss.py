@@ -6,7 +6,14 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    LossConfig,
+    PPOClipLossConfig,
+    SAOLossConfig,
+)
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -39,7 +46,8 @@ class LossOutputs:
 
 class Loss(Protocol):
     """Interface for the config-initialized rl loss objects built by
-    ``setup_rl_loss_fn``: ``IPOLoss``, ``IcePopLoss`` and ``CustomLoss``."""
+    ``setup_rl_loss_fn``: ``IPOLoss``, ``IcePopLoss``, ``PPOClipLoss`` and ``CustomLoss``.
+    SAO uses ``IcePopLoss`` with its own ratio interval."""
 
     def loss(self, inputs: LossInputs) -> LossOutputs: ...
 
@@ -187,9 +195,7 @@ class IcePopLoss:
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
-        log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            inputs.trainer_logprobs, inputs.inference_logprobs
-        )
+        log_importance_ratio = inputs.trainer_logprobs.float() - inputs.inference_logprobs.float()
 
         log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
         log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
@@ -205,10 +211,41 @@ class IcePopLoss:
         if inputs.loss_weights is not None:
             per_token_loss = per_token_loss * inputs.loss_weights
 
+        metric_log_ratio = log_importance_ratio.detach().clamp(min=-30, max=30)
+        mismatch_kl = torch.expm1(metric_log_ratio) - metric_log_ratio
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask & is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": _safe_mean(is_masked, inputs.loss_mask),
+        }
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+
+
+class PPOClipLoss:
+    """Clipped PPO surrogate using the rollout log probabilities as the old policy."""
+
+    def __init__(self, config: PPOClipLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        log_ratio = inputs.trainer_logprobs.float() - inputs.inference_logprobs.float()
+        log_ratio = torch.where(inputs.loss_mask, log_ratio, torch.zeros_like(log_ratio))
+        lower = log_ratio.new_tensor(1 - self.config.eps_low).log()
+        upper = log_ratio.new_tensor(1 + self.config.eps_high).log()
+        # A very stale, unfavorably moved token can otherwise overflow exp.
+        ratio = torch.exp(log_ratio.clamp(max=30))
+        clipped_ratio = torch.exp(log_ratio.clamp(min=lower, max=upper))
+        advantage = self.config.adv_tau * inputs.advantages
+        per_token_loss = -torch.minimum(ratio * advantage, clipped_ratio * advantage)
+        per_token_loss = torch.where(inputs.loss_mask, per_token_loss, 0.0)
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights
+
+        clipped = ((advantage >= 0) & (log_ratio > upper)) | ((advantage < 0) & (log_ratio < lower))
+        metric_log_ratio = log_ratio.clamp(min=-30, max=30)
+        metrics = {
+            "ppo/clip_fraction": _safe_mean(clipped, inputs.loss_mask),
+            "ppo/approx_kl": _safe_mean(torch.expm1(metric_log_ratio) - metric_log_ratio, inputs.loss_mask),
         }
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
@@ -296,6 +333,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return CustomLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
+        case PPOClipLossConfig():
+            return PPOClipLoss(loss_config)
+        case SAOLossConfig():
+            return IcePopLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
         case _:

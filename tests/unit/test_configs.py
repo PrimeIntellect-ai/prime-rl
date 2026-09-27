@@ -516,6 +516,48 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+def test_multi_node_value_layout_keeps_policy_and_critic_parallelism_independent():
+    payload = {
+        "trainer": {"model": {"cp": 16, "ep": 8}},
+        "orchestrator": {
+            "algo": {"type": "ppo"},
+            "train": {"source": [{"name": "math", "env": {"taskset": {"id": "reverse-text"}}}]},
+        },
+        "inference": {"vllm": {"tensor_parallel_size": 8}},
+        "value": {"model": {"cp": 8, "ep": 8}},
+        "deployment": {
+            "type": "multi_node",
+            "gpus_per_node": 8,
+            "num_train_nodes": 2,
+            "num_infer_nodes": 1,
+            "num_value_nodes": 1,
+        },
+        "slurm": {},
+        "rollout_transport": {"type": "zmq"},
+    }
+
+    config = RLConfig.model_validate(payload)
+    assert config.trainer.model.cp == 16
+    assert config.value is not None and config.value.model.cp == 8
+    assert config.deployment.num_value_nodes == 1
+    assert config.orchestrator.num_train_workers == 1
+    assert config.orchestrator.value_rollout_transport.port == config.trainer.rollout_transport.port + 2
+
+    payload["deployment"]["num_value_nodes"] = 0
+    with pytest.raises(ValidationError, match="num_value_nodes > 0"):
+        RLConfig.model_validate(payload)
+
+    payload["deployment"]["num_value_nodes"] = 1
+    payload["value"]["model"]["cp"] = 4
+    with pytest.raises(ValidationError, match="one data-parallel worker"):
+        RLConfig.model_validate(payload)
+
+    payload["value"]["model"]["cp"] = 8
+    payload["trainer"]["model"]["cp"] = 8
+    with pytest.raises(ValidationError, match="one policy data-parallel worker"):
+        RLConfig.model_validate(payload)
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(

@@ -315,6 +315,27 @@ def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
     assert micro_batch.ref_kl_weights is None
 
 
+def test_ppo_value_streams_survive_truncation_and_mixed_packing(make_training_example):
+    ppo = make_training_example()
+    ppo.old_values = [0.0, 0.0, 0.2, 0.4]
+    ppo.value_targets = [0.0, 0.0, 1.0, 1.0]
+    ppo.value_mask = [False, False, True, True]
+    truncated = prepare_sample(ppo, seq_len=3)
+    assert truncated.old_values == [0.0, 0.0, 0.2]
+    assert truncated.value_targets == [0.0, 0.0, 1.0]
+    assert truncated.value_mask == [False, False, True]
+
+    mixed = prepare_batch(
+        rollouts=[ppo, make_training_example()],
+        seq_len=16,
+        num_train_workers=1,
+        bin_cost=build_bin_cost(None),
+    )[0][0]
+    assert mixed.old_values == [0.0, 0.0, 0.2, 0.4] + [0.0] * 4
+    assert mixed.value_targets == [0.0, 0.0, 1.0, 1.0] + [0.0] * 4
+    assert mixed.value_mask == [False, False, True, True] + [False] * 4
+
+
 @pytest.mark.parametrize("streams_on_longer", [True, False])
 def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_longer):
     """Component membership is per token, so samples feeding different

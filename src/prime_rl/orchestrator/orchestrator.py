@@ -25,6 +25,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+import httpx
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
@@ -205,6 +206,11 @@ class Orchestrator:
         )
         self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
 
+        if config.value_service_url is not None:
+            for source in config.train.source:
+                if source.algo is not None and source.algo.type in ("ppo", "sao"):
+                    source.algo.value_url = config.value_service_url
+
         await monitors.setup(
             producer="orch",
             wandb=config.monitors.wandb,
@@ -263,6 +269,16 @@ class Orchestrator:
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+        )
+        self.value_sender = (
+            setup_batch_sender(config.output_dir, 1, self.progress.step, config.value_rollout_transport)
+            if config.value_rollout_transport is not None
+            else None
+        )
+        self.value_client = (
+            httpx.AsyncClient(base_url=config.value_service_url, timeout=30)
+            if config.value_service_url is not None
+            else None
         )
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
@@ -633,6 +649,18 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        if self.value_sender is not None:
+            await self.value_sender.send(micro_batch_grid)
+            assert self.value_client is not None
+            value_deadline = time.monotonic() + 3600
+            while True:
+                response = await self.value_client.get("/status")
+                response.raise_for_status()
+                if response.json()["completed_step"] >= self.progress.step:
+                    break
+                if time.monotonic() >= value_deadline:
+                    raise TimeoutError(f"Value trainer did not complete step {self.progress.step}")
+                await asyncio.sleep(0.1)
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
@@ -1012,6 +1040,10 @@ class Orchestrator:
         async def teardown() -> None:
             get_logger().debug("Closing micro batch sender")
             self.sender.close()
+            if self.value_sender is not None:
+                self.value_sender.close()
+            if self.value_client is not None:
+                await self.value_client.aclose()
             if self.dispatcher is not None:
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()
@@ -1039,6 +1071,7 @@ class Orchestrator:
                     for clients in (env.generation_source.connected, env.algorithm.connected):
                         if clients is not None:
                             await clients.aclose()
+                    await env.algorithm.aclose()
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
+from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -59,6 +60,9 @@ class Algorithm:
     async def setup(self) -> None:
         """Connect resources owned by the algorithm."""
 
+    async def aclose(self) -> None:
+        """Close resources owned by the algorithm."""
+
     async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
         """Connect and track the frozen model pool owned by this algorithm."""
         self.connected = await connect_frozen_client(reference)
@@ -69,6 +73,9 @@ class Algorithm:
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         """Assign group-relative annotations to a finalized cohort."""
+
+    async def score_samples(self, trace: vf.Trace, samples: list[TrainingSample]) -> None:
+        """Assign token-level training data after branch samples are materialized."""
 
     async def finalize_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local scoring when the episode has trainable traces."""

@@ -8,6 +8,7 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
+from prime_rl.orchestrator.algo.gae import skip_observation_gae
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
@@ -179,6 +180,30 @@ def test_grpo_plain_mean():
 def test_grpo_singleton_group_is_zero():
     # A group of size 1 has reward == mean, so its advantage is 0.
     assert _grpo([_build_episode(0.7, sampled_lengths=[2])]) == pytest.approx([0.0], abs=1e-6)
+
+
+def test_skip_observation_gae_bridges_tool_output():
+    advantages, returns = skip_observation_gae(
+        [0.0, 0.2, 99.0, 0.4, 0.5],
+        [False, True, False, True, True],
+        1.0,
+        gamma=1.0,
+        policy_lambda=0.5,
+        value_lambda=1.0,
+    )
+    assert advantages == pytest.approx([0.0, 0.375, 0.0, 0.35, 0.5])
+    assert returns == pytest.approx([0.0, 1.0, 0.0, 1.0, 1.0])
+    partial_advantages, partial_returns = skip_observation_gae(
+        [0.0, 0.2, 99.0, 0.4, 0.5],
+        [False, True, False, True, True],
+        0.0,
+        gamma=1.0,
+        policy_lambda=1.0,
+        value_lambda=1.0,
+        bootstrap_value=0.75,
+    )
+    assert partial_advantages == pytest.approx([0.0, 0.55, 0.0, 0.35, 0.25])
+    assert partial_returns == pytest.approx([0.0, 0.75, 0.0, 0.75, 0.75])
 
 
 def test_max_rl_mean_normalized():

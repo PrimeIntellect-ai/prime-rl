@@ -67,6 +67,9 @@ class OptimizerInBackwardOffloadConfig(BaseConfig):
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
+    timeout_seconds: float = Field(120.0, gt=0)
+    """Maximum wait for a native CPU optimizer transfer or update to complete."""
+
 
 def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
     if value is True:
@@ -600,6 +603,25 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
+class PPOClipLossConfig(BaseConfig):
+    type: Literal["ppo"] = "ppo"
+
+    eps_low: float = Field(0.2, ge=0, lt=1)
+    """Lower PPO ratio bound is 1 - eps_low."""
+
+    eps_high: float = Field(0.2, ge=0)
+    """Upper PPO ratio bound is 1 + eps_high."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Scale applied to the advantage."""
+
+
+class SAOLossConfig(IcePopLossConfig):
+    type: Literal["sao"] = "sao"  # type: ignore[assignment]
+    ratio_low: float = Field(0.7, gt=0)
+    ratio_high: float = Field(6.0, gt=0)
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -610,7 +632,10 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | IcePopLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[
+    IPOLossConfig | IcePopLossConfig | PPOClipLossConfig | SAOLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -677,6 +702,11 @@ class TrainerConfig(BaseConfig):
 
     loss: LossConfig = IPOLossConfig()
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
+
+    ppo_head_warmup_steps: int = Field(0, ge=0)
+    """Live critic head warmup steps before policy-backbone snapshots begin."""
+    ppo_policy_sync_interval: int | None = Field(None, ge=1)
+    ppo_policy_sync_dir: Path | None = None
 
     optim: OptimizerConfig = AdamWConfig()
 

@@ -32,15 +32,19 @@ from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    ModelConfig,
+    PPOClipLossConfig,
+    SAOLossConfig,
+    TokenizerConfig,
+    TrainerConfig,
+)
+from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import (
-    TokenizerConfig,
-    TrainerConfig,
-)
+from prime_rl.configs.value import ValueConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -186,12 +190,16 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_infer_gpus: int = 1
     """GPUs allocated to inference."""
 
+    num_value_gpus: int = Field(0, ge=0)
+    """GPUs allocated to a separate PPO value trainer."""
+
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        total = self.num_train_gpus + self.num_infer_gpus
+        total = self.num_train_gpus + self.num_infer_gpus + self.num_value_gpus
         if total > self.gpus_per_node:
             raise ValueError(
-                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer)"
+                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer + "
+                f"{self.num_value_gpus} value)"
                 f" exceeds gpus_per_node ({self.gpus_per_node})."
             )
         return self
@@ -202,6 +210,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     num_train_nodes: int
     """Training nodes."""
+
+    num_value_nodes: int = Field(0, ge=0)
+    """Dedicated value-trainer nodes for PPO/SAO."""
 
     num_infer_nodes: int | None = Field(None, ge=0)
     """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
@@ -231,6 +242,9 @@ DeploymentConfig: TypeAlias = Annotated[
 
 class RLConfig(BaseConfig):
     trainer: TrainerConfig
+
+    value: ValueConfig | None = None
+    """Separate PPO/SAO value trainer."""
 
     orchestrator: OrchestratorConfig
 
@@ -337,6 +351,18 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_deployment(self):
+        if self.value is not None:
+            if self.deployment.type == "single_node" and self.deployment.num_value_gpus == 0:
+                raise ValueError("A value trainer requires num_value_gpus > 0")
+            if self.deployment.type == "multi_node":
+                if self.deployment.num_value_nodes == 0:
+                    raise ValueError("A multi-node value trainer requires num_value_nodes > 0")
+                if self.deployment.infer_nodes_per_replica == 0:
+                    raise ValueError("A multi-node value trainer requires inference nodes for the orchestrator")
+        elif self.deployment.type == "single_node" and self.deployment.num_value_gpus:
+            raise ValueError("num_value_gpus requires a [value] configuration")
+        elif self.deployment.type == "multi_node" and self.deployment.num_value_nodes:
+            raise ValueError("num_value_nodes requires a [value] configuration")
         if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
@@ -393,6 +419,9 @@ class RLConfig(BaseConfig):
                     "output_dir / run.name — set those instead."
                 )
             sub.output_dir = run_dir
+        if self.value is not None:
+            self.value.output_dir = run_dir / "value"
+            self.value.rollout_dir = run_dir
         return self
 
     @model_validator(mode="after")
@@ -402,6 +431,8 @@ class RLConfig(BaseConfig):
             return self
         self.trainer.resume = self.resume.model_copy()
         self.orchestrator.resume = self.resume.model_copy()
+        if self.value is not None:
+            self.value.resume = self.resume.model_copy()
         return self
 
     @model_validator(mode="after")
@@ -514,6 +545,79 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_value(self):
+        if self.value is None:
+            if any(
+                source.algo is not None and source.algo.type in ("ppo", "sao")
+                for source in self.orchestrator.train.source
+            ):
+                raise ValueError("PPO/SAO requires a [value] configuration")
+            return self
+        algo_types = {source.algo.type for source in self.orchestrator.train.source if source.algo is not None}
+        if len(algo_types) != 1 or not algo_types <= {"ppo", "sao"}:
+            raise ValueError("A value trainer requires one PPO or SAO algorithm across all training sources")
+        algorithm_type = next(iter(algo_types))
+        if algorithm_type == "sao" and "freeze_attention" not in self.value.model_fields_set:
+            self.value.freeze_attention = True
+        if "loss" not in self.trainer.model_fields_set:
+            self.trainer.loss = PPOClipLossConfig() if algorithm_type == "ppo" else SAOLossConfig()
+        elif self.trainer.loss.type != algorithm_type:
+            raise ValueError("trainer.loss.type must match the PPO or SAO algorithm")
+        model_overrides = self.value.model.model_dump(exclude_unset=True)
+        self.value.model = ModelConfig.model_validate({**self.trainer.model.model_dump(), **model_overrides})
+        if self.value.model.name != self.trainer.model.name:
+            raise ValueError("value.model.name must match trainer.model.name")
+        if self.deployment.type == "single_node":
+            num_train_gpus = self.deployment.num_train_gpus
+            num_value_gpus = self.deployment.num_value_gpus
+        else:
+            num_train_gpus = self.deployment.num_train_nodes * self.deployment.gpus_per_node
+            num_value_gpus = self.deployment.num_value_nodes * self.deployment.gpus_per_node
+        if (
+            self.value.model.lora is not None
+            and "experts" in self.value.model.lora.target_modules
+            and self.value.model.lora.rank % 8
+        ):
+            raise ValueError("Expert LoRA on the Qwen3 MoE value model requires a rank divisible by 8")
+        if self.value.policy_sync_interval is not None:
+            if self.value.model.lora is None:
+                raise ValueError("value.policy_sync_interval requires value.model.lora")
+            if self.trainer.model.lora is not None:
+                raise ValueError("Policy backbone sync requires a full-weight policy trainer")
+            if self.value.model.cp != self.trainer.model.cp or self.value.model.ep != self.trainer.model.ep:
+                raise ValueError("Policy and value models must use the same CP and EP for backbone sync")
+            if num_train_gpus != num_value_gpus:
+                raise ValueError("Policy and value models must use the same GPU count for backbone sync")
+            self.value.policy_sync_dir = self.run_dir / "policy_sync"
+            self.trainer.ppo_policy_sync_dir = self.value.policy_sync_dir
+            self.trainer.ppo_policy_sync_interval = self.value.policy_sync_interval
+        if num_value_gpus != self.value.model.cp:
+            raise ValueError("The value trainer currently requires one data-parallel worker")
+        if num_train_gpus != self.trainer.model.cp:
+            raise ValueError("The value trainer currently requires one policy data-parallel worker")
+        if self.trainer.rollout_transport.type != "zmq":
+            raise ValueError("The separate value trainer currently requires ZMQ rollout transport")
+        self.value.rollout_transport = self.trainer.rollout_transport.model_copy(deep=True)
+        self.value.rollout_transport.port += 2
+        self.orchestrator.value_rollout_transport = self.value.rollout_transport.model_copy(deep=True)
+        self.orchestrator.value_service_url = f"http://{self.value.service_host}:{self.value.service_port}"
+        self.value.max_steps = self.trainer.max_steps
+        self.value.ckpt = self.value.ckpt or self.trainer.ckpt
+        if self.value.resume is not None and self.value.resume.dir is not None:
+            source_run_dir = self.value.resume.dir.parent.parent
+            self.value.resume.dir = source_run_dir / "value" / "checkpoints" / self.value.resume.dir.name
+        self.trainer.ppo_head_warmup_steps = max(0, self.value.head_warmup_steps - self.value.pretrain_steps)
+        for source in self.orchestrator.train.source:
+            algo = source.algo
+            if algo is not None and "value_url" not in algo.model_fields_set:
+                algo.value_url = f"http://{self.value.service_host}:{self.value.service_port}"
+            if algo is not None and algo.value_seq_len is None:
+                algo.value_seq_len = min(self.value.model.seq_len, self.orchestrator.seq_len)
+            if algo is not None and algo.value_seq_len > self.value.model.seq_len:
+                raise ValueError("algo.value_seq_len cannot exceed value.model.seq_len")
         return self
 
     @model_validator(mode="after")
