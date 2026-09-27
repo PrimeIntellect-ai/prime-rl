@@ -132,6 +132,30 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
 
 
+def test_take_landed_can_keep_current_attempt_errors(tmp_path) -> None:
+    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+    stream.append(orjson.dumps({**_record("math", "m0"), "id": "m0"}, option=orjson.OPT_APPEND_NEWLINE))
+    stream.append(orjson.dumps({**_record("math", "m1", ok=False), "id": "old-m1"}, option=orjson.OPT_APPEND_NEWLINE))
+    stream.close()
+    resume.take_landed(tmp_path)
+
+    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+    stream.append(orjson.dumps({**_record("math", "m0"), "id": "m0"}, option=orjson.OPT_APPEND_NEWLINE))
+    stream.append(orjson.dumps({**_record("math", "m1", ok=False), "id": "new-m1"}, option=orjson.OPT_APPEND_NEWLINE))
+    stream.append(orjson.dumps({**_record("math", "m2", ok=False), "id": "m2"}, option=orjson.OPT_APPEND_NEWLINE))
+    stream.close()
+
+    landed = resume.take_landed(tmp_path, keep_failed=True)
+    assert [record["id"] for record in landed] == ["m0", "new-m1", "m2"]
+    kept, owed, _ = resume.plan(landed, [_env("math", ["m0", "m1", "m2", "m3"])])
+    assert [(episode.task.key, episode.ok) for episode in kept] == [
+        ("m0", True),
+        ("m1", False),
+        ("m2", False),
+    ]
+    assert owed == {"math": {"m3": 1}}
+
+
 def test_previous_config_is_the_one_stamped_beside_the_results(tmp_path) -> None:
     resume.stamp_config(tmp_path, {"model": "a"})
     resume.take_landed(tmp_path)  # the attempt that ran is archived; a rejected one never stamps

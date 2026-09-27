@@ -28,7 +28,7 @@ class Eval:
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             resume.check_config(resume.previous_config(config.run_dir), dump_resolved_config(config))
-            landed = resume.take_landed(config.run_dir)
+            landed = resume.take_landed(config.run_dir, keep_failed=config.resume_keep_failed)
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
