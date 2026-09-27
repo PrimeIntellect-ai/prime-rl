@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     BaseWeightBroadcastConfig,
     EnvVars,
     HeartbeatConfig,
+    LossNormalization,
     MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
@@ -670,6 +671,9 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
+
+    loss_normalization: LossNormalization = "token"
+    """Average each loss component over eligible tokens or over samples containing that component."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 

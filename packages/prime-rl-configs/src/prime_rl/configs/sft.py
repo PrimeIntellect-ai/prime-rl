@@ -14,6 +14,7 @@ from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
     HeartbeatConfig,
+    LossNormalization,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -192,6 +193,9 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
+
+    loss_normalization: LossNormalization = "token"
+    """Average SFT loss over trainable tokens or over original samples before packing."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""

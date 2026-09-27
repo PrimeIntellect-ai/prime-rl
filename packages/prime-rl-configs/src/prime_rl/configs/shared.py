@@ -36,6 +36,8 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
+LossNormalization: TypeAlias = Literal["token", "sample"]
+
 
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200

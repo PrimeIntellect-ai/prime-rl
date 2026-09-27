@@ -8,9 +8,9 @@ ones the interruption cut off are owed again.
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
-kept episodes are matched to the new selection and the rest is owed. What defines the
-measurement itself - the model, the sampling, each source's env - must not change
-(``check_config``).
+kept episodes are matched to the new selection and the rest is owed. The rollout
+timeout may change for owed episodes. The model, sampling, and other source
+settings must not change (``check_config``).
 """
 
 from __future__ import annotations
@@ -43,9 +43,9 @@ RESUMABLE = (
     "source.*.shuffle",
     "source.*.group_size",
     "source.*.serve",
+    "source.*.env.agent.timeout.rollout",
 )
-"""Config paths a resumed run may change: how many rollouts to run and how to run them,
-never what is measured."""
+"""Config paths a resumed run may change, including the time budget for owed rollouts."""
 
 
 CONFIG_NAME = "eval.json"
@@ -119,9 +119,7 @@ def archives(run_dir: Path) -> list[Path]:
 
 
 def take_landed(run_dir: Path) -> list[dict]:
-    """The ok eval episodes the run has landed, each once, from every attempt's stream.
-    The current file monitor directory joins the archives so the resumed attempt writes a
-    fresh stream, plan and metrics; nothing is deleted."""
+    """Collect successful episodes and archive the current attempt's file monitor."""
     current = get_file_monitor_dir(run_dir)
     stream = get_trace_stream(run_dir).relative_to(current)
     landed: dict[str, dict] = {}
