@@ -118,6 +118,7 @@ Pulled from the console logs and mirrored to W&B.
 
 - `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
 - `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
+- `is_timeout/{all,env}/mean` — share of rollouts stopped by a stage deadline (`setup`/`agent`/`finalize`/`scoring` `_timeout`). Training counts a timed-out rollout as an error, so it stays out of the batch; eval scores it.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
 - `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
@@ -251,7 +252,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `optim/grad_norm` — spikes precede divergence.
 - `optim/lr` — LR schedule.
-- For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
+- For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
 
 **Performance:**
 

@@ -55,6 +55,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     turns = branches = 0
     stop_condition = None
     truncated = False
+    timeout = bool(rec.get("is_timeout"))
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
@@ -92,6 +93,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
         truncated = truncated or trace_truncated(trace)
+        timeout = timeout or bool(trace.get("is_timeout"))
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
@@ -117,6 +119,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "branches": branches,
         "stop_condition": stop_condition,
         "truncated": truncated,
+        "timeout": timeout,
         # when the episode landed and how long it was alive: the stream's x axis,
         # and the one duration worth sorting a stream by
         "dispatch": (first_info.get("dispatch") or {}).get("time"),
