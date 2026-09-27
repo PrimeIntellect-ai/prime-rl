@@ -37,7 +37,7 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None
         _record("math", "m0"),
         _record("math", "m0"),  # a third rollout of m0 exceeds group_size 2
         _record("math", "m1"),
-        _record("math", "m9"),  # no longer selected (num_examples shrank)
+        _record("math", "m9"),  # no longer selected (select.limit shrank)
         _record("code", "c0", ok=False),  # errored: owed again
     ]
 
@@ -65,23 +65,31 @@ def test_trigger_queues_only_owed_rollouts() -> None:
 
 
 def test_check_config_allows_selection_changes_only() -> None:
+    source = {
+        "env": {"taskset": {"id": "gsm8k"}},
+        "select": {"limit": 8},
+        "group_size": None,
+        "serve": {"address": None},
+    }
     previous = {
         "model": "a",
-        "num_examples": 8,
+        "select": {"limit": 8},
         "group_size": 2,
         "sampling": {"temperature": 1.0},
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "serve": {"address": None}}],
+        "source": [source],
     }
     resized = {
         **previous,
-        "num_examples": 16,
+        "select": {"limit": 16},
         "group_size": 4,
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+        "source": [{**source, "select": {"limit": 16}, "group_size": 8, "serve": {"address": "tcp://x"}}],
     }
     resume.check_config(previous, resized)
 
     with pytest.raises(ValueError, match="model, sampling.temperature"):
         resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
+    with pytest.raises(ValueError, match="source.0.select.include"):
+        resume.check_config(previous, {**previous, "source": [{**source, "select": {"include": {"idx": ["0:4"]}}}]})
     with pytest.raises(ValueError, match="source"):
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
 

@@ -31,7 +31,7 @@ env.player1.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-num_examples = 16
+select.limit = 16
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 512

@@ -166,8 +166,8 @@ class EnvConfig(BaseConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
-    shuffle: bool = False
-    """Shuffle the source's finite taskset once with a fixed seed. The shuffled order is fixed for the whole run; infinite tasksets cannot be shuffled."""
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Which of the taskset's tasks this source uses: ``include``/``exclude`` by ``idx``, ``ids``, ``keys`` or ``names``, then ``shuffle``, ``skip`` and ``limit``, applied in that order."""
 
     @model_validator(mode="before")
     @classmethod
@@ -290,9 +290,6 @@ class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
-    num_examples: int = -1
-    """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
-
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
@@ -344,25 +341,26 @@ class EvalSourcesConfig(BaseConfig):
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
 
-    num_examples: int = -1
-    """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Default task selection for every source. Each field a source sets on its own
+    ``select`` wins over this one."""
 
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples and
+        """Resolve per-env overrides: inherit group-level sampling, select and
         group_size (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
+        group_select = self.select.model_dump(exclude_unset=True)
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in source.model_fields_set:
-                source.num_examples = self.num_examples
+            source.select = vf.SelectConfig(**(group_select | source.select.model_dump(exclude_unset=True)))
             if "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
         return self

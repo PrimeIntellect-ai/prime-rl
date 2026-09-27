@@ -272,13 +272,14 @@ def eval_env(config: dict) -> str | None:
 
 
 def source_total_episodes(source: dict) -> int | None:
-    """What one ``[[source]]`` will produce, from its config alone: ``num_examples = -1``
-    means the whole taskset, unknown up front unless the source names its tasks."""
-    tasks = ((source.get("env") or {}).get("taskset") or {}).get("tasks")
-    count = source.get("num_examples") or -1
-    if count < 0 and not tasks:
+    """What one ``[[source]]`` will produce, from its config alone: without a
+    ``select.limit`` the count is unknown up front unless the source names its tasks."""
+    taskset = (source.get("env") or {}).get("taskset") or {}
+    limit = (source.get("select") or {}).get("limit")
+    tasks = taskset.get("tasks")
+    if limit is None and not tasks:
         return None
-    return (count if count >= 0 else len(tasks)) * (source.get("group_size") or 1)
+    return (limit if limit is not None else len(tasks)) * (source.get("group_size") or 1)
 
 
 def eval_totals(config: dict) -> dict[str, int | None]:

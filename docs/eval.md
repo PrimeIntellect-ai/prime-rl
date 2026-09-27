@@ -32,17 +32,17 @@ uv run inference --vllm.model Qwen/Qwen3-4B
 uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1
 ```
 
-Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
+Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-s`/`-r` set `select.limit`/`select.shuffle`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).
 
 ## Configuration
 
-Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `num_examples`, `group_size` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
+Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `[select]`, `group_size` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
 
 ```toml
 model = "Qwen/Qwen3-4B"
-num_examples = 32
+select.limit = 32
 group_size = 4
 
 [client]
@@ -63,9 +63,10 @@ env.agent.harness.id = "bash"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
+select.include.idx = ["0:30"]
 ```
 
-Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+Per-source `group_size` and `sampling` override the top-level defaults. Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 ## Resume
 
@@ -79,7 +80,7 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
-A landed episode counts toward the task with its `task.key`, so `num_examples` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The model, the sampling and each source's env must match the config the landed episodes were measured with (kept beside them in `monitors/file/eval.json`); a resume that changes them stops with the differing config paths. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. Use `--clean` to start over instead.
+A landed episode counts toward the task with its `task.key`, so `select.limit`, `select.shuffle` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The model, the sampling and each source's env must match the config the landed episodes were measured with (kept beside them in `monitors/file/eval.json`); a resume that changes them stops with the differing config paths. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. Use `--clean` to start over instead.
 
 ## Monitors
 

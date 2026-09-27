@@ -148,7 +148,7 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "browsecomp"
-num_examples = 500 # full set is 1266; cap eval at 500
+select.limit = 500 # full set is 1266; cap eval at 500
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
 env.agent.harness.forward_env = ["SERPER_API_KEY"]

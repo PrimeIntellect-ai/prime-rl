@@ -62,9 +62,6 @@ class EvalConfig(ServedEvalConfig):
     ``/metrics`` to adapt to; against a vLLM server set ``min_inflight < max_inflight`` to
     let the band adapt to KV usage like the orchestrator's."""
 
-    num_examples: int = Field(-1, validation_alias=AliasChoices("num_examples", "n"))
-    """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
-
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
 
@@ -88,8 +85,8 @@ class EvalConfig(ServedEvalConfig):
     resume: bool = False
     """Continue the interrupted run named by ``run.name`` from its trace stream: the
     landed episodes rejoin the epoch and only the rollouts still owed run. The model,
-    sampling and env config must match the interrupted run; ``num_examples`` and
-    ``group_size`` may change."""
+    sampling and env config must match the interrupted run; ``select.limit``,
+    ``select.shuffle`` and ``group_size`` may change."""
 
     log: LogConfig = LogConfig()
 
