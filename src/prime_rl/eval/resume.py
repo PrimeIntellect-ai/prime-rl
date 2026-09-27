@@ -43,6 +43,7 @@ RESUMABLE = (
     "source.*.shuffle",
     "source.*.group_size",
     "source.*.serve",
+    "source.*.env.agent.timeout.scoring",
 )
 """Config paths a resumed run may change: how many rollouts to run and how to run them,
 never what is measured."""

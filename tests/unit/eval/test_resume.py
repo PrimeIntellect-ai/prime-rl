@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import orjson
@@ -64,19 +65,31 @@ def test_trigger_queues_only_owed_rollouts() -> None:
     ]
 
 
-def test_check_config_allows_selection_changes_only() -> None:
+def test_check_config_allows_selection_and_scoring_timeout_changes() -> None:
     previous = {
         "model": "a",
         "num_examples": 8,
         "group_size": 2,
         "sampling": {"temperature": 1.0},
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": None, "serve": {"address": None}}],
+        "source": [
+            {
+                "env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"scoring": None, "rollout": 21600}}},
+                "group_size": None,
+                "serve": {"address": None},
+            }
+        ],
     }
     resized = {
         **previous,
         "num_examples": 16,
         "group_size": 4,
-        "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+        "source": [
+            {
+                "env": {"taskset": {"id": "gsm8k"}, "agent": {"timeout": {"scoring": 7200, "rollout": 21600}}},
+                "group_size": 8,
+                "serve": {"address": "tcp://x"},
+            }
+        ],
     }
     resume.check_config(previous, resized)
 
@@ -84,6 +97,10 @@ def test_check_config_allows_selection_changes_only() -> None:
         resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
     with pytest.raises(ValueError, match="source"):
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
+    changed_rollout = deepcopy(resized)
+    changed_rollout["source"][0]["env"]["agent"]["timeout"]["rollout"] = 3600
+    with pytest.raises(ValueError, match="source.0.env.agent.timeout.rollout"):
+        resume.check_config(previous, changed_rollout)
 
 
 def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
