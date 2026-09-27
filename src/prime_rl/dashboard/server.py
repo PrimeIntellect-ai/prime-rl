@@ -295,7 +295,7 @@ def eval_total_episodes(config: dict) -> int | None:
     if sources:
         totals = [source_total_episodes(s) for s in sources]
         return None if any(t is None for t in totals) else sum(totals) or None
-    return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
+    return ((config.get("select") or {}).get("limit") or 0) * (config.get("num_rollouts") or 0) or None
 
 
 def run_meta(run_dir: Path) -> dict:

@@ -58,7 +58,7 @@ env.agent.runtime.type = "subprocess"
 uv run eval gsm8k -n 50                                   # the first 50 tasks
 uv run eval gsm8k -n 50 -s                                # a random subset of 50 (same tasks every run)
 uv run eval gsm8k -n 50 -s --select.seed 1                # another random subset
-uv run eval gsm8k --select.include.idx 0:10,42            # tasks by position (ints and half-open ranges)
+uv run eval gsm8k --select.include.idx 0:10,42            # tasks by position (ints and Python slices)
 uv run eval terminal-bench-2 --select.include.names '["fix-git"]' # tasks by name; `ids` and `keys` work the same
 uv run eval terminal-bench-2 --select.exclude.keys '["<task.key>"]' # drop known-broken tasks (keys are on every trace)
 ```

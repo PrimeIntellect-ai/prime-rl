@@ -180,7 +180,7 @@ retries.include = ["ProviderError", "SandboxError"]
 timeout.episode = 7200
 ```
 
-Each source also takes a `select` block that picks which tasks of its taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order. A group's `select` block works like its `env` block: every source inherits it field by field, and a source's own fields win. To evaluate 128 tasks of each taskset:
+Each source also takes a `select` block that picks which tasks of its taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order. A group's `select` block works like its `env` block: every source inherits it field by field, and a source's own fields win. A source's `include` or `exclude` replaces the group's whole block. To evaluate 128 tasks of each taskset:
 
 ```toml
 [orchestrator.eval.select]

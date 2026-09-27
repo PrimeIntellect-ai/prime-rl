@@ -194,10 +194,10 @@ class EnvConfig(BaseConfig):
         return self
 
 
-def merge_group_defaults(data: Any, select_type: type[vf.SelectConfig]) -> Any:
+def merge_group_defaults(data: Any) -> Any:
     """Shared ``mode="before"`` body for source groups: layer the group's ``env`` and
-    ``select`` blocks under those of each raw source. A source's own values win.
-    ``select_type`` is the group's ``select`` field type."""
+    ``select`` blocks under those of each raw source. A source's own values win; a
+    source's ``include`` or ``exclude`` replaces the group's whole block."""
     if not isinstance(data, dict):
         return data
     sources = data.get("source") or []
@@ -214,11 +214,12 @@ def merge_group_defaults(data: Any, select_type: type[vf.SelectConfig]) -> Any:
                 for source in sources
             ]
     if data.get("select") is not None:
-        group = set_select_fields(data["select"], select_type)
+        group = select_fields(data["select"], vf.SelectCLIConfig)
         if group is not None:
             sources = [
-                {**source, "select": group | (set_select_fields(source.get("select"), vf.SelectConfig) or {})}
+                {**source, "select": group | own}
                 if isinstance(source, dict)
+                and (own := select_fields(source.get("select"), vf.SelectConfig)) is not None
                 else source
                 for source in sources
             ]
@@ -227,9 +228,9 @@ def merge_group_defaults(data: Any, select_type: type[vf.SelectConfig]) -> Any:
     return data
 
 
-def set_select_fields(raw: Any, select_type: type[vf.SelectConfig]) -> dict | None:
-    """The fields a raw ``select`` block sets, under their canonical names (``n`` becomes
-    ``limit``); None when the block is invalid, so its own field reports the errors."""
+def select_fields(raw: Any, select_type: type[vf.SelectConfig]) -> dict | None:
+    """The fields a raw ``select`` block sets, under their canonical names; None when
+    the block is invalid, which leaves it to report its own errors."""
     if raw is None:
         return {}
     try:
@@ -363,7 +364,7 @@ class TrainConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def resolve_group_defaults(cls, data):
-        return merge_group_defaults(data, cls.model_fields["select"].annotation)
+        return merge_group_defaults(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -413,7 +414,7 @@ class EvalSourcesConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def resolve_group_defaults(cls, data):
-        return merge_group_defaults(data, cls.model_fields["select"].annotation)
+        return merge_group_defaults(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
