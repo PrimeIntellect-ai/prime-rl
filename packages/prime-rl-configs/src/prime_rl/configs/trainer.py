@@ -574,6 +574,9 @@ class IPOLossConfig(BaseConfig):
     eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
 
+    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
+    """Cap the importance weight of accepted tokens while preserving its policy gradient."""
+
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 

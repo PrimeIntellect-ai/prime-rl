@@ -8,6 +8,8 @@ from prime_rl.trainer.rl.loss import (
     LossOutputs,
     compute_entropy,
     compute_loss,
+    mismatch_kl_from_log_ratio,
+    ref_kl_loss_fn,
     setup_rl_loss_fn,
 )
 
@@ -124,8 +126,84 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
     result = IcePopLoss(IcePopLossConfig()).loss(inputs)
 
     assert torch.equal(result.loss, torch.zeros_like(result.loss))
+    assert all(torch.isfinite(value) for value in result.metrics.values())
     result.loss.backward()
     assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
+
+
+@pytest.mark.parametrize("config", [IPOLossConfig(kl_tau=0.01), IcePopLossConfig()])
+def test_ipo_icepop_match_original_on_finite_ratios(config):
+    torch.manual_seed(23)
+    trainer_logprobs = (-8 * torch.rand(128, device="cuda")).requires_grad_()
+    inference_logprobs = -8 * torch.rand(128, device="cuda")
+    advantages = torch.randn(128, device="cuda")
+    loss_mask = torch.rand(128, device="cuda") > 0.3
+    weights = torch.rand(128, device="cuda")
+    inputs = LossInputs(trainer_logprobs, inference_logprobs, None, advantages, loss_mask, weights)
+
+    result = setup_rl_loss_fn(config).loss(inputs)
+    log_ratio = trainer_logprobs - inference_logprobs
+    ratio = log_ratio.exp()
+    if isinstance(config, IPOLossConfig):
+        keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
+        expected = (
+            (-(keep * config.adv_tau * advantages * ratio) + loss_mask * config.kl_tau * log_ratio.square()) * weights
+        ).sum()
+    else:
+        keep = (
+            loss_mask
+            & (log_ratio.detach() >= torch.tensor(config.ratio_low, device="cuda").log())
+            & (log_ratio.detach() <= torch.tensor(config.ratio_high, device="cuda").log())
+        )
+        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
+
+    torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
+    actual_grad = torch.autograd.grad(result.loss, trainer_logprobs, retain_graph=True)[0]
+    expected_grad = torch.autograd.grad(expected, trainer_logprobs)[0]
+    torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-5, atol=1e-5)
+
+
+def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
+    trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.tensor([-100.0, -100.0, float("nan")], device="cuda"),
+        ref_logprobs=None,
+        advantages=torch.ones(3, device="cuda"),
+        loss_mask=torch.tensor([True, True, False], device="cuda"),
+    )
+
+    result = setup_rl_loss_fn(IPOLossConfig()).loss(inputs)
+
+    torch.testing.assert_close(result.loss, torch.tensor(-1e4, device="cuda"))
+    assert all(torch.isfinite(value) for value in result.metrics.values())
+    result.loss.backward()
+    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-1e4, 0.0, 0.0], device="cuda"))
+
+
+def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():
+    trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.tensor([-100.0, -100.0, float("nan")], device="cuda"),
+        ref_logprobs=torch.tensor([-1.0, -1.0, float("nan")], device="cuda"),
+        advantages=torch.zeros(3, device="cuda"),
+        loss_mask=torch.tensor([True, True, False], device="cuda"),
+    )
+
+    result = ref_kl_loss_fn(inputs)
+
+    assert torch.isfinite(result.loss)
+    assert all(torch.isfinite(value) for value in result.metrics.values())
+    result.loss.backward()
+    assert torch.isfinite(trainer_logprobs.grad).all()
+
+
+def test_mismatch_kl_retains_small_positive_values():
+    log_ratio = torch.tensor([1e-4], device="cuda")
+    torch.testing.assert_close(
+        mismatch_kl_from_log_ratio(log_ratio), torch.tensor([5e-9], device="cuda"), rtol=1e-3, atol=0
+    )
 
 
 def test_ce_component_matches_masked_nll():
