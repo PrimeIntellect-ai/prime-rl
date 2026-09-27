@@ -34,9 +34,6 @@ export TRAIN_GPUS_PER_NODE={{ train_gpus_per_node }}
 export VALUE_GPUS_PER_NODE={{ value_gpus_per_node }}
 export VALUE_GPUS_PER_TRAIN_NODE={{ value_gpus_per_train_node }}
 export VALUE_GPU_OFFSET={{ value_gpu_offset }}
-{% if has_value -%}
-export VALUE_MASTER_PORT={{ value_rendezvous_port }}
-{% endif -%}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -159,9 +156,7 @@ echo "VALUE_HOSTS=${VALUE_HOSTS[*]}"
 {% endif -%}
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
-export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
-echo "MASTER_PORT=${MASTER_PORT}"
 {% if use_nixl_broadcast -%}
 {% if launch_modelexpress -%}
 export WEIGHT_BROADCAST_HOST="$MASTER_ADDR"
@@ -243,6 +238,43 @@ srun bash -s <<'CLEANUP_SH'
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
+
+# Discover rendezvous ports on the hosts that will bind them. A shared policy/value
+# node gets both ports in one probe, so its two groups cannot choose the same port.
+discover_rendezvous_ports() {
+    local host="$1" count="$2" attempt output
+    for attempt in 1 2 3 4 5; do
+        if output=$(srun --nodes=1 --ntasks=1 --nodelist="$host" uv run python -m prime_rl.utils.ports "$count" {{ reserved_rendezvous_ports | join(' ') }}); then
+            if [[ "$output" =~ ^[0-9]+(\ [0-9]+)*$ ]]; then
+                set -- $output
+                if [ "$#" -eq "$count" ]; then
+                    echo "$output"
+                    return 0
+                fi
+            fi
+        fi
+        echo "Port discovery attempt $attempt failed on $host; retrying" >&2
+        sleep "$attempt"
+    done
+    echo "Could not discover $count rendezvous port(s) on $host" >&2
+    return 1
+}
+
+{% if has_value and value_gpus_per_train_node > 0 -%}
+RENDEZVOUS_PORTS=$(discover_rendezvous_ports "$MASTER_ADDR" 2) || exit 1
+read -r MASTER_PORT VALUE_MASTER_PORT <<< "$RENDEZVOUS_PORTS"
+{% else -%}
+MASTER_PORT=$(discover_rendezvous_ports "$MASTER_ADDR" 1) || exit 1
+{% if has_value -%}
+VALUE_MASTER_PORT=$(discover_rendezvous_ports "$VALUE_ADDR" 1) || exit 1
+{% endif -%}
+{% endif -%}
+export MASTER_PORT
+echo "MASTER_PORT=$MASTER_PORT"
+{% if has_value -%}
+export VALUE_MASTER_PORT
+echo "VALUE_MASTER_PORT=$VALUE_MASTER_PORT"
+{% endif -%}
 
 # Run RL
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other

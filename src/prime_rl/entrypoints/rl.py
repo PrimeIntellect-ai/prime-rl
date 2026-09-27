@@ -54,15 +54,19 @@ INFERENCE_CONFIG = "inference.json"
 ENVS_DIR = "envs"
 
 
-def value_rendezvous_port(config: RLConfig) -> int:
-    assert config.value is not None
-    reserved = {29500, config.value.service_port}
-    if config.trainer.weight_broadcast.type == "nccl":
+def reserved_rendezvous_ports(config: RLConfig) -> list[int]:
+    reserved = set()
+    if hasattr(config.trainer.weight_broadcast, "port"):
         reserved.add(config.trainer.weight_broadcast.port)
-    for transport in (config.trainer.rollout_transport, config.value.rollout_transport):
+    if config.value is not None:
+        reserved.add(config.value.service_port)
+    transports = [config.trainer.rollout_transport]
+    if config.value is not None:
+        transports.append(config.value.rollout_transport)
+    for transport in transports:
         if transport.type == "zmq":
             reserved.update((transport.port, transport.port + 1))
-    return next(port for port in range(29502, 29600) if port not in reserved)
+    return sorted(reserved)
 
 
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
@@ -596,7 +600,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             trainer_env_vars=trainer_env_vars,
             value_env_vars=value_env_vars,
             value_service_port=config.value.service_port if config.value is not None else 0,
-            value_rendezvous_port=value_rendezvous_port(config) if config.value is not None else 0,
+            reserved_rendezvous_ports=reserved_rendezvous_ports(config),
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
@@ -657,7 +661,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             trainer_env_vars=trainer_env_vars,
             value_env_vars=value_env_vars,
             value_service_port=config.value.service_port if config.value is not None else 0,
-            value_rendezvous_port=value_rendezvous_port(config) if config.value is not None else 0,
+            reserved_rendezvous_ports=reserved_rendezvous_ports(config),
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,

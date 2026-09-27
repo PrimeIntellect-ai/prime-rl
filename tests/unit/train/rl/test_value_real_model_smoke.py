@@ -22,7 +22,10 @@ from prime_rl.utils.cp import setup_context_parallel
 def main():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl")
-    dims = ParallelDims(dp_replicate=1, dp_shard=2, cp=2, pp=1, ep=1, world_size=4)
+    cp = int(os.environ.get("TEST_VALUE_CP", "2"))
+    cp_style = os.environ.get("TEST_VALUE_CP_STYLE", "ring")
+    dp = 4 // cp
+    dims = ParallelDims(dp_replicate=1, dp_shard=dp, cp=cp, pp=1, ep=1, world_size=4)
     torch.manual_seed(2026)
     config = Qwen3MoeConfig(
         vocab_size=256,
@@ -32,7 +35,7 @@ def main():
         moe_intermediate_size=64,
         num_hidden_layers=1,
         num_attention_heads=4,
-        num_key_value_heads=2,
+        num_key_value_heads=4,
         num_experts=2,
         num_experts_per_tok=1,
         max_position_embeddings=64,
@@ -43,13 +46,15 @@ def main():
         model = Qwen3MoeForCausalLM._from_config(config)
         model.value_head = nn.Linear(64, 1)
     inject_prime_lm_head(model, chunk_size=None)
-    model_config = ModelConfig(name="Qwen/Qwen3-0.6B", seq_len=16, cp=2, ep=1, attn="flash_attention_2")
+    model_config = ModelConfig(
+        name="Qwen/Qwen3-0.6B", seq_len=16, cp=cp, cp_style=cp_style, ep=1, attn="flash_attention_2"
+    )
     setup_fsdp(model, model_config, dims)
     setup_context_parallel(model, model_config, dims)
 
     sequences = [list(range(start, start + length)) for start, length in ((1, 4), (20, 8), (40, 12), (60, 4), (80, 8))]
-    packed = _score_batch(model, sequences, dims, 16, "ring", False)
-    individual = [_score(model, ids, dims, "ring", False) for ids in sequences]
+    packed = _score_batch(model, sequences, dims, 16, cp_style, False)
+    individual = [_score(model, ids, dims, cp_style, False) for ids in sequences]
     if dist.get_rank() == 0:
         assert packed is not None
         for index, (values, bootstrap) in enumerate(individual):
@@ -70,8 +75,8 @@ def main():
         )
         for ids in sequences
     ]
-    grid = prepare_batch(samples, 16, 2, sum, pad_to_multiple_of=2, for_value=True)
-    micro_batches = [DataLoader._micro_batch_to_tensor(None, batch) for batch in grid[dist.get_rank() // 2]]
+    grid = prepare_batch(samples, 16, dp, sum, pad_to_multiple_of=cp, for_value=True)
+    micro_batches = [DataLoader._micro_batch_to_tensor(None, batch) for batch in grid[dist.get_rank() // cp]]
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
     value_config = SimpleNamespace(model=model_config, optim=SimpleNamespace(max_norm=None), updates_per_step=1)
