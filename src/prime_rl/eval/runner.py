@@ -183,7 +183,9 @@ class EvalRunner:
         newer checkpoint, the unfinished episodes of this epoch are cancelled so the
         caller can move on to it."""
         for env_name in fired:
-            await monitors.log_eval_plan(env_name, step, self.eval_sink.batch_size_for(env_name))
+            await monitors.log_eval_plan(
+                env_name, step, self.eval_sink.batch_size_for(env_name), self.eval_sink.group_size_for(env_name)
+            )
 
         now = time.perf_counter()
         for env_name in fired:

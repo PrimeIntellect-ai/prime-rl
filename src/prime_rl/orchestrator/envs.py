@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -183,6 +184,8 @@ class EvalEnv(Env):
         super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
+        self.group_size: int = 1
+        """Rollouts per example, resolved at ``start()`` once the examples are counted."""
 
     async def start(self) -> None:
         await super().start()
@@ -192,6 +195,14 @@ class EvalEnv(Env):
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
         self.examples = tasks
+        if self.config.min_rollouts is not None:
+            if not tasks:
+                raise ValueError(f"Eval env {self.name} selected no tasks to spread min_rollouts over")
+            self.group_size = math.ceil(self.config.min_rollouts / len(tasks))
+        else:
+            # The config validator leaves exactly one of min_rollouts and group_size set.
+            assert self.config.group_size is not None
+            self.group_size = self.config.group_size
 
 
 EnvT = TypeVar("EnvT", bound=Env)

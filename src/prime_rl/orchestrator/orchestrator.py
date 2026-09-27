@@ -791,11 +791,11 @@ class Orchestrator:
             self.eval_triggered_at[(env_name, step)] = now
         assert self.eval_envs is not None
         census = {
-            env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+            env_name: self.eval_envs.get(env_name).group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         }
         for env_name, expected in census.items():
-            await monitors.log_eval_plan(env_name, step, expected)
+            await monitors.log_eval_plan(env_name, step, expected, self.eval_envs.get(env_name).group_size)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

@@ -520,7 +520,9 @@ class Dispatcher:
             return None
 
         env_name = request.env_name
-        rollouts = request.rollouts if request.rollouts is not None else envs.get(env_name).config.group_size
+        env = envs.get(env_name)
+        group_size = env.group_size if kind == "eval" else env.config.group_size
+        rollouts = request.rollouts if request.rollouts is not None else group_size
 
         return GroupState(
             kind=kind,
@@ -834,9 +836,7 @@ class Dispatcher:
 
         for request in queued:
             count = (
-                request.rollouts
-                if request.rollouts is not None
-                else self.eval_envs.get(request.env_name).config.group_size
+                request.rollouts if request.rollouts is not None else self.eval_envs.get(request.env_name).group_size
             )
             cancelled += count
             self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)

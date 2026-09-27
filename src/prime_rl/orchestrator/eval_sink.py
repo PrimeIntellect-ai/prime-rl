@@ -58,12 +58,12 @@ class EvalSink:
         )
 
     def group_size_for(self, env_name: str) -> int:
-        return self.eval_envs.get(env_name).config.group_size
+        return self.eval_envs.get(env_name).group_size
 
     def batch_size_for(self, env_name: str) -> int:
         """Every rollout of an env's epoch: its examples times its group size."""
         env = self.eval_envs.get(env_name)
-        return len(env.examples) * env.config.group_size
+        return len(env.examples) * env.group_size
 
     def batch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env, step, arrived, expected)`` per epoch in progress."""
