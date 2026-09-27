@@ -8,8 +8,9 @@ ones the interruption cut off are owed again.
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
-kept episodes are matched to the new selection and the rest is owed. What defines the
-measurement itself - the model, the sampling, each source's env - must not change
+kept episodes are matched to the new selection and the rest is owed. The solver and
+judge models may move to another endpoint or name serving the same weights. What
+defines the measurement itself - the sampling, each source's env - must not change
 (``check_config``).
 """
 
@@ -36,6 +37,8 @@ RESUMABLE = (
     "num_examples",
     "group_size",
     "concurrency",
+    "tasks_per_minute",
+    "model",
     "client",
     "log",
     "monitors",
@@ -43,9 +46,12 @@ RESUMABLE = (
     "source.*.shuffle",
     "source.*.group_size",
     "source.*.serve",
+    "source.*.env.judge.model",
+    "source.*.env.judge.client",
 )
 """Config paths a resumed run may change: how many rollouts to run and how to run them,
-never what is measured."""
+and where the solver and judges are served, never what is measured. A model change is
+trusted to serve the same weights under another name."""
 
 
 CONFIG_NAME = "eval.json"

@@ -79,8 +79,17 @@ def test_check_config_allows_selection_changes_only() -> None:
         "source": [{"env": {"taskset": {"id": "gsm8k"}}, "group_size": 8, "serve": {"address": "tcp://x"}}],
     }
     resume.check_config(previous, resized)
+    judged = {"env": {"taskset": {"id": "gsm8k"}, "judge": {"model": "a", "client": {"base_url": "x"}}}}
+    resume.check_config(
+        {**previous, "source": [judged]},
+        {
+            **previous,
+            "model": "b",
+            "source": [{"env": {"taskset": {"id": "gsm8k"}, "judge": {"model": "b", "client": {"base_url": "y"}}}}],
+        },
+    )
 
-    with pytest.raises(ValueError, match="model, sampling.temperature"):
+    with pytest.raises(ValueError, match="sampling.temperature"):
         resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
     with pytest.raises(ValueError, match="source"):
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
