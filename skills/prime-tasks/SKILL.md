@@ -10,8 +10,6 @@ description: Where task data and taskset code live across prime-tasks and prime-
 | [`prime-tasks`](https://github.com/PrimeIntellect-ai/prime-tasks) | Raw Harbor task data: `task.toml` (with the image ref), `instruction.md`, `environment/` (Dockerfile, assets), `tests/`, `solution/`. |
 | [`prime-envs`](https://github.com/PrimeIntellect-ai/prime-envs) | Runtime logic: taskset classes, configs, prompts, judges, `registry.json`, and the pinned `prime-tasks` commit. |
 
-`prime-tasks-private` and `prime-envs-private` follow the same split.
-
 ## Rules
 
 - Do not put task data in `prime-envs`. No task dirs, Dockerfiles, test files, or data files for single tasks.
