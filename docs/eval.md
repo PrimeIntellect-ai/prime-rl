@@ -32,7 +32,7 @@ uv run inference --vllm.model Qwen/Qwen3-4B
 uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1
 ```
 
-Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-s`/`-r` set `select.limit`/`select.shuffle`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
+Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-s`/`-r` set `select.limit`/`select.shuffle`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). `<taskset-id>` cannot be combined with a TOML that defines `[[source]]` blocks; next to one, `--env.<field>` sets the shared [env block](#configuration) instead. `uv run eval -h` lists them.
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).
 
@@ -55,6 +55,10 @@ max_inflight = 256
 [sampling]
 max_completion_tokens = 2048
 
+[env]                # every source inherits these
+timeout.episode = 7200
+retries.max_retries = 3
+
 [[source]]
 env.taskset.id = "gsm8k"
 env.agent.harness.id = "bash"
@@ -66,7 +70,11 @@ env.agent.runtime.type = "subprocess"
 select.include.idx = ["0:30"]
 ```
 
-Per-source `group_size` and `sampling` override the top-level defaults. Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+Per-source `group_size` and `sampling` override the top-level defaults. The top-level `[env]` block holds the env knobs that every source inherits (see [Environments](configuration.md#environments)); a source's own `env` values win.
+
+Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
+
+Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 ## Resume
 
@@ -110,6 +118,7 @@ Eval metrics mirror the training rollout hierarchy under the `eval/<env>` scope:
 |---|---|
 | `eval/<env>/all/<agent>/reward/mean` | mean reward over the epoch |
 | `eval/<env>/all/<agent>/is_truncated/mean` | share of rollouts cut by the length limit |
+| `eval/<env>/all/<agent>/is_timeout/mean` | share of rollouts stopped by a stage deadline (`<stage>_timeout`) |
 | `eval/<env>/all/<agent>/has_error/mean` | share of rollouts that raised |
 | `eval/<env>/all/seq_len/mean` | mean episode length in tokens |
 

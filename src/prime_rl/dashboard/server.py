@@ -824,6 +824,8 @@ def message_text(message: dict) -> str:
 def timeline_status(trace: dict) -> str:
     if not trace.get("is_completed"):
         return "running"
+    if trace.get("is_timeout"):
+        return "timeout"
     if not trace.get("ok") and (trace.get("errors") or trace.get("stop_condition") == "error"):
         return "failed"
     return "completed"
@@ -1823,6 +1825,7 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
                 "ok",
                 "num_errors",
                 "truncated",
+                "timeout",
                 "stop_condition",
                 "duration",
                 "reward",
