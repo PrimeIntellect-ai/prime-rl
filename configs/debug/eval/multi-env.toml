@@ -5,7 +5,8 @@
 #
 #   uv run eval @ configs/debug/eval/multi-env.toml
 
-select.limit = 16
+[select]
+limit = 16
 
 [[source]]
 name = "tb2-bash"

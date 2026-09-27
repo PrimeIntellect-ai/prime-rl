@@ -3,8 +3,10 @@
 #
 #   uv run eval @ configs/debug/eval/single-turn.toml
 
-select.limit = 8
 group_size = 2
+
+[select]
+limit = 8
 
 [sampling]
 max_completion_tokens = 8192

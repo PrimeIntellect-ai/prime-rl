@@ -23,17 +23,19 @@ uv run eval @ eval.toml --monitors.prime                            # stream eac
 
 - Config: `EvalConfig` (`packages/prime-rl-configs/src/prime_rl/configs/eval.py`); `uv run eval -h` lists the fields.
 - Entrypoint: `src/prime_rl/entrypoints/eval.py`; implementation `src/prime_rl/eval/eval.py`, shared engine `src/prime_rl/eval/runner.py`.
-- Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `num_examples`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. They cannot be combined with a TOML that defines `[[source]]` blocks.
+- Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `select.limit`, `-s` `select.shuffle`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. They cannot be combined with a TOML that defines `[[source]]` blocks.
 - Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to KV usage.
 - Env servers: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
 - Ready-made configs: `configs/debug/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
 
-Minimal multi-source TOML (the eval block is flattened to the top level; per-source `num_examples`, `group_size`, `sampling` override the top level):
+Minimal multi-source TOML (the eval block is flattened to the top level; per-source `select`, `group_size`, `sampling` override the top level):
 
 ```toml
 model = "Qwen/Qwen3-4B"
-num_examples = 32
 group_size = 4
+
+[select]
+limit = 32
 
 [client]
 base_url = "http://localhost:8000/v1"
@@ -47,6 +49,38 @@ env.taskset.id = "aime25"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
+
+## Select tasks
+
+`select` picks which tasks of a source's taskset run. The steps apply in a fixed order: `include` and `exclude` (by `idx` position, `ids`, `keys` or `names`), then `shuffle` (under `seed`, default 0), `skip`, `limit`. Set it once for every source of a group (`[select]` in an eval TOML, `[orchestrator.eval.select]`, `[orchestrator.train.select]`), or per source (`select.limit = 50` in a `[[source]]`); a source's own fields win.
+
+```bash
+uv run eval gsm8k -n 50                                   # the first 50 tasks
+uv run eval gsm8k -n 50 -s                                # a random subset of 50 (same tasks every run)
+uv run eval gsm8k -n 50 -s --select.seed 1                # another random subset
+uv run eval gsm8k --select.include.idx 0:10,42            # tasks by position (ints and half-open ranges)
+uv run eval terminal-bench-2 --select.include.names '["fix-git"]' # tasks by name; `ids` and `keys` work the same
+uv run eval terminal-bench-2 --select.exclude.keys '["<task.key>"]' # drop known-broken tasks (keys are on every trace)
+```
+
+Disjoint train/test splits from one taskset:
+
+```toml
+# contiguous: eval on the first 100 tasks, train on the rest
+[[orchestrator.eval.source]]
+env.taskset.id = "gsm8k"
+select.include.idx = [":100"]
+
+[[orchestrator.train.source]]
+env.taskset.id = "gsm8k"
+select.exclude.idx = [":100"]
+
+# random: the same shuffle on both sides; eval takes 100, train skips them
+#   eval:  select.shuffle = true, select.limit = 100
+#   train: select.shuffle = true, select.skip = 100
+```
+
+The shuffle comes before `skip` and `limit`, so a larger `limit` extends the same selection: resuming a `-n 50 -s` run with `-n 100` keeps the 50 landed tasks and adds 50 more.
 
 ## Monitor an eval
 
@@ -72,4 +106,4 @@ The progress line in `eval.log` counts live rollouts by phase (`- boot 1 · runn
 
 Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
 
-Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed (`num_examples`/`group_size` may change, the model, sampling and env config may not). Env servers are children of the eval process and exit with it.
+Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed (`select`/`group_size` may change, the model, sampling and env config may not). Env servers are children of the eval process and exit with it.

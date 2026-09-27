@@ -194,20 +194,48 @@ class EnvConfig(BaseConfig):
         return self
 
 
-def merge_group_env(data: Any) -> Any:
-    """Shared ``mode="before"`` body for source groups: layer the group's ``env`` block
-    under the ``env`` block of each raw source."""
-    if not isinstance(data, dict) or data.get("env") is None:
+def merge_group_defaults(data: Any, select_type: type[vf.SelectConfig]) -> Any:
+    """Shared ``mode="before"`` body for source groups: layer the group's ``env`` and
+    ``select`` blocks under those of each raw source. A source's own values win.
+    ``select_type`` is the group's ``select`` field type."""
+    if not isinstance(data, dict):
         return data
-    try:
-        shared = vf.SharedEnvConfig.model_validate(data["env"])
-    except ValidationError:
-        return data  # the ``env`` field reports the errors once, not once per source
-    data["source"] = [
-        {**source, "env": vf.merge_env_defaults(shared, source.get("env"))} if isinstance(source, dict) else source
-        for source in data.get("source") or []
-    ]
+    sources = data.get("source") or []
+    if data.get("env") is not None:
+        try:
+            shared = vf.SharedEnvConfig.model_validate(data["env"])
+        except ValidationError:
+            shared = None  # the ``env`` field reports the errors once, not once per source
+        if shared is not None:
+            sources = [
+                {**source, "env": vf.merge_env_defaults(shared, source.get("env"))}
+                if isinstance(source, dict)
+                else source
+                for source in sources
+            ]
+    if data.get("select") is not None:
+        group = set_select_fields(data["select"], select_type)
+        if group is not None:
+            sources = [
+                {**source, "select": group | (set_select_fields(source.get("select"), vf.SelectConfig) or {})}
+                if isinstance(source, dict)
+                else source
+                for source in sources
+            ]
+    if sources:
+        data["source"] = sources
     return data
+
+
+def set_select_fields(raw: Any, select_type: type[vf.SelectConfig]) -> dict | None:
+    """The fields a raw ``select`` block sets, under their canonical names (``n`` becomes
+    ``limit``); None when the block is invalid, so its own field reports the errors."""
+    if raw is None:
+        return {}
+    try:
+        return select_type.model_validate(raw).model_dump(exclude_unset=True)
+    except ValidationError:
+        return None
 
 
 class StandardSamplerConfig(BaseConfig):
@@ -328,10 +356,14 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Task selection that every training source inherits. Each field a source sets on
+    its own ``select`` wins over this one."""
+
     @model_validator(mode="before")
     @classmethod
-    def resolve_group_env(cls, data):
-        return merge_group_env(data)
+    def resolve_group_defaults(cls, data):
+        return merge_group_defaults(data, cls.model_fields["select"].annotation)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -371,30 +403,29 @@ class EvalSourcesConfig(BaseConfig):
     """Shared eval sampling configuration; can differ from training sampling."""
 
     select: vf.SelectConfig = vf.SelectConfig()
-    """Default task selection for every source. Each field a source sets on its own
-    ``select`` wins over this one."""
+    """Task selection that every eval source inherits, e.g. ``limit = 128`` to evaluate
+    128 tasks of each taskset. Each field a source sets on its own ``select`` wins over
+    this one."""
 
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
     @model_validator(mode="before")
     @classmethod
-    def resolve_group_env(cls, data):
-        return merge_group_env(data)
+    def resolve_group_defaults(cls, data):
+        return merge_group_defaults(data, cls.model_fields["select"].annotation)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, select and
-        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling and group_size (the
+        worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
-        group_select = self.select.model_dump(exclude_unset=True)
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
-            source.select = vf.SelectConfig(**(group_select | source.select.model_dump(exclude_unset=True)))
             if "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
         return self

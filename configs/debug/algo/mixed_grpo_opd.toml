@@ -48,7 +48,9 @@ algo.teacher.base_url = "http://localhost:8001/v1"
 
 [orchestrator.eval]
 interval = 5
-select.limit = 128
+
+[orchestrator.eval.select]
+limit = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

@@ -22,7 +22,9 @@ lr = 2e-5
 
 [eval]
 interval = 25
-select.limit = 32
+
+[eval.select]
+limit = 32
 
 [eval.sampling]
 max_completion_tokens = 1024

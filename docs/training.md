@@ -189,7 +189,9 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 ```toml
 [eval]
 interval = 25
-select.limit = 32
+
+[eval.select]
+limit = 32
 
 [[eval.source]]
 name = "reverse-text"

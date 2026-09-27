@@ -1,6 +1,7 @@
 import uuid
 from pathlib import Path
 
+import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
@@ -57,6 +58,10 @@ class EvalConfig(ServedEvalConfig):
     client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
     """Client of the inference server. Defaults to Prime Inference."""
 
+    select: vf.SelectCLIConfig = vf.SelectCLIConfig()
+    """Task selection that every source inherits (``-n`` sets ``limit``, ``-s`` sets
+    ``shuffle``). Each field a source sets on its own ``select`` wins over this one."""
+
     concurrency: ConcurrencyConfig = ConcurrencyConfig(min_inflight=128, max_inflight=128)
     """In-flight episodes, pinned at 128 (``-c N`` repins). External APIs expose no vLLM
     ``/metrics`` to adapt to; against a vLLM server set ``min_inflight < max_inflight`` to
@@ -84,9 +89,7 @@ class EvalConfig(ServedEvalConfig):
 
     resume: bool = False
     """Continue the interrupted run named by ``run.name`` from its trace stream: the
-    landed episodes rejoin the epoch and only the rollouts still owed run. The model,
-    sampling and env config must match the interrupted run; ``select.limit``,
-    ``select.shuffle`` and ``group_size`` may change."""
+    landed episodes rejoin the epoch and only the rollouts still owed run."""
 
     log: LogConfig = LogConfig()
 

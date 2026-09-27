@@ -4,7 +4,8 @@
 #
 #   uv run eval @ configs/debug/eval/multi-turn.toml
 
-select.limit = 16
+[select]
+limit = 16
 
 [[source]]
 env.taskset.id = "terminal-bench-2"

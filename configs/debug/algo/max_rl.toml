@@ -29,7 +29,9 @@ env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-select.limit = 128
+
+[orchestrator.eval.select]
+limit = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

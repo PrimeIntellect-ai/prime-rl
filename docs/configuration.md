@@ -180,6 +180,13 @@ retries.include = ["ProviderError", "SandboxError"]
 timeout.episode = 7200
 ```
 
+Each source also takes a `select` block that picks which tasks of its taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order. A group's `select` block works like its `env` block: every source inherits it field by field, and a source's own fields win. To evaluate 128 tasks of each taskset:
+
+```toml
+[orchestrator.eval.select]
+limit = 128
+```
+
 `ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire (inherited from the group-level `interval` when unset); a standalone eval has neither.
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).

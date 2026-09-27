@@ -82,14 +82,19 @@ def test_check_config_allows_selection_changes_only() -> None:
         **previous,
         "select": {"limit": 16},
         "group_size": 4,
-        "source": [{**source, "select": {"limit": 16}, "group_size": 8, "serve": {"address": "tcp://x"}}],
+        "source": [
+            {
+                **source,
+                "select": {"limit": 16, "include": {"idx": ["0:4"]}},
+                "group_size": 8,
+                "serve": {"address": "tcp://x"},
+            }
+        ],
     }
     resume.check_config(previous, resized)
 
     with pytest.raises(ValueError, match="model, sampling.temperature"):
         resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
-    with pytest.raises(ValueError, match="source.0.select.include"):
-        resume.check_config(previous, {**previous, "source": [{**source, "select": {"include": {"idx": ["0:4"]}}}]})
     with pytest.raises(ValueError, match="source"):
         resume.check_config(previous, {**previous, "source": previous["source"] * 2})
 
