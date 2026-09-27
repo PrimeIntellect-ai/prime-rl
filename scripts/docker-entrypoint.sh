@@ -118,10 +118,15 @@ HEAVY_PINS_PY
     # Replay the image's post-sync step (Dockerfile.cuda; keep the two in
     # sync): the prime CLI pulls prime-traces / prime-sandboxes / openai
     # past the lock's pins, and the --locked sync above just rolled them
-    # back, which leaves `prime env install` unable to import. The CLI
-    # also pins verifiers==0.2.0, which would swap the editable for the
-    # PyPI wheel and break prime-rl's imports; override that one
-    # requirement until the CLI drops its verifiers dependency.
+    # back, which leaves `prime env install` unable to import.
+    #
+    # FIXME(prime#940): workaround, remove once the prime CLI drops
+    # verifiers as a dependency
+    # (https://github.com/PrimeIntellect-ai/prime/pull/940). The CLI pins
+    # verifiers==0.2.0, which would swap the editable for the PyPI wheel
+    # and break prime-rl's imports; the --overrides file ignores that one
+    # requirement. When removing it, drop the overrides file and the
+    # --overrides flag here and in Dockerfile.cuda.
     echo "[prime-rl] installing the prime CLI"
     printf 'verifiers\n' > /tmp/prime-cli-overrides.txt
     uv pip install --overrides /tmp/prime-cli-overrides.txt 'prime>=0.7'
