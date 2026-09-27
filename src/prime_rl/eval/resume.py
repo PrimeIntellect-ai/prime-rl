@@ -35,6 +35,7 @@ RESUMABLE = (
     "dashboard",
     "num_examples",
     "group_size",
+    "rollouts_per_source",
     "concurrency",
     "client",
     "log",
@@ -42,6 +43,7 @@ RESUMABLE = (
     "source.*.num_examples",
     "source.*.shuffle",
     "source.*.group_size",
+    "source.*.rollouts_per_source",
     "source.*.serve",
 )
 """Config paths a resumed run may change: how many rollouts to run and how to run them,

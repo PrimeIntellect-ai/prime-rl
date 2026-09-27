@@ -194,6 +194,19 @@ class EnvConfig(BaseConfig):
         return self
 
 
+def merge_group_env(data: Any) -> Any:
+    """Shared ``mode="before"`` body for source groups: layer the group's ``env`` block
+    under the ``env`` block of each raw source."""
+    if isinstance(data, dict) and data.get("env"):
+        data["source"] = [
+            {**source, "env": vf.merge_env_defaults(data["env"], source.get("env"))}
+            if isinstance(source, dict)
+            else source
+            for source in data.get("source") or []
+        ]
+    return data
+
+
 class StandardSamplerConfig(BaseConfig):
     type: Literal["standard"] = "standard"
 
@@ -296,6 +309,12 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
+    rollouts_per_source: int | None = Field(None, ge=1)
+    """Target rollouts for this source. When set, it replaces ``num_examples`` and
+    ``group_size``: the source takes up to this many examples and repeats each example
+    until it reaches the target (``group_size = ceil(target / examples)``). The eval
+    resolves both counts when it loads the taskset."""
+
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
@@ -308,8 +327,17 @@ class TrainConfig(BaseConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
 
+    env: dict[str, Any] = {}
+    """Env fields that every training source inherits (e.g. ``retries`` or
+    ``agent.runtime.labels``). A source's own ``env`` values win."""
+
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_group_env(cls, data):
+        return merge_group_env(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -341,6 +369,10 @@ class EvalSourcesConfig(BaseConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
+    env: dict[str, Any] = {}
+    """Env fields that every eval source inherits (e.g. ``retries`` or
+    ``agent.timeout.rollout``). A source's own ``env`` values win."""
+
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
 
@@ -350,17 +382,30 @@ class EvalSourcesConfig(BaseConfig):
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
+    rollouts_per_source: int | None = Field(None, ge=1)
+    """Default target rollouts per environment. When set, it replaces ``num_examples``
+    and ``group_size`` for every source that sets none of the three itself."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_group_env(cls, data):
+        return merge_group_env(data)
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples and
-        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling, num_examples,
+        group_size and rollouts_per_source (the worker ``pool`` is configured per env,
+        default elastic)."""
         group_sampling = self.sampling.model_dump()
+        counts = {"num_examples", "group_size", "rollouts_per_source"}
         for source in self.source:
             if "sampling" not in source.model_fields_set:
                 source.sampling = EvalSamplingConfig(**group_sampling)
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
+            if self.rollouts_per_source is not None and not counts & source.model_fields_set:
+                source.rollouts_per_source = self.rollouts_per_source
             if "num_examples" not in source.model_fields_set:
                 source.num_examples = self.num_examples
             if "group_size" not in source.model_fields_set:

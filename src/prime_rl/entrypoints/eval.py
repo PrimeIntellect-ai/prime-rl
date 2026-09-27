@@ -10,7 +10,6 @@ import os
 import re
 import signal
 import sys
-import tomllib
 import uuid
 from pathlib import Path
 from subprocess import Popen
@@ -22,12 +21,12 @@ from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, s
 
 USAGE = """\
 usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c N] [-m MODEL] [options]
-       uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
+       uv run eval @ eval.toml [@ more.toml ...] [options]                 multi-source runs ([[source]] blocks)
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
 
-Shorthands for a single-source run:
-  <taskset-id>             the taskset of the run's only source
-  --env.<field> <value>    a field of that source's env block (e.g. --env.agent.harness.id bash)
+Shorthands:
+  <taskset-id>             add a source that runs this taskset
+  --env.<field> <value>    a field of the env block every source inherits (e.g. --env.agent.harness.id bash)
   -c N                     pin the concurrency band (concurrency.min_inflight = max_inflight = N)
 """
 
@@ -46,18 +45,18 @@ def parse_value(raw: str) -> Any:
 
 
 def expand_shorthands(argv: list[str]) -> list[str]:
-    """Rewrite the single-source shorthands into flags ``EvalConfig`` parses.
+    """Rewrite the shorthands into flags ``EvalConfig`` parses.
 
-    ``<taskset-id>`` and ``--env.<path> <value>`` describe the run's only source and fold
-    into one JSON ``--source`` flag (pydantic-config has no list-index paths, so
-    ``--source.0.env...`` cannot address it). ``-c N`` pins the concurrency band.
-    Everything else passes through untouched.
+    ``<taskset-id>`` becomes one JSON ``--source`` flag, which adds to the sources of
+    the ``@`` files. The ``--env.<path> <value>`` flags fold into one JSON ``--env``
+    flag, so list and object values stay structured. ``-c N`` pins the concurrency
+    band. Everything else passes through untouched.
     """
     out: list[str] = []
-    source: dict[str, Any] = {}
+    env: dict[str, Any] = {}
     rest = list(argv)
     if rest and not rest[0].startswith(("-", "@")):
-        set_nested(source, ["env", "taskset", "id"], rest.pop(0))
+        out += ["--source", json.dumps([{"env": {"taskset": {"id": rest.pop(0)}}}])]
     i = 0
     while i < len(rest):
         arg = rest[i]
@@ -68,36 +67,15 @@ def expand_shorthands(argv: list[str]) -> list[str]:
             i += 1
             value = rest[i]
         if flag.startswith("--env."):
-            set_nested(source, [key.replace("-", "_") for key in flag[2:].split(".")], parse_value(value))
+            set_nested(env, [key.replace("-", "_") for key in flag[2:].split(".")][1:], parse_value(value))
         elif flag == "-c":
             out += ["--concurrency.min_inflight", value, "--concurrency.max_inflight", value]
         else:
             out.append(arg)
         i += 1
-    if source:
-        if any(toml_defines_source(path) for path in root_config_files(argv)):
-            raise SystemExit(
-                "The <taskset-id> / --env.* shorthands describe a single source and cannot be combined "
-                "with a config file that defines [[source]] blocks - use one or the other"
-            )
-        out += ["--source", json.dumps([source])]
+    if env:
+        out += ["--env", json.dumps(env)]
     return out
-
-
-def root_config_files(argv: list[str]) -> list[Path]:
-    """Root ``@ file`` references (a ``--flag @ file`` is a nested reference)."""
-    return [
-        Path(argv[i + 1])
-        for i, arg in enumerate(argv[:-1])
-        if arg == "@" and (i == 0 or not argv[i - 1].startswith("--"))
-    ]
-
-
-def toml_defines_source(path: Path) -> bool:
-    if path.suffix != ".toml" or not path.is_file():
-        return False
-    with path.open("rb") as f:
-        return "source" in tomllib.load(f)
 
 
 def main():

@@ -32,7 +32,7 @@ uv run inference --vllm.model Qwen/Qwen3-4B
 uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1
 ```
 
-Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). The shorthands cannot be combined with a TOML that defines `[[source]]` blocks. `uv run eval -h` lists them.
+Shorthands: `<taskset-id>` adds a source that runs the taskset, `--env.<field> <value>` sets a field of the [env block](#configuration) that every source inherits (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-r` set `num_examples`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). `uv run eval -h` lists them.
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).
 
@@ -55,6 +55,10 @@ max_inflight = 256
 [sampling]
 max_completion_tokens = 2048
 
+[env]                # every source inherits these
+agent.timeout.rollout = 3600
+retries.max_retries = 3
+
 [[source]]
 env.taskset.id = "gsm8k"
 env.agent.harness.id = "bash"
@@ -65,7 +69,17 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+Per-source `num_examples`, `group_size` and `sampling` override the top-level defaults. The top-level `[env]` block holds env fields that every source inherits; a source's own `env` values win. A run without sources evaluates its `[env]` block as its only source.
+
+Each `@` file and `--source` flag adds its `[[source]]` blocks to the run, so one TOML per benchmark stacks:
+
+```bash
+uv run eval @ gsm8k.toml @ aime25.toml @ defaults.toml
+```
+
+`rollouts_per_source = N` replaces `num_examples` and `group_size`. Each source takes up to `N` examples and repeats each example until it reaches `N` rollouts (`group_size = ceil(N / examples)`). For example, `N = 1000` runs 1,000 examples once from a large taskset, and 30 examples 34 times from a 30-task taskset. A source that sets `num_examples`, `group_size` or `rollouts_per_source` itself keeps its own counts.
+
+Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 ## Resume
 

@@ -93,7 +93,7 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. The `eval` entrypoint's `[[source]]` list is the exception: each `@` file adds its sources. For arrays of tables, see [Environments](#environments).
 
 ### Dicts
 
@@ -169,6 +169,14 @@ env.taskset.id = "gsm8k"
 env.taskset.split = "test"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
+```
+
+Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` table that each of its sources inherits. A source's own `env` values win. Put shared settings there instead of repeating them in every source:
+
+```toml
+[orchestrator.train.env]
+agent.runtime.labels = ["my-run"]
+retries.max_retries = 3
 ```
 
 `ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire (inherited from the group-level `interval` when unset); a standalone eval has neither.

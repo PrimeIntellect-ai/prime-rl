@@ -1,10 +1,12 @@
 import uuid
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import AliasChoices, Field, model_validator
+from pydantic_config import Append
 
 from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
-from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourceConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import default_output_dir
@@ -54,6 +56,11 @@ class EvalConfig(ServedEvalConfig):
     model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
 
+    source: Annotated[list[EvalSourceConfig], Append()] = Field(default_factory=list)
+    """Evaluation sources. Every ``@`` file and ``--source`` flag adds its sources, so
+    benchmark TOMLs stack. With no sources, the run evaluates its ``env`` block as its
+    only source."""
+
     client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
     """Client of the inference server. Defaults to Prime Inference."""
 
@@ -95,6 +102,13 @@ class EvalConfig(ServedEvalConfig):
 
     monitors: EvalMonitorsConfig = EvalMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_env_as_source(cls, data):
+        if isinstance(data, dict) and data.get("env") and not data.get("source"):
+            data["source"] = [{}]
+        return data
 
     @property
     def run_dir(self) -> Path:
