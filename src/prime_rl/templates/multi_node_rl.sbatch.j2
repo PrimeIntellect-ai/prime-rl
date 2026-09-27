@@ -34,6 +34,9 @@ export TRAIN_GPUS_PER_NODE={{ train_gpus_per_node }}
 export VALUE_GPUS_PER_NODE={{ value_gpus_per_node }}
 export VALUE_GPUS_PER_TRAIN_NODE={{ value_gpus_per_train_node }}
 export VALUE_GPU_OFFSET={{ value_gpu_offset }}
+{% if has_value -%}
+export VALUE_MASTER_PORT={{ value_rendezvous_port }}
+{% endif -%}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -569,7 +572,7 @@ if [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
             --nnodes=$NUM_VALUE_TRAINER_NODES \
             --nproc-per-node=$VALUE_GPUS_PER_NODE \
             --node-rank=$VALUE_NODE_RANK \
-            --rdzv-endpoint=$VALUE_ADDR:$((MASTER_PORT + 1)) \
+            --rdzv-endpoint=$VALUE_ADDR:$VALUE_MASTER_PORT \
             --rdzv-id=value_$SLURM_JOB_ID \
             --log-dir=$LOG_DIR/value/torchrun \
             --tee=3 \

@@ -15,6 +15,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.entrypoints.rl import value_rendezvous_port
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
@@ -559,6 +560,10 @@ def test_multi_node_value_layout_keeps_policy_and_critic_parallelism_independent
     assert config.deployment.value_trainer_nodes == 2
     assert config.orchestrator.num_train_workers == 2
     assert config.orchestrator.value_num_train_workers == 2
+    assert value_rendezvous_port(config) == 29502
+    config.trainer.weight_broadcast.port = 29502
+    config.value.service_port = 29503
+    assert value_rendezvous_port(config) == 29504
     payload["deployment"].pop("num_value_gpus_per_train_node")
     payload["trainer"]["model"]["cp"] = 16
     payload["value"]["model"]["cp"] = 8
