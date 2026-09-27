@@ -555,6 +555,14 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_value_nodes=config.deployment.num_value_nodes,
+            value_trainer_nodes=config.deployment.value_trainer_nodes,
+            train_gpus_per_node=config.deployment.train_gpus_per_node,
+            value_gpus_per_node=config.deployment.value_gpus_per_node,
+            value_gpus_per_train_node=config.deployment.num_value_gpus_per_train_node,
+            value_gpu_offset=config.deployment.train_gpus_per_node
+            if config.deployment.num_value_gpus_per_train_node
+            else 0,
+            has_value=config.value is not None,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
@@ -603,6 +611,14 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_value_nodes=config.deployment.num_value_nodes,
+            value_trainer_nodes=config.deployment.value_trainer_nodes,
+            train_gpus_per_node=config.deployment.train_gpus_per_node,
+            value_gpus_per_node=config.deployment.value_gpus_per_node,
+            value_gpus_per_train_node=config.deployment.num_value_gpus_per_train_node,
+            value_gpu_offset=config.deployment.train_gpus_per_node
+            if config.deployment.num_value_gpus_per_train_node
+            else 0,
+            has_value=config.value is not None,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,

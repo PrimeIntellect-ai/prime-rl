@@ -214,6 +214,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_value_nodes: int = Field(0, ge=0)
     """Dedicated value-trainer nodes for PPO/SAO."""
 
+    num_value_gpus_per_train_node: int = Field(0, ge=0)
+    """GPUs reserved for the critic on each training node instead of dedicated value nodes."""
+
     num_infer_nodes: int | None = Field(None, ge=0)
     """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
 
@@ -225,6 +228,26 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
+
+    @model_validator(mode="after")
+    def validate_value_gpu_layout(self):
+        if self.num_value_gpus_per_train_node >= self.gpus_per_node:
+            raise ValueError("num_value_gpus_per_train_node must leave at least one policy GPU per training node")
+        if self.num_value_nodes and self.num_value_gpus_per_train_node:
+            raise ValueError("Use dedicated value nodes or shared training-node GPUs, not both")
+        return self
+
+    @property
+    def train_gpus_per_node(self) -> int:
+        return self.gpus_per_node - self.num_value_gpus_per_train_node
+
+    @property
+    def value_gpus_per_node(self) -> int:
+        return self.num_value_gpus_per_train_node or self.gpus_per_node
+
+    @property
+    def value_trainer_nodes(self) -> int:
+        return self.num_train_nodes if self.num_value_gpus_per_train_node else self.num_value_nodes
 
     @property
     def infer_nodes_per_replica(self) -> int:
@@ -355,14 +378,16 @@ class RLConfig(BaseConfig):
             if self.deployment.type == "single_node" and self.deployment.num_value_gpus == 0:
                 raise ValueError("A value trainer requires num_value_gpus > 0")
             if self.deployment.type == "multi_node":
-                if self.deployment.num_value_nodes == 0:
-                    raise ValueError("A multi-node value trainer requires num_value_nodes > 0")
+                if self.deployment.value_trainer_nodes == 0:
+                    raise ValueError("A multi-node value trainer requires value nodes or GPUs on training nodes")
                 if self.deployment.infer_nodes_per_replica == 0:
                     raise ValueError("A multi-node value trainer requires inference nodes for the orchestrator")
         elif self.deployment.type == "single_node" and self.deployment.num_value_gpus:
             raise ValueError("num_value_gpus requires a [value] configuration")
-        elif self.deployment.type == "multi_node" and self.deployment.num_value_nodes:
-            raise ValueError("num_value_nodes requires a [value] configuration")
+        elif self.deployment.type == "multi_node" and (
+            self.deployment.num_value_nodes or self.deployment.num_value_gpus_per_train_node
+        ):
+            raise ValueError("Value GPUs require a [value] configuration")
         if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
@@ -568,20 +593,26 @@ class RLConfig(BaseConfig):
             raise ValueError("trainer.loss.type must match the PPO or SAO algorithm")
         model_overrides = self.value.model.model_dump(exclude_unset=True)
         self.value.model = ModelConfig.model_validate({**self.trainer.model.model_dump(), **model_overrides})
+        if self.value.model.cp > 1 and self.value.model.seq_len % (2 * self.value.model.cp):
+            raise ValueError("value.model.seq_len must be divisible by 2 * value.model.cp")
         if self.value.model.name != self.trainer.model.name:
             raise ValueError("value.model.name must match trainer.model.name")
         if self.deployment.type == "single_node":
             num_train_gpus = self.deployment.num_train_gpus
             num_value_gpus = self.deployment.num_value_gpus
         else:
-            num_train_gpus = self.deployment.num_train_nodes * self.deployment.gpus_per_node
-            num_value_gpus = self.deployment.num_value_nodes * self.deployment.gpus_per_node
+            num_train_gpus = self.deployment.num_train_nodes * self.deployment.train_gpus_per_node
+            num_value_gpus = self.deployment.value_trainer_nodes * self.deployment.value_gpus_per_node
+        if num_train_gpus % self.trainer.model.cp:
+            raise ValueError("Policy GPU count must be divisible by trainer.model.cp")
+        if num_value_gpus % self.value.model.cp:
+            raise ValueError("Value GPU count must be divisible by value.model.cp")
         if (
             self.value.model.lora is not None
             and "experts" in self.value.model.lora.target_modules
             and self.value.model.lora.rank % 8
         ):
-            raise ValueError("Expert LoRA on the Qwen3 MoE value model requires a rank divisible by 8")
+            raise ValueError("Expert LoRA requires a rank divisible by 8")
         if self.value.policy_sync_interval is not None:
             if self.value.model.lora is None:
                 raise ValueError("value.policy_sync_interval requires value.model.lora")
@@ -594,16 +625,15 @@ class RLConfig(BaseConfig):
             self.value.policy_sync_dir = self.run_dir / "policy_sync"
             self.trainer.ppo_policy_sync_dir = self.value.policy_sync_dir
             self.trainer.ppo_policy_sync_interval = self.value.policy_sync_interval
-        if num_value_gpus != self.value.model.cp:
-            raise ValueError("The value trainer currently requires one data-parallel worker")
-        if num_train_gpus != self.trainer.model.cp:
-            raise ValueError("The value trainer currently requires one policy data-parallel worker")
         if self.trainer.rollout_transport.type != "zmq":
             raise ValueError("The separate value trainer currently requires ZMQ rollout transport")
         self.value.rollout_transport = self.trainer.rollout_transport.model_copy(deep=True)
         self.value.rollout_transport.port += 2
         self.orchestrator.value_rollout_transport = self.value.rollout_transport.model_copy(deep=True)
         self.orchestrator.value_service_url = f"http://{self.value.service_host}:{self.value.service_port}"
+        self.orchestrator.value_seq_len = self.value.model.seq_len
+        self.orchestrator.value_num_train_workers = num_value_gpus // self.value.model.cp
+        self.orchestrator.value_pad_to_multiple_of = self.value.model.cp
         self.value.max_steps = self.trainer.max_steps
         self.value.ckpt = self.value.ckpt or self.trainer.ckpt
         if self.value.resume is not None and self.value.resume.dir is not None:
@@ -814,7 +844,7 @@ class RLConfig(BaseConfig):
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = (
-                self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
+                self.deployment.num_train_nodes * self.deployment.train_gpus_per_node // self.trainer.model.cp
             )
 
             if self.deployment.nodes_per_fsdp_group is not None:

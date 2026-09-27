@@ -877,7 +877,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         )
 
 
-def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
+def _make_dummy_batch(source: MicroBatch, *, for_value: bool = False) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
@@ -887,9 +887,9 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
-    dummy.old_values = None
-    dummy.value_targets = None
-    dummy.value_mask = None
+    dummy.old_values = [0.0] * len(dummy.input_ids) if for_value else None
+    dummy.value_targets = [0.0] * len(dummy.input_ids) if for_value else None
+    dummy.value_mask = [False] * len(dummy.input_ids) if for_value else None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
     # The copied identity would double-annotate the source's traces.
@@ -898,11 +898,13 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     return dummy
 
 
-def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+def _pad_group_for_distribution(
+    group: list[MicroBatch], num_train_workers: int, *, for_value: bool = False
+) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = _make_dummy_batch(group[0], for_value=for_value)
         group.extend([dummy] * num_padding)
     return group
 
@@ -913,6 +915,7 @@ def prepare_batch(
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    for_value: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -933,8 +936,8 @@ def prepare_batch(
     text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
 
     # Pad each group independently so its count is divisible by num_train_workers
-    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
-    text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
+    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers, for_value=for_value)
+    text_batches = _pad_group_for_distribution(text_batches, num_train_workers, for_value=for_value)
 
     # Alignment check after distribution padding so the dummy batches are covered too
     for micro_batch in (*mm_batches, *text_batches):

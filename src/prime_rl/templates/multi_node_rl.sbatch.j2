@@ -29,6 +29,11 @@ set -e
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
 export NUM_VALUE_NODES={{ num_value_nodes }}
+export NUM_VALUE_TRAINER_NODES={{ value_trainer_nodes }}
+export TRAIN_GPUS_PER_NODE={{ train_gpus_per_node }}
+export VALUE_GPUS_PER_NODE={{ value_gpus_per_node }}
+export VALUE_GPUS_PER_TRAIN_NODE={{ value_gpus_per_train_node }}
+export VALUE_GPU_OFFSET={{ value_gpu_offset }}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -63,10 +68,10 @@ export LAUNCHER_DIR={{ launcher_dir }}
 export LOG_DIR={{ log_dir }}
 export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
 export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
-mkdir -p $LOG_DIR/trainer $LOG_DIR/inference{% if num_value_nodes > 0 %} $LOG_DIR/value{% endif %}
+mkdir -p $LOG_DIR/trainer $LOG_DIR/inference{% if has_value %} $LOG_DIR/value{% endif %}
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
-{% if num_value_nodes > 0 -%}
+{% if has_value -%}
 ln -sfn value/node_0.log $LOG_DIR/value.log
 {% endif -%}
 
@@ -88,8 +93,12 @@ export WANDB_SHARED_MODE=1
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$NUM_TRAIN_NODES} )
-{% if num_value_nodes > 0 -%}
+{% if has_value -%}
+{% if value_gpus_per_train_node > 0 -%}
+VALUE_HOSTS=( ${TRAIN_HOSTS[@]} )
+{% else -%}
 VALUE_HOSTS=( ${HOSTNAMES[@]:$((NUM_INFER_NODES + NUM_TRAIN_NODES)):$NUM_VALUE_NODES} )
+{% endif -%}
 export VALUE_ADDR="${VALUE_HOSTS[0]}"
 export VALUE_SERVICE_PORT={{ value_service_port }}
 {% endif -%}
@@ -142,7 +151,7 @@ echo "ADMIN_URLS=${ADMIN_URLS}"
 
 echo "HOSTNAMES=${HOSTNAMES[*]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
-{% if num_value_nodes > 0 -%}
+{% if has_value -%}
 echo "VALUE_HOSTS=${VALUE_HOSTS[*]}"
 {% endif -%}
 
@@ -505,7 +514,7 @@ else
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
-{% if num_value_nodes > 0 %}
+{% if has_value %}
 if [ "$TRAIN_NODE_RANK" -lt "$NUM_TRAIN_NODES" ]; then
 {% endif %}
 
@@ -517,10 +526,10 @@ if [ "$TRAIN_NODE_RANK" -lt "$NUM_TRAIN_NODES" ]; then
     echo $HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=trainer uv run torchrun \
+        CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((TRAIN_GPUS_PER_NODE - 1))) WANDB_SHARED_LABEL=trainer uv run torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
-            --nproc-per-node=$GPUS_PER_NODE \
+            --nproc-per-node=$TRAIN_GPUS_PER_NODE \
             --node-rank=$TRAIN_NODE_RANK \
             --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
             --rdzv-id=job_$SLURM_JOB_ID \
@@ -539,21 +548,26 @@ if [ "$TRAIN_NODE_RANK" -lt "$NUM_TRAIN_NODES" ]; then
         fi
         exit "$COMPONENT_CODE"
     ) &
-{% if num_value_nodes > 0 %}fi{% endif %}
+{% if has_value %}fi{% endif %}
 {% if num_infer_nodes > 0 %}    fi{% endif %}
-{% if num_value_nodes > 0 %}
+{% if has_value %}
+{% if value_gpus_per_train_node > 0 %}
+if [ "$SLURM_PROCID" -ge "$NUM_INFER_NODES" ] && [ "$SLURM_PROCID" -lt "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
+    VALUE_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
+{% else %}
 if [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
     VALUE_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES - NUM_TRAIN_NODES))
+{% endif %}
 {%- for key, value in value_env_vars.items() %}
     export {{ key }}="{{ value }}"
 {%- endfor %}
     echo $HOSTNAMES_STR | tee $LOG_DIR/value/node_${VALUE_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=value uv run torchrun \
+        CUDA_VISIBLE_DEVICES=$(seq -s, $VALUE_GPU_OFFSET $((VALUE_GPU_OFFSET + VALUE_GPUS_PER_NODE - 1))) WANDB_SHARED_LABEL=value uv run torchrun \
             --role=value \
-            --nnodes=$NUM_VALUE_NODES \
-            --nproc-per-node=$GPUS_PER_NODE \
+            --nnodes=$NUM_VALUE_TRAINER_NODES \
+            --nproc-per-node=$VALUE_GPUS_PER_NODE \
             --node-rank=$VALUE_NODE_RANK \
             --rdzv-endpoint=$VALUE_ADDR:$((MASTER_PORT + 1)) \
             --rdzv-id=value_$SLURM_JOB_ID \
@@ -612,7 +626,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif use_nixl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
         {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-        {% endif %}{% if num_value_nodes > 0 %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --value-rollout-transport.host $ORCH_ADDR --value-service-url http://$VALUE_ADDR:$VALUE_SERVICE_PORT"
+        {% endif %}{% if has_value %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --value-rollout-transport.host $ORCH_ADDR --value-service-url http://$VALUE_ADDR:$VALUE_SERVICE_PORT"
         {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?

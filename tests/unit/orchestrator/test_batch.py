@@ -56,6 +56,26 @@ def make_sized_training_example(length: int, env_name: str = "test-env") -> Trai
     )
 
 
+def test_value_packing_uses_own_context_and_masked_dummies():
+    samples = [make_sized_training_example(length) for length in (5, 4, 3)]
+    for sample in samples:
+        n = len(sample.token_ids)
+        sample.old_values = [0.1] * n
+        sample.value_targets = [0.2] * n
+        sample.value_mask = list(sample.mask)
+    policy_grid = prepare_batch(samples, seq_len=8, num_train_workers=1, bin_cost=sum)
+    value_grid = prepare_batch(
+        samples, seq_len=4, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=2, for_value=True
+    )
+    assert len(policy_grid) == 1 and len(value_grid) == 2
+    assert all(len(worker) == len(value_grid[0]) for worker in value_grid)
+    assert all(len(batch.input_ids) <= 4 and len(batch.input_ids) % 2 == 0 for worker in value_grid for batch in worker)
+    assert sum(sum(batch.value_mask) for worker in value_grid for batch in worker) == 2
+    dummies = [batch for worker in value_grid for batch in worker if batch.trace_ids is None]
+    assert dummies and all(batch.value_targets == [0.0] * len(batch.input_ids) for batch in dummies)
+    assert [len(sample.token_ids) for sample in samples] == [5, 4, 3]
+
+
 def _flatten_batches(batches_per_gpu):
     return [batch for worker_batches in batches_per_gpu for batch in worker_batches]
 

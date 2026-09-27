@@ -261,12 +261,15 @@ class Orchestrator:
 
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
+        self.value_packer = BatchPacker(config, for_value=True) if config.value_rollout_transport is not None else None
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
         )
         self.value_sender = (
-            setup_batch_sender(config.output_dir, 1, self.progress.step, config.value_rollout_transport)
+            setup_batch_sender(
+                config.output_dir, config.value_num_train_workers, self.progress.step, config.value_rollout_transport
+            )
             if config.value_rollout_transport is not None
             else None
         )
@@ -645,7 +648,9 @@ class Orchestrator:
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
         if self.value_sender is not None:
-            await self.value_sender.send(micro_batch_grid)
+            assert self.value_packer is not None
+            value_grid = await asyncio.to_thread(self.value_packer.pack, batch.samples)
+            await self.value_sender.send(value_grid)
             assert self.value_client is not None
             value_deadline = time.monotonic() + 3600
             while True:

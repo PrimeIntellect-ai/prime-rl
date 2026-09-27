@@ -74,8 +74,8 @@ class Algorithm:
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         """Assign group-relative annotations to a finalized cohort."""
 
-    async def score_samples(self, trace: vf.Trace, samples: list[TrainingSample]) -> None:
-        """Assign token-level training data after branch samples are materialized."""
+    async def score_samples(self, trace_samples: list[tuple[vf.Trace, list[TrainingSample]]]) -> None:
+        """Assign token-level training data after a group's branch samples are materialized."""
 
     async def finalize_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local scoring when the episode has trainable traces."""

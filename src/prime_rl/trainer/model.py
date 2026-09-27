@@ -1060,9 +1060,7 @@ def setup_model(
         for param in model.lm_head.parameters():
             param.requires_grad = False
         if freeze_attention:
-            for layer in model.model.layers:
-                for param in layer.self_attn.parameters():
-                    param.requires_grad = False
+            freeze_attention_modules(model)
         for param in model.value_head.parameters():
             param.requires_grad = True
 
@@ -1112,6 +1110,19 @@ def setup_model(
             model.value_head.weight.zero_()
             model.value_head.bias.zero_()
     return model
+
+
+def freeze_attention_modules(model: nn.Module) -> None:
+    attention = [
+        module
+        for name, module in model.named_modules()
+        if name.rsplit(".", 1)[-1] in {"self_attn", "linear_attn", "attn"}
+    ]
+    if not attention:
+        raise ValueError("value.freeze_attention requires named attention modules on the value backbone")
+    for module in attention:
+        for param in module.parameters():
+            param.requires_grad = False
 
 
 def forward(

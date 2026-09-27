@@ -1,5 +1,7 @@
 import asyncio
+import json
 
+import httpx
 import pytest
 import verifiers.v1 as vf
 
@@ -7,10 +9,12 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
+    PPOAlgoConfig,
 )
 from prime_rl.orchestrator.algo.gae import skip_observation_gae
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
+from prime_rl.orchestrator.algo.ppo import PPOAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
 
@@ -164,6 +168,61 @@ def _max_rl(group: list[vf.Episode]) -> list[float]:
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), clients=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
+
+
+def test_ppo_group_scoring_matches_per_sample_scoring():
+    requests = []
+
+    def score(ids):
+        raw = [token * 0.1 for token in ids]
+        return [0.0] + raw[:-1], raw[-1]
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if "batched_token_ids" in body:
+            scored = [score(ids) for ids in body["batched_token_ids"]]
+            return httpx.Response(
+                200, json={"values": [v for v, _ in scored], "bootstrap_values": [b for _, b in scored]}
+            )
+        values, bootstrap = score(body["token_ids"])
+        return httpx.Response(200, json={"values": values, "bootstrap_value": bootstrap})
+
+    async def run(batched):
+        episodes = [
+            _build_episode(1.0, sampled_lengths=[2, 2], obs_lengths=[1]),
+            _build_episode(0.0, sampled_lengths=[3]),
+        ]
+        trace_samples = [(e.traces[0], trace_to_samples(e.traces[0])) for e in episodes]
+        algo = PPOAlgorithm(PPOAlgoConfig(value_seq_len=4, length_adaptive_alpha=1.5), clients=None)
+        await algo.value_client.aclose()
+        algo.value_client = httpx.AsyncClient(base_url="http://value.test", transport=httpx.MockTransport(respond))
+        if batched:
+            await algo.score_samples(trace_samples)
+        else:
+            for trace, samples in trace_samples:
+                await algo.score_samples_by_sample(trace, samples)
+        await algo.aclose()
+        return [
+            (
+                sample.advantages,
+                sample.old_values,
+                sample.value_targets,
+                sample.value_mask,
+                sample.mask,
+                [node.advantages for node in trace.nodes],
+            )
+            for trace, samples in trace_samples
+            for sample in samples
+        ]
+
+    by_sample = asyncio.run(run(False))
+    assert len(requests) == 2
+    requests.clear()
+    batched = asyncio.run(run(True))
+    assert batched == by_sample
+    assert len(requests) == 1
+    assert len(requests[0]["batched_token_ids"]) == 2
 
 
 # --------------------------------------------------------------------------

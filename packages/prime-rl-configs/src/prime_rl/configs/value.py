@@ -42,4 +42,6 @@ class ValueConfig(BaseConfig):
     def validate_pretraining(self):
         if self.pretrain_steps and self.pretrain_data is None:
             raise ValueError("value.pretrain_steps requires value.pretrain_data")
+        if self.model.cp > 1 and self.model.seq_len % (2 * self.model.cp):
+            raise ValueError("value.model.seq_len must be divisible by 2 * value.model.cp")
         return self

@@ -48,11 +48,48 @@ from prime_rl.utils.utils import resolve_latest_ckpt_step
 
 @dataclass
 class ScoreRequest:
-    token_ids: list[int]
+    batched_token_ids: list[list[int]]
+    single: bool = False
     done: threading.Event = field(default_factory=threading.Event)
-    values: list[float] | None = None
-    bootstrap_value: float | None = None
+    values: list[list[float]] | None = None
+    bootstrap_values: list[float] | None = None
     error: BaseException | None = None
+
+
+@dataclass
+class ScoreBin:
+    indices: list[int]
+    token_ids: list[int]
+    lengths: list[int]
+
+
+def pack_score_requests(batched_token_ids: list[list[int]], seq_len: int, dp: int, cp: int) -> list[list[ScoreBin]]:
+    """Pack whole scoring sequences, then give every DP replica the same number of bins."""
+    if not batched_token_ids or any(not ids or len(ids) > seq_len for ids in batched_token_ids):
+        raise ValueError("Scoring requires nonempty sequences within value.model.seq_len")
+    divisor = 2 * cp if cp > 1 else 1
+    if seq_len % divisor:
+        raise ValueError("value.model.seq_len must be divisible by the CP score divisor")
+    bins: list[ScoreBin] = []
+    for index in sorted(range(len(batched_token_ids)), key=lambda i: len(batched_token_ids[i]), reverse=True):
+        tokens = batched_token_ids[index]
+        target = next((b for b in bins if len(b.token_ids) + len(tokens) <= seq_len), None)
+        if target is None:
+            target = ScoreBin([], [], [])
+            bins.append(target)
+        target.indices.append(index)
+        target.token_ids.extend(tokens)
+        target.lengths.append(len(tokens))
+    ranks: list[list[ScoreBin]] = [[] for _ in range(dp)]
+    loads = [0] * dp
+    for score_bin in sorted(bins, key=lambda b: len(b.token_ids), reverse=True):
+        rank = min(range(dp), key=lambda i: (loads[i], len(ranks[i])))
+        ranks[rank].append(score_bin)
+        loads[rank] += len(score_bin.token_ids)
+    steps = max(map(len, ranks))
+    for rank_bins in ranks:
+        rank_bins.extend(ScoreBin([], [], []) for _ in range(steps - len(rank_bins)))
+    return ranks
 
 
 @dataclass
@@ -61,7 +98,7 @@ class ServiceState:
     completed_step: int = 0
 
 
-def _server_handler(state: ServiceState):
+def _server_handler(state: ServiceState, max_seq_len: int | None = None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/health":
@@ -83,15 +120,23 @@ def _server_handler(state: ServiceState):
                 self.send_error(404)
                 return
             body = self.rfile.read(int(self.headers["Content-Length"]))
-            token_ids = json.loads(body)["token_ids"]
+            data = json.loads(body)
+            single = "token_ids" in data
+            batched_token_ids = [data["token_ids"]] if single else data.get("batched_token_ids")
             if (
-                not isinstance(token_ids, list)
-                or not token_ids
-                or not all(isinstance(token, int) for token in token_ids)
+                not isinstance(batched_token_ids, list)
+                or not batched_token_ids
+                or any(
+                    not isinstance(ids, list) or not ids or any(not isinstance(token, int) for token in ids)
+                    for ids in batched_token_ids
+                )
             ):
-                self.send_error(400, "token_ids must be a nonempty list of integers")
+                self.send_error(400, "batched_token_ids must be a nonempty list of nonempty integer lists")
                 return
-            request = ScoreRequest(token_ids)
+            if max_seq_len is not None and any(len(ids) > max_seq_len for ids in batched_token_ids):
+                self.send_error(400, "scoring sequence exceeds value.model.seq_len")
+                return
+            request = ScoreRequest(batched_token_ids, single=single)
             state.requests.put(request)
             if not request.done.wait(timeout=3600):
                 self.send_error(504, "value scoring timed out")
@@ -99,7 +144,12 @@ def _server_handler(state: ServiceState):
             if request.error is not None:
                 self.send_error(500, str(request.error))
                 return
-            payload = json.dumps({"values": request.values, "bootstrap_value": request.bootstrap_value}).encode()
+            if single:
+                payload = json.dumps(
+                    {"values": request.values[0], "bootstrap_value": request.bootstrap_values[0]}
+                ).encode()
+            else:
+                payload = json.dumps({"values": request.values, "bootstrap_values": request.bootstrap_values}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -158,6 +208,58 @@ def _score(model, token_ids: list[int], parallel_dims, cp_style: str, lora_enabl
         shift_tensor_right(values)[0, :original_length].float().cpu().tolist(),
         values[0, original_length - 1].float().item(),
     )
+
+
+def _score_batch(
+    model, batched_token_ids: list[list[int]], parallel_dims, seq_len: int, cp_style: str, lora_enabled: bool
+) -> tuple[list[list[float]], list[float]] | None:
+    dp = parallel_dims.get_mesh("dp").size()
+    cp = parallel_dims.cp
+    rank = dist.get_rank()
+    dp_rank = rank // parallel_dims.non_data_parallel_size
+    bins_by_rank = pack_score_requests(batched_token_ids, seq_len, dp, cp)
+    local_results: list[tuple[int, list[float], float]] = []
+    model.eval()
+    with torch.no_grad():
+        for step in range(len(bins_by_rank[0])):
+            score_bin = bins_by_rank[dp_rank][step]
+            length = len(score_bin.token_ids)
+            max_length = max(len(bins[step].token_ids) for bins in bins_by_rank)
+            divisor = 2 * cp if cp > 1 else 1
+            padded_length = ((max_length + divisor - 1) // divisor) * divisor
+            padding = padded_length - length
+            tokens = score_bin.token_ids + [0] * padding
+            positions = [position for n in score_bin.lengths for position in range(n)] + list(range(padding))
+            segment_lengths = score_bin.lengths + ([padding] if padding else [])
+            input_ids = torch.tensor(tokens, device="cuda", dtype=torch.long).unsqueeze(0)
+            position_ids = torch.tensor(positions, device="cuda", dtype=torch.long).unsqueeze(0)
+            seq_lens = torch.tensor(segment_lengths, device="cuda", dtype=torch.long)
+            raw_values = _forward_values(
+                model, input_ids, position_ids, seq_lens, parallel_dims, cp_style, lora_enabled=lora_enabled
+            )
+            if parallel_dims.cp_enabled:
+                raw_values = gather_for_cp_wo_grad(raw_values, cp, parallel_dims.get_mesh("cp").get_group())
+            if rank % parallel_dims.non_data_parallel_size == 0:
+                offset = 0
+                for index, n in zip(score_bin.indices, score_bin.lengths, strict=True):
+                    segment = raw_values[:, offset : offset + n]
+                    local_results.append(
+                        (index, shift_tensor_right(segment)[0].float().cpu().tolist(), segment[0, -1].float().item())
+                    )
+                    offset += n
+    gathered = [None] * dist.get_world_size() if rank == 0 else None
+    dist.gather_object(local_results, gathered, dst=0)
+    if rank != 0:
+        return None
+    values: list[list[float] | None] = [None] * len(batched_token_ids)
+    bootstraps: list[float | None] = [None] * len(batched_token_ids)
+    for rank_results in gathered:
+        for index, token_values, bootstrap in rank_results:
+            values[index] = token_values
+            bootstraps[index] = bootstrap
+    if any(value is None for value in values) or any(value is None for value in bootstraps):
+        raise RuntimeError("Value scoring failed to return every sequence")
+    return values, bootstraps
 
 
 def _train_batch(
@@ -322,14 +424,18 @@ def train(config: ValueConfig):
 
     if checkpoint_step is None:
         _pretrain(model, optimizer, scheduler, gradient_manager, parallel_dims, config)
-    dataloader = DataLoader(config.rollout_dir, progress.step, 1, config.rollout_transport)
+    dataloader = DataLoader(
+        config.rollout_dir, progress.step, parallel_dims.get_mesh("dp").size(), config.rollout_transport
+    )
     dist.barrier()
 
     state = ServiceState(completed_step=progress.step - 1)
     server = None
     server_thread = None
     if world.is_master:
-        server = ThreadingHTTPServer((config.service_host, config.service_port), _server_handler(state))
+        server = ThreadingHTTPServer(
+            (config.service_host, config.service_port), _server_handler(state, config.model.seq_len)
+        )
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
         logger.info(f"Value service ready on {config.service_host}:{config.service_port}")
@@ -357,7 +463,7 @@ def train(config: ValueConfig):
                         request = state.requests.get(timeout=0.1)
                     except queue.Empty:
                         continue
-                    command = ("score", request.token_ids)
+                    command = ("score", request.batched_token_ids)
             else:
                 command = None
             objects = [command]
@@ -384,12 +490,16 @@ def train(config: ValueConfig):
                 continue
             if action == "score":
                 try:
-                    values, bootstrap_value = _score(
-                        model, payload, parallel_dims, config.model.cp_style, config.model.lora is not None
+                    result = _score_batch(
+                        model,
+                        payload,
+                        parallel_dims,
+                        config.model.seq_len,
+                        config.model.cp_style,
+                        config.model.lora is not None,
                     )
                     if request is not None:
-                        request.values = values
-                        request.bootstrap_value = bootstrap_value
+                        request.values, request.bootstrap_values = result
                 except BaseException as error:
                     if request is not None:
                         request.error = error

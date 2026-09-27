@@ -548,17 +548,47 @@ def test_multi_node_value_layout_keeps_policy_and_critic_parallelism_independent
     assert remote_orchestrator.train.source[0].algo.value_url == "http://value-host:8123"
 
     payload["deployment"]["num_value_nodes"] = 0
-    with pytest.raises(ValidationError, match="num_value_nodes > 0"):
+    with pytest.raises(ValidationError, match="requires value nodes or GPUs"):
         RLConfig.model_validate(payload)
+
+    payload["deployment"]["num_value_gpus_per_train_node"] = 4
+    payload["trainer"]["model"]["cp"] = 4
+    payload["value"]["model"]["cp"] = 4
+    config = RLConfig.model_validate(payload)
+    assert config.deployment.train_gpus_per_node == 4
+    assert config.deployment.value_trainer_nodes == 2
+    assert config.orchestrator.num_train_workers == 2
+    assert config.orchestrator.value_num_train_workers == 2
+    payload["deployment"].pop("num_value_gpus_per_train_node")
+    payload["trainer"]["model"]["cp"] = 16
+    payload["value"]["model"]["cp"] = 8
 
     payload["deployment"]["num_value_nodes"] = 1
     payload["value"]["model"]["cp"] = 4
-    with pytest.raises(ValidationError, match="one data-parallel worker"):
+    config = RLConfig.model_validate(payload)
+    assert config.orchestrator.value_num_train_workers == 2
+    assert config.orchestrator.value_pad_to_multiple_of == 4
+    assert config.orchestrator.value_seq_len == config.value.model.seq_len
+
+    payload["trainer"]["model"]["cp"] = 8
+    config = RLConfig.model_validate(payload)
+    assert config.orchestrator.num_train_workers == 2
+    assert config.orchestrator.value_num_train_workers == 2
+
+    payload["value"]["model"]["cp"] = 3
+    payload["value"]["model"]["seq_len"] = 2046
+    with pytest.raises(ValidationError, match="Value GPU count must be divisible"):
         RLConfig.model_validate(payload)
 
-    payload["value"]["model"]["cp"] = 8
+    payload["value"]["model"]["cp"] = 4
+    payload["value"]["model"].pop("seq_len")
+    payload["trainer"]["model"]["cp"] = 7
+    with pytest.raises(ValidationError, match="Policy GPU count must be divisible"):
+        RLConfig.model_validate(payload)
+
     payload["trainer"]["model"]["cp"] = 8
-    with pytest.raises(ValidationError, match="one policy data-parallel worker"):
+    payload["trainer"]["model"]["seq_len"] = 2050
+    with pytest.raises(ValidationError, match="value.model.seq_len must be divisible"):
         RLConfig.model_validate(payload)
 
 
