@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import orjson
-import pytest
 
 from prime_rl.eval import resume
 from prime_rl.monitors.file.traces import get_trace_stream
@@ -64,41 +63,6 @@ def test_trigger_queues_only_owed_rollouts() -> None:
     ]
 
 
-def test_check_config_allows_selection_changes_only() -> None:
-    source = {
-        "env": {"taskset": {"id": "gsm8k"}},
-        "select": {"limit": 8},
-        "group_size": None,
-        "serve": {"address": None},
-    }
-    previous = {
-        "model": "a",
-        "select": {"limit": 8},
-        "group_size": 2,
-        "sampling": {"temperature": 1.0},
-        "source": [source],
-    }
-    resized = {
-        **previous,
-        "select": {"limit": 16},
-        "group_size": 4,
-        "source": [
-            {
-                **source,
-                "select": {"limit": 16, "include": {"idx": ["0:4"]}},
-                "group_size": 8,
-                "serve": {"address": "tcp://x"},
-            }
-        ],
-    }
-    resume.check_config(previous, resized)
-
-    with pytest.raises(ValueError, match="model, sampling.temperature"):
-        resume.check_config(previous, {**previous, "model": "b", "sampling": {"temperature": 0.5}})
-    with pytest.raises(ValueError, match="source"):
-        resume.check_config(previous, {**previous, "source": previous["source"] * 2})
-
-
 def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
     def land(*keys: str) -> None:
         stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
@@ -115,11 +79,3 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
     land("m0", "m2")
     assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1", "m2"]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
-
-
-def test_previous_config_is_the_one_stamped_beside_the_results(tmp_path) -> None:
-    resume.stamp_config(tmp_path, {"model": "a"})
-    resume.take_landed(tmp_path)  # the attempt that ran is archived; a rejected one never stamps
-    assert resume.previous_config(tmp_path) == {"model": "a"}
-    resume.stamp_config(tmp_path, {"model": "b"})
-    assert resume.previous_config(tmp_path) == {"model": "b"}

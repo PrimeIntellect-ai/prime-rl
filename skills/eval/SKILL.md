@@ -106,4 +106,4 @@ The progress line in `eval.log` counts live rollouts by phase (`- boot 1 · runn
 
 Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
 
-Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed (`select`/`group_size` may change, the model, sampling and env config may not). Env servers are children of the eval process and exit with it.
+Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed. Any config may be overridden on resume (`select`/`group_size` change what is owed); keep the model, sampling and env config the same to keep the landed episodes comparable. Env servers are children of the eval process and exit with it.
