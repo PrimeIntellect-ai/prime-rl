@@ -20,6 +20,7 @@ from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
+from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -40,6 +41,7 @@ class OnlineEval:
         # The last weight-broadcast step already handled (evaluated or skipped).
         self.last_step = config.resume_step or 0
         self.receiver: WeightReceiver | None = None
+        self.watcher: WeightWatcher | None = None
 
     async def run(self) -> None:
         config = self.config
@@ -67,6 +69,15 @@ class OnlineEval:
             model_name=config.model,
         )
         await self.receiver.initialize()
+        # The watcher applies each broadcast on demand (no polling task): the dispatcher
+        # drains stale work before the swap and reads the version it serves.
+        dispatcher = self.runner.dispatcher
+        assert dispatcher is not None
+        self.watcher = WeightWatcher(self.receiver)
+        self.watcher.bind(
+            on_version_pending=[dispatcher.on_version_pending], on_new_version=[dispatcher.on_new_version]
+        )
+        dispatcher.bind(version=lambda: self.watcher.version)
 
         await self.runner.start()
         await self.watch()
@@ -76,7 +87,7 @@ class OnlineEval:
     async def watch(self) -> None:
         """Evaluate each eligible weight broadcast as it appears."""
         config = self.config
-        assert self.receiver is not None
+        assert self.receiver is not None and self.watcher is not None
         assert config.broadcasts_dir is not None
 
         # Rendezvous with the trainer's startup broadcast (v0 fresh, the checkpoint step
@@ -84,8 +95,7 @@ class OnlineEval:
         # its startup broadcast until this receive, and for filesystem it guarantees the
         # served weights match the trainer's incoming policy.
         startup_step = config.resume_step or 0
-        await self.receiver.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)
-        self.runner.policy.version = startup_step
+        await self.watcher.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)
 
         if config.resume_step is None:
             # The first trigger fires every env (policy v0) unless ``skip_first_step``.
@@ -167,34 +177,21 @@ class OnlineEval:
         that a live transport's broadcast must always be received (the trainer
         is blocked inside it), eval or no eval."""
         runner = self.runner
+        assert self.receiver is not None and self.watcher is not None
         if reload_weights:
-            assert self.receiver is not None
             broadcast_dir = self.receiver.step_dir(step)
             if not self.receiver.is_published(step):
                 get_logger().warning(f"No published weight broadcast for step {step} ({broadcast_dir}) - skipping eval")
                 self.last_step = max(self.last_step, step)
                 return
-
-        # Trigger before the reload: the dispatcher only schedules eval in PREFER_EVAL,
-        # so nothing dispatches until ``run_epoch`` switches modes below.
-        fired = runner.eval_source.trigger(step, force=force)
+            # Every offered version must be received: the trainer blocks inside the
+            # handshake, so a failed receive fails the run loudly.
+            get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
+            await self.watcher.apply(step)
         self.last_step = max(self.last_step, step)
 
-        if reload_weights:
-            # Every offered version must be received: the trainer blocks inside
-            # the handshake, so a failed receive fails the run loudly.
-            get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
-            await runner.dispatcher.on_version_pending(step)
-            await self.receiver.receive(step)
-            runner.policy.version = step
-            await runner.dispatcher.on_new_version(step)
-        else:
-            runner.policy.version = step
-
-        if not fired:
-            return
         superseding_step = (lambda: self.next_published_step(step)) if self.config.cancel_on_new_checkpoint else None
-        await runner.run_epoch(fired, step, superseding_step=superseding_step)
+        await runner.run_epoch(step, force=force, superseding_step=superseding_step)
 
 
 @clean_exit

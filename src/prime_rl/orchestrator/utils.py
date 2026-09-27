@@ -4,61 +4,8 @@ import gc
 import logging
 import math
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
-
-import verifiers.v1 as vf
 
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
-
-
-def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
-    name = episode.env.name
-    if name is None:
-        raise ValueError("Orchestrated episode is missing its environment name")
-    return name
-
-
-def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
-    group = episode.group
-    if group is None:
-        raise ValueError("Orchestrated episode is missing its rollout group")
-    return group.id
-
-
-def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
-    run = episode.run
-    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
-        raise ValueError("Train episode is missing training-work provenance")
-    return run.work
-
-
-def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
-    run = episode.run
-    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.EvalWorkInfo):
-        raise ValueError("Eval episode is missing evaluation-work provenance")
-    return run.work
-
-
-def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
-    """Oldest dispatch version whose episodes may still train in batch
-    ``step`` — anything older would ship past ``max_off_policy_steps``."""
-    return (step - 1) - max_off_policy_steps
-
-
-def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:
-    """``(total, in_flight, in_queue)`` staleness of one train episode when
-    consumed by batch ``training_step``: the version the batch trains on
-    (v{step-1}) minus the version that generated the episode. ``in_flight``
-    is the span's share (weight updates during generation); ``in_queue`` is
-    time spent buffered between completion and ship. Frozen-sourced episodes
-    (no policy span) are never stale."""
-    policy = train_work(episode).policy
-    if policy is None:
-        return 0, 0, 0
-    total = max(0, (training_step - 1) - policy.start)
-    in_flight = min(total, max(0, policy.end - policy.start))
-    in_queue = total - in_flight
-    return total, in_flight, in_queue
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

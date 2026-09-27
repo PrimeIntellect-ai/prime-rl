@@ -35,7 +35,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
-| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
+| `uv run orchestrator` | Standalone orchestrator process ([components and wiring](orchestrator.md)). | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
 | `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source; each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/<split>/<name>.address` for the orchestrator); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
@@ -58,7 +58,6 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | Knob | What it does |
 |---|---|
 | `orchestrator.batch_size` | Tasks per trainer step. |
-| `orchestrator.constant_trainer_batch_size` | Keep trainer batches constant when samples have no training signal, such as zero advantage on all tokens. Enabled by default. Disable it for faster collection with variable trainer batch sizes. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |

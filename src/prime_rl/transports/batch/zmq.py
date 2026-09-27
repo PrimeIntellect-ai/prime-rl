@@ -14,10 +14,10 @@ class ZMQBatchSender(BatchSender):
         There is one sender (in the orchestrator process) for the entire data world.
 
         PUB never blocks: a message past a subscriber's HWM would be dropped
-        silently. The orchestrator's dispatch gate bounds in-flight steps to
-        TARGET_LAG + 1 (one message per rank per step), far below the HWM, so
-        drops cannot happen in steady state; the READY barrier below covers
-        slow joiners at startup.
+        silently. The orchestrator's lag gate bounds in-flight steps to
+        max_off_policy_steps + 1 (one message per rank per step), and the config
+        requires the HWM to exceed that, so drops cannot happen in steady state; the
+        READY barrier below covers slow joiners at startup.
         """
         super().__init__(output_dir, data_world_size)
         # Async context so ``send`` yields instead of blocking the orchestrator event loop

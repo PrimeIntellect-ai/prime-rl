@@ -445,7 +445,7 @@ Scoring runs before curriculum admission, so a rollout that is later rejected st
 
 The orchestrator filters samples with no training signal. This includes samples with zero advantage on all RL tokens. Samples that still carry CE or reference-KL components are retained. Filtering an RL token also removes its trainer/inference mismatch-KL contribution.
 
-`orchestrator.constant_trainer_batch_size` defaults to `true`. The orchestrator filters samples before they count toward the batch target. It collects replacements, so rollout-based batches contain `orchestrator.batch_size` training traces. Set the option to `false` to filter after collection without replacement. This setting can improve orchestrator throughput, but it produces smaller trainer batches.
+The orchestrator prunes zero-advantage tokens as each group finishes, and a trace left with nothing to train does not count toward `orchestrator.batch_size`. Every batch therefore holds exactly `orchestrator.batch_size` traces with training signal.
 
 ## Curricula
 

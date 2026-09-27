@@ -550,7 +550,7 @@ class OrchestratorConfig(BaseConfig):
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
-    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
+    """Mirror inference-server metrics to the monitors. The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """Role for each policy admin client when collecting P/D inference metrics."""
@@ -570,20 +570,15 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
-
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
-
-    constant_trainer_batch_size: bool = True
-    """Require each batch to reach its effective sample target."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
+    batch_size: int = Field(128, ge=1)
+    """Traces to train on per step. Only traces with training signal count: zero-advantage
+    tokens are pruned as groups finish, and a trace left with nothing to train is replaced."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
+
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: one episode is one token. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
@@ -731,16 +726,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
-        if self.batch_size is not None and self.batch_size % self.group_size != 0:
+        if self.batch_size % self.group_size != 0:
             raise ValueError("Batch size must be divisible by the number of samples per problem")
 
         for field in ("max_inflight", "initial_inflight"):
