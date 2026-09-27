@@ -36,12 +36,12 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.loss_normalization import LossNormalizer
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
-    sample_loss_weights,
     setup_dataloader,
     setup_dataset,
 )
@@ -238,6 +238,7 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
+    loss_normalizer = LossNormalizer(config.loss_normalization, parallel_dims, loss_replicated_across_cp=False)
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning the weighted loss sum and its normalizer count."""
@@ -246,13 +247,9 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
         seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
-        if config.loss_normalization == "sample":
-            loss_weights = sample_loss_weights(micro_batch["loss_mask"], micro_batch["seq_lens"]).to(
-                "cuda", non_blocking=True
-            )
-            normalizer_count = torch.tensor(len(micro_batch["seq_lens"]), dtype=torch.int64, device="cuda")
-        else:
-            loss_weights = None
+        loss_weights = loss_normalizer.weights(micro_batch["loss_mask"], micro_batch["seq_lens"], require_nonempty=True)
+        if loss_weights is not None:
+            loss_weights = loss_weights.to("cuda", non_blocking=True)
         mm_kwargs = micro_batch.get("mm_kwargs")
         if mm_kwargs is not None:
             mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
@@ -287,8 +284,14 @@ def train(config: SFTConfig):
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
-        if loss_weights is None:
-            normalizer_count = loss_mask.sum(dtype=torch.int64)
+        normalizer_count = torch.tensor(
+            loss_normalizer.local_count(
+                micro_batch["loss_mask"] if loss_normalizer.mode == "sample" else loss_mask,
+                micro_batch["seq_lens"] if loss_normalizer.mode == "sample" else [loss_mask.numel()],
+            ),
+            dtype=torch.int64,
+            device="cuda",
+        )
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if isinstance(config.model.fused_lm_head_token_chunk_size, int):
@@ -308,9 +311,7 @@ def train(config: SFTConfig):
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                 )
                 token_loss = -out["logprobs"][loss_mask]
-                loss_sum = (
-                    (token_loss * loss_weights[loss_mask]).sum() if loss_weights is not None else token_loss.sum()
-                )
+                loss_sum = (token_loss * (loss_weights[loss_mask] if loss_weights is not None else 1.0)).sum()
             else:
                 out = forward(
                     model,
@@ -325,9 +326,7 @@ def train(config: SFTConfig):
                 B, L, V = logits.shape
                 token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 token_loss = token_loss[loss_mask]
-                loss_sum = (
-                    (token_loss * loss_weights[loss_mask]).sum() if loss_weights is not None else token_loss.sum()
-                )
+                loss_sum = (token_loss * (loss_weights[loss_mask] if loss_weights is not None else 1.0)).sum()
                 del logits
 
         del out
@@ -354,18 +353,18 @@ def train(config: SFTConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, normalizer_count = compute_loss(micro_batch)
+                loss_sum, normalizer = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
-                    total_normalizer_count += normalizer_count
+                    total_normalizer_count += normalizer
                 else:
                     nan_count += 1
 
         dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(total_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        total_normalizer_count = loss_normalizer.global_counts(
+            total_normalizer_count, counts_replicated_across_cp=loss_normalizer.mode == "sample"
+        )
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
-        if config.loss_normalization == "sample":
-            total_normalizer_count //= cp_size
 
         mean_loss = (
             (total_loss_sum / total_normalizer_count).item() if total_normalizer_count.item() > 0 else float("nan")
@@ -474,19 +473,15 @@ def train(config: SFTConfig):
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_normalizer_count = sum(
-                len(micro_batch["seq_lens"])
-                if config.loss_normalization == "sample"
-                else int(micro_batch["loss_mask"].sum())
+                loss_normalizer.local_count(micro_batch["loss_mask"], micro_batch["seq_lens"])
                 for micro_batch in micro_batches
             )
-            global_normalizer_count = torch.tensor(local_normalizer_count, dtype=torch.int64, device="cuda")
-            dist.all_reduce(global_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_normalizer_count_val = global_normalizer_count.item() // cp_size
-            grad_scale = (
-                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_normalizer_count_val
-                if global_normalizer_count_val > 0
-                else 1.0
+            global_normalizer_count = loss_normalizer.global_counts(
+                torch.tensor(local_normalizer_count, dtype=torch.int64, device="cuda"),
+                counts_replicated_across_cp=True,
             )
+            global_normalizer_count_val = global_normalizer_count.item()
+            grad_scale = loss_normalizer.gradient_scale(global_normalizer_count_val, grad_accum_steps=grad_accum_steps)
             prepare_gradient_offload(
                 gradient_manager,
                 grad_scale,
@@ -527,13 +522,14 @@ def train(config: SFTConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         if gradient_manager is None:
-            global_normalizer_count = step_local_normalizer_count.clone()
-            dist.all_reduce(global_normalizer_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_normalizer_count = loss_normalizer.global_counts(
+                step_local_normalizer_count, counts_replicated_across_cp=loss_normalizer.mode == "sample"
+            )
             global_normalizer_count_val = global_normalizer_count.item()
-            if config.loss_normalization == "sample":
-                global_normalizer_count_val //= cp_size
             if global_normalizer_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_normalizer_count_val
+                grad_scale = loss_normalizer.gradient_scale(
+                    global_normalizer_count_val, grad_accum_steps=grad_accum_steps
+                )
                 scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before

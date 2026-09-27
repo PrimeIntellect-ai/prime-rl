@@ -3,9 +3,8 @@
 The stream records what landed, so it is what a resume continues from. The run's ok
 episodes are read back and rejoin the epoch as if they had just arrived - through the
 monitors, so the rebuilt stream, the epoch's metrics and the platform upload cover the
-whole epoch - and only the rollouts still owed run. Errored episodes are owed again
-unless ``resume_keep_failed`` preserves the current attempt's outcomes. In-flight
-episodes that the interruption cut off are always owed again.
+whole epoch - and only the rollouts still owed run. Errored episodes and the in-flight
+ones the interruption cut off are owed again.
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
@@ -31,7 +30,6 @@ from prime_rl.utils.pathing import get_file_monitor_dir
 
 RESUMABLE = (
     "resume",
-    "resume_keep_failed",
     "clean",
     "dry_run",
     "dashboard",
@@ -120,27 +118,19 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path, *, keep_failed: bool = False) -> list[dict]:
-    """Collect landed episodes and archive the current attempt's file monitor.
-
-    Successful episodes from every attempt take precedence. When ``keep_failed`` is
-    set, failed episodes from the current attempt also count toward the epoch; this
-    preserves its measured outcomes while an interrupted pass finishes elsewhere.
-    """
+def take_landed(run_dir: Path) -> list[dict]:
+    """Collect successful episodes and archive the current attempt's file monitor."""
     current = get_file_monitor_dir(run_dir)
     stream = get_trace_stream(run_dir).relative_to(current)
     landed: dict[str, dict] = {}
-    failed: dict[str, dict] = {}
     for directory in [*archives(run_dir), current]:
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
                 if record.get("ok"):
                     landed.setdefault(record["id"], record)
-                elif keep_failed and directory == current:
-                    failed.setdefault(record["id"], record)
     if current.is_dir():
         current.rename(current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}"))
-    return [*landed.values(), *(record for id, record in failed.items() if id not in landed)]
+    return list(landed.values())
 
 
 def plan(

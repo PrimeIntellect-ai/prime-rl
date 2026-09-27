@@ -143,6 +143,8 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
+Set `loss_normalization = "sample"` to average each original dataset sample's loss before packing. The default, `"token"`, averages over trainable tokens. The setting also applies to validation loss.
+
 ### Dataset Format
 
 Two accepted layouts:

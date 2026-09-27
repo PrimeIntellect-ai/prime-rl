@@ -45,6 +45,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.loss_normalization import LossNormalizer
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -128,6 +129,7 @@ def train(config: TrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
+    normalizer = LossNormalizer(config.loss_normalization, parallel_dims, loss_replicated_across_cp=True)
 
     # Check for checkpoint to resume from
     checkpoint_step = None
@@ -297,9 +299,9 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize each loss component by its own global (dp_cp) token count, so every rank
+        # Normalize each loss component by its own global (dp_cp) count, so every rank
         # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
-        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # samples implicitly upweight their gradient contribution after FSDP averaging.
         # FSDP's per-rank divide is undone after the microbatch loop via
         # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
         # op regardless of which components its samples carry.
@@ -309,17 +311,18 @@ def train(config: TrainerConfig):
         for micro_batch in micro_batches:
             mask = micro_batch["loss_mask"]
             rl_w = micro_batch["rl_weights"]
-            local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
+            lengths = micro_batch["sequence_lengths"]
+            local_rl_scale += normalizer.local_count(mask & (rl_w != 0) if rl_w is not None else mask, lengths)
             if micro_batch["ce_weights"] is not None:
-                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
+                local_ce_scale += normalizer.local_count(micro_batch["ce_weights"] != 0, lengths)
             if micro_batch["ref_kl_weights"] is not None:
-                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
+                local_ref_kl_scale += normalizer.local_count(micro_batch["ref_kl_weights"] != 0, lengths)
         global_scales = torch.tensor(
             [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
         )
-        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_scales = normalizer.global_counts(global_scales, counts_replicated_across_cp=True)
         rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         prepare_gradient_offload(
             gradient_manager,
             parallel_dims.fsdp_gradient_divide_factor,
@@ -492,6 +495,7 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                normalizer=normalizer,
             )
 
             # Backward pass

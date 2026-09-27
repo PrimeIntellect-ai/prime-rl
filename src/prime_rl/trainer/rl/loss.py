@@ -7,6 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig, LossConfig
+from prime_rl.trainer.loss_normalization import LossNormalizer
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
@@ -315,12 +316,13 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    normalizer: LossNormalizer | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
+    weight stream and normalized by its own global token or sample count:
 
     - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
       ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
@@ -343,9 +345,10 @@ def compute_loss(
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
         rl_loss_fn: RL loss object built by setup_rl_loss_fn()
-        rl_scale: Global rl-token count normalizing the rl component
-        ce_scale: Global ce-token count normalizing the ce component
-        ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        rl_scale: Global count normalizing the rl component
+        ce_scale: Global count normalizing the ce component
+        ref_kl_scale: Global count normalizing the ref_kl component
+        normalizer: Shared token or sample normalizer
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -387,6 +390,10 @@ def compute_loss(
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
+            if normalizer is not None:
+                sample_weights = normalizer.weights(component_mask, [component_mask.numel()])
+                if sample_weights is not None:
+                    weights = sample_weights if weights is None else weights * sample_weights
             return LossInputs(
                 trainer_logprobs=t_logp,
                 inference_logprobs=i_logp,

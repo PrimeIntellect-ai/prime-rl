@@ -2,6 +2,8 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig
+from prime_rl.trainer.loss_normalization import LossNormalizer
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
@@ -37,6 +39,35 @@ def test_grpo_loss():
         ref_kl_scale=1,
     )
     assert loss.shape == ()
+
+
+def test_sample_normalization_weights_rl_samples_equally():
+    logprobs = [torch.zeros(2, device="cuda", requires_grad=True), torch.zeros(1, device="cuda", requires_grad=True)]
+    inference = [torch.zeros_like(values) for values in logprobs]
+    advantages = [torch.ones(2, device="cuda"), torch.full((1,), 3.0, device="cuda")]
+    mask = [torch.ones_like(values, dtype=torch.bool) for values in logprobs]
+    normalizer = LossNormalizer("sample", ParallelDims(1, 1, 1, 1, 1, 1), loss_replicated_across_cp=True)
+
+    loss, _ = compute_loss(
+        trainer_logprobs=logprobs,
+        inference_logprobs=inference,
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=mask,
+        rl_weights=None,
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=setup_rl_loss_fn(IPOLossConfig(eps=10.0)),
+        rl_scale=2,
+        ce_scale=1,
+        ref_kl_scale=1,
+        normalizer=normalizer,
+    )
+
+    assert torch.isclose(loss, torch.tensor(-2.0, device="cuda"))
+    loss.backward()
+    assert torch.allclose(logprobs[0].grad, torch.full((2,), -0.25, device="cuda"))
+    assert torch.allclose(logprobs[1].grad, torch.tensor([-1.5], device="cuda"))
 
 
 def test_gspo_loss():

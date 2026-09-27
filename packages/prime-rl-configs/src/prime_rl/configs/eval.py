@@ -91,10 +91,6 @@ class EvalConfig(ServedEvalConfig):
     sampling and env config must match the interrupted run; ``num_examples`` and
     ``group_size`` may change."""
 
-    resume_keep_failed: bool = False
-    """Keep failed completed episodes when resuming an interrupted pass. The default
-    retries them; keeping them preserves the original pass's error outcomes."""
-
     log: LogConfig = LogConfig()
 
     monitors: EvalMonitorsConfig = EvalMonitorsConfig()
