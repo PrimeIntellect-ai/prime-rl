@@ -542,6 +542,10 @@ def test_multi_node_value_layout_keeps_policy_and_critic_parallelism_independent
     assert config.deployment.num_value_nodes == 1
     assert config.orchestrator.num_train_workers == 1
     assert config.orchestrator.value_rollout_transport.port == config.trainer.rollout_transport.port + 2
+    remote_orchestrator = OrchestratorConfig.model_validate(
+        {**config.orchestrator.model_dump(), "value_service_url": "http://value-host:8123"}
+    )
+    assert remote_orchestrator.train.source[0].algo.value_url == "http://value-host:8123"
 
     payload["deployment"]["num_value_nodes"] = 0
     with pytest.raises(ValidationError, match="num_value_nodes > 0"):

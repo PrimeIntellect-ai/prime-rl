@@ -206,11 +206,6 @@ class Orchestrator:
         )
         self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
 
-        if config.value_service_url is not None:
-            for source in config.train.source:
-                if source.algo is not None and source.algo.type in ("ppo", "sao"):
-                    source.algo.value_url = config.value_service_url
-
         await monitors.setup(
             producer="orch",
             wandb=config.monitors.wandb,

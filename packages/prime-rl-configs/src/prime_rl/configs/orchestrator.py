@@ -639,6 +639,14 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def sync_value_service_url(self):
+        if self.value_service_url is not None:
+            for source in self.train.source:
+                if source.algo is not None and source.algo.type in ("ppo", "sao"):
+                    source.algo.value_url = self.value_service_url
+        return self
+
+    @model_validator(mode="after")
     def validate_env_algorithms(self):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
