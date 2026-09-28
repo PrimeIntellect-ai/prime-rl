@@ -6,9 +6,9 @@ from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
     LossOutputs,
+    _mismatch_kl_from_log_ratio,
     compute_entropy,
     compute_loss,
-    mismatch_kl_from_log_ratio,
     ref_kl_loss_fn,
     setup_rl_loss_fn,
 )
@@ -202,7 +202,7 @@ def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():
 def test_mismatch_kl_retains_small_positive_values():
     log_ratio = torch.tensor([1e-4], device="cuda")
     torch.testing.assert_close(
-        mismatch_kl_from_log_ratio(log_ratio), torch.tensor([5e-9], device="cuda"), rtol=1e-3, atol=0
+        _mismatch_kl_from_log_ratio(log_ratio), torch.tensor([5e-9], device="cuda"), rtol=1e-3, atol=0
     )
 
 

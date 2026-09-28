@@ -29,7 +29,7 @@ from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
-    mismatch_kl_from_log_ratio,
+    _mismatch_kl_from_log_ratio,
     selective_log_softmax,
     selective_log_softmax_with_sampling_mask,
     setup_rl_loss_fn,
@@ -529,7 +529,7 @@ def train(config: TrainerConfig):
             if has_mismatch_tokens:
                 with torch.no_grad():
                     log_ratio = out["logprobs"][mismatch_mask] - inference_logprobs[mismatch_mask]
-                    mismatch_kl = mismatch_kl_from_log_ratio(log_ratio)
+                    mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
                 mismatch_kl = mismatch_kl.detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 mismatch_env_names = [

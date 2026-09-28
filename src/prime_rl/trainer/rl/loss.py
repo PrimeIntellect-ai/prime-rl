@@ -128,7 +128,7 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return (values[mask] / denom).sum()
 
 
-def mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
+def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
     # Keep headroom for FP32 reductions across tokens and ranks.
     metric_limit = log_importance_ratio.new_tensor(1e30)
     mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
@@ -158,6 +158,8 @@ class IPOLoss:
         log_importance_ratio = trainer_logprobs - inference_logprobs
         larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
         smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
+        # |e^logp - e^logq| = e^max(logp, logq) * -expm1(min(logp, logq) - max(logp, logq)).
+        # expm1 avoids cancellation when the probabilities are nearly equal.
         abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
         is_masked = abs_probs_diff > loss_config.eps
         keep_mask = ~is_masked
@@ -173,7 +175,7 @@ class IPOLoss:
                 kl_loss = kl_loss * weights
             loss = loss + kl_loss.sum()
 
-        mismatch_kl = mismatch_kl_from_log_ratio(log_importance_ratio)
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
@@ -208,7 +210,7 @@ class IcePopLoss:
         if weights is not None:
             per_token_loss = per_token_loss * weights[keep_mask]
 
-        mismatch_kl = mismatch_kl_from_log_ratio(log_importance_ratio)
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
@@ -249,7 +251,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         pg_loss = pg_loss * weights[keep_mask]
         kl_loss = kl_loss * weights
     loss = pg_loss.sum() + kl_loss.sum()
-    mismatch_kl = mismatch_kl_from_log_ratio(log_importance_ratio)
+    mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
     # Namespaced: the rl loss fn emits same-named trust-region metrics with a
     # different definition, and mixed batches run both fns in one step.
