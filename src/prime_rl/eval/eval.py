@@ -27,7 +27,7 @@ class Eval:
         landed: list[dict] = []
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
-            landed = resume.take_landed(config.run_dir)
+            landed = resume.take_landed(config.run_dir, {source.resolved_name for source in config.source})
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
@@ -44,6 +44,8 @@ class Eval:
         restored: list = []
         if config.resume:
             restored, owed, groups = resume.plan(landed, self.runner.eval_envs)
+            # the restored episodes are the only copy the epoch needs; release the raw records
+            del landed
             self.runner.eval_source.restore(owed, groups)
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
