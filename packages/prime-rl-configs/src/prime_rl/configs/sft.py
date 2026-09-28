@@ -1,11 +1,15 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
-from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers import (
+    AutoRendererConfig,
+    DefaultRendererConfig,
+    RendererConfig,
+)
 from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
@@ -85,6 +89,68 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
+class SFTColumnsConfig(BaseConfig):
+    """Dataset columns that feed the renderer."""
+
+    messages: str = "messages"
+    """Column with whole-chat messages."""
+
+    prompt: str = "prompt"
+    """Column with prompt messages, used with ``completion`` when a row has no messages."""
+
+    completion: str = "completion"
+    """Column with completion messages."""
+
+    tools: str = "tools"
+    """Column with the tool schemas. Without it, a ``tool_defs`` column is read instead."""
+
+    renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``depth = "task_depth"``. A non-null value overrides the source's and the global renderer setting. A column set here must exist in every source that uses the mapping; the default mapping skips datasets without the column."""
+
+
+class SFTSourceConfig(BaseConfig):
+    """One ``(dataset, subset, split)`` to train on. Unset fields inherit from ``[data]``."""
+
+    name: str | None = None
+    """Label in logs. Defaults to ``dataset/subset/split``."""
+
+    dataset: str | None = None
+    """HF dataset name or path. Defaults to ``data.name``."""
+
+    revision: str | None = None
+    """HF dataset revision. Defaults to ``data.revision`` when the source reads ``data.name``."""
+
+    subset: str | None = None
+    """Subset of the dataset."""
+
+    split: str = "train"
+    """Split of the dataset."""
+
+    weight: float | None = Field(None, gt=0)
+    """Relative sampling weight. Set it on every source or on none; unset samples uniformly."""
+
+    columns: SFTColumnsConfig | None = None
+    """Column overrides for this source; unset fields keep ``data.columns``."""
+
+    renderer: dict[str, Any] = {}
+    """Chat-template kwargs for this source, applied over ``[renderer]``, e.g. ``{ depth = 128 }``."""
+
+
+class ResolvedSFTSource(BaseConfig):
+    """An ``SFTSourceConfig`` with every field resolved against ``[data]``."""
+
+    name: str
+    dataset: str
+    revision: str | None
+    subset: str | None
+    split: str
+    weight: float | None
+    columns: SFTColumnsConfig
+    renderer: dict[str, Any]
+    explicit_renderer_columns: bool
+    """Whether the renderer column mapping was set in the config rather than defaulted."""
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -112,9 +178,74 @@ class SFTDataConfig(BaseDataConfig):
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
 
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns for every source. A source's ``columns`` override single fields."""
+
+    source: list[SFTSourceConfig] | None = None
+    """Datasets to train on, one ``(dataset, subset, split)`` each, as ``[[data.source]]`` tables. Replaces ``subsets``, ``splits``, and ``probabilities``; ``name`` and ``revision`` become the default dataset."""
+
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        if self.source is None:
+            return self
+        if self.subsets is not None or self.splits is not None or self.probabilities is not None:
+            raise ValueError("Set either data.source or data.subsets/splits/probabilities, not both.")
+        if not self.source:
+            raise ValueError("data.source must list at least one source.")
+        weighted = [source.weight is not None for source in self.source]
+        if any(weighted) and not all(weighted):
+            raise ValueError("Set weight on every data.source or on none.")
+        names = [source.name for source in self.resolved_sources()]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"data.source names must be unique; repeated: {duplicates}. Set name to tell them apart.")
+        return self
+
+    def resolved_sources(self) -> list[ResolvedSFTSource]:
+        """Every source with its dataset, revision, columns, and renderer settings resolved."""
+        explicit = "renderer" in self.columns.model_fields_set
+        if self.source is None:
+            subsets = self.subsets if self.subsets is not None else [None] * len(self.splits or [None])
+            splits = self.splits if self.splits is not None else ["train"] * len(subsets)
+            weights = self.probabilities if self.probabilities is not None else [None] * len(subsets)
+            return [
+                ResolvedSFTSource(
+                    # Progress metrics have always been keyed by subset, else split.
+                    name=subset or split,
+                    dataset=self.name,
+                    revision=self.revision,
+                    subset=subset,
+                    split=split,
+                    weight=weight,
+                    columns=self.columns,
+                    renderer={},
+                    explicit_renderer_columns=explicit,
+                )
+                for subset, split, weight in zip(subsets, splits, weights, strict=True)
+            ]
+        resolved = []
+        for source in self.source:
+            dataset = source.dataset or self.name
+            overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
+            resolved.append(
+                ResolvedSFTSource(
+                    name=source.name or _source_name(dataset, source.subset, source.split),
+                    dataset=dataset,
+                    # A revision pins one repo, so only the default dataset inherits it.
+                    revision=source.revision or (self.revision if dataset == self.name else None),
+                    subset=source.subset,
+                    split=source.split,
+                    weight=source.weight,
+                    columns=SFTColumnsConfig.model_validate({**self.columns.model_dump(), **overrides}),
+                    renderer=source.renderer,
+                    explicit_renderer_columns=explicit or "renderer" in overrides,
+                )
+            )
+        return resolved
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
@@ -135,6 +266,10 @@ class SFTDataConfig(BaseDataConfig):
                         "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
                     )
         return self
+
+
+def _source_name(dataset: str, subset: str | None, split: str) -> str:
+    return "/".join(part for part in (dataset, subset, split) if part)
 
 
 class SFTValConfig(BaseConfig):
