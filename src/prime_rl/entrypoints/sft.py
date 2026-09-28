@@ -96,12 +96,11 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
-        # Same run dir as the trainer: the dashboard reads the online
-        # eval's file-monitor artifacts (traces, eval plan) from the run
-        # directory, so a separate output dir would hide them. The
-        # platform-record collision (train vs eval shapes in one
-        # run.json) is resolved by record MERGING in
-        # prime_rl.monitors.prime, not by directory separation.
+        # Same run dir as the trainer: the dashboard reads the eval's
+        # file-monitor artifacts from the run directory, so a separate
+        # output dir would hide them. The train-vs-eval record collision
+        # is resolved by record merging in prime_rl.monitors.prime, not
+        # by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=build_online_eval_monitors(config.monitors),

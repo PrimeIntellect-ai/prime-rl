@@ -65,20 +65,12 @@ def _platform_record_lock(output_dir: Path) -> Iterator[None]:
     unlocked read-modify-write lets one clobber the other's snapshot. POSIX
     flock on a sibling .lock file. The lock file is NEVER unlinked: a waiting
     writer can still hold the unlinked inode's lock while a new writer
-    creates and locks a fresh file — two simultaneous "exclusive" locks and a
-    lost merge. A stable lock inode is the whole guarantee; releasing is
-    enough.
-
-    Acquisition is BOUNDED (`RECORD_LOCK_TIMEOUT`): contention is retried
-    with non-blocking flock instead of blocking the async event-loop thread
-    indefinitely; `TimeoutError` past the bound. Storage errors that make
-    locking impossible here (e.g. ENOLCK on a filesystem without flock
-    support) raise immediately instead of retrying.
-
-    Storage footprint: exactly one empty .lock file next to the run.json it
-    guards, for the run directory's whole lifetime — the run-dir lifecycle
-    already bounds it (deleting the run dir deletes the lock); no per-write
-    files are ever created."""
+    creates and locks a fresh file — two simultaneous "exclusive" locks and
+    a lost merge; a stable lock inode is the whole guarantee. Acquisition is
+    BOUNDED (`RECORD_LOCK_TIMEOUT`), retried with non-blocking flock so the
+    async event-loop thread never blocks; `TimeoutError` past the bound.
+    Storage errors that make locking impossible (e.g. ENOLCK) raise
+    immediately instead of retrying."""
     path = get_platform_run_path(output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -215,9 +207,8 @@ class PrimeTrainMonitor(Monitor):
             if output_dir is not None:
                 # Merge, not overwrite: a concurrent eval process (SFT
                 # online evals share the trainer's run dir) may already
-                # have written its evaluations record. Locked RMW, run
-                # off the event loop: the bounded flock retry, the merge
-                # and the atomic replace must not stall the loop.
+                # have written its evaluations record. Off the event
+                # loop: the flock retry must not stall it.
                 await asyncio.to_thread(
                     update_platform_record,
                     output_dir,
@@ -296,8 +287,7 @@ class PrimeEvalMonitor(Monitor):
                         return record
                     return {"kind": "eval", "run_id": self.run_id, "evaluations": {}}
 
-                # Off the event loop: the bounded flock retry, the merge
-                # and the atomic replace must not stall the loop.
+                # Off the event loop: the flock retry must not stall it.
                 await asyncio.to_thread(_merge_platform_record, output_dir, _eval_init_update)
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
@@ -368,8 +358,7 @@ class PrimeEvalMonitor(Monitor):
                     }
                     return record
 
-                # Off the event loop: the bounded flock retry, the merge
-                # and the atomic replace must not stall the loop.
+                # Off the event loop: the flock retry must not stall it.
                 await asyncio.to_thread(_merge_platform_record, self.output_dir, _eval_epoch_update)
         return run
 
