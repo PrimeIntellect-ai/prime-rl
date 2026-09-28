@@ -2,16 +2,18 @@
 
 Run `prime-rl` supervised fine-tuning on Prime Intellect's hosted GPU clusters — no cluster credentials, no `kubectl`, no SLURM. You create a storage volume with the `prime` CLI, stage a public Hugging Face dataset onto it, dispatch a `prime-rl` SFT config with `prime train`, and watch the loss curve and logs on the platform dashboard. When the run finishes, teardown is automatic and your checkpoints are on the volume.
 
-This walkthrough trains a small Qwen3 model to reverse text (the [`reverse-text`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) example) end-to-end on a single GPU. Every output shown is from a real run of this exact flow, so you know what to expect at each step. For SFT on your own infrastructure, see [Training](training.md).
+This walkthrough trains a small Qwen3 model to reverse text (the [`reverse-text`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) example) end-to-end on a single GPU. Every output shown is real, captured from live runs of this exact flow, so you know what to expect at each step. Two sessions are spliced: the staging transcript is from a live platform-API staging run of this dataset (on a shared staging volume, hence `sft-datasets` in its output), and the training transcript is from a run trained on this same dataset after it was staged on that run's volume. Run IDs, volume names, and timestamps differ per invocation. For SFT on your own infrastructure, see [Training](training.md).
 
 ## Prerequisites
 
-- The `prime` CLI (a release with volumes, staging, and hosted SFT support), installed and logged in:
+- The `prime` CLI, installed and logged in:
 
 ```bash
 uv tool install prime
 prime login
 ```
+
+  **Version note — this flow is not in a released CLI yet.** `prime volumes`, `prime volumes stage`, and hosted-SFT dispatch ship in the upcoming CLI release that bundles volumes, SFT, and dataset staging ([prime-cli PR #935](https://github.com/PrimeIntellect-ai/prime-cli/pull/935), [prime-cli PR #964](https://github.com/PrimeIntellect-ai/prime-cli/pull/964)). On a released build (v0.7.7 and earlier) `prime volumes stage` does not exist, and dispatching an SFT config misroutes it against the RL schema with confusing field errors. This page assumes that release.
 
 - A Prime account with hosted training access.
 - A model **cached on your cluster** — hosted SFT boots models from the cluster model cache, not from the Hub. List what is available:
@@ -63,7 +65,7 @@ prime volumes stage willcb/R1-reverse-wikipedia-paragraphs-v1-1000 \
 - Re-staging the same dataset at the same revision is a no-op — you get `already_staged` and nothing is overwritten. A different revision at the same path fails instead of silently replacing your data.
 - `--kube-context` falls back to running the staging job through your own kubeconfig (operator path); without it, everything goes through the platform API.
 
-The CLI admits the staging job and streams progress until the dataset is verified (output below is from a live staging run of this same dataset; IDs and volume names differ per invocation):
+The CLI admits the staging job and streams progress until the dataset is verified. The output below is verbatim from a live staging run of this same dataset on a shared staging volume — `sft-datasets` in the output is that session's volume, not the walkthrough's:
 
 ```text
 Volume sft-datasets · cluster lfxxf6afiwriu03czkmjwa9u · API staging (no kubectl required)
@@ -162,7 +164,7 @@ If your cluster runs an unpublished runtime image, pin it explicitly with `--ima
 
 ## 5. Watch it run
 
-The dashboard page for the run shows the status timeline, the per-step loss curve, and the live trainer logs. The same data is available from the CLI:
+The dashboard page for the run shows the status timeline, the per-step loss curve, and the live trainer logs. The run below dispatched this walkthrough's config against its own volume, with the same dataset staged under its repository basename (`/datasets/willcb-r1-reverse-wikipedia-paragraphs-v1-1000` — in your run, the staged path is whatever `--path` you chose in step 2). The same data is available from the CLI:
 
 ```bash
 prime train get kqeggj5dl7k85bc0mk1i4y5i
@@ -264,7 +266,7 @@ The recipe is steps 1–4 of this guide. `data.type = "fake"` without `--volume`
 
 ## Limitations
 
-- **CLI release.** Volumes, staging, and hosted SFT ship together in one `prime` CLI release. A CLI build without SFT support validates the config against the RL schema and rejects it with confusing field errors — if `prime volumes stage` does not exist, upgrade the CLI.
+- **Not in a released CLI yet.** Volumes, staging, and hosted-SFT dispatch ship together in the upcoming CLI release — see the version note in [Prerequisites](#prerequisites). A build without SFT support validates the config against the RL schema and rejects it with confusing field errors; if `prime volumes stage` does not exist, upgrade the CLI.
 - **Public datasets only.** `prime volumes stage` accepts public HF dataset repositories; private and gated datasets (HF tokens) are not supported yet.
 - **Cluster-cached models only.** You cannot add models to the cache yourself — `prime train models` lists what is available, and Prime support can add others.
 - **Trainer-only.** `[eval]` and `[inference]` blocks are rejected; online evals during hosted SFT are not available.
