@@ -309,6 +309,8 @@ class Qwen3_5VLMModel(nn.Module):
 
 
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+
     def __init__(self, config) -> None:
         super().__init__(config)
         self.is_vlm = hasattr(config, "vision_config")
@@ -316,11 +318,13 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
 
         if self.is_vlm:
             self.model = Qwen3_5VLMModel(config)
+            self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5Model(config)
 
         self.supports_packed_multimodal_training = self.is_vlm
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
+        self.tie_weights()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.model.get_input_embeddings()
