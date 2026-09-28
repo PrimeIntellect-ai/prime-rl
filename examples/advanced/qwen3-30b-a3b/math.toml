@@ -42,6 +42,7 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
+group_size = 8
 max_off_policy_steps = 8
 
 [orchestrator.concurrency]
