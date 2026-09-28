@@ -1,0 +1,116 @@
+# Mismatch-KL measurement on the `math` environment, the table format used by the bf16 PR
+# (batch_size = 64, 20 steps, lr = 0, 4 trainer + 1 inference node).
+#
+# Two settings here exist only to make the measurement possible and are not how you would train:
+# `constant_trainer_batch_size = false` and the length penalty. With `lr = 0` the policy is frozen,
+# and math rewards are binary, so whole groups come back unanimous. GRPO centers advantages on the
+# group mean, so a unanimous group gets exactly zero advantage, its tokens are pruned, and it
+# contributes nothing to mismatch KL. The length penalty perturbs each reward by a normalized
+# output-token term, which breaks the tie and lets those groups ship. It cannot influence training
+# because no weight update ever happens at lr = 0.
+
+max_steps = 20
+seq_len = 4096
+
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "dsv4-fp8-math"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+
+[slurm]
+job_name = "ds-v4-math-fp8"
+partition = "all"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+[orchestrator]
+batch_size = 64
+constant_trainer_batch_size = false
+group_size = 8
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[orchestrator.algo]
+type = "grpo"
+
+# Tiebreaker only. The input-token and turn terms are inert for single-turn math, where every
+# rollout in a group shares one prompt and one turn, so only the output-token term does any work.
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.25
+num_input_tokens_weight = 0.0
+num_turns_weight = 0.0
+
+[orchestrator.renderer]
+name = "deepseek-v4"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 3072
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "math-env"
+# Deterministic scoring. The default reference judge calls out to Prime inference whenever
+# math-verify scores 0, which makes the reward nondeterministic and errors the rollout if the
+# judge call fails.
+env.taskset.task.judge = "None"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+enable_router_replay = true
+dist_timeout_seconds = 14400
+
+[trainer.model]
+impl = "custom"
+ep = 8
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+# `lr = 0` holds the policy fixed: this measures trainer-vs-inference mismatch, not training.
+[trainer.optim]
+lr = 0.0
+weight_decay = 0.0
+
+[inference]
+# Mandatory with online FP8, not an optimization. DeepSeek V4's o_proj never calls `wo_a`: it
+# reads `wo_a.weight` directly and hands it to DeepGEMM's grouped `fp8_einsum`, which needs the
+# 3D `[groups, rank, dim]` layout. Only `DeepGemmFp8BlockScaledMMKernel` honors the layer's
+# `is_bmm` flag and builds that layout, and it is skipped unless `VLLM_USE_DEEP_GEMM` is on.
+use_deep_gemm = true
+
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+dtype = "bfloat16"
+# The only delta from rl.toml: vLLM quantizes the broadcast bf16 weights at load time, on every
+# layerwise reload. The trainer stays bf16.
+quantization = "fp8_per_block"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.8
+max_model_len = 4096
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256

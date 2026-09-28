@@ -1,3 +1,5 @@
+import re
+
 import torch
 
 
@@ -22,7 +24,12 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_deepseek_v4_per_layer_rope()
+    monkey_patch_diag_stash_bf16_o_proj_weight()
+    monkey_patch_fp8_ue8m0_weight_scales()
+    monkey_patch_triton_moe_swiglu_clamp()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_deepseek_v4_attn_sink_loading()
+    monkey_patch_diag_fake_quant_weights()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -185,6 +192,47 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
 
 
+_DIAG_BF16_WEIGHT_ATTR = "_prime_diag_bf16_weight"
+
+# Under the `vllm` logger, whose handler and INFO level vLLM configures. A logger named
+# after this module would inherit the root level instead, which drops INFO on the floor.
+_DIAG_LOGGER_NAME = "vllm.prime_rl.diag"
+
+
+def monkey_patch_triton_moe_swiglu_clamp():
+    """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
+
+    That path fuses SiLU-and-mul into ``ops.silu_and_mul_per_block_quant``, which takes no clamp
+    argument, so a model's ``swiglu_limit`` (DeepSeek V4 Flash: 10.0) is dropped for every batch
+    below 128 tokens, i.e. every decode step. Binding ``triton_moe.is_deep_gemm_e8m0_used`` to
+    return True for the duration of a clamped ``apply`` call steers it to the clamped branch;
+    unclamped calls keep the fast path. Remove this once
+    https://github.com/vllm-project/vllm/pull/57984 (merged upstream, unreleased) is in the
+    pinned vLLM.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe.experts import triton_moe
+
+    logger = init_logger("vllm.prime_rl.fused_moe")
+    original_apply = triton_moe.TritonExperts.apply
+    if getattr(original_apply, "_prime_honours_swiglu_clamp", False):
+        return
+
+    def apply(self, *args, **kwargs):
+        if self.activation_config.clamp_limit is None:
+            return original_apply(self, *args, **kwargs)
+        saved = triton_moe.is_deep_gemm_e8m0_used
+        triton_moe.is_deep_gemm_e8m0_used = lambda: True
+        try:
+            return original_apply(self, *args, **kwargs)
+        finally:
+            triton_moe.is_deep_gemm_e8m0_used = saved
+
+    apply._prime_honours_swiglu_clamp = True
+    triton_moe.TritonExperts.apply = apply
+    logger.info("TritonExperts.apply takes the clamped activation path when a swiglu clamp is configured.")
+
+
 def monkey_patch_deepseek_v4_bf16_o_proj():
     """Run DeepSeek V4's output projection in bf16 when the weights are not FP8.
 
@@ -217,7 +265,10 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     condition is the weight dtype rather than the presence of
     ``weight_scale_inv``, so a checkpoint that *is* quantized but whose scales
     ended up in the wrong layout still fails loudly instead of being silently
-    rerouted.
+    rerouted. The one exception is the ``PRIME_DIAG_BF16_OPROJ`` measurement
+    diagnostic (``monkey_patch_diag_stash_bf16_o_proj_weight``), which leaves a
+    bf16 copy of the weight on the layer for this path to pick up while the rest
+    of the model stays FP8.
 
     The replacement mirrors the Triton kernel's arithmetic
     (``vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py:95-105``)
@@ -238,9 +289,11 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     matmuls accumulate in fp32. That is strictly more accurate than the FP8 path
     it replaces, and it avoids materializing an fp32 copy of the attention output.
     """
+    from vllm.logger import init_logger
     from vllm.models.deepseek_v4.nvidia import flashinfer_sparse, flashmla
     from vllm.models.deepseek_v4.nvidia.ops import o_proj as o_proj_module
 
+    logger = init_logger(_DIAG_LOGGER_NAME)
     original_o_proj = o_proj_module.deep_gemm_fp8_o_proj
     if getattr(original_o_proj, "_prime_rl_has_bf16_fallback", False):
         return
@@ -261,7 +314,8 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
         return out
 
     def _patched_o_proj(o, positions, cos_sin_cache, wo_a, wo_b, *, n_groups, heads_per_group, **kwargs):
-        if wo_a.weight.dtype == torch.float8_e4m3fn:
+        weight = getattr(wo_a, _DIAG_BF16_WEIGHT_ATTR, wo_a.weight)
+        if weight.dtype == torch.float8_e4m3fn:
             return original_o_proj(
                 o,
                 positions,
@@ -272,11 +326,12 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
                 heads_per_group=heads_per_group,
                 **kwargs,
             )
+        if weight is not wo_a.weight:
+            logger.info_once("PRIME_DIAG_BF16_OPROJ=1: DeepSeek V4 o_proj is running on the stashed bf16 wo_a weight.")
 
         x = _inverse_rope(o, positions, cos_sin_cache, kwargs["rope_dim"])
         x = x.reshape(o.shape[0], n_groups, heads_per_group * o.shape[-1])
-        weight = wo_a.weight.view(n_groups, kwargs["o_lora_rank"], -1)
-        z = torch.einsum("tgr,gdr->tgd", x, weight)
+        z = torch.einsum("tgr,gdr->tgd", x, weight.view(n_groups, kwargs["o_lora_rank"], -1))
         return wo_b(z.flatten(1))
 
     _patched_o_proj._prime_rl_has_bf16_fallback = True
@@ -287,6 +342,274 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_fp8_ue8m0_weight_scales():
+    """Off unless ``PRIME_FP8_UE8M0_WEIGHT_SCALES=1`` (``inference.fp8_ue8m0_weight_scales``): power-of-two block scales.
+
+    ``Fp8PerBlockOnlineLinearMethod`` and its MoE counterpart both call
+    ``per_block_cast_to_fp8(..., use_ue8m0=False)``, which picks the scale
+    ``amax / 448``. The published DeepSeek V4 bf16 checkpoint is a dequantized
+    FP8 release whose weights already lie exactly on the e4m3 grid with
+    power-of-two block scales, so that scale choice rotates the grid and injects
+    the full e4m3 rounding error on weights that would otherwise round-trip
+    exactly. Forcing ``use_ue8m0=True`` restores the original grid.
+
+    The scales stay fp32, so no kernel change is implied: a power of two is an
+    ordinary fp32 scale. This is distinct from ``VLLM_USE_DEEP_GEMM_E8M0=1``,
+    which re-quantizes an already-rounded weight and therefore double-rounds;
+    with both on, the re-quantization finds the weights already on power-of-two
+    scales and leaves them alone, so the pair gives UE8M0 activation scales and
+    exact weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_UE8M0_WEIGHT_SCALES") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    logger = init_logger("vllm.prime_rl.fp8")
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_forces_ue8m0", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        kwargs["use_ue8m0"] = True
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_forces_ue8m0 = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_UE8M0_WEIGHT_SCALES=1: quantizing online FP8 weights with power-of-two block scales.")
+
+
+def monkey_patch_diag_stash_bf16_o_proj_weight():
+    """Measurement only, off unless ``PRIME_DIAG_BF16_OPROJ=1``: keep ``wo_a`` in bf16 under online FP8.
+
+    DeepSeek V4's output projection is the prime suspect for a precision floor
+    under FP8. ``deep_gemm_fp8_o_proj`` quantizes the attention output with
+    ``fused_inv_rope_fp8_quant``, whose Triton kernel uses power-of-two (UE8M0)
+    activation scales unconditionally and so ignores ``VLLM_USE_DEEP_GEMM_E8M0=0``,
+    and then contracts against the blockwise-quantized ``wo_a`` weight with
+    DeepGEMM's grouped ``fp8_einsum``. This diagnostic removes both, leaving the
+    rest of the model on the FP8 path, so the o_proj's contribution to the gap
+    against a bf16 server can be read off directly.
+
+    Dequantizing inside the forward is not viable: by then ``wo_a.weight`` is a
+    3D FP8 tensor and ``wo_a.weight_scale_inv`` has been through
+    ``transform_sf_into_required_layout``. So take the copy before it is
+    destroyed. ``Fp8PerBlockOnlineLinearMethod.process_weights_after_loading``
+    runs with ``layer.weight`` still the loaded bf16 tensor, and ``is_bmm`` marks
+    exactly the layer this applies to (``vllm/models/deepseek_v4/attention.py``
+    sets it on ``wo_a`` and nowhere else). ``monkey_patch_deepseek_v4_bf16_o_proj``
+    then prefers the stashed copy over ``wo_a.weight``.
+
+    Layerwise reload deletes and re-registers the weight on every weight update
+    and ``_layerwise_process`` drops the
+    ``_already_called_process_weights_after_loading`` sentinel before re-running
+    the quantization, so the stash is refreshed from the newly received weights
+    rather than going stale.
+
+    ``wo_b`` is untouched and still runs its FP8 kernel, so what this isolates is
+    the activation quantization plus the ``wo_a`` contraction, not the whole
+    output projection.
+    """
+    import os
+
+    if os.environ.get("PRIME_DIAG_BF16_OPROJ") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online.fp8 import Fp8PerBlockOnlineLinearMethod
+
+    logger = init_logger(_DIAG_LOGGER_NAME)
+    original_process = Fp8PerBlockOnlineLinearMethod.process_weights_after_loading
+    if getattr(original_process, "_prime_diag_stashes_bf16_weight", False):
+        return
+
+    def process_weights_after_loading(self, layer):
+        already_processed = getattr(layer, "_already_called_process_weights_after_loading", False)
+        if getattr(layer, "is_bmm", False) and not already_processed:
+            setattr(layer, _DIAG_BF16_WEIGHT_ATTR, layer.weight.data.clone().to(torch.bfloat16))
+        return original_process(self, layer)
+
+    process_weights_after_loading._prime_diag_stashes_bf16_weight = True
+    Fp8PerBlockOnlineLinearMethod.process_weights_after_loading = process_weights_after_loading
+    logger.info(
+        "PRIME_DIAG_BF16_OPROJ=1: stashing a bf16 copy of every online-FP8 is_bmm weight for the bf16 o_proj path."
+    )
+
+
+_FAKE_QUANT_BLOCK_SIZE = [128, 128]
+
+# DeepSeek V4 builds these `LinearBase` modules with `quant_config=None` (the MoE router
+# gate through `GateLinear`), so online FP8 leaves them in bf16 and so must this.
+_FAKE_QUANT_EXCLUDED_LINEARS = frozenset({"gate", "fused_wkv_wgate", "weights_proj"})
+
+
+def _fake_quantize_block_fp8_(weight: torch.Tensor) -> None:
+    """Round-trip a 2D weight through 128x128 block FP8 in place."""
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    block_m, block_n = _FAKE_QUANT_BLOCK_SIZE
+    rows, cols = weight.shape
+    quantized, scale = per_block_cast_to_fp8(weight, block_size=_FAKE_QUANT_BLOCK_SIZE, use_ue8m0=False)
+    block_scale = scale.repeat_interleave(block_m, dim=0)[:rows].repeat_interleave(block_n, dim=1)[:, :cols]
+    weight.copy_(quantized.to(torch.float32) * block_scale)
+
+
+def _fake_quantize_model_weights(model, ignore: re.Pattern[str] | None = None) -> int:
+    from vllm.model_executor.layers.fused_moe import RoutedExperts
+    from vllm.model_executor.layers.linear import LinearBase
+
+    quantized_tensors = 0
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] in _FAKE_QUANT_EXCLUDED_LINEARS:
+            continue
+        if ignore is not None and ignore.search(name):
+            continue
+        if isinstance(module, LinearBase):
+            _fake_quantize_block_fp8_(module.weight.data)
+            quantized_tensors += 1
+        elif isinstance(module, RoutedExperts):
+            for experts in (module.w13_weight, module.w2_weight):
+                for expert in range(experts.shape[0]):
+                    _fake_quantize_block_fp8_(experts.data[expert])
+                    quantized_tensors += 1
+    return quantized_tensors
+
+
+def monkey_patch_diag_fake_quant_weights():
+    """Measurement only, off unless ``PRIME_DIAG_FAKE_QUANT_WEIGHTS=1``: serve bf16 weights that FP8 rounded.
+
+    Pair this with a **bf16** server config, i.e. ``[inference.vllm] quantization``
+    unset. Every weight the FP8 path would have quantized is round-tripped
+    ``bf16 -> per_block_cast_to_fp8 -> dequantize -> bf16`` and then served by the
+    unmodified bf16 kernel stack. What is left is pure weight quantization error,
+    with no activation quantization and no change of kernel, which separates the
+    three contributions to an FP8 rollout gap.
+
+    The round trip calls vLLM's own ``per_block_cast_to_fp8``, so the arithmetic
+    matches production exactly, including the ``1e-4`` amax clamp and the multiply
+    by the reciprocal scale rather than a divide. Dequantization multiplies the
+    e4m3 values back by their fp32 block scale. The product is then rounded to
+    bf16, which the real FP8 path does not do (it applies fp32 scales in the GEMM
+    epilogue); that adds a relative error of about ``2**-9``, roughly thirty times
+    smaller than e4m3's own, so it does not move the measurement.
+
+    Scope follows ``OnlineQuantizationConfig.get_quant_method``: ``LinearBase``
+    weights and routed-expert ``w13``/``w2``, nothing else. ``lm_head`` and
+    ``embed_tokens`` are ``VocabParallelEmbedding``, not ``LinearBase``, and are
+    out for that reason as well as prime-rl's ``head_dtype=float32``. The three
+    DeepSeek V4 linears that online FP8 skips are listed in
+    ``_FAKE_QUANT_EXCLUDED_LINEARS``. ``PRIME_DIAG_FAKE_QUANT_IGNORE`` takes a regex
+    that is searched against each module name and skips matches, mirroring the
+    production ``quantization_config.ignore`` list so the fake-quant scope can be
+    aligned with it or bisected by module family.
+
+    Both entry points matter. ``BaseModelLoader.load_model`` covers the cold start,
+    which ``finalize_layerwise_processing`` does not, since the loader only calls
+    it when the model has an online-quant method and a bf16 model has none.
+    ``finalize_layerwise_processing`` covers every ``/update_weights`` reload, which
+    restores fresh bf16 weights and would otherwise silently stop the diagnostic
+    after the first update. Every reload engine reaches it through
+    ``finalize_layerwise_reload``, which resolves it as a module global at call
+    time, so patching the defining module is enough. Weights are rewritten in
+    place so cudagraph references survive.
+    """
+    import os
+
+    if os.environ.get("PRIME_DIAG_FAKE_QUANT_WEIGHTS") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader import base_loader
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    logger = init_logger(_DIAG_LOGGER_NAME)
+    ignore_pattern = os.environ.get("PRIME_DIAG_FAKE_QUANT_IGNORE")
+    ignore = re.compile(ignore_pattern) if ignore_pattern else None
+    original_load_model = base_loader.BaseModelLoader.load_model
+    if getattr(original_load_model, "_prime_diag_fake_quants_weights", False):
+        return
+
+    def _fake_quantize_and_log(model, stage):
+        logger.info(
+            "PRIME_DIAG_FAKE_QUANT_WEIGHTS=1: round-tripped %d weight tensors through 128x128 block FP8 after %s (ignore=%r).",
+            _fake_quantize_model_weights(model, ignore),
+            stage,
+            ignore_pattern,
+        )
+
+    def load_model(self, *args, **kwargs):
+        model = original_load_model(self, *args, **kwargs)
+        _fake_quantize_and_log(model, "the initial load")
+        return model
+
+    original_finalize = layerwise.finalize_layerwise_processing
+
+    def finalize_layerwise_processing(model, model_config):
+        original_finalize(model, model_config)
+        _fake_quantize_and_log(model, "a weight reload")
+
+    load_model._prime_diag_fake_quants_weights = True
+    base_loader.BaseModelLoader.load_model = load_model
+    layerwise.finalize_layerwise_processing = finalize_layerwise_processing
+    logger.info("PRIME_DIAG_FAKE_QUANT_WEIGHTS=1: serving bf16 weights round-tripped through block FP8.")
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """A weight update silently leaves DeepSeek V4's attention sinks at their boot values.
+
+    ``attn_sink`` is the only parameter ``DeepseekV4Model.load_weights`` writes without calling
+    ``param.weight_loader``; it gets a bare ``params_dict[name][:n].copy_()``. Layerwise reload has
+    already moved that parameter to meta, so the copy is discarded, ``load_numel`` stays 0, and the
+    loader still records the name as loaded. Sinks are trainable, so the engine serves stale ones
+    for the rest of the run.
+
+    The sink tensor has one entry per attention head, and each tensor-parallel rank loads only its
+    own ``n_heads // tp_size`` slice. The parameter is longer than that slice: some attention
+    backends allocate their query and output buffers at a rounded-up head count, and the sinks are
+    sized to match, with the tail left at ``-inf`` meaning no sink. That is why upstream writes only
+    the leading entries. Padding the incoming slice back up to the full length with ``-inf`` makes
+    it an ordinary whole-parameter load.
+
+    Remove this patch once the pinned vLLM loads ``attn_sink`` through a weight loader; as of
+    0.29.0 the same fix exists only as open drafts in vllm-project/vllm#57798, which covers the
+    DeepSeek V4 target models on top of the shared helper in #57797.
+    """
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
 
 
 def monkey_patch_nano_v3_reasoning_parser():
@@ -639,8 +962,8 @@ def monkey_patch_tokenize_params_validation():
         if self.max_total_tokens is None or tokenizer is None:
             return text
 
+        max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
         if self.truncate_prompt_tokens is None:
-            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
             if len(text) > max_chars:
                 raise VLLMValidationError(
                     f"You passed {len(text)} input characters. "
@@ -651,6 +974,11 @@ def monkey_patch_tokenize_params_validation():
                     parameter="input_text",
                     value=len(text),
                 )
+        elif self.truncation_side is not None and len(text) > max_chars:
+            if self.truncation_side == "left":
+                text = text[-max_chars:]
+            else:
+                text = text[:max_chars]
         return text
 
     def _patched_get_encode_kwargs(self):
@@ -664,6 +992,14 @@ def monkey_patch_tokenize_params_validation():
             max_length = self.max_total_tokens
         elif max_length is None and self.max_total_tokens is not None:
             max_length = self.max_total_tokens + 1
+
+        # Match upstream: a truncation-side override needs the full token sequence so
+        # _token_truncation can slice from the requested side; _text_len_check pre-trims.
+        if self.truncation_side is not None and self.truncate_prompt_tokens is not None:
+            return dict(
+                truncation=False,
+                add_special_tokens=self.add_special_tokens,
+            )
 
         return dict(
             truncation=max_length is not None,

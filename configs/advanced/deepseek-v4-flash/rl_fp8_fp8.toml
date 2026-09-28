@@ -1,0 +1,126 @@
+max_steps = 20
+seq_len = 2048
+
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "dsv4-fp8-fp8"
+tags = ["fp8-train"]
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+
+[slurm]
+job_name = "ds-v4-rl-fp8-fp8"
+partition = "all"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+[orchestrator]
+batch_size = 32
+group_size = 8
+
+[orchestrator.concurrency]
+max_inflight = 64
+
+[orchestrator.renderer]
+name = "deepseek-v4"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+enable_router_replay = true
+dist_timeout_seconds = 14400
+
+[trainer.model]
+impl = "custom"
+ep = 8
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+# Trainer-side FP8 with the same recipe vLLM uses online (128x128 weight blocks, 1x128 activation
+# groups, amax / 448 fp32 scales on H200), so both forwards see the same FP8 weights. The list
+# restates the eight defaults; `ignore_patterns` replaces rather than extends them.
+#   o_a_proj: `DeepseekV4GroupedLinear` has a block-diagonal bmm forward that the dense FP8 rewrite
+#   would break on shapes. vLLM keeps `wo_a` in FP8, so this is a known asymmetry.
+#   TODO: give o_a_proj a grouped FP8 path (8 groups of 1024x4096) so the trainer matches vLLM's wo_a
+#   indexer\.: the indexer's projection weights stay bf16 on vLLM (`quantization_config.ignore`), so
+#   they must stay bf16 here too; the in-kernel e4m3 q/k quantization is unaffected on both sides.
+#   compressor\.: vLLM builds the attention compressor's projections with `quant_config=None`, so
+#   they are bf16 on the server and no vLLM-side ignore entry can change that.
+[trainer.model.quantization]
+type = "fp8"
+ignore_patterns = [
+  "lm_head",
+  "router",
+  'mlp\.gate\.',
+  'shared_expert\.output_gate',
+  "eh_proj",
+  "weights_proj",
+  "in_proj_a",
+  "in_proj_b",
+  "o_a_proj",
+  'indexer\.',
+  'compressor\.',
+]
+
+# Routed experts through DeepGEMM FP8 grouped GEMMs; `quantization` above only covers dense linears.
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+# `lr = 0` holds the policy fixed: this measures trainer-vs-inference mismatch, not training.
+[trainer.optim]
+lr = 0.0
+weight_decay = 0.0
+
+[inference]
+# Mandatory with online FP8, not an optimization. DeepSeek V4's o_proj never calls `wo_a`: it
+# reads `wo_a.weight` directly and hands it to DeepGEMM's grouped `fp8_einsum`, which needs the
+# 3D `[groups, rank, dim]` layout. Only `DeepGemmFp8BlockScaledMMKernel` honors the layer's
+# `is_bmm` flag and builds that layout, and it is skipped unless `VLLM_USE_DEEP_GEMM` is on.
+use_deep_gemm = true
+
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+dtype = "bfloat16"
+# vLLM quantizes the broadcast bf16 weights at load time, on every layerwise reload; the trainer
+# quantizes the same bf16 values with the same block recipe (see [trainer.model.quantization]).
+quantization = "fp8_per_block"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.8
+max_model_len = 2048
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
+
+# Probe only. The indexer entry gives the probe production scope. The `wo_a` entry makes `o_a` bf16
+# on both sides, so the probe measures the fp8/fp8 parity floor without the `o_a_proj` asymmetry;
+# vLLM's bf16 `wo_a` fallback is a slow Python einsum, fine for 20 steps at 2048 tokens only.
+[inference.vllm.quantization_config]
+ignore = ["re:.*indexer.*", "re:.*\\.wo_a.*"]
