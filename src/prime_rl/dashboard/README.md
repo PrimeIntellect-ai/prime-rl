@@ -22,6 +22,13 @@ cluster head node, a laptop against a mounted outputs dir:
 uv sync --extra dashboard && uv run dashboard [output_dir ...]
 ```
 
+**Evals** in the top bar opens a Prime platform evaluation (from the saved
+`prime login` account, or pasted by id or URL) as a run. The dashboard syncs it
+from Prime Traces in the background into
+`~/.cache/prime-rl/dashboard/platform/<evaluation id>/`, laid out like a local
+eval run, and keeps polling while the evaluation runs. Metrics and logs stay
+empty: the platform keeps neither for an evaluation.
+
 The trace viewer's **Messages** mode keeps structured `message.content` and
 `trace.tools` visibly separate. **Rendered** decodes each selected branch's
 recorded post-renderer `token_ids` as one sequence, retaining special tokens;
