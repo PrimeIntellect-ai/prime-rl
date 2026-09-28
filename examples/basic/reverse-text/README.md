@@ -34,6 +34,8 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 ## SFT
 
+> You can also run this SFT example end-to-end on Prime Intellect's hosted GPU clusters — no cluster credentials, no local GPUs: create a volume, stage the dataset, and dispatch the config with `prime train`. See the [Hosted SFT guide](../../../docs/hosted-sft.md).
+
 We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
