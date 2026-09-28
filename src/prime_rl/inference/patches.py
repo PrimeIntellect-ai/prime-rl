@@ -23,6 +23,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_deepseek_v4_attn_sink_loading()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -287,6 +288,59 @@ def monkey_patch_deepseek_v4_bf16_o_proj():
     # their `_o_proj` methods actually call.
     flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
     flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """A weight update silently leaves DeepSeek V4's attention sinks at their boot values.
+
+    ``attn_sink`` is the only parameter ``DeepseekV4Model.load_weights`` writes without calling
+    ``param.weight_loader``; it gets a bare ``params_dict[name][:n].copy_()``. Layerwise reload has
+    already moved that parameter to meta, so the copy is discarded, ``load_numel`` stays 0, and the
+    loader still records the name as loaded. Sinks are trainable, so the engine serves stale ones
+    for the rest of the run.
+
+    The sink tensor has one entry per attention head, and each tensor-parallel rank loads only its
+    own ``n_heads // tp_size`` slice. The parameter is longer than that slice: some attention
+    backends allocate their query and output buffers at a rounded-up head count, and the sinks are
+    sized to match, with the tail left at ``-inf`` meaning no sink. That is why upstream writes only
+    the leading entries. Padding the incoming slice back up to the full length with ``-inf`` makes
+    it an ordinary whole-parameter load.
+
+    Remove this patch once the pinned vLLM loads ``attn_sink`` through a weight loader; as of
+    0.29.0 the same fix exists only as open drafts in vllm-project/vllm#57798, which covers the
+    DeepSeek V4 target models on top of the shared helper in #57797.
+    """
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
 
 
 def monkey_patch_nano_v3_reasoning_parser():
@@ -639,8 +693,8 @@ def monkey_patch_tokenize_params_validation():
         if self.max_total_tokens is None or tokenizer is None:
             return text
 
+        max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
         if self.truncate_prompt_tokens is None:
-            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
             if len(text) > max_chars:
                 raise VLLMValidationError(
                     f"You passed {len(text)} input characters. "
@@ -651,6 +705,11 @@ def monkey_patch_tokenize_params_validation():
                     parameter="input_text",
                     value=len(text),
                 )
+        elif self.truncation_side is not None and len(text) > max_chars:
+            if self.truncation_side == "left":
+                text = text[-max_chars:]
+            else:
+                text = text[:max_chars]
         return text
 
     def _patched_get_encode_kwargs(self):
@@ -664,6 +723,14 @@ def monkey_patch_tokenize_params_validation():
             max_length = self.max_total_tokens
         elif max_length is None and self.max_total_tokens is not None:
             max_length = self.max_total_tokens + 1
+
+        # Match upstream: a truncation-side override needs the full token sequence so
+        # _token_truncation can slice from the requested side; _text_len_check pre-trims.
+        if self.truncation_side is not None and self.truncate_prompt_tokens is not None:
+            return dict(
+                truncation=False,
+                add_special_tokens=self.add_special_tokens,
+            )
 
         return dict(
             truncation=max_length is not None,
