@@ -257,9 +257,12 @@ class DynamoAdminPlane(AdminPlane):
         model_name: str,
         *,
         poll_interval: float = 1.0,
+        max_off_policy_steps: int | None = None,
     ) -> None:
         if client_config.dynamo is None or not client_config.dynamo.enabled:
             raise ValueError("Dynamo discovery configuration is required")
+        if max_off_policy_steps is not None and max_off_policy_steps < 0:
+            raise ValueError("max_off_policy_steps must be non-negative")
         self._discovery_url = resolve_dynamo_discovery_url(client_config)
         self._client_config = client_config
         self._model_name = model_name
@@ -275,6 +278,11 @@ class DynamoAdminPlane(AdminPlane):
         self._worker_routes: frozenset[str] = frozenset()
         self._lora_names_by_step: dict[int, str] = {}
         self._loaded_loras: list[str] = []
+        # Keep the current policy plus every older version still eligible for
+        # training. Multi-turn episodes pin their model name until completion.
+        self._lora_resident_versions = (
+            _DYNAMO_LORA_RESIDENT_VERSIONS if max_off_policy_steps is None else max_off_policy_steps + 1
+        )
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()
 
@@ -596,12 +604,20 @@ class DynamoAdminPlane(AdminPlane):
         body: dict[str, object],
     ) -> None:
         expected_name = body["lora_name"]
-        response = await client.post(
-            f"/engine/{operation}",
-            json=body,
-            timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
+        async with asyncio.timeout(2 * ADMIN_TIMEOUT_S):
+            for attempt in range(10):
+                try:
+                    response = await client.post(
+                        f"/engine/{operation}",
+                        json=body,
+                        timeout=httpx.Timeout(connect=10.0, read=ADMIN_TIMEOUT_S, write=60.0, pool=10.0),
+                    )
+                    response.raise_for_status()
+                    break
+                except BaseException as error:
+                    if attempt == 9 or not _is_retryable_admin_error(error):
+                        raise
+                    await asyncio.sleep(min(2**attempt, 10))
         payload = response.json()
         if (
             operation == "unload_lora"
@@ -673,7 +689,7 @@ class DynamoAdminPlane(AdminPlane):
             if active_model in self._loaded_loras:
                 await self._wait_for_lora_model(active_model)
                 return active_model
-            if len(self._loaded_loras) >= _DYNAMO_LORA_RESIDENT_VERSIONS:
+            if len(self._loaded_loras) >= self._lora_resident_versions:
                 oldest = self._loaded_loras[0]
                 await self._post_lora_all("unload_lora", {"lora_name": oldest})
                 self._loaded_loras.pop(0)

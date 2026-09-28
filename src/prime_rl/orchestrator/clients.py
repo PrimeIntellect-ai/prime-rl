@@ -82,14 +82,19 @@ class InferenceClient:
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
     ):
-        renderer_model_name = model_name if train_client_type == "renderer" else None
+        renderer_model_name = model_name if train_client_type == "renderer" or eval_client_type == "renderer" else None
         self.train_client = setup_client(
             client_config,
             client_type=train_client_type,
             renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
         )
-        self.eval_client = setup_client(client_config, client_type=eval_client_type)
+        self.eval_client = setup_client(
+            client_config,
+            client_type=eval_client_type,
+            renderer_config=renderer_config,
+            renderer_model_name=renderer_model_name,
+        )
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
@@ -245,12 +250,21 @@ class AdminPlane:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: ClientConfig,
+    model_name: str,
+    *,
+    max_off_policy_steps: int | None = None,
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
-        return DynamoAdminPlane(client_config, model_name)
+        return DynamoAdminPlane(
+            client_config,
+            model_name,
+            max_off_policy_steps=max_off_policy_steps,
+        )
     return AdminPlane(client_config)
 
 

@@ -8,6 +8,7 @@ from verifiers.v1.configs.client import EvalClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
+    InferenceClient,
     _is_retryable_lora_error,
     check_health,
     load_lora_adapter,
@@ -139,6 +140,24 @@ def test_setup_client_assigns_renderer_model_name():
     )
 
     assert client.renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
+
+
+def test_inference_client_configures_renderer_eval_like_training():
+    from renderers import Qwen3VLRendererConfig
+
+    renderer_settings = Qwen3VLRendererConfig()
+    clients = InferenceClient(
+        ClientConfig(base_url="http://worker-a:8000/v1"),
+        model_name="Qwen/Qwen3-VL-4B-Instruct",
+        train_client_type="renderer",
+        eval_client_type="renderer",
+        renderer_config=renderer_settings,
+    )
+
+    assert clients.train_client.type == "train"
+    assert clients.eval_client.type == "train"
+    assert clients.eval_client.renderer == renderer_settings
+    assert clients.eval_client.renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
 
 
 def test_setup_client_preserves_chat_client_defaults():

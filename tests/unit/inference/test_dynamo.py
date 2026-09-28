@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import httpx
 import pytest
@@ -11,7 +11,7 @@ from prime_rl.inference.dynamo import (
     parse_dynamo_worker,
     parse_dynamo_workers,
 )
-from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
+from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S, AdminPlane, setup_admin_plane
 
 MODEL = "Qwen/Qwen3-0.6B"
 
@@ -239,6 +239,22 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
 
     assert discover.await_count == 2
     assert str(admin.clients[0].base_url) == "http://worker:8201"
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_admin_plane_retains_all_trainable_policy_versions():
+    admin = setup_admin_plane(
+        ClientConfig(
+            base_url="http://worker:8000/v1",
+            skip_model_check=True,
+            dynamo=dynamo_config(),
+        ),
+        MODEL,
+        max_off_policy_steps=8,
+    )
+
+    assert isinstance(admin, DynamoAdminPlane)
+    assert admin._lora_resident_versions == 9
     asyncio.run(admin.aclose())
 
 
@@ -525,7 +541,7 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
     asyncio.run(admin.aclose())
 
 
-def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
+def test_dynamo_python_worker_retries_versioned_filesystem_lora_load(tmp_path):
     discovered = parse_dynamo_worker(snapshot(python_worker(enable_lora=True)), MODEL, expected_admin_host="frontend")
     admin = python_admin()
     workers = (discovered,)
@@ -537,7 +553,7 @@ def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
         "lora_name": "prime-rl-policy-v1-test",
         "lora_id": 17,
     }
-    admin.clients[0].post.return_value = response
+    admin.clients[0].post.side_effect = [httpx.ReadTimeout("engine busy"), response]
     adapter = tmp_path / "adapter"
     adapter.mkdir()
 
@@ -545,19 +561,70 @@ def test_dynamo_python_worker_loads_versioned_filesystem_lora(tmp_path):
         patch.object(admin, "ensure_topology_current", new=AsyncMock()),
         patch.object(admin, "_lora_name", return_value="prime-rl-policy-v1-test"),
         patch("prime_rl.inference.dynamo.maybe_check_has_model", new=AsyncMock()) as check_model,
+        patch("prime_rl.inference.dynamo.asyncio.sleep", new=AsyncMock()) as sleep,
     ):
         active_model = asyncio.run(admin.load_lora_adapter(MODEL, adapter, step=1))
 
     assert active_model == "prime-rl-policy-v1-test"
-    admin.clients[0].post.assert_awaited_once_with(
-        "/engine/load_lora",
-        json={
-            "lora_name": "prime-rl-policy-v1-test",
-            "source": {"uri": adapter.as_uri()},
-        },
-        timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
-    )
+    request = {
+        "lora_name": "prime-rl-policy-v1-test",
+        "source": {"uri": adapter.as_uri()},
+    }
+    assert admin.clients[0].post.await_args_list == [
+        call(
+            "/engine/load_lora",
+            json=request,
+            timeout=httpx.Timeout(connect=10.0, read=ADMIN_TIMEOUT_S, write=60.0, pool=10.0),
+        ),
+        call(
+            "/engine/load_lora",
+            json=request,
+            timeout=httpx.Timeout(connect=10.0, read=ADMIN_TIMEOUT_S, write=60.0, pool=10.0),
+        ),
+    ]
+    sleep.assert_awaited_once_with(1)
     check_model.assert_awaited_once()
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_python_worker_unloads_only_beyond_policy_staleness_window(tmp_path):
+    config = ClientConfig(
+        base_url="http://frontend:8000/v1",
+        skip_model_check=True,
+        wait_for_ready_timeout=2,
+        dynamo={"discovery_url": "http://frontend:8001"},
+    )
+    worker = parse_dynamo_worker(
+        snapshot(python_worker(enable_lora=True)),
+        MODEL,
+        expected_admin_host="frontend",
+    )
+    admin = DynamoAdminPlane(config, MODEL, poll_interval=0, max_off_policy_steps=2)
+    workers = (worker,)
+    admin._bind(workers, admin._topology_fingerprint(workers), [AsyncMock()])
+    adapters = []
+    for step in range(4):
+        adapter = tmp_path / f"adapter-{step}"
+        adapter.mkdir()
+        adapters.append(adapter)
+
+    with (
+        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
+        patch.object(admin, "_lora_name", side_effect=[f"policy-v{step}" for step in range(4)]),
+        patch.object(admin, "_post_lora_all", new=AsyncMock()) as post_lora,
+        patch.object(admin, "_wait_for_lora_model", new=AsyncMock()),
+    ):
+        for step, adapter in enumerate(adapters):
+            asyncio.run(admin.load_lora_adapter(MODEL, adapter, step=step))
+
+    assert admin._loaded_loras == ["policy-v1", "policy-v2", "policy-v3"]
+    assert [call.args[:2] for call in post_lora.await_args_list] == [
+        ("load_lora", {"lora_name": "policy-v0", "source": {"uri": adapters[0].as_uri()}}),
+        ("load_lora", {"lora_name": "policy-v1", "source": {"uri": adapters[1].as_uri()}}),
+        ("load_lora", {"lora_name": "policy-v2", "source": {"uri": adapters[2].as_uri()}}),
+        ("unload_lora", {"lora_name": "policy-v0"}),
+        ("load_lora", {"lora_name": "policy-v3", "source": {"uri": adapters[3].as_uri()}}),
+    ]
     asyncio.run(admin.aclose())
 
 
