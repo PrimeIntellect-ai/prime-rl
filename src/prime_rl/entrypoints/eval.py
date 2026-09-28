@@ -25,9 +25,10 @@ usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-r N] [-c 
        uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
 
-Shorthands for a single-source run:
+Shorthands:
   <taskset-id>             the taskset of the run's only source
-  --env.<field> <value>    a field of that source's env block (e.g. --env.agent.harness.id bash)
+  --env.<field> <value>    a field of that source's env block (e.g. --env.agent.harness.id bash); next to a
+                           TOML with [[source]] blocks, a field of the shared env block (e.g. --env.retries.max-retries 3)
   -c N                     pin the concurrency band (concurrency.min_inflight = max_inflight = N)
 """
 
@@ -46,17 +47,21 @@ def parse_value(raw: str) -> Any:
 
 
 def expand_shorthands(argv: list[str]) -> list[str]:
-    """Rewrite the single-source shorthands into flags ``EvalConfig`` parses.
+    """Rewrite the shorthands into flags ``EvalConfig`` parses.
 
     ``<taskset-id>`` and ``--env.<path> <value>`` describe the run's only source and fold
     into one JSON ``--source`` flag (pydantic-config has no list-index paths, so
-    ``--source.0.env...`` cannot address it). ``-c N`` pins the concurrency band.
-    Everything else passes through untouched.
+    ``--source.0.env...`` cannot address it). Next to a config file that defines
+    ``[[source]]`` blocks, ``--env.*`` flags pass through to the shared ``env`` block.
+    ``-c N`` pins the concurrency band. Everything else passes through untouched.
     """
     out: list[str] = []
     source: dict[str, Any] = {}
     rest = list(argv)
-    if rest and not rest[0].startswith(("-", "@")):
+    positional = bool(rest) and not rest[0].startswith(("-", "@"))
+    sources_in_toml = any(toml_defines_source(path) for path in root_config_files(argv))
+    shared_env = sources_in_toml and not positional
+    if positional:
         set_nested(source, ["env", "taskset", "id"], rest.pop(0))
     i = 0
     while i < len(rest):
@@ -67,7 +72,9 @@ def expand_shorthands(argv: list[str]) -> list[str]:
                 raise SystemExit(f"{flag} needs a value")
             i += 1
             value = rest[i]
-        if flag.startswith("--env."):
+        if flag.startswith("--env.") and shared_env:
+            out += [flag, value]
+        elif flag.startswith("--env."):
             set_nested(source, [key.replace("-", "_") for key in flag[2:].split(".")], parse_value(value))
         elif flag == "-c":
             out += ["--concurrency.min_inflight", value, "--concurrency.max_inflight", value]
@@ -75,9 +82,9 @@ def expand_shorthands(argv: list[str]) -> list[str]:
             out.append(arg)
         i += 1
     if source:
-        if any(toml_defines_source(path) for path in root_config_files(argv)):
+        if sources_in_toml:
             raise SystemExit(
-                "The <taskset-id> / --env.* shorthands describe a single source and cannot be combined "
+                "The <taskset-id> shorthand describes a single source and cannot be combined "
                 "with a config file that defines [[source]] blocks - use one or the other"
             )
         out += ["--source", json.dumps([source])]

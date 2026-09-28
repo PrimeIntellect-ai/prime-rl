@@ -82,6 +82,10 @@ else
 fi
 cd "$NIXL_SRC"
 git checkout "$NIXL_VERSION"
+# Name the wheel nixl-cu13 (pyproject says nixl-cu12): the `nixl` shim imports
+# nixl_cu13 first, so a nixl_cu12 build would sit unused next to the PyPI wheel.
+git checkout -- pyproject.toml
+uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml
 
 export PKG_CONFIG_PATH="$UCX_INSTALL/lib/pkgconfig"
 export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}"
@@ -92,5 +96,5 @@ mkdir -p "$WHEEL_DIR"
 uv pip install pip 2>/dev/null
 "$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR"
 
-WHEEL=$(ls "$WHEEL_DIR"/nixl*.whl | head -1)
+WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"$NIXL_VERSION"-*.whl | head -1)
 echo "=== NIXL wheel built at: $WHEEL ==="
