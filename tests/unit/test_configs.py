@@ -463,6 +463,29 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
     assert online.intervals == {"gsm8k": 5, "b": 2}
 
 
+def test_train_sources_can_use_their_own_group_sizes():
+    def orchestrator(batch_size: int, **concurrency) -> OrchestratorConfig:
+        return OrchestratorConfig.model_validate(
+            {
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "train": {
+                    "group_size": 16,
+                    "source": [
+                        {"env": {"taskset": {"id": "reverse-text"}}},
+                        {"env": {"taskset": {"id": "reverse-text"}}, "name": "b", "group_size": 8},
+                    ],
+                },
+            }
+        )
+
+    assert [source.group_size for source in orchestrator(64).train.source] == [16, 8]
+    with pytest.raises(ValidationError, match="divisible by every train source"):
+        orchestrator(40)
+    with pytest.raises(ValidationError, match="largest train group_size"):
+        orchestrator(64, max_inflight=8)
+
+
 @pytest.mark.parametrize(
     "group", [TrainConfig, EvalSourcesConfig, ScheduledEvalConfig, EvalConfig, SFTOnlineEvalConfig]
 )

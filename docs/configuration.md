@@ -180,6 +180,10 @@ group_size = 16
 [orchestrator.train.algo]
 type = "grpo"
 
+[[orchestrator.train.source]]
+env.taskset.id = "math"
+group_size = 32  # this source's own value wins over the group's 16
+
 [orchestrator.eval.env]
 retries.max_retries = 3
 retries.include = ["ProviderError", "SandboxError"]

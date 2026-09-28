@@ -196,9 +196,11 @@ class EnvConfig(BaseConfig):
 
 
 def inherit_defaults(defaults: dict[str, Any], source: dict) -> dict:
-    """A raw source with its group's set defaults layered under it: a config block
-    through ``vf.merge_defaults``, a plain value when the source leaves it unset. A
-    block the source passes as a built config is kept as is."""
+    """Fill in one raw source with its group's ``defaults`` (field name to validated
+    group value). A config block such as ``sampling`` is filled in key by key with
+    ``vf.merge_defaults``; a plain value such as ``group_size`` is used only when the
+    source leaves it unset. The source's own values always win, and a block that the
+    source passes as an already-built config is kept as is."""
     merged = dict(source)
     for name, value in defaults.items():
         own = source.get(name)
@@ -211,8 +213,8 @@ def inherit_defaults(defaults: dict[str, Any], source: dict) -> dict:
 
 
 def raw_field(data: dict, name: str, field: FieldInfo) -> tuple[bool, Any]:
-    """Whether raw ``data`` sets field ``name`` (under its name or an alias), and the
-    value it sets."""
+    """Whether raw ``data`` sets field ``name``, under its name or an alias (``-r``
+    arrives as ``r``), and the value it sets."""
     alias = field.validation_alias
     keys = [name, *(alias.choices if isinstance(alias, AliasChoices) else [alias] if alias else [])]
     for key in keys:
@@ -300,7 +302,8 @@ class TrainSourceConfig(EnvConfig):
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     group_size: int = Field(1, ge=1)
-    """Rollouts generated per example for GRPO group-relative advantages."""
+    """Rollouts generated per example for GRPO group-relative advantages. Overrides the
+    train group's ``group_size`` for this env, so envs can use different sizes."""
 
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm for this env: sampling plus the per-token training signal
@@ -329,12 +332,19 @@ class OnlineEvalSourceConfig(EvalSourceConfig):
 
 
 class SourceGroupConfig(BaseConfig):
-    """Sources and the defaults they inherit. Every field that the group and its source
-    type both declare is a default: each source inherits the fields that the group
-    sets, merged under its own with ``vf.merge_defaults``. A source's own values win,
-    and a block whose ``type`` or ``id`` differs is the source's alone. A group field's
-    default must equal the source field's, because an unset group field is not
-    layered."""
+    """A list of sources plus defaults for them.
+
+    Any field that both the group and its source type declare (``env``, ``sampling``,
+    ``select``, ``group_size``, ...) is a default. Before validation, each source gets
+    the group's value for every such field that the group sets:
+
+    - a field the source sets itself keeps the source's value;
+    - a nested block is filled in key by key (``vf.merge_defaults``);
+    - a block with a different ``type``/``id`` (e.g. another ``algo``) is the source's
+      alone.
+
+    A field the group leaves unset is not passed on, so each group field must default
+    to the same value as the source field it feeds."""
 
     env: vf.SharedEnvConfig = vf.SharedEnvConfig()
     """Env knobs that every source inherits: the fields every env and taskset has, such
@@ -343,6 +353,7 @@ class SourceGroupConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def inherit_group_defaults(cls, data: Any) -> Any:
+        """Pass the group's set defaults down into each raw source."""
         if not isinstance(data, dict) or not isinstance(data.get("source"), list):
             return data
         (source_type,) = get_args(cls.model_fields["source"].annotation)
@@ -374,7 +385,8 @@ class TrainConfig(SourceGroupConfig):
     """Task selection that every training source inherits."""
 
     group_size: int = Field(1, ge=1)
-    """Rollouts generated per example that every training source inherits."""
+    """Rollouts generated per example that every training source inherits unless it
+    sets its own. ``batch_size`` must be divisible by every source's group size."""
 
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm that every training source inherits. Defaults to ``grpo``."""
@@ -752,13 +764,18 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if self.batch_size is not None and self.batch_size % self.train.group_size != 0:
-            raise ValueError("Batch size must be divisible by the number of samples per problem")
+        group_sizes = [source.group_size for source in self.train.source] or [self.train.group_size]
+        if self.batch_size is not None and any(self.batch_size % size for size in group_sizes):
+            raise ValueError(
+                f"Batch size {self.batch_size} must be divisible by every train source's group_size {sorted(set(group_sizes))}"
+            )
 
         for field in ("max_inflight", "initial_inflight"):
             value = getattr(self.concurrency, field)
-            if value is not None and value < self.train.group_size:
-                raise ValueError(f"concurrency.{field} must be at least the number of rollouts per example")
+            if value is not None and value < max(group_sizes):
+                raise ValueError(
+                    f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
+                )
 
         return self
 
