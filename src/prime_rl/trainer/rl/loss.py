@@ -250,7 +250,7 @@ class IPOV2Loss:
                 kl_loss = kl_loss * weights
             loss = loss + kl_loss.sum()
 
-        mismatch_kl = mismatch_kl_from_log_ratio(log_ratio)
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
