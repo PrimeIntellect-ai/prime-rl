@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -11,6 +12,7 @@ from prime_rl.configs.trainer import (
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
+    IPOV2LossConfig,
     LossConfig,
     PPOLossConfig,
 )
@@ -34,6 +36,7 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    entropy: Float[Tensor, " seq"] | None = field(default=None)
 
 
 @dataclass
@@ -93,8 +96,10 @@ def selective_log_softmax_with_sampling_mask(
 
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
-def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
-    with torch.no_grad():
+def compute_entropy(
+    shifted_logits: Float[Tensor, "batch seq vocab"], differentiable: bool = False
+) -> Float[Tensor, "batch seq"]:
+    with torch.enable_grad() if differentiable else torch.no_grad():
         pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
         entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
     return entropy
@@ -192,6 +197,66 @@ class IPOLoss:
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
 
+        return LossOutputs(loss=loss, metrics=metrics)
+
+
+class IPOV2Loss:
+    """IPO gate with a tangent-capped importance coefficient and entropy floor."""
+
+    def __init__(self, config: IPOV2LossConfig):
+        self.config = config
+        self.entropy_lambda = config.entropy_lambda_init
+
+    def update_entropy_lambda(self, mean_entropy: float) -> None:
+        if not math.isfinite(mean_entropy):
+            raise ValueError(f"IPOv2 mean entropy must be finite, got {mean_entropy}")
+        self.entropy_lambda = max(
+            0.0,
+            self.entropy_lambda + self.config.entropy_lambda_lr * (self.config.entropy_floor - mean_entropy),
+        )
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        if inputs.entropy is None:
+            raise ValueError("IPOv2 requires full-vocabulary token entropy")
+
+        config = self.config
+        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
+        advantages = inputs.advantages[inputs.loss_mask]
+        entropy = inputs.entropy[inputs.loss_mask]
+        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
+
+        log_ratio = trainer_logprobs - inference_logprobs
+        larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
+        smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
+        abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
+        is_masked = abs_probs_diff > config.eps
+        keep_mask = ~is_masked
+
+        kept_log_ratio = log_ratio[keep_mask]
+        log_cap = kept_log_ratio.new_tensor(config.ratio_cap).log()
+        surrogate = torch.where(
+            kept_log_ratio <= log_cap,
+            kept_log_ratio.clamp(max=log_cap).exp(),
+            config.ratio_cap * (1 + kept_log_ratio - log_cap),
+        )
+        pg_loss = -config.adv_tau * advantages[keep_mask] * surrogate
+        if weights is not None:
+            pg_loss = pg_loss * weights[keep_mask]
+        loss = pg_loss.sum() - self.entropy_lambda * entropy.sum()
+        if config.kl_tau:
+            kl_loss = config.kl_tau * log_ratio.clamp(-1e4, 1e4).square()
+            if weights is not None:
+                kl_loss = kl_loss * weights
+            loss = loss + kl_loss.sum()
+
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
+        metrics = {
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
+            "ratio_saturated": (kept_log_ratio.detach() > log_cap).sum() / max(kept_log_ratio.numel(), 1),
+        }
         return LossOutputs(loss=loss, metrics=metrics)
 
 
@@ -371,6 +436,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return CustomLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
+        case IPOV2LossConfig():
+            return IPOV2Loss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
         case PPOLossConfig():
@@ -394,6 +461,7 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    entropy: list[Float[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -425,6 +493,7 @@ def compute_loss(
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        entropy: Full-vocabulary entropy for each sequence, if the RL loss requires it
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -440,6 +509,8 @@ def compute_loss(
         ce_weights = [None] * n
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
+    if entropy is None:
+        entropy = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -454,7 +525,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, token_entropy in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -463,6 +534,7 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        entropy,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -473,6 +545,7 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                entropy=token_entropy,
             )
 
         if rl_w is None:

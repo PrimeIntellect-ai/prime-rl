@@ -123,19 +123,16 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_chunk - (t / s)
 
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz)
+        ctx.set_materialize_grads(False)
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, entropy)
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
         return logprobs, entropy
 
     @staticmethod
-    def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):
-        assert grad_entropy is None or torch.all(grad_entropy == 0.0), (
-            "Backward through entropy is not implemented in GemmaFusedOutputLinear"
-        )
-
-        hidden, weight, labels, inv_temperature, logz = ctx.saved_tensors
+    def backward(ctx, grad_logprobs: torch.Tensor | None, grad_entropy: torch.Tensor | None):
+        hidden, weight, labels, inv_temperature, logz, entropy = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
         softcap: float = ctx.softcap
 
@@ -150,9 +147,15 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, n)
             hidden_chunk = hidden[start:end]
             labels_chunk = labels[start:end]
-            grad_chunk = grad_logprobs[start:end].to(torch.float32)
+            grad_chunk = (
+                grad_logprobs[start:end].to(torch.float32)
+                if grad_logprobs is not None
+                else torch.zeros_like(logz[start:end])
+            )
+            grad_entropy_chunk = grad_entropy[start:end].to(torch.float32) if grad_entropy is not None else None
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
             logz_chunk = logz[start:end]
+            entropy_chunk = entropy[start:end]
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -162,13 +165,17 @@ class _GemmaChunkedLogProbEntropyFn(torch.autograd.Function):
                 tanh_val = torch.tanh(logits_f / softcap)
                 scaled_logits = softcap * tanh_val
                 scaled_logits = scaled_logits * inv_t_chunk
-                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
+                logprobs = scaled_logits - logz_chunk.unsqueeze(-1)
+                probs = logprobs.exp()
 
                 grad_logits = (-grad_chunk).unsqueeze(-1) * probs
                 mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
                 if torch.any(mask):
                     idx = (labels_chunk[mask] - vocab_start).to(torch.long)
                     grad_logits[mask, idx] += grad_chunk[mask]
+                if grad_entropy_chunk is not None:
+                    centered_logprobs = torch.where(probs > 0, logprobs + entropy_chunk.unsqueeze(-1), 0.0)
+                    grad_logits = grad_logits - grad_entropy_chunk.unsqueeze(-1) * probs * centered_logprobs
                 grad_logits = grad_logits * inv_t_chunk
                 grad_logits = grad_logits * (1 - tanh_val**2)
 

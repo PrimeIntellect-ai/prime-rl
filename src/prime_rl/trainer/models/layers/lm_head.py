@@ -150,6 +150,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
         logz = torch.empty((n,), device=device, dtype=torch.float32)
+        full_logz = torch.empty((n,), device=device, dtype=torch.float32)
         replay = torch.zeros((n,), device=device, dtype=torch.bool) if sampling_mask is not None else None
 
         for start in range(0, n, chunk_size):
@@ -196,24 +197,21 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             else:
                 logz_chunk = logz_full
             logz[start:end] = logz_chunk
+            full_logz[start:end] = logz_full
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_full - (t / s)
 
         ctx.set_materialize_grads(
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, sampling_mask, replay)
+        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, full_logz, entropy, sampling_mask, replay)
         ctx.chunk_size = chunk_size
 
         return logprobs, entropy
 
     @staticmethod
-    def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):
-        # Grads are not materialized (see forward above) so an unused entropy output arrives becomes None, and as we don't compare values we don't have any sync
-        assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
-        assert grad_logprobs is not None, "FusedOutputLinear backward requires logprobs gradients"
-
-        hidden, weight, labels, inv_temperature, logz, sampling_mask, replay = ctx.saved_tensors
+    def backward(ctx, grad_logprobs: torch.Tensor | None, grad_entropy: torch.Tensor | None):
+        hidden, weight, labels, inv_temperature, logz, full_logz, entropy, sampling_mask, replay = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
 
         n, _ = hidden.shape
@@ -228,9 +226,16 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, n)
             hidden_chunk = hidden[start:end]
             labels_chunk = labels[start:end]
-            grad_chunk = grad_logprobs[start:end].to(torch.float32)
+            grad_chunk = (
+                grad_logprobs[start:end].to(torch.float32)
+                if grad_logprobs is not None
+                else torch.zeros_like(logz[start:end])
+            )
+            grad_entropy_chunk = grad_entropy[start:end].to(torch.float32) if grad_entropy is not None else None
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
             logz_chunk = logz[start:end]
+            full_logz_chunk = full_logz[start:end]
+            entropy_chunk = entropy[start:end]
             mask_chunk = sampling_mask[start:end].to(torch.long) if sampling_mask is not None else None
             replay_chunk = replay[start:end] if replay is not None else None
 
@@ -239,6 +244,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 weight_chunk = weight[vocab_start:vocab_end]
                 logits_chunk = hidden_chunk @ weight_chunk.t()
                 scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
+
+                if grad_entropy_chunk is not None:
+                    full_logprobs = scaled_logits - full_logz_chunk.unsqueeze(-1)
+                    full_probs = full_logprobs.exp()
+                    centered_logprobs = torch.where(full_probs > 0, full_logprobs + entropy_chunk.unsqueeze(-1), 0.0)
+                    entropy_grad = -grad_entropy_chunk.unsqueeze(-1) * full_probs * centered_logprobs
 
                 if mask_chunk is not None:
                     # Replayed rows get softmax gradient only on mask ids. Set masked-out
@@ -256,6 +267,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
                 local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
                 grad_logits.scatter_add_(1, local_idx.unsqueeze(1), (grad_chunk * in_range).unsqueeze(1))
+                if grad_entropy_chunk is not None:
+                    grad_logits = grad_logits + entropy_grad
                 grad_logits = grad_logits * inv_t_chunk
 
                 if needs_hidden:

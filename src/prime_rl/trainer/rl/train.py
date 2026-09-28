@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
+import math
 import time
 import asyncio
 from datetime import timedelta
@@ -27,6 +28,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    IPOV2Loss,
     compute_entropy,
     compute_loss,
     _mismatch_kl_from_log_ratio,
@@ -221,6 +223,24 @@ def train(config: TrainerConfig):
         )
     else:
         logger.info("Starting from scratch")
+    if isinstance(rl_loss_fn, IPOV2Loss) and checkpoint_step is not None:
+        checkpoint_path = (
+            resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
+        )
+        multiplier_path = checkpoint_path / "ipo_v2_entropy_lambda.txt"
+        if multiplier_path.exists():
+            loaded_lambda = float(multiplier_path.read_text())
+            if not math.isfinite(loaded_lambda) or loaded_lambda < 0:
+                raise ValueError(f"Invalid IPOv2 entropy multiplier in {multiplier_path}: {loaded_lambda}")
+            rl_loss_fn.entropy_lambda = loaded_lambda
+        else:
+            logger.info("No IPOv2 entropy multiplier in checkpoint; using configured initial value")
+
+    def save_ipo_v2_state(step: int) -> None:
+        if isinstance(rl_loss_fn, IPOV2Loss) and world.is_master:
+            (ckpt_manager.get_ckpt_path(step) / "ipo_v2_entropy_lambda.txt").write_text(
+                f"{rl_loss_fn.entropy_lambda:.17g}\n"
+            )
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -319,7 +339,11 @@ def train(config: TrainerConfig):
         )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        global_scale_values = global_scales.tolist()
+        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scale_values)
+        ipo_v2_entropy_sum = (
+            torch.zeros((), dtype=torch.float32, device="cuda") if isinstance(rl_loss_fn, IPOV2Loss) else None
+        )
         prepare_gradient_offload(
             gradient_manager,
             parallel_dims.fsdp_gradient_divide_factor,
@@ -461,12 +485,16 @@ def train(config: TrainerConfig):
                     out["logprobs"] = selective_log_softmax_with_sampling_mask(scaled_logits, labels, sampling_mask)
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
-                out["entropy"] = compute_entropy(scaled_logits)
+                out["entropy"] = compute_entropy(scaled_logits, differentiable=isinstance(rl_loss_fn, IPOV2Loss))
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                out["entropy"] = (
+                    gather_for_cp(out["entropy"], cp_group)
+                    if isinstance(rl_loss_fn, IPOV2Loss)
+                    else gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                )
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -492,6 +520,7 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                entropy=out["entropy"].squeeze().split(sequence_lengths) if isinstance(rl_loss_fn, IPOV2Loss) else None,
             )
 
             # Backward pass
@@ -503,6 +532,11 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
+            if ipo_v2_entropy_sum is not None:
+                rl_mask = loss_mask & (rl_weights != 0) if rl_weights is not None else loss_mask
+                rl_entropy = out["entropy"][rl_mask].detach()
+                ipo_v2_entropy_sum = ipo_v2_entropy_sum + rl_entropy.sum()
+                tensors["entropy/rl"].append(rl_entropy.to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
@@ -576,6 +610,12 @@ def train(config: TrainerConfig):
         # Update learning rate scheduler
         scheduler.step()
 
+        if ipo_v2_entropy_sum is not None:
+            assert isinstance(rl_loss_fn, IPOV2Loss)
+            if global_scale_values[0] > 0:
+                dist.all_reduce(ipo_v2_entropy_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+                rl_loss_fn.update_entropy_lambda((ipo_v2_entropy_sum / global_scale_values[0]).item())
+
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
@@ -607,6 +647,7 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            save_ipo_v2_state(progress.step)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
@@ -619,6 +660,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        if isinstance(rl_loss_fn, IPOV2Loss):
+            tensor_stats["ipo_v2/entropy_lambda"] = rl_loss_fn.entropy_lambda
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
@@ -731,6 +774,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        save_ipo_v2_state(progress.step)
         ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:

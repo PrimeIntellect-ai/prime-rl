@@ -5,8 +5,15 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head_gemma import GemmaFusedOutputLinear
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import (
+    compute_entropy,
+    selective_log_softmax,
+    selective_log_softmax_with_sampling_mask,
+    shift_tensor_left,
+    shift_tensor_right,
+)
 from prime_rl.utils.utils import default_dtype
 
 
@@ -59,6 +66,70 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_hidden1, grad_hidden0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_weight1, grad_weight0, rtol=0, atol=1e-5)
+
+
+@pytest.mark.gpu
+def test_fused_lm_head_entropy_gradient_with_sampling_mask():
+    torch.manual_seed(17)
+    hidden = torch.randn(1, 4, 5, device="cuda") * 0.3
+    weight = torch.randn(11, 5, device="cuda") * 0.3
+    labels = torch.tensor([[1, 8, 6, 2]], device="cuda")
+    temperature = torch.tensor([[1.0, 0.7, 1.3, 2.0]], device="cuda")
+    sampling_mask = torch.tensor([[[1, 2, 3, -1], [-1, -1, -1, -1], [6, 7, 8, -1], [0, 2, 4, 6]]], device="cuda")
+
+    for include_logprobs in (False, True):
+        baseline_hidden = hidden.clone().requires_grad_()
+        baseline_weight = weight.clone().requires_grad_()
+        logits = (baseline_hidden @ baseline_weight.t()) / temperature.unsqueeze(-1)
+        baseline_logprobs = selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
+        baseline_entropy = compute_entropy(logits, differentiable=True)
+        baseline_loss = -0.2 * baseline_entropy.sum()
+        if include_logprobs:
+            baseline_loss = baseline_loss + baseline_logprobs.sum()
+        baseline_loss.backward()
+
+        fused_hidden = hidden.clone().requires_grad_()
+        fused = FusedOutputLinear(5, 11, chunk_size=2).cuda()
+        fused.weight = torch.nn.Parameter(weight.clone())
+        out = fused(fused_hidden, labels, temperature=temperature, sampling_mask=sampling_mask)
+        fused_loss = -0.2 * out["entropy"].sum()
+        if include_logprobs:
+            fused_loss = fused_loss + out["logprobs"].sum()
+        fused_loss.backward()
+
+        torch.testing.assert_close(out["logprobs"], baseline_logprobs, rtol=0, atol=1e-5)
+        torch.testing.assert_close(out["entropy"], baseline_entropy, rtol=0, atol=1e-5)
+        torch.testing.assert_close(fused_hidden.grad, baseline_hidden.grad, rtol=0, atol=1e-5)
+        torch.testing.assert_close(fused.weight.grad, baseline_weight.grad, rtol=0, atol=1e-5)
+
+
+@pytest.mark.gpu
+def test_gemma_fused_lm_head_entropy_gradient():
+    torch.manual_seed(19)
+    hidden = torch.randn(1, 3, 5, device="cuda") * 0.3
+    weight = torch.randn(11, 5, device="cuda") * 0.3
+    labels = torch.tensor([[1, 8, 6]], device="cuda")
+    temperature = torch.tensor([[1.0, 0.7, 1.3]], device="cuda")
+    softcap = 2.0
+
+    baseline_hidden = hidden.clone().requires_grad_()
+    baseline_weight = weight.clone().requires_grad_()
+    logits = baseline_hidden @ baseline_weight.t()
+    logits = softcap * torch.tanh(logits / softcap) / temperature.unsqueeze(-1)
+    baseline_logprobs = selective_log_softmax(logits, labels)
+    baseline_entropy = compute_entropy(logits, differentiable=True)
+    (baseline_logprobs.sum() - 0.2 * baseline_entropy.sum()).backward()
+
+    fused_hidden = hidden.clone().requires_grad_()
+    fused = GemmaFusedOutputLinear(5, 11, chunk_size=2, softcap=softcap).cuda()
+    fused.weight = torch.nn.Parameter(weight.clone())
+    out = fused(fused_hidden, labels, temperature=temperature)
+    (out["logprobs"].sum() - 0.2 * out["entropy"].sum()).backward()
+
+    torch.testing.assert_close(out["logprobs"], baseline_logprobs, rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["entropy"], baseline_entropy, rtol=0, atol=1e-5)
+    torch.testing.assert_close(fused_hidden.grad, baseline_hidden.grad, rtol=0, atol=1e-5)
+    torch.testing.assert_close(fused.weight.grad, baseline_weight.grad, rtol=0, atol=1e-5)
 
 
 def test_fused_lm_head_frozen_weight_backward_cpu():
