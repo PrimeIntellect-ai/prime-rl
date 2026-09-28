@@ -57,17 +57,18 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path) -> list[dict]:
-    """The ok eval episodes the run has landed, each once, from every attempt's stream.
-    The current file monitor directory joins the archives so the resumed attempt writes a
-    fresh stream, plan and metrics; nothing is deleted."""
+def take_landed(run_dir: Path, env_names: set[str]) -> list[dict]:
+    """The ok eval episodes of ``env_names`` the run has landed, each once, from every
+    attempt's stream. Episodes of envs the resumed run no longer configures are never
+    held in memory. The current file monitor directory joins the archives so the resumed
+    attempt writes a fresh stream, plan and metrics; nothing is deleted."""
     current = get_file_monitor_dir(run_dir)
     stream = get_trace_stream(run_dir).relative_to(current)
     landed: dict[str, dict] = {}
     for directory in [*archives(run_dir), current]:
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
-                if record.get("ok"):
+                if record.get("ok") and (record["env"].get("name") or record["env"]["id"]) in env_names:
                     landed.setdefault(record["id"], record)
     if current.is_dir():
         current.rename(current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}"))

@@ -71,11 +71,14 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
         stream.close()
 
     land("m0", "m1")
-    assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1"]
+    assert [record["id"] for record in resume.take_landed(tmp_path, {"math"})] == ["m0", "m1"]
     assert not get_file_monitor_dir(tmp_path).exists()
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
 
     # the resumed attempt re-logged one episode and landed a new one before it died
     land("m0", "m2")
-    assert [record["id"] for record in resume.take_landed(tmp_path)] == ["m0", "m1", "m2"]
+    assert [record["id"] for record in resume.take_landed(tmp_path, {"math"})] == ["m0", "m1", "m2"]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
+
+    # envs the resumed run no longer configures are not read into memory
+    assert resume.take_landed(tmp_path, {"code"}) == []
