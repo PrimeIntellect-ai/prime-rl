@@ -33,6 +33,26 @@ def apply_shared_vllm_patches():
     monkey_patch_triton_moe_swiglu_clamp()
     monkey_patch_fp8_stochastic_weight_rounding()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    # Last, so a failing local plugin cannot skip the patches above.
+    load_vllm_plugins()
+
+
+def load_vllm_plugins():
+    """Run the ``inference.vllm_plugins`` callables exported in ``$PRIME_VLLM_PLUGINS``."""
+    import json
+    import os
+
+    targets = json.loads(os.environ.get("PRIME_VLLM_PLUGINS") or "[]")
+    if not targets:
+        return
+
+    from renderers.plugins import load_plugin_object
+    from vllm.logger import init_logger
+
+    logger = init_logger("vllm.prime_rl.plugins")
+    for target in targets:
+        load_plugin_object(target)()
+        logger.info(f"Loaded vLLM plugin {target}")
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():

@@ -3,7 +3,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
@@ -466,6 +466,21 @@ class InferenceConfig(BaseConfig):
 
     fp8_stochastic_weight_rounding: bool = False
     """Round online block-wise FP8 weights stochastically instead of to nearest. Each element lands on the e4m3 grid point on the far side of its value with probability equal to its fractional distance in bins, so the served weight equals the bf16 weight in expectation. Round-to-nearest pins a weight that starts on the grid until the trainer has moved it half a bin, which at lr 1e-6 takes on the order of 1000 steps, so the served policy stays at step 0 while the trainer drifts; unbiased rounding lets it track sub-bin updates in expectation. Input already on the grid rounds to nearest, so the checkpoint quantizes to identical bytes. Sets ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` for the vLLM workers."""
+
+    vllm_plugins: list[str] = []
+    """Callables that run in every vLLM process before the model and tokenizer load, as ``package.module:function`` or ``path/to/file.py:function``. Relative file paths resolve against the launch directory. Use them to register local tokenizer modes or parsers without a vLLM package. Sets ``PRIME_VLLM_PLUGINS`` for the vLLM processes."""
+
+    @field_validator("vllm_plugins")
+    @classmethod
+    def _resolve_vllm_plugin_paths(cls, targets: list[str]) -> list[str]:
+        # Spawned vLLM processes and other nodes may not share the launch directory.
+        resolved = []
+        for target in targets:
+            module_ref, sep, attr = target.rpartition(":")
+            if sep and (module_ref.endswith(".py") or "/" in module_ref):
+                target = f"{Path(module_ref).expanduser().resolve()}:{attr}"
+            resolved.append(target)
+        return resolved
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
