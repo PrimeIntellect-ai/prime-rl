@@ -6,7 +6,7 @@ including startup. The dispatcher pulls via ``next_task()`` until
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
@@ -28,10 +28,14 @@ class EvalSource:
         intervals: dict[str, int] | None = None,
         skip_first_step: bool = False,
         is_resumed: bool = False,
+        groups_per_step: int | None = None,
     ) -> None:
         """``intervals`` is the step interval per env of a training run's online evals;
-        a standalone eval has none and fires every env on its one trigger."""
+        a standalone eval has none and fires every env on its one trigger.
+        ``groups_per_step`` labels a trigger's queued groups with consecutive steps,
+        advancing every that many groups in dispatch order."""
         self.skip_first_step = skip_first_step
+        self.groups_per_step = groups_per_step
 
         self.tasks_by_env: dict[str, list[vf.Task]] = {}
         self.group_sizes: dict[str, int] = {}
@@ -42,6 +46,8 @@ class EvalSource:
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
+        self.planned: Counter[tuple[str, int]] = Counter()
+        """Rollouts queued per ``(env, step)`` by the last trigger."""
         self.owed: dict[str, dict[str, int]] | None = None
         self.groups: dict[str, dict[str, str]] = {}
 
@@ -70,6 +76,8 @@ class EvalSource:
             if (is_first or force or step % interval == 0) and self.tasks_by_env[name]
         ]
         owed, self.owed = self.owed, None
+        self.planned = Counter()
+        queued = 0
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -86,9 +94,14 @@ class EvalSource:
                     owed[env_name][task.key] = owed[env_name].get(task.key, 0) - rollouts
                 if rollouts > 0:
                     group_id = self.groups.get(env_name, {}).get(task.key)
+                    request_step = step if self.groups_per_step is None else step + queued // self.groups_per_step
                     self.queue.append(
-                        TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+                        TaskRequest(
+                            env_name=env_name, task=task, step=request_step, rollouts=rollouts, group_id=group_id
+                        )
                     )
+                    self.planned[(env_name, request_step)] += rollouts
+                    queued += 1
         return fired
 
     def next_task(self) -> TaskRequest | None:

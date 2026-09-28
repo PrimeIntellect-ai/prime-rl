@@ -12,6 +12,7 @@ from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
+from prime_rl.orchestrator.utils import eval_work
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
@@ -53,8 +54,13 @@ class Eval:
             )
 
         await self.runner.start()
-        fired = self.runner.eval_source.trigger(0)
-        await self.runner.run_epoch(fired, 0, restored=restored)
+        # With groups_per_step, the owed rollouts start after the steps the restored ones
+        # were dispatched at, so no batch mixes the two.
+        step = 0
+        if config.groups_per_step is not None and restored:
+            step = max(eval_work(episode).step for episode in restored) + 1
+        fired = self.runner.eval_source.trigger(step)
+        await self.runner.run_epoch(fired, step, restored=restored)
         await self.runner.drain()
 
 
