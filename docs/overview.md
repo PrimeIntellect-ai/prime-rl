@@ -38,6 +38,7 @@ The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into 
 
 - **[Configuration](configuration.md)** — TOML composition, CLI overrides, dry-run.
 - **[Training](training.md)** — Launch and observe RL and SFT runs.
+- **[Hosted SFT](hosted-sft.md)** — Run SFT on Prime Intellect's hosted clusters: volumes, dataset staging, `prime train` dispatch.
 - **[Inference](inference.md)** — vLLM-backed server (or fleet) holding the current policy.
 - **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
 - **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.

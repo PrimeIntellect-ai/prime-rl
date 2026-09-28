@@ -141,7 +141,7 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 ## SFT Trainer
 
-`uv run sft` runs supervised fine-tuning from a HF dataset. To run SFT on Prime Intellect's hosted GPU clusters instead of your own infrastructure — volumes, dataset staging, and dispatch through the `prime` CLI — see the [Hosted SFT guide](hosted-sft.md). It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
+`uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting. To run SFT on Prime Intellect's hosted GPU clusters instead of your own infrastructure — volumes, dataset staging, and dispatch through the `prime` CLI — see the [Hosted SFT guide](hosted-sft.md).
 
 ### Dataset Format
 

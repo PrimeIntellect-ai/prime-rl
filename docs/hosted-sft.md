@@ -4,7 +4,19 @@
 
 Run `prime-rl` supervised fine-tuning on Prime Intellect's hosted GPU clusters — no cluster credentials, no `kubectl`, no SLURM. You create a storage volume with the `prime` CLI, stage a public Hugging Face dataset onto it, dispatch a `prime-rl` SFT config with `prime train`, and watch the loss curve and logs on the platform dashboard. When the run finishes, teardown is automatic and your outputs land on the volume.
 
-This walkthrough trains a small Qwen3 model to reverse text (the [`reverse-text`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) example) end-to-end on a single GPU. Every output shown is real, but the page is assembled from two live tests of this flow, not one continuous session: the staging transcript comes from a platform-API staging run of this dataset (on a shared staging volume — hence `sft-datasets` in its output), and the training transcript comes from a completed run on the same dataset, staged on its volume by the platform team with an operator pod — the exact operation `prime volumes stage` performs. Run IDs, volume names, and timestamps differ per invocation. For SFT on your own infrastructure, see [Training](training.md).
+This walkthrough trains a small Qwen3 model to reverse text (the [`reverse-text`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) example) end-to-end on a single GPU. For SFT on your own infrastructure, see [Training](training.md).
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [1. Create a volume](#1-create-a-volume)
+- [2. Stage the dataset](#2-stage-the-dataset)
+- [3. Write the config](#3-write-the-config)
+- [4. Dispatch](#4-dispatch)
+- [5. Watch it run](#5-watch-it-run)
+- [What the errors mean](#what-the-errors-mean)
+- [Limitations](#limitations)
+- [Scaling up](#scaling-up)
 
 ## Prerequisites
 
@@ -17,11 +29,9 @@ prime login
 
   **Version note — this flow is not in a released CLI yet.** `prime volumes`, `prime volumes stage`, and hosted-SFT dispatch ship in the upcoming CLI release that bundles them ([prime-cli PR #935](https://github.com/PrimeIntellect-ai/prime-cli/pull/935) — volumes + SFT dispatch, [prime-cli PR #964](https://github.com/PrimeIntellect-ai/prime-cli/pull/964) — staging including the API path). On a released build (v0.7.7 and earlier) `prime volumes stage` does not exist, and dispatching an SFT config misroutes it against the RL schema with confusing field errors. This page assumes that combined release; at release time, replace this note with the minimum tested CLI version.
 
-- A platform deployment with the hosted SFT path enabled. Besides the CLI, the platform side needs the SFT dispatch admission, the volumes staging endpoint, the dedicated-run chart with named-volume support, and a warmed validator/runtime image — all enabled by Prime. If your platform does not expose staging yet, dataset staging is support-assisted.
-
 - A Prime account with hosted training access, including the dedicated cluster/volume path (not just shared LoRA training).
 
-- A model **cached on the cluster that owns your volume** — hosted SFT boots models from the cluster model cache, not from the Hub. List the full-FT cluster cache (a shared-LoRA model from the plain list is not valid here) and pick the entry for that cluster, with a renderer your model supports:
+- A model **cached on the cluster that owns your volume** — hosted SFT boots models from the cluster model cache, not from the Hub. List the full-FT cache with `--fft-only` (a shared-LoRA model from the plain `prime train models` list is not valid here) and pick a model whose listed GPU types match your volume's cluster and whose family your renderer supports:
 
 ```bash
 prime train models --fft-only
@@ -53,7 +63,7 @@ Name                  Size   Status   Namespace            Created
 reverse-text-sft-e2e  100Gi  RUNNING  prime-user-cmug944…  2026-09-28T20:04:33…
 ```
 
-`prime volumes resize <name> --size <size>` grows a volume in place, and `prime volumes delete -y <name>` deletes a volume and everything on it.
+`prime volumes resize <name> --size <size>` grows a volume in place, and `prime volumes delete -y <name>` deletes a volume and everything on it. Size the volume for what you will keep: staged datasets plus — for every checkpoint you keep — the model weights and optimizer state. The 0.6B smoke run in this walkthrough wrote ~7 GB under `runs/<runId>/`; a `[ckpt]` on a 100B-class model needs terabytes per checkpoint, so resize before dispatching large runs.
 
 ## 2. Stage the dataset
 
@@ -69,7 +79,6 @@ prime volumes stage willcb/R1-reverse-wikipedia-paragraphs-v1-1000 \
 - `--path` names the directory under `datasets/` on the volume. It defaults to the dataset's repository basename. Here the dataset lands at `/datasets/reverse-text`, which is exactly what `data.name` in the config below points at.
 - `--revision` pins a branch, tag, or commit (default `main`); the staging job resolves it to one immutable commit before downloading.
 - Re-staging is idempotent for the same source and **resolved revision (SHA)**: the job re-verifies the layout and inventory, returns `already_staged`, and never overwrites. Re-publishing a *changed* revision at the same `--path` fails instead of silently replacing your data — use a new `--path` when you want a different revision.
-- `--kube-context` falls back to running the staging job through your own kubeconfig (operator path); without it, everything goes through the platform API. An API failure does not silently fall back to kubectl — retry, or contact support.
 
 The CLI admits the staging job and streams progress until the dataset is verified. The output below is verbatim from a live staging run of this same dataset on a shared staging volume — `sft-datasets` in the output is that session's volume, not the walkthrough's:
 
@@ -109,7 +118,9 @@ On success you get the verified inventory — revision, byte count, file count, 
 }
 ```
 
-Before publishing, the staging job re-loads the dataset in a fresh process with the Hub disabled — if it cannot be loaded offline, staging fails and nothing lands on the volume. A `.prime-stage-manifest` file inside the dataset directory records the source repo, revision, and inventory for later re-runs.
+Before publishing, the staging job re-loads the dataset in a fresh process with the Hub disabled — if it cannot be loaded offline, staging fails and nothing lands on the volume.
+
+*Operators: `--kube-context <ctx>` runs the same staging job through your own kubeconfig instead of the platform API.*
 
 ## 3. Write the config
 
@@ -157,7 +168,7 @@ name = "prime-qwen3"            # chat-template renderer for the Qwen3 family
 
 ## 4. Dispatch
 
-Pin the runtime image your platform validates and dispatch against your volume — `prime train` asks you to confirm before dispatch (the captured run passed `-y` to skip the prompt):
+Dispatch against your volume — `prime train` asks you to confirm before dispatch (the captured run passed `-y` to skip the prompt):
 
 ```bash
 prime train sft.toml --volume reverse-text-sft-e2e --image-tag commit-6f4ab3b73
@@ -171,11 +182,15 @@ Monitor run at:
   http://localhost:3000/dashboard/training/kqeggj5dl7k85bc0mk1i4y5i
 ```
 
-The CLI prints a link straight to the run page in the dashboard (this walkthrough ran against a local stack, hence `localhost` — on the hosted platform the same run page is served at `https://app.primeintellect.ai/dashboard/training/<runId>`). `--image-tag` pins the `prime-rl` runtime image; `commit-6f4ab3b73` is the image the captured runs used. Do not set `HF_HOME` or other Hugging Face cache variables in the config — the platform owns the HF cache inside the run.
+The CLI prints a link straight to the run page in the dashboard (this walkthrough ran against a local stack, hence `localhost` — on the hosted platform the same run page is served at `https://app.primeintellect.ai/dashboard/training/<runId>`).
+
+The `--image-tag commit-6f4ab3b73` pin is temporary, and for a concrete reason: the platform's default runtime tag is `main`, and a mainline `prime-rl` image does not yet carry the SFT platform monitor ([prime-rl #3614](https://github.com/PrimeIntellect-ai/prime-rl/pull/3614)) — an unpinned hosted SFT run trains but shows no per-step metrics on the dashboard. Pin an image that includes the monitor until #3614 ships in a release; afterwards, omit the flag. Do not set `HF_HOME` or other Hugging Face cache variables in the config — the platform owns the HF cache inside the run.
 
 Use **the run ID your dispatch printed** in the monitoring commands below (`<runId>`); the IDs in the shown outputs belong to the captured run. The run moves through `PENDING` → `CREATING` → `RUNNING` → `COMPLETED`; the captured one took about 3 minutes wall-clock on one H200.
 
 ## 5. Watch it run
+
+> **About the outputs on this page:** they come from two live tests — a platform-API staging run of this dataset (on a shared staging volume, hence `sft-datasets` in its output) and a completed training run on the same dataset, staged by the platform team with an operator pod (the exact operation `prime volumes stage` performs). Run IDs, volume names, and timestamps differ per invocation.
 
 The dashboard page for the run shows the status timeline, the per-step loss curve, and the live trainer logs. The outputs below come from the captured run — this walkthrough's config dispatched against its own volume, with the same dataset staged under its repository basename (`/datasets/willcb-r1-reverse-wikipedia-paragraphs-v1-1000`; in your run, the staged path is whatever `--path` you chose in step 2). The same data is available from the CLI:
 
@@ -231,13 +246,14 @@ examples/s]
 2.00e-05 | Throughput 6704 tokens/s | MFU 2.9% | Peak Mem. 10.7/139.8 GiB (7.7%)
 ```
 
-`Generating train split: 100%|…| 1000/1000` is consistent with the staged 1000-example parquet; the actual guarantee that the trainer read your volume is structural: hosted SFT mounts the staged `datasets/` tree at `/datasets` and runs offline — there is no Hub download during training.
+`Generating train split: 100%|…| 1000/1000` is consistent with the staged 1000-example parquet; the actual guarantee that the trainer read your volume is structural: hosted SFT reads its dataset from the staged `datasets/` tree mounted at `/datasets` — no Hub download is needed for the dataset.
 
-When the run completes, teardown is automatic and asynchronous: the trainer pods are removed and the cluster is freed shortly after the terminal state (cleanup can trail the trainer's last step). Your outputs stay on the volume (visible with cluster access):
+When the run completes, teardown is automatic and asynchronous: the trainer pods are removed and the cluster is freed shortly after the terminal state (cleanup can trail the trainer's last step). Your outputs stay on the volume — ~7.3 GB total for this smoke run, including an HF dataset cache (excerpt; visible with cluster access):
 
 ```text
 /volume/runs/kqeggj5dl7k85bc0mk1i4y5i/outputs/fft-kqeggj5dl7k85bc0mk1i4y5i/checkpoints/step_10/trainer
 /volume/runs/kqeggj5dl7k85bc0mk1i4y5i/outputs/fft-kqeggj5dl7k85bc0mk1i4y5i/monitors/file/metrics.jsonl
+/volume/runs/kqeggj5dl7k85bc0mk1i4y5i/.cache/huggingface/datasets
 ```
 
 The staged `datasets/` tree is read-only for the run and is left untouched. With `[ckpt]` set, the final checkpoint lives at `runs/<runId>/outputs/fft-<runId>/checkpoints/step_<max_steps>/trainer` on the volume. There is currently no CLI route to browse or download volume contents, and `prime train checkpoints` does not list SFT checkpoints yet — to retrieve a checkpoint, contact Prime support and give them that volume-relative path as identification.
@@ -284,7 +300,7 @@ The recipe is steps 1–4 of this guide. `data.type = "fake"` without `--volume`
 - **Cluster-cached models only.** You cannot add models to the cache yourself — `prime train models --fft-only` lists what is available, and Prime support can add others.
 - **Trainer-only.** `[eval]`, `[inference]`, and `[weight_broadcast]` blocks are rejected; online evals during hosted SFT are not available.
 - **SFT checkpoints are on the volume but not yet listed** by `prime train checkpoints`, and there is no CLI route to browse volume contents — retrieval goes through Prime support.
-- **Usage accounting shows 0 tokens / $0.00 for SFT** — a reporting limitation, not evidence of free usage; token accounting is an RL-rollout concept. The `prime train components` view labels the single trainer row `orchestrator`; that label is cosmetic.
+- **Usage accounting shows 0 tokens / $0.00 for SFT** — a reporting limitation, not evidence of free usage; token accounting is an RL-rollout concept.
 
 ## Scaling up
 
