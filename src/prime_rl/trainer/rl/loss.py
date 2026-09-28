@@ -159,7 +159,7 @@ class IPOLoss:
         larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
         smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
         # |e^logp - e^logq| = e^max(logp, logq) * -expm1(min(logp, logq) - max(logp, logq)).
-        # expm1 avoids cancellation when the probabilities are nearly equal.
+        # This equals abs(p - q); expm1 avoids cancellation when the probabilities are nearly equal.
         abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
         is_masked = abs_probs_diff > loss_config.eps
         keep_mask = ~is_masked
