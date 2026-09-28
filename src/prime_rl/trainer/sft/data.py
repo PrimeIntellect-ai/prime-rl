@@ -10,7 +10,7 @@ import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, PluginRendererConfig, RendererConfig
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -216,7 +216,9 @@ def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> Rend
             "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
             "not renderer.name = 'auto'"
         )
-    if "reasoning_effort" not in type(config).model_fields:
+    # A plugin config carries its renderer's fields as extras.
+    fields_cls = config.plugin_config_class if isinstance(config, PluginRendererConfig) else type(config)
+    if "reasoning_effort" not in fields_cls.model_fields:
         raise ValueError(f"Renderer {config.name!r} has no reasoning_effort field, but a row sets {reasoning_effort!r}")
     return type(config).model_validate({**config.model_dump(), "reasoning_effort": reasoning_effort})
 
