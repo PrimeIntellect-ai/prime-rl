@@ -12,6 +12,7 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
 
     patch_gpt_oss_weight_loading()
+    monkey_patch_vllm_029_nemotron()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
@@ -23,6 +24,119 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_deepseek_v4_per_layer_rope()
     monkey_patch_deepseek_v4_bf16_o_proj()
+
+
+def monkey_patch_vllm_029_nemotron():
+    """Backport Nemotron vision dtype and language-model LoRA fixes to vLLM 0.29."""
+    import vllm
+
+    version = vllm.__version__.split(".")
+    if len(version) < 2 or version[:2] != ["0", "29"]:
+        return
+
+    from vllm.lora.layers.base import BaseLayerWithLoRA
+    from vllm.model_executor.models import nano_nemotron_vl
+    from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
+
+    _patch_vllm_029_nemotron(
+        nano_nemotron_vl,
+        NemotronHForCausalLM,
+        BaseLayerWithLoRA,
+    )
+
+
+def _patch_vllm_029_nemotron(
+    nano_nemotron_vl,
+    nemotron_h_for_causal_lm,
+    base_layer_with_lora,
+):
+    model_cls = nano_nemotron_vl.NemotronH_Nano_VL_V2
+    if getattr(model_cls, "_prime_rl_vllm_029_compat", False):
+        return
+
+    # LoRA covers the language model only. These attributes make the VLM expose
+    # the same adapter layout as its Nemotron-H language-model backbone.
+    model_cls.supports_lora = True
+    model_cls.is_non_gated_moe = nemotron_h_for_causal_lm.is_non_gated_moe
+    model_cls.packed_modules_mapping = nemotron_h_for_causal_lm.packed_modules_mapping
+    model_cls.embedding_modules = nemotron_h_for_causal_lm.embedding_modules
+    model_cls.lora_skip_prefixes = nemotron_h_for_causal_lm.lora_skip_prefixes
+
+    def extract_feature_dynamic(self, pixel_values, imgs_sizes):
+        pixel_values = pixel_values.to(dtype=self.llm_dtype)
+        _, vit_embeds = self.vision_model(pixel_values, imgs_sizes=imgs_sizes)
+        vit_embeds = vit_embeds.to(dtype=self.llm_dtype)
+        vit_embeds = self.pixel_shuffle_dynamic_res(vit_embeds, imgs_sizes=imgs_sizes)
+        return self.mlp1(vit_embeds)
+
+    def extract_feature(self, pixel_values, num_frames=None):
+        pixel_values = pixel_values.to(dtype=self.llm_dtype)
+        num_images, _channels, height, width = pixel_values.shape
+        temporal_patch_size = self.video_temporal_patch_size if num_frames is not None else 1
+        micro_batch_size = 128 - (128 % temporal_patch_size)
+        height_patches = height // self.patch_size
+        width_patches = width // self.patch_size
+
+        vit_embeds_list = []
+        for start in range(0, num_images, micro_batch_size):
+            chunk = pixel_values[start : start + micro_batch_size]
+            if num_frames is not None and temporal_patch_size > 1:
+                _, vit_embeds = self.vision_model(chunk, num_frames=chunk.shape[0])
+            else:
+                _, vit_embeds = self.vision_model(chunk)
+            vit_embeds = vit_embeds.to(dtype=self.llm_dtype)
+            vit_embeds = vit_embeds.reshape(
+                vit_embeds.shape[0],
+                height_patches,
+                width_patches,
+                -1,
+            )
+            vit_embeds = self.pixel_shuffle(vit_embeds, scale_factor=self.downsample_ratio)
+            vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
+            vit_embeds_list.append(self.mlp1(vit_embeds))
+
+        return torch.cat(vit_embeds_list, dim=0)
+
+    def _create_final_video_embeddings(
+        self,
+        video_embeddings,
+        num_tokens_per_frame,
+        frames_indices,
+        frame_duration_ms,
+        video_temporal_patch_size=1,
+    ):
+        tokenizer = nano_nemotron_vl.cached_tokenizer_from_config(self.model_config)
+        video_repl = nano_nemotron_vl.NanoNemotronVLProcessor.get_video_repl(
+            tokens_per_frame=num_tokens_per_frame,
+            frames_indices=frames_indices,
+            frame_duration_ms=frame_duration_ms,
+            tokenizer=tokenizer,
+            img_start_token_ids=self._img_start_token_ids,
+            img_end_token_ids=self._img_end_token_ids,
+            img_context_token_ids=self._img_context_token_ids,
+            video_temporal_patch_size=video_temporal_patch_size,
+        )
+        device = video_embeddings.device
+        repl_token_ids = torch.tensor(video_repl.full, device=device)
+        embed_token_ids = torch.tensor(self._img_context_token_ids, device=device)
+        is_video_embed = torch.isin(repl_token_ids, embed_token_ids)
+
+        # Indicator tokens are produced inside the encoder and have no request
+        # adapter-index mapping, so their LoRA delta is undefined.
+        embed_tokens = self.get_language_model().model.embed_tokens
+        if isinstance(embed_tokens, base_layer_with_lora):
+            embed_tokens = embed_tokens.base_layer
+        text_embeddings = embed_tokens(repl_token_ids)
+        return nano_nemotron_vl._merge_multimodal_embeddings(
+            inputs_embeds=text_embeddings,
+            multimodal_embeddings=video_embeddings,
+            is_multimodal=is_video_embed,
+        )
+
+    model_cls.extract_feature_dynamic = extract_feature_dynamic
+    model_cls.extract_feature = extract_feature
+    model_cls._create_final_video_embeddings = _create_final_video_embeddings
+    model_cls._prime_rl_vllm_029_compat = True
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
