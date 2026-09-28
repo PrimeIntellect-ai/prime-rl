@@ -159,9 +159,7 @@ class TrainEnv(Env):
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = (
-            config.sampling.truncates_distribution()
-            and config.algo is not None
-            and config.algo.sampling.source == "policy"
+            config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"
         )
 
 
@@ -235,7 +233,6 @@ class TrainEnvs(Envs[TrainEnv]):
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,

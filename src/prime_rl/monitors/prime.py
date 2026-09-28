@@ -80,7 +80,7 @@ class PrimeTrainMonitor(Monitor):
                 training=pr.TrainingSpec(
                     max_steps=config.max_steps or 0,
                     batch_size=config.batch_size,
-                    rollouts_per_example=config.group_size,
+                    rollouts_per_example=config.train.group_size,
                     seq_len=config.seq_len,
                     wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
                 ),

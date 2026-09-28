@@ -20,9 +20,11 @@ name = "debug-mixed-grpo-opd"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
 [orchestrator.renderer]
