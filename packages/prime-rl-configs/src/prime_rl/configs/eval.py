@@ -71,6 +71,12 @@ class EvalConfig(ServedEvalConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
 
+    groups_per_step: int | None = Field(None, ge=1)
+    """Advance the eval step every this many dispatched groups (across all envs, in
+    dispatch order), so each step's batch is finalized, logged and released on its own
+    instead of holding the whole run in memory until every rollout lands. None runs each
+    env's full selection as a single step."""
+
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
