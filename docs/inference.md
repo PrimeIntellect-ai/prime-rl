@@ -247,6 +247,8 @@ path = "/scratch/kv"
 
 For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
+For an optional external connector, see the [LMCache MP example](../examples/extra/lmcache/README.md). It uses vLLM argument passthrough for a local inference engine and includes a check for external cache reuse and policy-salt isolation.
+
 
 ### Optimized P/D disaggregation deployment
 

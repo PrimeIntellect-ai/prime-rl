@@ -30,6 +30,7 @@ Walk-throughs for the core environments (baseline eval → optional SFT warmup �
 Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 - [`dynamo/`](extra/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
+- [`lmcache/`](extra/lmcache/README.md) — optional LMCache MP offload, a cache-salt smoke check, and a multi-turn Wordle recipe
 - [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
 
 ## Related config folders

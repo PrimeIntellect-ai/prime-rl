@@ -1,0 +1,13 @@
+# Compose with an RL config using --inference @ this-file.toml.
+# Start the standalone LMCache server before launching inference.
+[vllm]
+enable_prefix_caching = true
+
+[vllm.kv_transfer_config]
+kv_connector = "LMCacheMPConnector"
+kv_connector_module_path = "lmcache.integration.vllm.lmcache_mp_connector"
+kv_role = "kv_both"
+
+[vllm.kv_transfer_config.kv_connector_extra_config]
+"lmcache.mp.host" = "localhost"
+"lmcache.mp.port" = 5555
