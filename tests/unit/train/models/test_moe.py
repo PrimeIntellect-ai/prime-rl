@@ -143,8 +143,9 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         expert_type=expert_type,
         activation=activation,
         bias=True,
-        compute=GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1),
     )
+    experts.set_compute(GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1))
+    assert experts.token_group_alignment == 1
     experts.init_weights(0.02)
 
     has_gate = expert_type == "gated"

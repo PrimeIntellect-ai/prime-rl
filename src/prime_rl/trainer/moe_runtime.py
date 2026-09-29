@@ -91,7 +91,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
-        moe.experts.compute = compute
+        moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
