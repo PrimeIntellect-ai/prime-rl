@@ -13,9 +13,17 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
-from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
+
+from prime_rl.utils.mx_compat import MX_INSTALL_HELP
+
+try:
+    from modelexpress.client import MxClient
+except ModuleNotFoundError as error:
+    if error.name not in {"modelexpress", "modelexpress.client"}:
+        raise
+    raise ImportError(f"nixl requires the optional modelexpress.client. {MX_INSTALL_HELP}") from error
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (

@@ -164,7 +164,10 @@ echo "ORCH_ADDR=${ORCH_ADDR}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-{% if not shared_fs %}
+{% if skip_dependency_sync %}
+# Keep the prepared environment unchanged, including deployment-installed packages.
+export UV_NO_SYNC=1
+{% elif not shared_fs %}
 # Node-local venv (e.g. UV_PROJECT_ENVIRONMENT on /tmp): a bare `uv sync` would only
 # build the batch node, so srun runs it on every node (one task each) and blocks until
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
@@ -240,7 +243,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source .venv/bin/activate
-    # Do not sync to avoid conflicts with lockfile
+{% if skip_dependency_sync %}
+    export UV_NO_SYNC=1
+{% endif %}
 
     # Higher ulimit
     ulimit -n 65536

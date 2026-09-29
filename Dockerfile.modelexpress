@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+
+# Supply a PrimeRL GPU image built from this checkout, pinned by digest.
+ARG PRIMERL_IMAGE
+FROM rust:1.90.0-slim-bookworm AS metadata-builder
+
+ENV RUSTUP_TOOLCHAIN=1.90.0
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl git make gcc libc6-dev pkg-config libssl-dev protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG MODELEXPRESS_REPOSITORY=https://github.com/ai-dynamo/modelexpress.git
+ARG MODELEXPRESS_REF=35a06060be50aa31e081c79a685bd900f006862a
+RUN echo "$MODELEXPRESS_REF" | grep -Eq '^[0-9a-f]{40}$' \
+    && git init -q /opt/modelexpress \
+    && git -C /opt/modelexpress fetch --depth 1 "$MODELEXPRESS_REPOSITORY" "$MODELEXPRESS_REF" \
+    && git -C /opt/modelexpress checkout -q FETCH_HEAD \
+    && test "$(git -C /opt/modelexpress rev-parse HEAD)" = "$MODELEXPRESS_REF"
+
+COPY scripts/install_modelexpress.sh /build/scripts/install_modelexpress.sh
+RUN MODELEXPRESS_REPOSITORY=/opt/modelexpress \
+    bash /build/scripts/install_modelexpress.sh "$MODELEXPRESS_REF"
+
+FROM ${PRIMERL_IMAGE}
+ARG PRIMERL_IMAGE
+ARG MODELEXPRESS_REF=35a06060be50aa31e081c79a685bd900f006862a
+LABEL ai.primeintellect.modelexpress.revision="${MODELEXPRESS_REF}"
+
+WORKDIR /app
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv UV_NO_SYNC=1
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY --from=metadata-builder --chown=appuser:appuser \
+    /build/third_party/modelexpress/bin/ /app/third_party/modelexpress/bin/
+COPY --from=metadata-builder --chown=appuser:appuser \
+    /opt/modelexpress/modelexpress_client/python/ /tmp/modelexpress-client/
+COPY --chown=appuser:appuser scripts/install_modelexpress_client.sh /app/scripts/install_modelexpress_client.sh
+
+# The bundled SLURM templates resolve UCX relative to the PrimeRL checkout.
+RUN test -x /opt/ucx/bin/ucx_info \
+    && ln -s /opt/ucx /app/third_party/ucx
+
+RUN echo "$PRIMERL_IMAGE" | grep -Eq '@sha256:[0-9a-f]{64}$' \
+    && test -x /app/.venv/bin/python \
+    && bash scripts/install_modelexpress_client.sh /tmp/modelexpress-client /app/.venv/bin/python \
+    && uv run --no-sync python -c \
+        'from prime_rl.utils.mx_compat import require_mx_refit; require_mx_refit(staging_mode="COPY_TO_HOST", streaming=True)' \
+    && /app/third_party/modelexpress/bin/modelexpress-server --version \
+    && test "$(cat /app/third_party/modelexpress/bin/modelexpress-server.source-sha)" = "$MODELEXPRESS_REF" \
+    && cp /app/third_party/modelexpress/bin/modelexpress-server.source-sha \
+        /app/third_party/modelexpress/bin/modelexpress-client.source-sha \
+    && rm -rf /tmp/modelexpress-client

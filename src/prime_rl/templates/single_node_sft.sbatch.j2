@@ -33,7 +33,12 @@ export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
+{% if skip_dependency_sync %}
+# Keep the prepared environment unchanged, including deployment-installed packages.
+export UV_NO_SYNC=1
+{% else %}
 uv sync --all-extras --all-packages
+{% endif %}
 
 {% if pre_run_command %}
 # Pre-run command

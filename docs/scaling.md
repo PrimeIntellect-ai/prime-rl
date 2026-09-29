@@ -182,7 +182,7 @@ The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fu
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
-> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
+> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale. For a prepared environment with externally installed packages, set `slurm.skip_dependency_sync = true`; each node must then have the same complete environment available.
 
 ### Activation
 
@@ -240,21 +240,103 @@ For inference-only multi-node, set `[deployment] type = "multi_node"` on an infe
 
 ### NIXL weight broadcast
 
-Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:
+Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. This transport uses the optional ModelExpress client and service; install both using the [ModelExpress image](#installing-modelexpress). For a shared-filesystem deployment, install the NIXL/UCX build before the first SLURM run:
 
 ```bash
 bash scripts/install_nixl_from_source.sh
 uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
-bash scripts/install_modelexpress.sh
 ```
 
 The generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. To use an existing service, set `slurm.launch_modelexpress = false` and configure `weight_broadcast.host` and `weight_broadcast.port`.
 
 The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
 
+Rail selection and throughput reporting are ModelExpress settings, and `mx_refit` leaves them to the deployment. On multi-rail nodes, set `MX_RDMA_NIC_PIN=auto` to pin each NIXL process to the rail nearest its GPU; it is ignored when `UCX_NET_DEVICES` is set. `MX_RESHARD_MIN_GBPS` sets a per-rank floor below which ModelExpress warns about slow throughput; it warns rather than rejecting, so choose it from the healthy concurrent rate of your fabric.
+
 ModelExpress exchanges peer metadata during startup. Weight updates reuse prepared NIXL requests, post every trainer-rank read in a transfer group concurrently, and use versioned NIXL notifications for source readiness and buffer credits.
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
+
+### ModelExpress refit weight broadcast
+
+<a id="modelexpress-refit"></a>
+
+Set `[weight_broadcast] type = "mx_refit"` to have ModelExpress reshard the weights rather than transferring them rank-to-rank. The trainer publishes each rank's FSDP shard under a per-step version and inference pulls the slices it needs, so the two sides do not have to agree on a parallelism layout.
+
+#### Installing ModelExpress
+
+ModelExpress is installed separately from PrimeRL. Both `nixl` and `mx_refit` require it; other transports can run without it. Selecting either MX transport checks the required client APIs at startup and reports a missing or incompatible installation. There is no released `mx` extra for the refit APIs yet.
+
+`Dockerfile.modelexpress` builds the client and server from the same source commit and adds them to a PrimeRL GPU image. The default source pin is `35a06060be50aa31e081c79a685bd900f006862a`, which includes mixed transfer dtypes, FSDP host staging, and bounded DIRECT installation. The base image must be built from this PrimeRL checkout with its locked GPU dependencies already installed and published to a registry:
+
+```bash
+docker build -f Dockerfile.modelexpress \
+  --build-arg 'PRIMERL_IMAGE=registry.example/prime-rl@sha256:<base-image-digest>' \
+  -t registry.example/prime-rl-mx:local .
+
+docker run --rm --entrypoint bash registry.example/prime-rl-mx:local -lc \
+  'cat /app/third_party/modelexpress/bin/*.source-sha'
+```
+
+The build resolves the MX client's dependencies while constraining packages already in the base image, including Torch, vLLM, and NIXL, to their installed versions. It explicitly updates `safetensors` to `0.8.0`, which the pinned MX client requires. The installer rejects new dependency conflicts; the image build also checks the public refit APIs. Existing dependency-check warnings from the prepared environment are recorded before and after installation; they are not treated as proof of compatibility. The build does not replace the base image's GPU stack. Installed packages and dependency reports are recorded in `/app/third_party/modelexpress/`. Keep the final image digest with each run; validate a real weight update on the target GPU stack before using a new image for training.
+
+To use a different compatible MX build, set `MODELEXPRESS_REPOSITORY` and `MODELEXPRESS_REF` as Docker build arguments. The ref must be a full commit SHA and applies to both client and server. The source stamps above must match. Package versions alone cannot distinguish two development commits.
+
+For a server installed on a shared filesystem, `bash scripts/install_modelexpress.sh` uses the same source pin. An explicit commit argument selects a different build; `MODELEXPRESS_REPOSITORY` can also name a local checkout or Git bundle. Install the client from that same commit into the prepared Python environment with `scripts/install_modelexpress_client.sh`; the script uses the same constrained installation and dependency checks as the image.
+
+The image sets `UV_NO_SYNC=1` so `uv run` preserves the prepared environment. The entrypoint rejects `PRIME_RL_REF` in this mode because changing the source checkout requires resynchronizing its editable packages. Build a new image to change the PrimeRL revision. For SLURM jobs, also disable the launcher's explicit dependency sync:
+
+```toml
+[slurm]
+skip_dependency_sync = true
+```
+
+Ordinary `uv sync` removes packages that are not declared in PrimeRL, including externally installed MX. Install MX after the final dependency sync and use `uv run --no-sync` when launching outside the image. On SLURM, the image, client environment, and service binaries must be accessible at the same paths on all participating nodes; configure container execution in the deployment's SLURM template.
+
+Weight versions use `{run_uid}.{attempt}:{step}` IDs. `run_uid` separates runs on a long-lived server; the per-offer token permits a restarted trainer to republish a step.
+
+#### Trainer staging
+
+Choose where the trainer holds published weights in the run configuration:
+
+```toml
+[weight_broadcast]
+type = "mx_refit"
+staging_mode = "COPY_TO_HOST"
+```
+
+For a standalone trainer configuration, use the same field under
+`[weight_broadcast]`. The integration passes this choice explicitly to
+ModelExpress. It defaults to `COPY_TO_HOST` and does not use the ModelExpress
+staging-mode environment variable. All trainer ranks must choose the same mode;
+the integration checks this during initialization.
+
+| Mode | When to use it |
+| --- | --- |
+| `IN_PLACE` | Lowest latency and no trainer snapshot allocation. Use when every source tensor already has its transfer dtype, no trainer-side conversion is needed, and its storage and contents remain unchanged until release. |
+| `COPY_TO_HOST` | Default for this integration. Use when `IN_PLACE` is not applicable, including dtype conversion. Holds a snapshot in pinned CPU memory and avoids a full GPU snapshot. Requires ModelExpress FSDP host-staging support. |
+| `COPY_TO_DEVICE` | Explicit option when CPU staging is too slow and there is enough GPU memory. It keeps an additional GPU snapshot, so reserve it for small models or other measured exceptions. |
+
+PrimeRL waits for each version to retire before the trainer advances, providing
+the synchronization needed for `IN_PLACE`. This alone does not satisfy its dtype
+and conversion requirements. For example, an FP32 source that transfers as BF16
+needs a copy mode. ModelExpress validates the chosen mode against the tensors.
+Do not change optimizer or reduction dtypes to make a staging mode fit.
+
+These settings govern trainer snapshots. Generator installation has its own
+memory budget: `MX_REFIT_STAGING_BYTES` bounds the receive arena used by DIRECT
+installation. Version retirement permits trainer cleanup after either a
+successful update or a failed update; it does not prove installation succeeded.
+
+`mx_refit` enables a Gloo CPU backend alongside NCCL. `handshake_mode = "tensor"` requires it outright, and the default `handshake_mode = "object"` routes through torch's object-collective device selection, which prefers CPU whenever a CPU backend exists — so the token exchange runs on Gloo in both modes.
+Set `MX_REFIT_STAGING_BYTES` to a positive byte budget to stream complete modules
+through a reusable GPU arena. A failed streaming installation requires restarting
+the inference engine. `MX_REFIT_TIMING_STDOUT=1` emits per-rank phase records to
+stdout for torchrun/Ray log collection; `MX_REFIT_REPLICA_ID` identifies each
+independent inference replica. Records include independent elapsed time and
+completion status, with detailed streaming metrics in `marks`.
+
+A failed MX update remains paused and is not retried in the same engine.
 
 ### Custom Templates
 

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 import verifiers.v1 as vf
@@ -17,6 +18,9 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.transports.weights.mx_phases import PhaseTimer
 
 
 def resolve_api_key(api_key_var: str) -> str:
@@ -206,30 +210,47 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["filesystem", "nccl", "nixl", "mx_refit"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        version_uid: str | None = None,
+        phase_timer: PhaseTimer | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
-
-        await _pause_engines(self.clients, step=step)
+        span = phase_timer.span if phase_timer is not None else lambda _: nullcontext()
+        await _pause_engines(self.clients, step=step, phase_timer=phase_timer)
+        updated = False
         try:
             if on_paused is not None:
-                on_paused()
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in self.clients
-                ]
-            )
+                with span("admin_on_paused"):
+                    on_paused()
+            with span("admin_update"):
+                await _gather_every_replica(
+                    [
+                        _admin_post(
+                            admin_client,
+                            "/update_weights",
+                            json={"weight_dir": weight_dir_posix, "version_uid": version_uid},
+                            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                            retry_errors=transport != "mx_refit",
+                        )
+                        for admin_client in self.clients
+                    ],
+                    operation="weight update",
+                )
+            updated = True
         finally:
-            await _resume_engines(self.clients)
+            if updated or transport != "mx_refit":
+                await _resume_engines(self.clients, phase_timer=phase_timer)
+            else:
+                # DIRECT updates can partially change live weights; keep engines
+                # paused on failure.
+                get_logger().error(
+                    "mx_refit weight update failed; inference engines remain paused to avoid "
+                    "serving partially installed weights. Restart the trainer and inference "
+                    "together to recover."
+                )
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -392,11 +413,19 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
+    if not retry_errors:
+        response = await client.post(
+            path, timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0), **kwargs
+        )
+        response.raise_for_status()
+        return
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error),
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
@@ -412,24 +441,56 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
+async def _gather_every_replica(coroutines: list, *, operation: str) -> None:
+    """Await every replica's request before propagating the first failure.
+
+    ``asyncio.gather`` raises the first exception but does not cancel its
+    siblings, so the caller would resume while other replicas are still
+    updating and reading the trainer's registered buffers over RDMA.
+
+    This only guarantees each HTTP request has finished; a timed-out request is
+    finished here while its worker may still be reading. What keeps the trainer
+    from overwriting those buffers is ModelExpress: a reader holds a lease on
+    the version, and releasing the version is refused while that lease is live.
+    """
+    results = await asyncio.gather(*coroutines, return_exceptions=True)
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if not failures:
+        return
+    for extra in failures[1:]:
+        get_logger().error(f"{operation} also failed on another replica: {extra!r}")
+    raise failures[0]
+
+
+async def _pause_engines(
+    admin_clients: list[AsyncClient],
+    *,
+    step: int,
+    phase_timer: PhaseTimer | None = None,
+    span_name: str = "admin_pause",
+) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
+    with phase_timer.span(span_name) if phase_timer is not None else nullcontext():
+        await asyncio.gather(
+            *[
+                _admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"})
+                for client in admin_clients
+            ]
+        )
     logger.debug("All inference engines paused")
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+async def _resume_engines(admin_clients: list[AsyncClient], *, phase_timer: PhaseTimer | None = None) -> None:
     """Resume all inference engines after weight update.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
+    with phase_timer.span("admin_resume") if phase_timer is not None else nullcontext():
+        await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -518,6 +579,26 @@ async def init_nixl_broadcast(
     await asyncio.gather(
         *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
     )
+
+
+async def init_mx_refit_broadcast(
+    admin_plane: AdminPlane,
+    host: str,
+    port: int,
+    timeout: int,
+) -> None:
+    """Initialize the ModelExpress client on every vLLM worker."""
+    admin_clients = admin_plane.clients
+
+    async def initialize(admin_client: AsyncClient) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            json={"host": host, "port": port},
+        )
+
+    await asyncio.gather(*[initialize(admin_client) for admin_client in admin_clients])
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

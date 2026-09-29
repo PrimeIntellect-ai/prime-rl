@@ -39,8 +39,7 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer. The trainer
-    fails the run when no consumer acknowledges an offered version in time."""
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 class RunConfig(BaseConfig):
@@ -115,6 +114,9 @@ class SlurmConfig(BaseConfig):
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
+    skip_dependency_sync: bool = False
+    """Use an environment prepared on every node. Bundled templates skip ``uv sync`` and disable automatic syncing by child ``uv run`` commands, preserving deployment-installed packages."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -129,6 +131,7 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "skip_dependency_sync": self.skip_dependency_sync,
         }
 
     @model_validator(mode="after")
