@@ -17,10 +17,14 @@
 - ``on_version_pending`` (called by the watcher before the engines pause for
   the weight update) drops train groups already past ``max_off_policy_steps`` — a
   compute-saving early cancel; the sink's queue sweep is what guarantees the
-  bound. Eval episodes are measurements for the policy version they started
-  with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
-  episodes sampled from a frozen model never go stale — their generation
-  source doesn't change with policy updates.
+  bound. The same cancel runs from ``fill_inflight`` as soon as a live group
+  is known dead, so its permit frees for a rollout that can still train.
+  A live rollout that would be born past the bound is not started: scheduling
+  waits until inference is on a fresh enough policy. Eval episodes are
+  measurements for the policy version they started with. Online evals may
+  explicitly cancel them when a newer checkpoint is ready. Train episodes
+  sampled from a frozen model never go stale — their generation source
+  doesn't change with policy updates.
 """
 
 from __future__ import annotations
@@ -200,8 +204,9 @@ class Dispatcher:
         self.metrics = DispatcherMetrics()
 
         # Orchestrator-owned gate. When clear, ``fill_inflight`` returns
-        # without scheduling new groups. The dispatcher itself doesn't know
-        # *why* — the orchestrator toggles this based on step / policy lead.
+        # without scheduling new train groups. Closed when a live rollout
+        # starting on the current weights would already be past
+        # ``max_off_policy_steps``; reopened once those weights land.
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
         self.policy_update_pending = False
@@ -416,25 +421,33 @@ class Dispatcher:
         async with self.scheduling_lock:
             pass
 
-        if self.train_envs is None or self.progress is None:
-            return
+        await self.cancel_stale_live_groups()
+
+    def stale_live_group_ids(self) -> list[uuid.UUID]:
+        """Live train groups whose dispatch version is already past the bound."""
+        if self.progress is None or self.train_envs is None:
+            return []
         min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        stale_groups = [
+        return [
             gid
             for gid, group in self.groups.items()
             if group.kind == "train"
             and self.train_envs.get(group.env_name).generation_source.uses_live_policy
             and group.policy_version_at_start < min_version
         ]
-        cancelled = 0
-        for gid in stale_groups:
-            cancelled += await self.drop_group(gid, reason="stale")
 
+    async def cancel_stale_live_groups(self) -> int:
+        """Drop live train groups that can no longer train. Frees their permits
+        so a later, fresh-enough rollout can take the slot."""
+        cancelled = 0
+        for gid in self.stale_live_group_ids():
+            cancelled += await self.drop_group(gid, reason="stale")
         if cancelled:
             get_logger().warning(
                 f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
+        return cancelled
 
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
@@ -449,6 +462,11 @@ class Dispatcher:
         while True:
             if self.policy_update_pending:
                 return
+            # Drop known-dead live groups even at capacity so their permits
+            # free; let the scheduling branches below handle admissions.
+            if self.stale_live_group_ids():
+                await self.cancel_stale_live_groups()
+                continue
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
