@@ -15,7 +15,7 @@ from torch.distributed.tensor import DTensor
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
+from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemmRecipe, GroupedGemmRecipe
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
@@ -94,7 +94,7 @@ class GroupedExperts(nn.Module):
         expert_type: ExpertType = "gated",
         activation: ActivationType = "silu",
         bias: bool = False,
-        grouped_gemm: GroupedGemm | None = None,
+        grouped_gemm: GroupedGemmRecipe | None = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -109,7 +109,7 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.grouped_gemm = grouped_gemm or BF16GroupedGemm()
+        self.grouped_gemm = grouped_gemm or BF16GroupedGemmRecipe()
         self.activation = ActivationDispatch[activation]
         if expert_type == "non_gated":
             self.supported_fusions = {}
@@ -118,7 +118,7 @@ class GroupedExperts(nn.Module):
     def token_group_alignment(self) -> int:
         return self.grouped_gemm.token_group_alignment
 
-    def set_grouped_gemm(self, grouped_gemm: GroupedGemm) -> None:
+    def set_grouped_gemm(self, grouped_gemm: GroupedGemmRecipe) -> None:
         self.grouped_gemm = grouped_gemm
 
     def forward(

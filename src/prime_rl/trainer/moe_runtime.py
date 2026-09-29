@@ -20,10 +20,10 @@ from prime_rl.trainer.distributed.token_dispatcher import (
     TorchTokenDispatcher,
 )
 from prime_rl.trainer.models.layers.grouped_gemm import (
-    BF16GroupedGemm,
-    DeepGemmFP8GroupedGemm,
-    GroupedGemm,
-    MXFP8GroupedGemm,
+    BF16GroupedGemmRecipe,
+    DeepGemmFP8GroupedGemmRecipe,
+    GroupedGemmRecipe,
+    MXFP8GroupedGemmRecipe,
 )
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -31,10 +31,10 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
 
 
-def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
+def _resolve_grouped_gemm_recipe(config: ModelConfig) -> GroupedGemmRecipe:
     compute = config.moe.compute
     if isinstance(compute, BF16MoEComputeConfig):
-        return BF16GroupedGemm()
+        return BF16GroupedGemmRecipe()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         if importlib.util.find_spec("deep_gemm") is None:
             raise RuntimeError("DeepGEMM FP8 expert compute requires the deep-gemm package.")
@@ -43,12 +43,12 @@ def _resolve_grouped_gemm(config: ModelConfig) -> GroupedGemm:
             raise RuntimeError(
                 f"DeepGEMM FP8 expert compute requires SM90 or newer, but this device is SM{capability[0]}{capability[1]}."
             )
-        return DeepGemmFP8GroupedGemm()
+        return DeepGemmFP8GroupedGemmRecipe()
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")
-        return MXFP8GroupedGemm(
+        return MXFP8GroupedGemmRecipe(
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
@@ -77,37 +77,37 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             if isinstance(module, MoE)
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
-    bf16_grouped_gemm = BF16GroupedGemm()
-    selected_grouped_gemm = _resolve_grouped_gemm(config) if selected_moes else bf16_grouped_gemm
+    bf16_recipe = BF16GroupedGemmRecipe()
+    selected_recipe = _resolve_grouped_gemm_recipe(config) if selected_moes else bf16_recipe
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
 
     for moe in moe_layers:
-        grouped_gemm = selected_grouped_gemm if moe in selected_moes else bf16_grouped_gemm
+        grouped_gemm_recipe = selected_recipe if moe in selected_moes else bf16_recipe
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
-        moe.experts.set_grouped_gemm(grouped_gemm)
+        grouped_gemm_recipe.convert(moe.experts)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
                 top_k=moe.router.top_k,
-                token_group_alignment=grouped_gemm.token_group_alignment,
+                token_group_alignment=grouped_gemm_recipe.token_group_alignment,
             )
         elif isinstance(dispatch, TorchMoEDispatchConfig):
-            if dispatch.transport == "mxfp8" and isinstance(grouped_gemm, MXFP8GroupedGemm):
+            if dispatch.transport == "mxfp8" and isinstance(grouped_gemm_recipe, MXFP8GroupedGemmRecipe):
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
-                    token_group_alignment=grouped_gemm.token_group_alignment,
+                    token_group_alignment=grouped_gemm_recipe.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
-                    token_group_alignment=grouped_gemm.token_group_alignment,
+                    token_group_alignment=grouped_gemm_recipe.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
         elif isinstance(dispatch, DeepEPMoEDispatchConfig):
@@ -115,7 +115,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
             token_dispatcher = DeepEPTokenDispatcher(
                 num_experts=moe.experts.num_experts,
-                token_group_alignment=grouped_gemm.token_group_alignment,
+                token_group_alignment=grouped_gemm_recipe.token_group_alignment,
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
