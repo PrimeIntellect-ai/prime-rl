@@ -348,7 +348,7 @@ class ModelConfig(BaseModelConfig):
     """Debugging knobs for the model and distributed training."""
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
@@ -577,6 +577,9 @@ class IPOLossConfig(BaseConfig):
     eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
 
+    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
+    """Cap the importance weight of accepted tokens while preserving its policy gradient."""
+
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
@@ -603,17 +606,39 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
-class PPOClipLossConfig(BaseConfig):
+class PPOLossConfig(BaseConfig):
     type: Literal["ppo"] = "ppo"
 
-    eps_low: float = Field(0.2, ge=0, lt=1)
-    """Lower PPO ratio bound is 1 - eps_low."""
+    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
+    """Lower ratio bound for the clipped surrogate."""
 
-    eps_high: float = Field(0.2, ge=0)
-    """Upper PPO ratio bound is 1 + eps_high."""
+    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
+    """Upper ratio bound for the clipped surrogate."""
+
+    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
+    """Cap the unbounded side of the surrogate while preserving its gradient."""
 
     adv_tau: float = Field(1.0, ge=0)
-    """Scale applied to the advantage."""
+    """Temperature for the advantage term."""
+
+    @model_validator(mode="after")
+    def validate_max_importance_ratio(self):
+        if self.max_importance_ratio < self.ratio_high:
+            raise ValueError("max_importance_ratio must be at least ratio_high")
+        return self
+
+
+class CISPOLossConfig(BaseConfig):
+    type: Literal["cispo"] = "cispo"
+
+    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
+    """Lower bound for the detached importance weight; zero disables lower clipping."""
+
+    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
+    """Upper bound for the detached importance weight."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
 
 
 class SAOLossConfig(IcePopLossConfig):
@@ -633,7 +658,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOClipLossConfig | SAOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | SAOLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

@@ -33,7 +33,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     ModelConfig,
-    PPOClipLossConfig,
+    PPOLossConfig,
     SAOLossConfig,
     TokenizerConfig,
     TrainerConfig,
@@ -588,7 +588,7 @@ class RLConfig(BaseConfig):
         if algorithm_type == "sao" and "freeze_attention" not in self.value.model_fields_set:
             self.value.freeze_attention = True
         if "loss" not in self.trainer.model_fields_set:
-            self.trainer.loss = PPOClipLossConfig() if algorithm_type == "ppo" else SAOLossConfig()
+            self.trainer.loss = PPOLossConfig() if algorithm_type == "ppo" else SAOLossConfig()
         elif self.trainer.loss.type != algorithm_type:
             raise ValueError("trainer.loss.type must match the PPO or SAO algorithm")
         model_overrides = self.value.model.model_dump(exclude_unset=True)

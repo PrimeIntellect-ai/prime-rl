@@ -117,7 +117,7 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-num_examples = 100
+select.limit = 100
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["debug-concurrency"]

@@ -7,11 +7,12 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import (
+    CISPOLossConfig,
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
-    PPOClipLossConfig,
+    PPOLossConfig,
     SAOLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
@@ -46,8 +47,7 @@ class LossOutputs:
 
 class Loss(Protocol):
     """Interface for the config-initialized rl loss objects built by
-    ``setup_rl_loss_fn``: ``IPOLoss``, ``IcePopLoss``, ``PPOClipLoss`` and ``CustomLoss``.
-    SAO uses ``IcePopLoss`` with its own ratio interval."""
+    ``setup_rl_loss_fn``."""
 
     def loss(self, inputs: LossInputs) -> LossOutputs: ...
 
@@ -133,54 +133,64 @@ def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     """Mean of values over a boolean mask; returns 0 when mask is empty."""
     denom = torch.clamp_min(mask.sum(), 1)
-    return values[mask].sum() / denom
+    return (values[mask] / denom).sum()
 
 
-def compute_importance_ratio_and_mismatch_kl(
-    trainer_logprobs: Tensor, inference_logprobs: Tensor
-) -> tuple[Tensor, Tensor, Tensor]:
-    log_importance_ratio = trainer_logprobs - inference_logprobs
-    importance_ratio = torch.exp(log_importance_ratio)
-    mismatch_kl = importance_ratio - log_importance_ratio - 1
-    return log_importance_ratio, importance_ratio, mismatch_kl
+def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
+    # Keep headroom for FP32 reductions across tokens and ranks.
+    metric_limit = log_importance_ratio.new_tensor(1e30)
+    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
+    return mismatch_kl.clamp(max=metric_limit)
+
+
+def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> Tensor:
+    capped_log_ratio = log_importance_ratio.detach().clamp(max=log_importance_ratio.new_tensor(max_ratio).log())
+    return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
-    the importance ratio, and a squared-log-ratio KL regularizer."""
+    a capped importance ratio, and a squared-log-ratio KL regularizer."""
 
     def __init__(self, config: IPOLossConfig):
         self.config = config
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
-        trainer_logprobs = inputs.trainer_logprobs
-        inference_logprobs = inputs.inference_logprobs
-        advantages = inputs.advantages
-        loss_mask = inputs.loss_mask
+        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
+        advantages = inputs.advantages[inputs.loss_mask]
+        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
-        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            trainer_logprobs, inference_logprobs
-        )
-
-        abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
-
+        log_importance_ratio = trainer_logprobs - inference_logprobs
+        larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
+        smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
+        # |e^logp - e^logq| = e^max(logp, logq) - e^min(logp, logq)
+        # = e^max(logp, logq) * (1 - e^(min(logp, logq) - max(logp, logq)))
+        # = e^max(logp, logq) * -expm1(min(logp, logq) - max(logp, logq)).
+        # expm1 avoids cancellation in 1 - e^x when x is near zero.
+        abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
         is_masked = abs_probs_diff > loss_config.eps
-        keep_mask = loss_mask & ~is_masked
+        keep_mask = ~is_masked
 
-        advantages = loss_config.adv_tau * advantages
-        pg_loss = keep_mask * advantages * importance_ratio
-        kl_loss = loss_mask * log_importance_ratio**2
-        per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights
-        loss = per_token_loss.sum()
+        importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], loss_config.max_importance_ratio)
+        pg_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
+        if weights is not None:
+            pg_loss = pg_loss * weights[keep_mask]
+        loss = pg_loss.sum()
+        if loss_config.kl_tau:
+            kl_loss = loss_config.kl_tau * log_importance_ratio.clamp(-1e4, 1e4).square()
+            if weights is not None:
+                kl_loss = kl_loss * weights
+            loss = loss + kl_loss.sum()
+
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
         metrics = {
-            "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-            "is_masked": _safe_mean(is_masked, loss_mask),
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
 
         return LossOutputs(loss=loss, metrics=metrics)
@@ -195,57 +205,93 @@ class IcePopLoss:
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
-        log_importance_ratio = inputs.trainer_logprobs.float() - inputs.inference_logprobs.float()
+        log_importance_ratio = (
+            inputs.trainer_logprobs[inputs.loss_mask].float() - inputs.inference_logprobs[inputs.loss_mask].float()
+        )
+        advantages = inputs.advantages[inputs.loss_mask]
+        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
         log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
         log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
         detached_log_ratio = log_importance_ratio.detach()
         is_masked = (detached_log_ratio < log_ratio_low) | (detached_log_ratio > log_ratio_high)
-        keep_mask = inputs.loss_mask & ~is_masked
+        keep_mask = ~is_masked
 
-        # Mask before exponentiation so rejected extreme ratios cannot produce
-        # 0 * inf = NaN in the loss or its gradient.
-        safe_log_ratio = torch.where(keep_mask, log_importance_ratio, torch.zeros_like(log_importance_ratio))
-        importance_ratio = torch.exp(safe_log_ratio)
-        per_token_loss = -(keep_mask * loss_config.adv_tau * inputs.advantages * importance_ratio)
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights
+        importance_ratio = torch.exp(log_importance_ratio[keep_mask])
+        per_token_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
+        if weights is not None:
+            per_token_loss = per_token_loss * weights[keep_mask]
 
-        metric_log_ratio = log_importance_ratio.detach().clamp(min=-30, max=30)
-        mismatch_kl = torch.expm1(metric_log_ratio) - metric_log_ratio
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
         metrics = {
-            "masked_mismatch_kl": _safe_mean(mismatch_kl, inputs.loss_mask & is_masked),
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-            "is_masked": _safe_mean(is_masked, inputs.loss_mask),
+            "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
-class PPOClipLoss:
-    """Clipped PPO surrogate using the rollout log probabilities as the old policy."""
+class PPOLoss:
+    """Token-level PPO clipped surrogate with bounded importance weights."""
 
-    def __init__(self, config: PPOClipLossConfig):
+    def __init__(self, config: PPOLossConfig):
         self.config = config
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
-        log_ratio = inputs.trainer_logprobs.float() - inputs.inference_logprobs.float()
-        log_ratio = torch.where(inputs.loss_mask, log_ratio, torch.zeros_like(log_ratio))
-        lower = log_ratio.new_tensor(1 - self.config.eps_low).log()
-        upper = log_ratio.new_tensor(1 + self.config.eps_high).log()
-        # A very stale, unfavorably moved token can otherwise overflow exp.
-        ratio = torch.exp(log_ratio.clamp(max=30))
-        clipped_ratio = torch.exp(log_ratio.clamp(min=lower, max=upper))
-        advantage = self.config.adv_tau * inputs.advantages
-        per_token_loss = -torch.minimum(ratio * advantage, clipped_ratio * advantage)
-        per_token_loss = torch.where(inputs.loss_mask, per_token_loss, 0.0)
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights
+        config = self.config
+        logprobs = inputs.trainer_logprobs[inputs.loss_mask].float()
+        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask].float()
+        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
 
-        clipped = ((advantage >= 0) & (log_ratio > upper)) | ((advantage < 0) & (log_ratio < lower))
-        metric_log_ratio = log_ratio.clamp(min=-30, max=30)
+        ratio = _capped_importance_ratio(log_ratio, config.max_importance_ratio)
+        clipped_ratio = ratio.clamp(config.ratio_low, config.ratio_high)
+        per_token_loss = -torch.minimum(advantages * ratio, advantages * clipped_ratio)
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
+
+        clipped = ((advantages > 0) & (log_ratio.detach() > log_ratio.new_tensor(config.ratio_high).log())) | (
+            (advantages < 0) & (log_ratio.detach() < log_ratio.new_tensor(config.ratio_low).log())
+        )
+        clip_fraction = clipped.sum() / max(clipped.numel(), 1)
+        approx_kl = _mismatch_kl_from_log_ratio(log_ratio.detach())
         metrics = {
-            "ppo/clip_fraction": _safe_mean(clipped, inputs.loss_mask),
-            "ppo/approx_kl": _safe_mean(torch.expm1(metric_log_ratio) - metric_log_ratio, inputs.loss_mask),
+            "is_clipped": clip_fraction,
+            "ratio_capped": (log_ratio.detach() > log_ratio.new_tensor(config.max_importance_ratio).log()).sum()
+            / max(log_ratio.numel(), 1),
+            "ppo/clip_fraction": clip_fraction,
+            "ppo/approx_kl": approx_kl.sum() / max(approx_kl.numel(), 1),
+        }
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+
+
+class CISPOLoss:
+    """CISPO uses a detached clipped importance weight on the current logprob."""
+
+    def __init__(self, config: CISPOLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        config = self.config
+        logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask]
+        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
+
+        detached_log_ratio = log_ratio.detach()
+        log_ratio_high = log_ratio.new_tensor(config.ratio_high).log()
+        clipped_log_ratio = detached_log_ratio.clamp(max=log_ratio_high)
+        is_clipped = detached_log_ratio > log_ratio_high
+        if config.ratio_low:
+            log_ratio_low = log_ratio.new_tensor(config.ratio_low).log()
+            clipped_log_ratio = clipped_log_ratio.clamp(min=log_ratio_low)
+            is_clipped = is_clipped | (detached_log_ratio < log_ratio_low)
+        importance_weight = clipped_log_ratio.exp()
+
+        per_token_loss = -importance_weight * advantages * logprobs
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
+
+        metrics = {
+            "is_clipped": is_clipped.sum() / max(is_clipped.numel(), 1),
         }
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
@@ -259,39 +305,37 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     inference probability; a squared-log-ratio term regularizes drift. Scalar
     advantages are not read — ref_kl algorithms ship none.
     """
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    ref_logprobs = inputs.ref_logprobs
-    loss_mask = inputs.loss_mask
-
-    if ref_logprobs is None:
+    if inputs.ref_logprobs is None:
         raise ValueError("ref_kl loss type requires ref_logprobs — use the 'opd' or 'opsd' algorithm.")
 
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
+    trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+    inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
+    ref_logprobs = inputs.ref_logprobs[inputs.loss_mask]
+    weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
+    log_importance_ratio = trainer_logprobs - inference_logprobs
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     is_masked = probs_diff < -0.2
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
+    keep_mask = ~is_masked
 
     ref_kl = ref_logprobs - trainer_logprobs
 
-    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + 1e-3 * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
+    importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], 1e4)
+    pg_loss = -ref_kl[keep_mask].detach() * importance_ratio
+    kl_loss = 1e-3 * log_importance_ratio.clamp(-1e4, 1e4).square()
+    if weights is not None:
+        pg_loss = pg_loss * weights[keep_mask]
+        kl_loss = kl_loss * weights
+    loss = pg_loss.sum() + kl_loss.sum()
+    mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
     # Namespaced: the rl loss fn emits same-named trust-region metrics with a
     # different definition, and mixed batches run both fns in one step.
     metrics = {
-        "ref_kl/masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
+        "ref_kl/masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
         "ref_kl/unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
-        "ref_kl": _safe_mean(ref_kl, loss_mask),
+        "ref_kl/is_masked": is_masked.sum() / max(is_masked.numel(), 1),
+        "ref_kl": ref_kl.sum() / max(ref_kl.numel(), 1),
     }
 
     return LossOutputs(loss=loss, metrics=metrics)
@@ -333,12 +377,14 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return CustomLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
-        case PPOClipLossConfig():
-            return PPOClipLoss(loss_config)
         case SAOLossConfig():
             return IcePopLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case PPOLossConfig():
+            return PPOLoss(loss_config)
+        case CISPOLossConfig():
+            return CISPOLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
