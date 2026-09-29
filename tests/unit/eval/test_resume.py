@@ -36,7 +36,7 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None
         _record("math", "m0"),
         _record("math", "m0"),  # a third rollout of m0 exceeds group_size 2
         _record("math", "m1"),
-        _record("math", "m9"),  # no longer selected (num_examples shrank)
+        _record("math", "m9"),  # no longer selected (select.limit shrank)
         _record("code", "c0", ok=False),  # errored: owed again
     ]
 
