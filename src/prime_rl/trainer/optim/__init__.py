@@ -3,7 +3,6 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
@@ -171,16 +170,6 @@ def _create_muon_optimizer(
     adamw_params = []
     for n, p in named_params:
         if p.requires_grad and muon_enabled(n, p):
-            if isinstance(p, DTensor):
-                for mesh_dim, placement in enumerate(p.placements):
-                    if placement.is_shard():
-                        shard_size = p.device_mesh.size(mesh_dim)
-                        if p.shape[placement.dim] % shard_size != 0:
-                            raise ValueError(
-                                f"Muon requires evenly divisible shards for parameter {n!r}: "
-                                f"shape={tuple(p.shape)}, shard_dim={placement.dim}, shard_degree={shard_size}. "
-                                "Use a compatible shard degree or parameter layout."
-                            )
             if "mlp.experts" in n:
                 expert_params.append(p)
             elif "mlp.router" in n:

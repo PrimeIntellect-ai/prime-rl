@@ -507,7 +507,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
-    shard_size = hsdp_mesh.size(mesh_dim=hsdp_mesh.ndim - 1)
+    shard_size = parallel_dims.get_mesh("dp_shard_cp").size()
 
     def shard_placement_fn(parameter: nn.Parameter) -> Shard | None:
         # Qwen's single-row shared-expert gates need equal shards for Muon's all-to-all.
