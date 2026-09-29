@@ -134,9 +134,6 @@ main() {
     source $HOME/.local/bin/env
   fi
 
-  log_info "Installing prime..."
-  uv tool install prime
-
   log_info "Syncing virtual environment..."
   uv sync --all-extras
 
