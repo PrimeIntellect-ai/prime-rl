@@ -23,7 +23,16 @@ def normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]
 
 
 def deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _deserialize_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+    def _deserialize_tool_call(tool_call: dict[str, Any] | str) -> dict[str, Any]:
+        # Verifiers traces store tool calls as JSON strings in a flat
+        # {"id", "name", "arguments"} shape; normalize to the OAI form.
+        if isinstance(tool_call, str):
+            tool_call = json.loads(tool_call)
+        if "function" not in tool_call:
+            tool_call = {
+                **{k: tool_call[k] for k in ("id", "type") if k in tool_call},
+                "function": {k: v for k, v in tool_call.items() if k not in ("id", "type")},
+            }
         function = tool_call.get("function", {})
         arguments = function.get("arguments")
         if isinstance(arguments, str):

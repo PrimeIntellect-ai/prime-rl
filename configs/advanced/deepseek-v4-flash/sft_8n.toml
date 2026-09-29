@@ -1,0 +1,54 @@
+# Short SFT run for PrimeIntellect/DeepSeek-V4-Flash-0731-bf16 on the scaleswe corpus: whether the
+# data path holds up and whether loss, gradient norm and routing look sane, before a long run.
+#
+#   uv run sft @ configs/advanced/deepseek-v4-flash/sft_8n.toml --run.name dsv4-sft-8n-$(date +%m%d-%H%M)
+#
+# Both the model and the dataset repo are private, so the run needs `HF_TOKEN` set.
+
+# Building the HF -> prime-rl conversion cache takes far longer than the 3600s default.
+dist_timeout_seconds = 14400
+max_steps = 10
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "scaleswe-sft"
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+impl = "custom"
+ep = 8
+cp = 8
+
+# Freezing the router keeps this measuring the data rather than expert drift onto one domain.
+freeze_moe_router = true
+
+optim_cpu_offload = false
+ac_offloading = "None"
+
+# DeepEP dies on the first backward, inside `DeepEPTokenDispatcher.combine`.
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "deepseek-v4"
+enable_thinking = true
+
+[data]
+name = "PrimeIntellect/SyntheticData-GLM5.2-scaleswe-reward0-rlm-filtered"
+splits = ["train"]
+seq_len = 131072
+batch_size = 8
+
+[optim]
+lr = 1e-5
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+
+[slurm]
+job_name = "ds-v4-sft-8n"
+partition = "all"

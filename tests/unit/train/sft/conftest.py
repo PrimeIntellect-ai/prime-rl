@@ -19,3 +19,15 @@ class DummyRenderer:
 @pytest.fixture
 def dummy_renderer():
     return DummyRenderer()
+
+
+class RaisingRenderer(DummyRenderer):
+    def render(self, messages, **kwargs):
+        if "bad" in messages[-1]["content"]:
+            raise ValueError("unrenderable sample")
+        return super().render(messages, **kwargs)
+
+
+@pytest.fixture
+def raising_renderer():
+    return RaisingRenderer()
