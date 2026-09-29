@@ -4769,6 +4769,8 @@ function semanticEdgeKind(type) {
   if (type === "continuation") return "continuation";
   if (type === "subagent_call") return "subagent-call";
   if (type === "subagent_return") return "subagent-return";
+  if (type === "subagent_cancel") return "subagent-cancel";
+  if (type === "subagent_failed") return "subagent-failed";
   if (type === "compaction_attempt") return "compaction-attempt";
   if (type === "compaction") return "compaction";
   return "custom";
@@ -5266,6 +5268,8 @@ function renderSemanticGraph() {
     continuation: "#767676",
     "subagent-call": "#4a9eff",
     "subagent-return": "#ff6b4a",
+    "subagent-cancel": "#ff4539",
+    "subagent-failed": "#ff4539",
     "compaction-attempt": "#b7a6fa",
     compaction: "#b7a6fa",
     custom: "#b6ff3c",

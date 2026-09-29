@@ -1015,8 +1015,12 @@ def timeline_lane(
     starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
     ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
     started = started_at if started_at is not None else min(starts or ends, default=None)
+    terminal = next(
+        (span["status"] for span in lifecycle if span["status"] in {"cancelled", "failed", "timeout"}),
+        None,
+    )
     status = (
-        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        (terminal or ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running"))
         if branch
         else timeline_status(trace)
     )
@@ -1207,6 +1211,13 @@ def semantic_context_lanes(
 
     ordered_components = sorted(components, key=lambda component: (component_start(component), component))
     cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
+    # subagent_failed (child -> parent) marks its source; subagent_cancel (parent -> child) its target.
+    context_outcome = {}
+    for edge in cross_edges:
+        if edge["type"] == "subagent_failed":
+            context_outcome[component_for[edge["source_node"]]] = "failed"
+        elif edge["type"] == "subagent_cancel":
+            context_outcome[component_for[edge["target_node"]]] = "cancelled"
     created_components = {
         component_for[edge["target_node"]]
         for edge in cross_edges
@@ -1276,6 +1287,10 @@ def semantic_context_lanes(
             default=None,
         )
         completed = bool(trace.get("is_completed"))
+        # A cancelled/failed context is done even if the trace as a whole is not.
+        outcome = context_outcome.get(component)
+        status = outcome or ("completed" if completed else "running")
+        ended_at = end if (outcome is not None or completed) else None
         label = f"{agent_label} · context {context_index}"
         lifecycle = (
             [
@@ -1284,8 +1299,8 @@ def semantic_context_lanes(
                     "label": label,
                     "track": "lifecycle",
                     "started_at": start,
-                    "ended_at": end if completed else None,
-                    "status": "completed" if completed else "running",
+                    "ended_at": ended_at,
+                    "status": status,
                 }
             ]
             if start != float("inf")
@@ -1304,6 +1319,8 @@ def semantic_context_lanes(
             "agent": agent_label,
             "index": context_index,
         }
+        if outcome is not None:
+            lane["context"]["outcome"] = outcome
         if component in unlinked_components:
             lane["context"]["unlinked"] = True
         if component in attempt_by_component:
