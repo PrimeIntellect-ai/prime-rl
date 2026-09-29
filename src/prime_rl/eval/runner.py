@@ -18,7 +18,7 @@ import os
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -42,7 +42,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
-    episode_env_name,
     eval_work,
     intercept_vf_logging,
     set_default_executor,
@@ -181,7 +180,8 @@ class EvalRunner:
         fired: list[str],
         step: int,
         *,
-        restored: Sequence[vf.Episode] = (),
+        restored: Iterable[vf.Episode] = (),
+        restored_by_env: dict[str, int] | None = None,
         superseding_step: Callable[[], int | None] | None = None,
     ) -> None:
         """Run the epoch ``EvalSource.trigger`` queued for ``step`` in the fired envs and
@@ -191,17 +191,21 @@ class EvalRunner:
         caller can move on to it. With ``groups_per_step`` the epoch spans several steps
         from ``step`` on, and each ``(env, step)`` batch is finalized as soon as it is
         complete; restored episodes keep the steps they were dispatched at."""
-        if self.eval_source.groups_per_step is None:
-            batches = {(env_name, step): self.eval_sink.batch_size_for(env_name) for env_name in fired}
-        else:
+        restored_by_env = restored_by_env or {}
+        stepped = self.eval_source.groups_per_step is not None
+        if stepped:
+            # restored episodes only rejoin the stream: their steps were finalized by the
+            # attempts that landed them, so no batch waits for (or holds) them
             batches = {key: rollouts for key, rollouts in self.eval_source.planned.items() if key[0] in fired}
-            for episode in restored:
-                key = (episode_env_name(episode), eval_work(episode).step)
-                batches[key] = batches.get(key, 0) + 1
             for (env_name, batch_step), rollouts in batches.items():
                 self.eval_sink.expect(env_name, batch_step, rollouts)
+            for env_name, count in restored_by_env.items():
+                self.eval_sink.closed[env_name] += count
+        else:
+            batches = {(env_name, step): self.eval_sink.batch_size_for(env_name) for env_name in fired}
         for env_name in fired:
-            self.planned_rollouts[env_name] = sum(n for (name, _), n in batches.items() if name == env_name)
+            planned = sum(n for (name, _), n in batches.items() if name == env_name)
+            self.planned_rollouts[env_name] = planned + (restored_by_env.get(env_name, 0) if stepped else 0)
         for (env_name, batch_step), rollouts in batches.items():
             await monitors.log_eval_plan(env_name, batch_step, rollouts)
 
@@ -213,7 +217,8 @@ class EvalRunner:
             for request in self.eval_source.queue
             if request.step >= step and request.env_name in fired
         )
-        restored_part = f", {len(restored)} restored" if restored else ""
+        restored_total = sum(restored_by_env.values())
+        restored_part = f", {restored_total} restored" if restored_total else ""
         get_logger().info(
             f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts{restored_part})"
         )
@@ -221,7 +226,10 @@ class EvalRunner:
 
         pending = {key for key, rollouts in batches.items() if rollouts > 0}
         for episode in restored:
-            await self.land(episode, pending)
+            if stepped:
+                await monitors.log([episode], eval_work(episode).step, "eval", "all")
+            else:
+                await self.land(episode, pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
