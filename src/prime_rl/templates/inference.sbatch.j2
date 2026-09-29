@@ -195,6 +195,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- if kv_offload_mooncake %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
+{%- if kv_offload_lmcache %}
+{% include "_lmcache_store.sh.j2" %}
+{%- endif %}
 
 {% if is_disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
@@ -354,8 +357,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 # turns background process crashes (router) into task failures that
 # --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job tears
 # down instead of leaving zombies holding the allocation.
-wait -n
+wait -n -p FINISHED_PID
 EXIT_CODE=$?
+if [ "${FINISHED_PID:-}" = "${LMCACHE_PID:-unset}" ]; then EXIT_CODE=1; fi
 echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
 for pid in $(jobs -p); do
     kill -TERM $pid 2>/dev/null || true

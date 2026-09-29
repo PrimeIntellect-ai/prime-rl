@@ -29,6 +29,58 @@ CONFIG_CLASSES = [
 ]
 
 
+@pytest.mark.parametrize("pd", [False, True])
+def test_lmcache_offload_connector(pd):
+    config = InferenceConfig.model_validate(
+        {
+            "kv_cache_offload": {"type": "lmcache", "cpu": {"num_bytes": 3 * 1024**3}, "port": 9123},
+            "use_pd_kv_transfer": pd,
+        }
+    )
+    namespace = InferenceConfig.model_validate_json(config.model_dump_json()).to_namespace()
+    assert namespace.enable_prefix_caching is True
+    connector = namespace.kv_transfer_config
+    if pd:
+        assert connector["kv_connector"] == "MultiConnector"
+        nixl, connector = connector["kv_connector_extra_config"]["connectors"]
+        assert nixl["kv_connector"] == "NixlConnector"
+    assert connector == {
+        "kv_connector": "LMCacheMPConnector",
+        "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {"lmcache.mp.host": "127.0.0.1", "lmcache.mp.port": 9123},
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cpu": None},
+        {"cpu": {"num_bytes": 0}},
+        {"disk": {"path": "/tmp/kv"}},
+        {"port": 0},
+        {"http_port": 65536},
+        {"port": 8080},
+        {"chunk_size": 0},
+    ],
+)
+def test_lmcache_offload_rejects_invalid_config(overrides):
+    with pytest.raises(ValidationError):
+        InferenceConfig.model_validate(
+            {"kv_cache_offload": {"type": "lmcache", "cpu": {"num_bytes": 1024**3}, **overrides}}
+        )
+
+
+def test_lmcache_offload_requires_prefix_caching():
+    with pytest.raises(ValidationError, match="requires.*enable_prefix_caching"):
+        InferenceConfig.model_validate(
+            {
+                "kv_cache_offload": {"type": "lmcache", "cpu": {"num_bytes": 1024**3}},
+                "vllm": {"enable_prefix_caching": False},
+            }
+        )
+
+
 def get_config_files() -> list[Path]:
     """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
