@@ -3,6 +3,9 @@
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ num_train_nodes + num_infer_nodes + num_value_nodes }}
 #SBATCH --ntasks-per-node=1
+{%- if cpus_per_task %}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{%- endif %}
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
 {%- if account %}
@@ -286,7 +289,7 @@ echo "VALUE_MASTER_PORT=$VALUE_MASTER_PORT"
 # quoted delimiter passes the script through verbatim, so apostrophes and quotes
 # (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
 # the body reads stdin, which would otherwise eat the rest of the script.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+srun --cpu-bind=none --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.

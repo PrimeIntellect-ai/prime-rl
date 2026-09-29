@@ -186,7 +186,7 @@ def _check_training_traffic(critic_dp, world_size, dims):
         optim=SimpleNamespace(max_norm=None),
         updates_per_step=1,
     )
-    loss = _train_batch(model, optimizer, scheduler, None, tensor_batches, dims, config, head_only=False)
+    loss, _ = _train_batch(model, optimizer, scheduler, None, tensor_batches, dims, config, head_only=False)
     assert torch.isfinite(torch.tensor(loss))
     assert scheduler.last_epoch == 1
     dist.barrier()

@@ -91,6 +91,9 @@ class SlurmConfig(BaseConfig):
     partition: str = "cluster"
     """SLURM partition (#SBATCH --partition)."""
 
+    cpus_per_task: int | None = Field(None, ge=1)
+    """CPUs allocated to each node's launcher task (#SBATCH --cpus-per-task)."""
+
     nodelist: str | None = None
     """Comma-separated list of specific nodes to run on (#SBATCH --nodelist)."""
 
@@ -122,6 +125,7 @@ class SlurmConfig(BaseConfig):
             "job_name": self.job_name,
             "project_dir": self.project_dir,
             "partition": self.partition,
+            "cpus_per_task": self.cpus_per_task,
             "nodelist": self.nodelist,
             "exclude": self.exclude,
             "account": self.account,

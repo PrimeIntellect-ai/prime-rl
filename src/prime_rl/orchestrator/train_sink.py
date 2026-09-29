@@ -9,6 +9,7 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
@@ -106,6 +107,7 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+        self.value_score_seconds = 0.0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -280,7 +282,10 @@ class TrainSink:
         trace_samples = [
             (trace, await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)) for trace in survivors
         ]
+        score_start = time.perf_counter()
         await env.algorithm.score_samples(trace_samples)
+        if self.config.value_service_url is not None:
+            self.value_score_seconds += time.perf_counter() - score_start
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
         for trace, samples in trace_samples:

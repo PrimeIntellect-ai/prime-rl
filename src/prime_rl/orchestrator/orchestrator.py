@@ -649,6 +649,7 @@ class Orchestrator:
         pack_time = time.perf_counter() - pack_start_time
         if self.value_sender is not None:
             assert self.value_packer is not None
+            value_wait_start = time.perf_counter()
             value_grid = await asyncio.to_thread(self.value_packer.pack, batch.samples)
             await self.value_sender.send(value_grid)
             assert self.value_client is not None
@@ -656,11 +657,13 @@ class Orchestrator:
             while True:
                 response = await self.value_client.get("/status")
                 response.raise_for_status()
-                if response.json()["completed_step"] >= self.progress.step:
+                value_status = response.json()
+                if value_status["completed_step"] >= self.progress.step:
                     break
                 if time.monotonic() >= value_deadline:
                     raise TimeoutError(f"Value trainer did not complete step {self.progress.step}")
                 await asyncio.sleep(0.1)
+            value_wait_time = time.perf_counter() - value_wait_start
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
@@ -716,6 +719,11 @@ class Orchestrator:
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
+        if self.value_sender is not None:
+            metrics["time/value_score"] = self.train_sink.value_score_seconds
+            metrics["time/value_update_wait"] = value_wait_time
+            metrics |= {f"critic/{name}": value for name, value in value_status["metrics"].items()}
+            self.train_sink.value_score_seconds = 0.0
         # Staleness of the shipped cohort, decomposed into its in-flight and
         # in-queue shares; ``dropped`` counts queued traces the sink voided
         # since the last ship.

@@ -23,7 +23,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.model import get_full_offload_dtype_policy, setup_model
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import FullCPUOffloadOptimizer, setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.rl.data import DataLoader, TensorMicroBatch
 from prime_rl.trainer.rl.loss import shift_tensor_right
@@ -50,6 +50,7 @@ from prime_rl.utils.utils import resolve_latest_ckpt_step
 class ScoreRequest:
     batched_token_ids: list[list[int]]
     single: bool = False
+    enqueued_at: float = field(default_factory=time.perf_counter)
     done: threading.Event = field(default_factory=threading.Event)
     values: list[list[float]] | None = None
     bootstrap_values: list[float] | None = None
@@ -96,6 +97,7 @@ def pack_score_requests(batched_token_ids: list[list[int]], seq_len: int, dp: in
 class ServiceState:
     requests: queue.Queue[ScoreRequest] = field(default_factory=queue.Queue)
     completed_step: int = 0
+    completed_metrics: dict[str, float] = field(default_factory=dict)
 
 
 def _server_handler(state: ServiceState, max_seq_len: int | None = None):
@@ -108,7 +110,7 @@ def _server_handler(state: ServiceState, max_seq_len: int | None = None):
             if self.path != "/status":
                 self.send_error(404)
                 return
-            payload = json.dumps({"completed_step": state.completed_step}).encode()
+            payload = json.dumps({"completed_step": state.completed_step, "metrics": state.completed_metrics}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -278,7 +280,12 @@ def _train_batch(
     denominator = total_count.clamp_min(1)
 
     last_loss = 0.0
+    forward_backward_seconds = 0.0
+    optimizer_seconds = 0.0
+    offload_materialize_seconds = 0.0
+    offload_optimizer_kernel_seconds = 0.0
     for _ in range(updates if updates is not None else config.updates_per_step):
+        update_start = time.perf_counter()
         update_loss = 0.0
         prepare_gradient_offload(gradient_manager, parallel_dims.fsdp_gradient_divide_factor, overlap_optimizer=True)
         for micro_step, batch in enumerate(micro_batches):
@@ -303,17 +310,28 @@ def _train_batch(
             loss = (((values.float() - targets.float()) ** 2) * mask).sum() / denominator
             begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
             loss.backward()
-            finish_backward(gradient_manager, wait_for_copies=config.model.full_offload is not None)
+            finish_backward(gradient_manager)
             update_loss += loss.detach().item()
+        forward_backward_seconds += time.perf_counter() - update_start
+        optimizer_start = time.perf_counter()
         if gradient_manager is None:
             scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
         if config.optim.max_norm is not None:
             clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
         optimizer.step()
+        if isinstance(optimizer, FullCPUOffloadOptimizer):
+            offload_materialize_seconds += optimizer.last_step_timings.get("materialize", 0.0)
+            offload_optimizer_kernel_seconds += optimizer.last_step_timings.get("optimizer_kernel", 0.0)
         optimizer.zero_grad()
         scheduler.step()
+        optimizer_seconds += time.perf_counter() - optimizer_start
         last_loss = update_loss
-    return last_loss
+    return last_loss, {
+        "forward_backward_seconds": forward_backward_seconds,
+        "optimizer_seconds": optimizer_seconds,
+        "offload_materialize_seconds": offload_materialize_seconds,
+        "offload_optimizer_kernel_seconds": offload_optimizer_kernel_seconds,
+    }
 
 
 def _pretrain(model, optimizer, scheduler, gradient_manager, parallel_dims, config):
@@ -444,6 +462,10 @@ def train(config: ValueConfig):
         final_step = None
         last_batch = None
         last_sync_step = progress.step - 1
+        score_requests = 0
+        score_tokens = 0
+        score_queue_seconds = 0.0
+        score_compute_seconds = 0.0
         while True:
             request = None
             if world.is_master:
@@ -489,6 +511,11 @@ def train(config: ValueConfig):
                     logger.info(f"Loaded policy backbone at step {payload} and retuned critic LoRA")
                 continue
             if action == "score":
+                if request is not None:
+                    score_requests += 1
+                    score_tokens += sum(map(len, request.batched_token_ids))
+                    score_queue_seconds += time.perf_counter() - request.enqueued_at
+                score_start = time.perf_counter()
                 try:
                     result = _score_batch(
                         model,
@@ -506,12 +533,13 @@ def train(config: ValueConfig):
                     raise
                 finally:
                     if request is not None:
+                        score_compute_seconds += time.perf_counter() - score_start
                         request.done.set()
                 continue
 
             micro_batches: list[TensorMicroBatch] = dataloader.get_batch()
             t0 = time.perf_counter()
-            loss = _train_batch(
+            loss, train_metrics = _train_batch(
                 model,
                 optimizer,
                 scheduler,
@@ -523,7 +551,26 @@ def train(config: ValueConfig):
             )
             last_batch = micro_batches
             if world.is_master:
-                logger.info(f"Value step {progress.step} | loss={loss:.5f} | time={time.perf_counter() - t0:.1f}s")
+                train_seconds = time.perf_counter() - t0
+                state.completed_metrics = {
+                    "train_seconds": train_seconds,
+                    "score_queue_seconds": score_queue_seconds,
+                    "score_compute_seconds": score_compute_seconds,
+                    **train_metrics,
+                }
+                logger.info(
+                    f"Value step {progress.step} | loss={loss:.5f} | time={train_seconds:.1f}s "
+                    f"forward_backward={train_metrics['forward_backward_seconds']:.1f}s "
+                    f"optimizer={train_metrics['optimizer_seconds']:.1f}s "
+                    f"offload_materialize={train_metrics['offload_materialize_seconds']:.1f}s "
+                    f"offload_kernel={train_metrics['offload_optimizer_kernel_seconds']:.1f}s | "
+                    f"score_requests={score_requests} score_tokens={score_tokens} "
+                    f"score_queue={score_queue_seconds:.1f}s score_compute={score_compute_seconds:.1f}s"
+                )
+                score_requests = 0
+                score_tokens = 0
+                score_queue_seconds = 0.0
+                score_compute_seconds = 0.0
             is_last_step = config.max_steps is not None and progress.step >= config.max_steps
             if (
                 config.ckpt is not None

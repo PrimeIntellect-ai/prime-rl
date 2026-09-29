@@ -80,7 +80,7 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
     value_config = SimpleNamespace(model=model_config, optim=SimpleNamespace(max_norm=None), updates_per_step=1)
-    loss = _train_batch(model, optimizer, scheduler, None, micro_batches, dims, value_config, head_only=False)
+    loss, _ = _train_batch(model, optimizer, scheduler, None, micro_batches, dims, value_config, head_only=False)
     assert torch.isfinite(torch.tensor(loss))
     dist.destroy_process_group()
 

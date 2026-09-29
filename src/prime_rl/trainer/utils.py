@@ -129,9 +129,16 @@ def bind_process_to_gpu_numa_node() -> None:
 
     logger = get_logger()
     device_id = torch.cuda.current_device()
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    visible_device = visible_devices.split(",")[device_id].strip() if visible_devices else str(device_id)
     pynvml.nvmlInit()
     try:
-        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+        handle = (
+            pynvml.nvmlDeviceGetHandleByIndex(int(visible_device))
+            if visible_device.isdecimal()
+            else pynvml.nvmlDeviceGetHandleByUUID(visible_device)
+        )
+        bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
     finally:
         pynvml.nvmlShutdown()
     if isinstance(bus_id, bytes):
@@ -149,13 +156,16 @@ def bind_process_to_gpu_numa_node() -> None:
             cpus.update(range(int(start), int(end) + 1))
         else:
             cpus.add(int(part))
-    os.sched_setaffinity(0, cpus)
-    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+    allowed_cpus = cpus & os.sched_getaffinity(0)
+    if not allowed_cpus:
+        raise RuntimeError(f"No allocated CPUs on GPU {visible_device}'s NUMA node {numa_node}")
+    os.sched_setaffinity(0, allowed_cpus)
+    logger.info(f"Bound rank with GPU {visible_device} to NUMA node {numa_node} ({len(allowed_cpus)} CPUs)")
 
 
 def configure_cpu_optimizer_threads() -> None:
     available = os.sched_getaffinity(0)
-    fair_share = (os.cpu_count() or len(available)) // get_world().local_world_size
+    fair_share = len(available) // get_world().local_world_size
     threads = max(1, min(len(available), fair_share))
     torch.set_num_threads(threads)
     get_logger().info(

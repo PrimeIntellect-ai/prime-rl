@@ -1079,6 +1079,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer = optimizer
         self.offload_config = offload_config
         self._initialized = False
+        self.last_step_timings: dict[str, float] = {}
         self._master_weights = master_weights
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
@@ -1335,6 +1336,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             if isinstance(self._gradient_manager, BoundedGradientOffloadManager):
                 timings = self._gradient_manager.consume_timings()
                 timings["drain"] = time.perf_counter() - drain_start
+                self.last_step_timings = timings
                 get_logger().debug(
                     "Offload pipeline: " + " ".join(f"{key}={value:.3f}s" for key, value in sorted(timings.items()))
                 )

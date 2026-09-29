@@ -499,7 +499,7 @@ def train(config: TrainerConfig):
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
-                finish_backward(gradient_manager, wait_for_copies=config.model.full_offload is not None)
+                finish_backward(gradient_manager)
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
