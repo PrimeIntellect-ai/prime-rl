@@ -631,6 +631,17 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
+    value_rollout_transport: TransportConfig | None = None
+    """Transport used to ship PPO batches to the separate value trainer."""
+    value_service_url: str | None = None
+    """HTTP endpoint for PPO value scoring and update status."""
+    value_seq_len: int | None = Field(None, ge=1)
+    """Critic sequence length for independent value batch packing."""
+    value_num_train_workers: int | None = Field(None, ge=1)
+    """Critic DP rank count; one ZMQ stream is sent per rank."""
+    value_pad_to_multiple_of: int | None = Field(None, ge=1)
+    """Critic CP degree for padding value batches."""
+
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
@@ -695,6 +706,14 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.source:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
+        return self
+
+    @model_validator(mode="after")
+    def sync_value_service_url(self):
+        if self.value_service_url is not None:
+            for source in self.train.source:
+                if source.algo is not None and source.algo.type in ("ppo", "sao"):
+                    source.algo.value_url = self.value_service_url
         return self
 
     @model_validator(mode="after")

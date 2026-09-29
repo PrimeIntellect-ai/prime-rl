@@ -1,5 +1,7 @@
+import fcntl
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import cast
@@ -700,29 +702,37 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = convert_dir / "prime"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_prime(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                (snapshot_path / ".prime-v1").touch()
-                del snapshot_state_dict
+            if get_world().is_master:
+                with (convert_dir / ".prime-conversion.lock").open("w") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    if not (snapshot_path / ".prime-v1").is_file():
+                        if snapshot_path.exists():
+                            shutil.rmtree(snapshot_path)
+                        logger.debug(
+                            f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                        )
+                        snapshot_state_dict = load_state_dict(source_path)
+                        model.convert_to_prime(snapshot_state_dict)
+                        save_state_dict(snapshot_state_dict, snapshot_path)
+                        (snapshot_path / ".prime-v1").touch()
+                        del snapshot_state_dict
 
         elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = convert_dir / "hf"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_hf(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+            if get_world().is_master:
+                with (convert_dir / ".hf-conversion.lock").open("w") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    if not snapshot_path.exists():
+                        logger.debug(
+                            f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
+                        )
+                        snapshot_state_dict = load_state_dict(source_path)
+                        model.convert_to_hf(snapshot_state_dict)
+                        save_state_dict(snapshot_state_dict, snapshot_path)
+                        del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
@@ -737,6 +747,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
+    state_dict.pop("value_head.weight", None)
+    state_dict.pop("value_head.bias", None)
     if model.config.tie_word_embeddings:
         state_dict.pop("lm_head.weight")
     dcp_load(
@@ -970,7 +982,12 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    *,
+    value_model: bool = False,
+    freeze_attention: bool = False,
 ) -> nn.Module:
+    if freeze_attention and not value_model:
+        raise ValueError("freeze_attention is only supported for a value model")
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -1014,6 +1031,11 @@ def setup_model(
 
     frozen_vision_encoder = configure_trainable_parameters(model, config)
 
+    if value_model:
+        model.value_head = nn.Linear(
+            model.lm_head.in_features, 1, device="meta", dtype=DTYPE_MAP[config.optimization_dtype]
+        )
+
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
@@ -1034,6 +1056,14 @@ def setup_model(
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
             freeze_all_except_lora_and_specified(model, config.lora)
+
+    if value_model:
+        for param in model.lm_head.parameters():
+            param.requires_grad = False
+        if freeze_attention:
+            freeze_attention_modules(model)
+        for param in model.value_head.parameters():
+            param.requires_grad = True
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
@@ -1076,7 +1106,24 @@ def setup_model(
             load_dcp_from_hf(model, config, parallel_dims)
 
     _reset_runtime_moe_buffers(model)
+    if value_model:
+        with torch.no_grad():
+            model.value_head.weight.zero_()
+            model.value_head.bias.zero_()
     return model
+
+
+def freeze_attention_modules(model: nn.Module) -> None:
+    attention = [
+        module
+        for name, module in model.named_modules()
+        if name.rsplit(".", 1)[-1] in {"self_attn", "linear_attn", "attn"}
+    ]
+    if not attention:
+        raise ValueError("value.freeze_attention requires named attention modules on the value backbone")
+    for module in attention:
+        for param in module.parameters():
+            param.requires_grad = False
 
 
 def forward(

@@ -41,15 +41,32 @@ from prime_rl.utils.process import (
     monitor_process,
     set_proc_title,
 )
+from prime_rl.utils.utils import get_free_port
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
 
 TRAINER_CONFIG = "trainer.json"
+VALUE_CONFIG = "value.json"
 ORCHESTRATOR_CONFIG = "orchestrator.json"
 INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
+
+
+def reserved_rendezvous_ports(config: RLConfig) -> list[int]:
+    reserved = set()
+    if hasattr(config.trainer.weight_broadcast, "port"):
+        reserved.add(config.trainer.weight_broadcast.port)
+    if config.value is not None:
+        reserved.add(config.value.service_port)
+    transports = [config.trainer.rollout_transport]
+    if config.value is not None:
+        transports.append(config.value.rollout_transport)
+    for transport in transports:
+        if transport.type == "zmq":
+            reserved.update((transport.port, transport.port + 1))
+    return sorted(reserved)
 
 
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
@@ -81,6 +98,8 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
     ]
     if config.inference is not None:
         components.append(("Inference", config_dir / INFERENCE_CONFIG))
+    if config.value is not None:
+        components.append(("Value", config_dir / VALUE_CONFIG))
     if env_servers(config):
         components.append(("Envs", f"{config_dir}/{ENVS_DIR}/*/*.json"))
     return components
@@ -92,6 +111,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
     with open(output_dir / TRAINER_CONFIG, "w") as f:
         json.dump(dump_resolved_config(config.trainer), f, indent=2)
+
+    if config.value is not None:
+        with open(output_dir / VALUE_CONFIG, "w") as f:
+            json.dump(dump_resolved_config(config.value), f, indent=2)
 
     with open(output_dir / ORCHESTRATOR_CONFIG, "w") as f:
         json.dump(dump_resolved_config(config.orchestrator), f, indent=2)
@@ -147,8 +170,10 @@ def rl_local(config: RLConfig):
     infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
     gpu_offset += num_infer_gpus
     trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
+    gpu_offset += config.deployment.num_train_gpus
+    value_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_value_gpus))
 
-    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
+    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + config.deployment.num_value_gpus
     physical_gpu_ids = get_physical_gpu_ids()
     if total_requested_gpus > len(physical_gpu_ids):
         raise ValueError(
@@ -160,6 +185,7 @@ def rl_local(config: RLConfig):
 
     infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
     trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
+    value_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in value_local_gpu_ids]
 
     start_command = sys.argv
     logger.debug(f"RL start command: {' '.join(start_command)}")
@@ -240,6 +266,45 @@ def rl_local(config: RLConfig):
                 f"({config.orchestrator.model.client.base_url}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
+
+        if config.value is not None:
+            value_cmd = [
+                "torchrun",
+                "--role=value",
+                f"--rdzv-endpoint=localhost:{get_free_port()}",
+                f"--rdzv-id={uuid.uuid4().hex}",
+                f"--log-dir={log_dir / 'value' / 'torchrun'}",
+                "--redirect=3",
+                "--tee=3",
+                f"--nproc-per-node={len(value_gpu_ids)}",
+                "-m",
+                "prime_rl.trainer.rl.value",
+                "@",
+                (config_dir / VALUE_CONFIG).as_posix(),
+            ]
+            logger.info(f"Starting value trainer on GPU(s) {' '.join(map(str, value_gpu_ids))}")
+            with open(log_dir / "value.log", "w") as log_file:
+                value_process = Popen(
+                    value_cmd,
+                    env={
+                        **os.environ,
+                        **DEFAULT_COMMON_ENV_VARS,
+                        **DEFAULT_TRAINER_ENV_VARS,
+                        **config.env_vars,
+                        **config.value.env_vars,
+                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, value_gpu_ids)),
+                    },
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+            processes.append(value_process)
+            stop_event = Event()
+            stop_events["value"] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process, args=(value_process, stop_event, error_queue, "value"), daemon=True
+            )
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
 
         frozen_endpoints: list[str] = []
         for env in config.orchestrator.train.source:
@@ -325,8 +390,6 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
-        from prime_rl.utils.utils import get_free_port
-
         trainer_cmd = [
             "torchrun",
             "--role=trainer",
@@ -451,6 +514,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         **config.env_vars,
         **config.trainer.env_vars,
     }
+    value_env_vars = (
+        {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_TRAINER_ENV_VARS, **config.env_vars, **config.value.env_vars}
+        if config.value is not None
+        else {}
+    )
     orchestrator_env_vars = {**DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars}
     inference_env_vars = (
         {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars, **config.inference.env_vars}
@@ -501,6 +569,15 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
+            num_value_nodes=config.deployment.num_value_nodes,
+            value_trainer_nodes=config.deployment.value_trainer_nodes,
+            train_gpus_per_node=config.deployment.train_gpus_per_node,
+            value_gpus_per_node=config.deployment.value_gpus_per_node,
+            value_gpus_per_train_node=config.deployment.num_value_gpus_per_train_node,
+            value_gpu_offset=config.deployment.train_gpus_per_node
+            if config.deployment.num_value_gpus_per_train_node
+            else 0,
+            has_value=config.value is not None,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
@@ -521,6 +598,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             prefill_env_vars=infer_deploy.prefill_env_vars,
             decode_env_vars=infer_deploy.decode_env_vars,
             trainer_env_vars=trainer_env_vars,
+            value_env_vars=value_env_vars,
+            value_service_port=config.value.service_port if config.value is not None else 0,
+            reserved_rendezvous_ports=reserved_rendezvous_ports(config),
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
@@ -546,6 +626,15 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
+            num_value_nodes=config.deployment.num_value_nodes,
+            value_trainer_nodes=config.deployment.value_trainer_nodes,
+            train_gpus_per_node=config.deployment.train_gpus_per_node,
+            value_gpus_per_node=config.deployment.value_gpus_per_node,
+            value_gpus_per_train_node=config.deployment.num_value_gpus_per_train_node,
+            value_gpu_offset=config.deployment.train_gpus_per_node
+            if config.deployment.num_value_gpus_per_train_node
+            else 0,
+            has_value=config.value is not None,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
@@ -570,6 +659,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
+            value_env_vars=value_env_vars,
+            value_service_port=config.value.service_port if config.value is not None else 0,
+            reserved_rendezvous_ports=reserved_rendezvous_ports(config),
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,

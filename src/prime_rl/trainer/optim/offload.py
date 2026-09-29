@@ -1067,7 +1067,6 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     _TARGET_CPU_CHUNK_NUMEL = 16 * 1024**2
     _TRANSFER_BUFFER_COUNT = 4
     _MAX_INFLIGHT_BACKWARDS = 16
-    _TIMEOUT_SECONDS = 120.0
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
 
     def __init__(
@@ -1080,6 +1079,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer = optimizer
         self.offload_config = offload_config
         self._initialized = False
+        self.last_step_timings: dict[str, float] = {}
         self._master_weights = master_weights
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
@@ -1113,7 +1113,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 dp_replicate,
                 buffer_count=self._TRANSFER_BUFFER_COUNT,
                 max_inflight_backwards=self._MAX_INFLIGHT_BACKWARDS,
-                timeout_seconds=self._TIMEOUT_SECONDS,
+                timeout_seconds=offload_config.timeout_seconds,
                 target_chunk_numel=self._TARGET_CPU_CHUNK_NUMEL,
                 chunk_ready_callback=self._step_cpu_chunk,
                 gradient_dtypes=gradient_dtypes,
@@ -1336,6 +1336,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             if isinstance(self._gradient_manager, BoundedGradientOffloadManager):
                 timings = self._gradient_manager.consume_timings()
                 timings["drain"] = time.perf_counter() - drain_start
+                self.last_step_timings = timings
                 get_logger().debug(
                     "Offload pipeline: " + " ".join(f"{key}={value:.3f}s" for key, value in sorted(timings.items()))
                 )

@@ -18,6 +18,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.policy_sync import save_policy_backbone
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -611,6 +612,15 @@ def train(config: TrainerConfig):
             torch.cuda.empty_cache()
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+
+        if (
+            config.ppo_policy_sync_interval is not None
+            and progress.step > config.ppo_head_warmup_steps
+            and progress.step % config.ppo_policy_sync_interval == 0
+        ):
+            assert config.ppo_policy_sync_dir is not None
+            logger.info(f"Saving policy backbone for value trainer at step {progress.step}")
+            save_policy_backbone(model, config.ppo_policy_sync_dir, progress.step)
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (

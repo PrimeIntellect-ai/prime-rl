@@ -22,6 +22,7 @@ class PrimeLmOutput(TypedDict, total=False):
     logprobs: Tensor | None
     entropy: Tensor | None
     loss: Tensor | None
+    values: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -35,6 +36,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
         loss=output.get("loss"),
+        values=_float_and_contiguous(output.get("values")),
     )
 
 
@@ -420,6 +422,8 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
+        return_values: bool = False,
+        head_only: bool = False,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -432,6 +436,12 @@ def _patch_model_forward(model: nn.Module) -> None:
             model_kwargs["inputs_embeds"] = inputs_embeds
         outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
+
+        if return_values:
+            value_head = getattr(self, "value_head", None)
+            if value_head is None:
+                raise ValueError("return_values requires a value head")
+            return PrimeLmOutput(values=value_head(hidden_states.detach() if head_only else hidden_states).squeeze(-1))
 
         # Slice hidden states for logits_to_keep
         slice_indices = (

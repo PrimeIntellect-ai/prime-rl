@@ -1,7 +1,14 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CISPOLossConfig, CustomLossConfig, IcePopLossConfig, IPOLossConfig, PPOLossConfig
+from prime_rl.configs.trainer import (
+    CISPOLossConfig,
+    CustomLossConfig,
+    IcePopLossConfig,
+    IPOLossConfig,
+    PPOLossConfig,
+    SAOLossConfig,
+)
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
@@ -126,9 +133,40 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
     result = IcePopLoss(IcePopLossConfig()).loss(inputs)
 
     assert torch.equal(result.loss, torch.zeros_like(result.loss))
-    assert all(torch.isfinite(value) for value in result.metrics.values())
+    assert all(torch.isfinite(metric) for metric in result.metrics.values())
     result.loss.backward()
     assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
+
+
+def test_ppo_clipped_surrogate_gradients():
+    ratios = torch.tensor([0.5, 0.5, 1.0, 2.0, 2.0, float("inf")], device="cuda")
+    logprobs = ratios.log().requires_grad_()
+    advantages = torch.tensor([1.0, -1.0, 1.0, 1.0, -1.0, 1.0], device="cuda")
+    mask = torch.tensor([True, True, True, True, True, False], device="cuda")
+    result = setup_rl_loss_fn(PPOLossConfig()).loss(
+        LossInputs(logprobs, torch.zeros_like(logprobs), None, advantages, mask)
+    )
+    result.loss.backward()
+    torch.testing.assert_close(logprobs.grad, torch.tensor([-0.5, 0.0, -1.0, 0.0, 2.0, 0.0], device="cuda"))
+    torch.testing.assert_close(result.metrics["ppo/clip_fraction"], torch.tensor(0.4, device="cuda"))
+    assert all(torch.isfinite(metric) for metric in result.metrics.values())
+
+
+def test_sao_masks_both_sides_independent_of_advantage():
+    ratios = torch.tensor([0.1, 0.7, 1.0, 6.0, 10.0], device="cuda")
+    logprobs = ratios.log().requires_grad_()
+    result = setup_rl_loss_fn(SAOLossConfig()).loss(
+        LossInputs(
+            logprobs,
+            torch.zeros_like(logprobs),
+            None,
+            torch.tensor([-1.0, 1.0, 1.0, -1.0, 1.0], device="cuda"),
+            torch.ones_like(logprobs, dtype=torch.bool),
+        )
+    )
+    result.loss.backward()
+    torch.testing.assert_close(logprobs.grad, torch.tensor([0.0, -0.7, -1.0, 6.0, 0.0], device="cuda"))
+    torch.testing.assert_close(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
 
 
 @pytest.mark.parametrize("config", [IPOLossConfig(kl_tau=0.01), IcePopLossConfig()])

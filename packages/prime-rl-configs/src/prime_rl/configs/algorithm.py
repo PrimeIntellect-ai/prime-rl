@@ -1,7 +1,7 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
+on ``type`` (``grpo``, ``ppo``, ``sao``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
 ``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
@@ -24,9 +24,9 @@ Each algorithm fixes two things:
    to env-provided observation tokens (masked out by default; ``echo`` trains on
    them with weighted CE).
 
-prime-rl only ever hosts the trainable policy. Every other model an algorithm
-uses is an external OpenAI-compatible endpoint, declared inline on the
-algorithm that uses it (a :class:`FrozenModelConfig`). Model roles like
+Frozen model references use external OpenAI-compatible endpoints, declared inline on the
+algorithm that uses them (a :class:`FrozenModelConfig`). PPO and SAO use the
+separate value trainer configured under ``value``. Model roles like
 "teacher" are algorithm-local vocabulary over these references; the pipeline
 branches on liveness alone. The trainer is algorithm-blind: the loss is a sum
 of three components (rl, ce, ref_kl), each normalized by its own global token
@@ -48,8 +48,7 @@ class FrozenModelConfig(ClientConfig):
     """An externally hosted model behind an OpenAI-compatible endpoint: the
     client config plus the served model's ``name``.
 
-    prime-rl never launches or updates these — only the trainable policy is
-    ever hosted by prime-rl itself. Frozen models are reachable-but-unmanaged:
+    prime-rl never launches or updates these. Frozen models are reachable-but-unmanaged:
     ``base_url`` is required, their weights never change, and rollouts or
     scores from them never go stale (stable prefix cache, no off-policy
     aging)."""
@@ -207,6 +206,22 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 
     length_penalty: LengthPenaltyConfig | None = None
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+
+
+class PPOAlgoConfig(BaseAlgoConfig):
+    type: Literal["ppo"] = "ppo"
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+    value_url: str = "http://127.0.0.1:8123"
+    value_seq_len: int | None = Field(None, ge=1)
+    gamma: float = Field(1.0, ge=0, le=1)
+    policy_lambda: float = Field(0.95, ge=0, le=1)
+    value_lambda: float = Field(1.0, ge=0, le=1)
+    length_adaptive_alpha: float | None = Field(None, gt=0)
+
+
+class SAOAlgoConfig(PPOAlgoConfig):
+    type: Literal["sao"] = "sao"  # type: ignore[assignment]
+    length_adaptive_alpha: float | None = Field(1.5, gt=0)
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):
@@ -393,6 +408,8 @@ class DebugAlgoConfig(BaseAlgoConfig):
 
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
+    | PPOAlgoConfig
+    | SAOAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
     | RAEAlgoConfig
@@ -408,6 +425,8 @@ assignment and loss routing, fused). The ``type`` selects the algorithm, and
 its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+- ``ppo`` — grouped sampling with token-value GAE and a clipped policy surrogate.
+- ``sao`` — grouped sampling with token-value GAE and a direct ratio interval mask.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
 - ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.

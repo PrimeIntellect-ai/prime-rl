@@ -299,9 +299,7 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         up_proj = self.base_layer.up_proj
         down_proj = self.base_layer.down_proj
 
-        # EP handling: convert DTensors to local shards.
-        # Standard EP also needs token permutation; DeepEP tokens are already dispatched.
-        permuted_indices = None
+        # The token dispatcher has already grouped and aligned tokens by local expert.
         if isinstance(gate_proj, DTensor):
             gate_proj = gate_proj.to_local()
             up_proj = up_proj.to_local()
@@ -312,27 +310,6 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             down_proj_lora_b = down_proj_lora_b.to_local()
             up_proj_lora_a = up_proj_lora_a.to_local()
             up_proj_lora_b = up_proj_lora_b.to_local()
-
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
-
-                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-
-                experts_per_ep_rank = gate_proj.shape[0]
-                num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
-
-                with torch.no_grad():
-                    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
-                        num_tokens_per_expert,
-                        experts_per_ep_rank,
-                        num_ep_ranks,
-                        x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
-                        TOKEN_GROUP_ALIGN_SIZE_M,
-                    )
-
-                x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
-                input_shape = x.shape
-                x = x[permuted_indices, :]
 
         # Compute offsets for grouped_mm
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
@@ -353,12 +330,6 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         h2_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
         down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
         out = (h2_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
-
-        # EP handling: unpermute output back to dispatched token order
-        if permuted_indices is not None:
-            out_unpermuted = out.new_zeros(input_shape)
-            out_unpermuted[permuted_indices, :] = out
-            out = out_unpermuted[:-1]
 
         return out
 
@@ -530,7 +501,6 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
         up_proj = self.base_layer.up_proj
         down_proj = self.base_layer.down_proj
 
-        permuted_indices = None
         if isinstance(up_proj, DTensor):
             up_proj = up_proj.to_local()
             down_proj = down_proj.to_local()
@@ -538,27 +508,6 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             up_proj_lora_b = up_proj_lora_b.to_local()
             down_proj_lora_a = down_proj_lora_a.to_local()
             down_proj_lora_b = down_proj_lora_b.to_local()
-
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
-
-                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-
-                experts_per_ep_rank = up_proj.shape[0]
-                num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
-
-                with torch.no_grad():
-                    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
-                        num_tokens_per_expert,
-                        experts_per_ep_rank,
-                        num_ep_ranks,
-                        x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
-                        TOKEN_GROUP_ALIGN_SIZE_M,
-                    )
-
-                x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
-                input_shape = x.shape
-                x = x[permuted_indices, :]
 
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         lora_x = self.lora_dropout(x)
@@ -571,11 +520,6 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
         out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
         down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
         out = (out_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
-
-        if permuted_indices is not None:
-            out_unpermuted = out.new_zeros(input_shape)
-            out_unpermuted[permuted_indices, :] = out
-            out = out_unpermuted[:-1]
 
         return out
 
@@ -772,7 +716,6 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         up_proj_bias = self.base_layer.up_proj_bias
         down_proj_bias = self.base_layer.down_proj_bias
 
-        permuted_indices = None
         if isinstance(up_proj, DTensor):
             gate_proj = gate_proj.to_local()
             up_proj = up_proj.to_local()
@@ -784,27 +727,6 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gu_b = gu_b.to_local()
             d_a = d_a.to_local()
             d_b = d_b.to_local()
-
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
-
-                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-
-                experts_per_ep_rank = up_proj.shape[0]
-                num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
-
-                with torch.no_grad():
-                    permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
-                        num_tokens_per_expert,
-                        experts_per_ep_rank,
-                        num_ep_ranks,
-                        x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
-                        TOKEN_GROUP_ALIGN_SIZE_M,
-                    )
-
-                x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
-                input_shape = x.shape
-                x = x[permuted_indices, :]
 
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         lora_x = self.lora_dropout(x)
@@ -825,11 +747,6 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         out_base = out_base + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
         out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
         out = (out_base + scaling * out_lora.bfloat16()).type_as(x)
-
-        if permuted_indices is not None:
-            out_unpermuted = out.new_zeros(input_shape)
-            out_unpermuted[permuted_indices, :] = out
-            out = out_unpermuted[:-1]
 
         return out
 

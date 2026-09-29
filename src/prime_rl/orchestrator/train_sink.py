@@ -9,6 +9,7 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
@@ -33,6 +34,8 @@ def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None)
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
+    if sample.value_mask is not None and any(sample.value_mask):
+        return True
     if sample.advantages is None:
         return True
 
@@ -104,6 +107,7 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+        self.value_score_seconds = 0.0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -275,10 +279,16 @@ class TrainSink:
             )
             return
 
+        trace_samples = [
+            (trace, await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)) for trace in survivors
+        ]
+        score_start = time.perf_counter()
+        await env.algorithm.score_samples(trace_samples)
+        if self.config.value_service_url is not None:
+            self.value_score_seconds += time.perf_counter() - score_start
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
-        for trace in survivors:
-            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+        for trace, samples in trace_samples:
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_sampling_masks and sample.sampling_mask is None:

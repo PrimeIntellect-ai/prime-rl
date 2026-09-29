@@ -360,6 +360,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
     ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
     ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
+    old_values = list(training_example.old_values) if training_example.old_values is not None else None
+    value_targets = list(training_example.value_targets) if training_example.value_targets is not None else None
+    value_mask = list(training_example.value_mask) if training_example.value_mask is not None else None
+    if (old_values is None) != (value_targets is None) or (old_values is None) != (value_mask is None):
+        raise ValueError("old_values, value_targets, and value_mask must be present together")
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
     mm_refs = training_example.mm_refs
@@ -397,6 +402,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             ce_weights = ce_weights[:cut]
         if ref_kl_weights is not None:
             ref_kl_weights = ref_kl_weights[:cut]
+        if old_values is not None:
+            old_values = old_values[:cut]
+            value_targets = value_targets[:cut]
+            value_mask = value_mask[:cut]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
@@ -421,6 +430,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ("rl_weights", rl_weights),
         ("ce_weights", ce_weights),
         ("ref_kl_weights", ref_kl_weights),
+        ("old_values", old_values),
+        ("value_targets", value_targets),
+        ("value_mask", value_mask),
     ):
         if stream is not None:
             assert len(stream) == len(input_ids), f"{stream_name}: {len(stream)}"
@@ -457,6 +469,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
+        old_values=old_values,
+        value_targets=value_targets,
+        value_mask=value_mask,
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
@@ -522,6 +537,7 @@ class _MicroBatchBin:
 def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     has_ref_logprobs = any(sample.ref_logprobs is not None for sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for sample in bin_content.samples)
+    has_values = any(sample.value_targets is not None for sample in bin_content.samples)
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for s in bin_content.samples) for name in STREAM_FILL}
@@ -537,6 +553,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     temperatures: list[float] = []
     env_names: list[str] = []
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
+    old_values: list[float] | None = [] if has_values else None
+    value_targets: list[float] | None = [] if has_values else None
+    value_mask: list[bool] | None = [] if has_values else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
     mm_refs: MMRefs | None = None
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
@@ -557,6 +576,10 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         env_names.extend(sample.env_names)
         if ref_logprobs is not None:
             ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
+        if has_values:
+            old_values.extend(sample.old_values if sample.old_values is not None else [0.0] * sample_len)
+            value_targets.extend(sample.value_targets if sample.value_targets is not None else [0.0] * sample_len)
+            value_mask.extend(sample.value_mask if sample.value_mask is not None else [False] * sample_len)
         for name, fill in STREAM_FILL.items():
             stream = streams[name]
             if stream is not None:
@@ -614,6 +637,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
+        old_values=old_values,
+        value_targets=value_targets,
+        value_mask=value_mask,
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
@@ -716,6 +742,10 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
+    if micro_batch.old_values is not None:
+        micro_batch.old_values.extend([0.0] * padding_size)
+        micro_batch.value_targets.extend([0.0] * padding_size)
+        micro_batch.value_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.sequence_lengths[-1] += padding_size
     micro_batch.seq_lens[-1] += padding_size
@@ -760,6 +790,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "ce_weights",
         "ref_kl_weights",
         "mm_token_type_ids",
+        "old_values",
+        "value_targets",
+        "value_mask",
     )
     for name in per_token_fields:
         values = getattr(micro_batch, name)
@@ -791,7 +824,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         )
 
 
-def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
+def _make_dummy_batch(source: MicroBatch, *, for_value: bool = False) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
@@ -801,6 +834,9 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
+    dummy.old_values = [0.0] * len(dummy.input_ids) if for_value else None
+    dummy.value_targets = [0.0] * len(dummy.input_ids) if for_value else None
+    dummy.value_mask = [False] * len(dummy.input_ids) if for_value else None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
     # The copied identity would double-annotate the source's traces.
@@ -809,11 +845,13 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     return dummy
 
 
-def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+def _pad_group_for_distribution(
+    group: list[MicroBatch], num_train_workers: int, *, for_value: bool = False
+) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = _make_dummy_batch(group[0], for_value=for_value)
         group.extend([dummy] * num_padding)
     return group
 
@@ -824,6 +862,7 @@ def prepare_batch(
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    for_value: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -844,8 +883,8 @@ def prepare_batch(
     text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
 
     # Pad each group independently so its count is divisible by num_train_workers
-    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
-    text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
+    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers, for_value=for_value)
+    text_batches = _pad_group_for_distribution(text_batches, num_train_workers, for_value=for_value)
 
     # Alignment check after distribution padding so the dummy batches are covered too
     for micro_batch in (*mm_batches, *text_batches):

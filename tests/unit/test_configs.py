@@ -1,4 +1,5 @@
 import os
+import socket
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -15,7 +16,9 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.entrypoints.rl import reserved_rendezvous_ports
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
+from prime_rl.utils.ports import find_available_ports
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -27,6 +30,18 @@ CONFIG_CLASSES = [
     EnvServerConfig,
     EvalConfig,
 ]
+
+
+def test_rendezvous_ports_are_distinct_and_skip_bound_ports():
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        port = occupied.getsockname()[1]
+        with pytest.raises(RuntimeError, match="Could not find"):
+            find_available_ports("127.0.0.1", 1, start=port, stop=port + 1)
+
+    ports = find_available_ports("127.0.0.1", 2, excluded=[29501], start=29500, stop=29505)
+    assert len(set(ports)) == 2
+    assert 29501 not in ports
 
 
 def get_config_files() -> list[Path]:
@@ -520,6 +535,87 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size_local == 2
     assert config.inference.vllm.data_parallel_size == 2
+
+
+def test_multi_node_value_layout_keeps_policy_and_critic_parallelism_independent():
+    payload = {
+        "trainer": {"model": {"cp": 16, "ep": 8}},
+        "orchestrator": {
+            "algo": {"type": "ppo"},
+            "train": {"source": [{"name": "math", "env": {"taskset": {"id": "reverse-text"}}}]},
+        },
+        "inference": {"vllm": {"tensor_parallel_size": 8}},
+        "value": {"model": {"cp": 8, "ep": 8}},
+        "deployment": {
+            "type": "multi_node",
+            "gpus_per_node": 8,
+            "num_train_nodes": 2,
+            "num_infer_nodes": 1,
+            "num_value_nodes": 1,
+        },
+        "slurm": {},
+        "rollout_transport": {"type": "zmq"},
+    }
+
+    config = RLConfig.model_validate(payload)
+    assert config.trainer.model.cp == 16
+    assert config.value is not None and config.value.model.cp == 8
+    assert config.deployment.num_value_nodes == 1
+    assert config.orchestrator.num_train_workers == 1
+    assert config.orchestrator.value_rollout_transport.port == config.trainer.rollout_transport.port + 2
+    remote_orchestrator = OrchestratorConfig.model_validate(
+        {**config.orchestrator.model_dump(), "value_service_url": "http://value-host:8123"}
+    )
+    assert remote_orchestrator.train.source[0].algo.value_url == "http://value-host:8123"
+
+    payload["deployment"]["num_value_nodes"] = 0
+    with pytest.raises(ValidationError, match="requires value nodes or GPUs"):
+        RLConfig.model_validate(payload)
+
+    payload["deployment"]["num_value_gpus_per_train_node"] = 4
+    payload["trainer"]["model"]["cp"] = 4
+    payload["value"]["model"]["cp"] = 4
+    config = RLConfig.model_validate(payload)
+    assert config.deployment.train_gpus_per_node == 4
+    assert config.deployment.value_trainer_nodes == 2
+    assert config.orchestrator.num_train_workers == 2
+    assert config.orchestrator.value_num_train_workers == 2
+    assert config.trainer.weight_broadcast.port in reserved_rendezvous_ports(config)
+    assert config.value.service_port in reserved_rendezvous_ports(config)
+    config.trainer.weight_broadcast.port = 29502
+    config.value.service_port = 29503
+    assert {29502, 29503}.issubset(reserved_rendezvous_ports(config))
+    payload["deployment"].pop("num_value_gpus_per_train_node")
+    payload["trainer"]["model"]["cp"] = 16
+    payload["value"]["model"]["cp"] = 8
+
+    payload["deployment"]["num_value_nodes"] = 1
+    payload["value"]["model"]["cp"] = 4
+    config = RLConfig.model_validate(payload)
+    assert config.orchestrator.value_num_train_workers == 2
+    assert config.orchestrator.value_pad_to_multiple_of == 4
+    assert config.orchestrator.value_seq_len == config.value.model.seq_len
+
+    payload["trainer"]["model"]["cp"] = 8
+    config = RLConfig.model_validate(payload)
+    assert config.orchestrator.num_train_workers == 2
+    assert config.orchestrator.value_num_train_workers == 2
+
+    payload["value"]["model"]["cp"] = 3
+    payload["value"]["model"]["seq_len"] = 2046
+    with pytest.raises(ValidationError, match="Value GPU count must be divisible"):
+        RLConfig.model_validate(payload)
+
+    payload["value"]["model"]["cp"] = 4
+    payload["value"]["model"].pop("seq_len")
+    payload["trainer"]["model"]["cp"] = 7
+    with pytest.raises(ValidationError, match="Policy GPU count must be divisible"):
+        RLConfig.model_validate(payload)
+
+    payload["trainer"]["model"]["cp"] = 8
+    payload["trainer"]["model"]["seq_len"] = 2050
+    with pytest.raises(ValidationError, match="value.model.seq_len must be divisible"):
+        RLConfig.model_validate(payload)
 
 
 def test_orchestrator_vlm_requires_renderer():

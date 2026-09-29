@@ -79,6 +79,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
 
+    # PPO critic streams. Present together; value_mask selects action tokens
+    # that contribute to the critic loss in mixed-algorithm batches.
+    old_values: list[float] | None = None
+    value_targets: list[float] | None = None
+    value_mask: list[bool] | None = None
+
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -115,3 +121,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+
+    old_values: list[float] | None = None
+    value_targets: list[float] | None = None
+    value_mask: list[bool] | None = None
