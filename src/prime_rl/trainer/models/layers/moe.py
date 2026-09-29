@@ -93,12 +93,13 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.set_compute(compute or BF16ExpertCompute())
         self.activation = ActivationDispatch[activation]
         if expert_type == "non_gated":
             self.supported_fusions = {}
+        self.set_compute(compute or BF16ExpertCompute())
 
     def set_compute(self, compute: ExpertCompute) -> None:
+        compute.validate(self)
         self.compute = compute
 
     @property

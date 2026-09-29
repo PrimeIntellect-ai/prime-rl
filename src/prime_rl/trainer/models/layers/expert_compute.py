@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 class ExpertCompute(Protocol):
     token_group_alignment: int
 
+    def validate(self, experts: "GroupedExperts") -> None: ...
+
     def __call__(
         self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor
     ) -> torch.Tensor: ...
@@ -47,6 +49,9 @@ class GroupedGemmExpertCompute:
     ) -> None:
         self.gemm = gemm
         self.token_group_alignment = token_group_alignment
+
+    def validate(self, experts: "GroupedExperts") -> None:
+        """The shared forward handles the experts' activation, biases, and weight layout."""
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 2
