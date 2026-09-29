@@ -27,11 +27,12 @@ class ServedEvalConfig(EvalSourcesConfig):
     rate limiting."""
 
     heartbeat: HeartbeatConfig | None = None
-    """BetterStack heartbeat for the run: one ping per landed episode — the first
+    """BetterStack heartbeat for the run: pinged by landed episodes — the first
     landed episode is the first beat, so the run's boot never shows up as a
-    stale-prone silence. When episodes stop landing, the pings stop and the heartbeat
-    goes stale on Better Stack after its grace period. Size that period + grace above
-    the longest legitimate gap between episodes."""
+    stale-prone silence. Pings are throttled to at most one every
+    ``heartbeat.min_interval`` seconds. When episodes stop landing, the pings stop
+    and the heartbeat goes stale on Better Stack after its grace period. Size that
+    period + grace above the longest legitimate gap between episodes."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:

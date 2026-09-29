@@ -93,7 +93,7 @@ def train(config: SFTConfig):
     heart = None
     if config.heartbeat is not None and world.rank == 0:
         logger.info("Initializing heartbeat")
-        heart = Heartbeat(config.heartbeat.url)
+        heart = Heartbeat(config.heartbeat)
 
     # Set precision
     setup_torch_distributed(

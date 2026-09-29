@@ -86,7 +86,7 @@ class EvalRunner:
         # sit inside the ping stream as an abnormally long silence and flip a healthy
         # run stale. Until then the heartbeat has simply never been pinged.
         if config.heartbeat is not None:
-            self.heart = Heartbeat(config.heartbeat.url)
+            self.heart = Heartbeat(config.heartbeat)
 
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
