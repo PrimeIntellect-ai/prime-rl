@@ -19,6 +19,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
+    CPPartition,
     gather_for_cp,
     gather_for_cp_wo_grad,
     setup_context_parallel,
@@ -306,7 +307,13 @@ def train(config: TrainerConfig):
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        seq_len = micro_batches[0]["input_ids"].shape[1]
+        seq_len = max((batch["input_ids"].shape[1] for batch in micro_batches), default=0)
+        num_local_tokens = sum(batch["input_ids"].shape[1] for batch in micro_batches)
+        inactive_slots = sum(batch.get("inactive", False) for batch in micro_batches)
+        real_micro_batches = len(micro_batches) - inactive_slots
+        real_samples = sum(
+            len(batch["sequence_lengths"]) for batch in micro_batches if not batch.get("inactive", False)
+        )
 
         # Normalize each loss component by its own global (dp_cp) token count, so every rank
         # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
@@ -326,11 +333,25 @@ def train(config: TrainerConfig):
             if micro_batch["ref_kl_weights"] is not None:
                 local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
         global_scales = torch.tensor(
-            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
+            [
+                local_rl_scale,
+                local_ce_scale,
+                local_ref_kl_scale,
+                num_local_tokens,
+                inactive_slots,
+                real_micro_batches,
+                real_samples,
+            ],
+            dtype=torch.int64,
+            device="cuda",
         )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        counts = global_scales.tolist()
+        if counts[3] == 0:
+            raise ValueError("An entirely empty global step cannot advance the optimizer")
+        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in counts[:3])
+        num_tokens = counts[3] // parallel_dims.cp
         prepare_gradient_offload(
             gradient_manager,
             parallel_dims.fsdp_gradient_divide_factor,
@@ -345,7 +366,13 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         for micro_step, micro_batch in enumerate(micro_batches):
+            inactive = micro_batch.get("inactive", False)
+            if inactive and not config.model.inactive_micro_batches:
+                raise ValueError("Received an inactive slot without model.inactive_micro_batches")
+            if inactive and micro_batch["input_ids"].numel():
+                raise ValueError("An inactive slot must not contain tokens")
             input_ids = micro_batch["input_ids"].to("cuda")
+            cp_partition = CPPartition(input_ids.shape[1], cp_size) if config.model.cp_unpadded else None
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
@@ -360,7 +387,7 @@ def train(config: TrainerConfig):
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
             )
 
-            if routed_experts is None and config.enable_router_replay:
+            if routed_experts is None and config.enable_router_replay and not inactive:
                 raise ValueError(
                     "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
                 )
@@ -413,15 +440,20 @@ def train(config: TrainerConfig):
                         cp_group,
                         seq_lens=seq_lens,
                         cp_style=config.model.cp_style,
+                        partition=cp_partition,
                     )
                 seq_lens_are_pre_shard = True
-                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
-                    routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
+                    routed_experts = shard_for_cp(
+                        routed_experts, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition
+                    )
                 if sampling_mask is not None:
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
-                    sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+                    sampling_mask = shard_for_cp(
+                        sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition
+                    )
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
@@ -429,7 +461,8 @@ def train(config: TrainerConfig):
                     chunk_size = labels.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
+                    offset = cp_partition.offsets[cp_rank] if cp_partition is not None else chunk_size * cp_rank
+                    adjusted_cu = torch.clip(cu_offsets - offset, min=0, max=chunk_size)
                     lora_num_tokens = torch.diff(
                         adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
                     )
@@ -439,7 +472,9 @@ def train(config: TrainerConfig):
 
             # Shard temperatures for context parallelism if enabled
             if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+                temperatures = shard_for_cp(
+                    temperatures, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition
+                )
 
             if sampling_mask is not None:
                 assert sampling_mask.shape[:2] == labels.shape, (
@@ -460,6 +495,7 @@ def train(config: TrainerConfig):
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                    cp_total_tokens=cp_partition.total_tokens if cp_partition is not None and cp_enabled else None,
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
                 )
@@ -478,8 +514,9 @@ def train(config: TrainerConfig):
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
-                out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                total_tokens = cp_partition.total_tokens if cp_partition is not None else None
+                out["logprobs"] = gather_for_cp(out["logprobs"], cp_group, total_tokens)
+                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group, total_tokens)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -492,20 +529,25 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
-                ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
-                advantages=advantages.squeeze().split(sequence_lengths),
-                loss_mask=loss_mask.squeeze().split(sequence_lengths),
-                rl_weights=rl_weights.squeeze().split(sequence_lengths) if rl_weights is not None else None,
-                ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
-                ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
-                rl_loss_fn=rl_loss_fn,
-                rl_scale=rl_scale,
-                ce_scale=ce_scale,
-                ref_kl_scale=ref_kl_scale,
-            )
+            if inactive:
+                loss, loss_tensors = out["logprobs"].sum(), {}
+            else:
+                loss, loss_tensors = compute_loss(
+                    trainer_logprobs=out["logprobs"].squeeze(0).split(sequence_lengths),
+                    inference_logprobs=inference_logprobs.squeeze(0).split(sequence_lengths),
+                    ref_logprobs=ref_logprobs.squeeze(0).split(sequence_lengths) if ref_logprobs is not None else None,
+                    advantages=advantages.squeeze(0).split(sequence_lengths),
+                    loss_mask=loss_mask.squeeze(0).split(sequence_lengths),
+                    rl_weights=rl_weights.squeeze(0).split(sequence_lengths) if rl_weights is not None else None,
+                    ce_weights=ce_weights.squeeze(0).split(sequence_lengths) if ce_weights is not None else None,
+                    ref_kl_weights=ref_kl_weights.squeeze(0).split(sequence_lengths)
+                    if ref_kl_weights is not None
+                    else None,
+                    rl_loss_fn=rl_loss_fn,
+                    rl_scale=rl_scale,
+                    ce_scale=ce_scale,
+                    ref_kl_scale=ref_kl_scale,
+                )
 
             # Backward pass
             with maybe_record_function("backward"):
@@ -518,7 +560,8 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            if not inactive:
+                tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
@@ -534,7 +577,7 @@ def train(config: TrainerConfig):
             # whose action component is ce (frozen-model tokens).
             if rl_weights is None and ref_kl_weights is None:
                 mismatch_mask = loss_mask
-                has_mismatch_tokens = True
+                has_mismatch_tokens = not inactive
             else:
                 sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
                 if ref_kl_weights is not None:
@@ -567,7 +610,11 @@ def train(config: TrainerConfig):
                 tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)}"
+            if inactive:
+                micro_step_message += " | Inactive"
+            else:
+                micro_step_message += f" | Loss {loss.item():.4f} | Entropy {entropy.mean().item():.4f}"
             if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -590,6 +637,8 @@ def train(config: TrainerConfig):
 
         # Update learning rate scheduler
         scheduler.step()
+        progress.total_tokens += num_tokens
+        progress.total_samples += counts[6] // parallel_dims.cp
 
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
@@ -636,10 +685,6 @@ def train(config: TrainerConfig):
         tensor_stats = tensors.compute_stats()
 
         # Compute step metrics
-        num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
-        progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
@@ -670,6 +715,9 @@ def train(config: TrainerConfig):
         # Log performance metrics
         perf_metrics = {
             "perf/throughput": throughput,
+            "perf/input_tokens": num_tokens,
+            "perf/inactive_micro_batches": counts[4] // parallel_dims.cp,
+            "perf/real_micro_batches": counts[5] // parallel_dims.cp,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
             "perf/peak_memory": peak_memory,

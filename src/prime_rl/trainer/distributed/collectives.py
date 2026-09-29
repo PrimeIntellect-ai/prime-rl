@@ -3,6 +3,8 @@
 import prime_kernels
 import torch
 import torch.distributed as dist
+import torch.distributed._functional_collectives as funcol
+from torch._dynamo.comptime import comptime
 from torch.distributed import ProcessGroup
 
 
@@ -254,8 +256,34 @@ def all_gather(x: torch.Tensor, dim: int, group: ProcessGroup) -> torch.Tensor:
     return _all_gather(x, dim, group.size(), group.group_name)
 
 
+def all_to_all_cp(x: torch.Tensor, total_tokens: int, group: ProcessGroup, sequence_to_head: bool) -> torch.Tensor:
+    """Exchange flattened token rows using the balanced CP partition."""
+    degree = group.size()
+    # Unit and empty shards need concrete broadcast strides in compiled backward.
+    if total_tokens < 2 * degree:
+        comptime.force_static(total_tokens)
+    lengths = [(total_tokens + degree - 1 - rank) // degree for rank in range(degree)]
+    repeated = [lengths[group.rank()]] * degree
+    outputs, inputs = (lengths, repeated) if sequence_to_head else (repeated, lengths)
+    exchanged = torch.ops._c10d_functional.all_to_all_single(x.contiguous(), outputs, inputs, group.group_name)
+    return funcol.wait_tensor(exchanged)
+
+
+def all_gather_cp(x: torch.Tensor, dim: int, total_tokens: int, group: ProcessGroup) -> torch.Tensor:
+    """Gather balanced token shards; backward sums every peer's contribution."""
+    if total_tokens % group.size() == 0:
+        rows = x.movedim(dim, 0).contiguous()
+        gathered = funcol.wait_tensor(funcol.all_gather_single(rows, 0, group))
+        return gathered.movedim(0, dim).contiguous()
+    rows = x.movedim(dim, 0)
+    repeated = rows.repeat(group.size(), *([1] * (rows.ndim - 1)))
+    return all_to_all_cp(repeated, total_tokens, group, True).movedim(0, dim).contiguous()
+
+
 __all__ = [
     "all_gather",
+    "all_gather_cp",
+    "all_to_all_cp",
     "all_to_all_single",
     "all_to_all_single_equal",
     "mxfp8_all_to_all_combine",

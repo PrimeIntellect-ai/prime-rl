@@ -54,7 +54,7 @@ class Qwen3_5VisionPatchEmbed(nn.Module):
             self.patch_size,
             self.patch_size,
         )
-        return self.proj(pixel_values.to(self.proj.weight.dtype)).view(pixel_values.shape[0], -1)
+        return self.proj(pixel_values.to(self.proj.weight.dtype)).view(pixel_values.shape[0], self.proj.out_channels)
 
 
 class Qwen3_5VisionMLP(nn.Module):
@@ -100,7 +100,9 @@ class Qwen3_5VisionAttention(nn.Module):
         query = ((query.float() * cos) + (rotate_half(query.float()) * sin)).to(query_dtype)
         key = ((key.float() * cos) + (rotate_half(key.float()) * sin)).to(query_dtype)
 
-        if self.attention_implementation == "flash_attention_4":
+        if sequence_length == 0:
+            attention_output = query + key + value
+        elif self.attention_implementation == "flash_attention_4":
             attention_output, _ = self.flash_attention(
                 query,
                 key,
@@ -116,12 +118,12 @@ class Qwen3_5VisionAttention(nn.Module):
                 key,
                 value,
                 cu_seqlens,
-                cu_seqlens,
+                cu_seqlens.clone(),
                 max_sequence_length,
                 max_sequence_length,
                 causal=False,
             )
-        return self.proj(attention_output.reshape(sequence_length, -1))
+        return self.proj(attention_output.reshape(sequence_length, self.num_heads * self.head_dim))
 
 
 class Qwen3_5VisionBlock(nn.Module):
@@ -173,6 +175,8 @@ class Qwen3_5VisionModel(nn.Module):
         return self.patch_embed.proj.weight.dtype
 
     def rotary_embeddings(self, grid_thw: torch.Tensor) -> torch.Tensor:
+        if grid_thw.shape[0] == 0:
+            return self.rotary_pos_emb(0).repeat(1, 2)
         grids = grid_thw.tolist()
         frequency_table = self.rotary_pos_emb(max(max(height, width) for _, height, width in grids))
         coordinates = []
@@ -190,6 +194,8 @@ class Qwen3_5VisionModel(nn.Module):
         return frequency_table[torch.cat(coordinates)].flatten(1)
 
     def interpolated_position_embeddings(self, grid_thw: torch.Tensor) -> torch.Tensor:
+        if grid_thw.shape[0] == 0:
+            return self.pos_embed(torch.empty(0, dtype=torch.long, device=grid_thw.device))
         embeddings = []
         merge_size = self.spatial_merge_size
         for frames, height, width in grid_thw.tolist():

@@ -29,6 +29,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.sequence import CPPartition
 
 
 class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
@@ -204,6 +205,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> MoeModelOutputWithPast:
         """
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -246,9 +248,9 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
         total_tokens = int(seq_lens.sum())
-        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
-            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
-            f"{inputs_embeds.shape[1]} tokens each"
+        partition = CPPartition(total_tokens, cp_world_size)
+        assert inputs_embeds.shape[1] == partition.lengths[cp_rank], (
+            f"local tokens {inputs_embeds.shape[1]} disagree with CP partition {partition.lengths}"
         )
 
         # Every layer type attends over the same local window; the compressed variants add their
@@ -309,6 +311,7 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
         **kwargs,
     ) -> PrimeLmOutput:
         """
@@ -329,6 +332,7 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
 
         hidden_states = outputs.last_hidden_state

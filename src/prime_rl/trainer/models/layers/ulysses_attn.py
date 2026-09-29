@@ -29,7 +29,7 @@ Constraints:
 - cp_size must divide num_attention_heads.
 - cp_size must divide num_key_value_heads, OR num_key_value_heads must divide
   cp_size (the KV-replication path).
-- Sequence length must be divisible by cp_size.
+- Uneven sequence shards require the full token count at each redistribution.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
+from prime_rl.trainer.distributed.collectives import all_to_all_cp, all_to_all_single_equal
 
 # Populated by `update_ulysses_params` before each forward pass. Mirrors
 # ring_flash_attn's DATA_PARAMS pattern so the patched attention path can
@@ -68,7 +68,9 @@ def _replicate_kv_heads(t: torch.Tensor, cp_size: int) -> torch.Tensor:
     return t.repeat_interleave(cp_size // h, dim=1)
 
 
-def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+def _all_to_all_seq_to_head(
+    t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup, total_tokens: int | None = None
+) -> torch.Tensor:
     """Redistribute [S_local, H, D] -> [S_global, H_local, D].
 
     Splits the head dim into cp_size groups and exchanges them so each rank
@@ -83,15 +85,26 @@ def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
 
     # [S_local, cp_size, H_local, D] -> [cp_size, S_local, H_local, D]
     t = t.reshape(s_local, cp_size, h_local, d).transpose(0, 1).contiguous()
+    if total_tokens is not None:
+        return all_to_all_cp(t.reshape(cp_size * s_local, h_local, d), total_tokens, cp_group, True)
     out = all_to_all_single_equal(t, cp_group)
     # out[i] is the chunk that source-rank i had at position my_rank, i.e.
     # source-rank i's local sequence shard for *my* head slice.
     return out.reshape(cp_size * s_local, h_local, d)
 
 
-def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+def _all_to_all_head_to_seq(
+    t: torch.Tensor,
+    cp_size: int,
+    cp_group: dist.ProcessGroup,
+    total_tokens: int | None = None,
+) -> torch.Tensor:
     """Inverse of `_all_to_all_seq_to_head`: [S_global, H_local, D] -> [S_local, H, D]."""
     s_global, h_local, d = t.shape
+    if total_tokens is not None:
+        out = all_to_all_cp(t, total_tokens, cp_group, False)
+        s_local = out.shape[0] // cp_size
+        return out.reshape(cp_size, s_local, h_local, d).transpose(0, 1).reshape(s_local, h_local * cp_size, d)
     assert s_global % cp_size == 0
     s_local = s_global // cp_size
     h = h_local * cp_size
@@ -100,6 +113,26 @@ def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
     out = all_to_all_single_equal(t, cp_group)
     # out[s']: original chunk for sequence-rank s' (which now becomes head-rank s').
     return out.transpose(0, 1).contiguous().reshape(s_local, h, d)
+
+
+def sequence_to_head_parallel(tensor, process_group, world_size, total_tokens=None):
+    """Redistribute packed [B, local tokens, features] to full tokens and local features."""
+    return torch.stack(
+        [
+            _all_to_all_seq_to_head(row.unsqueeze(-1), world_size, process_group, total_tokens).squeeze(-1)
+            for row in tensor
+        ]
+    )
+
+
+def head_to_sequence_parallel(tensor, process_group, world_size, total_tokens=None):
+    """Restore token shards from full tokens and local features."""
+    return torch.stack(
+        [
+            _all_to_all_head_to_seq(row.unsqueeze(-1), world_size, process_group, total_tokens).squeeze(-1)
+            for row in tensor
+        ]
+    )
 
 
 def ulysses_flash_attn_varlen_func(
@@ -120,6 +153,7 @@ def ulysses_flash_attn_varlen_func(
     dropout_p: float = 0.0,
     deterministic: bool | None = None,
     learnable_sink: torch.Tensor | None = None,
+    total_tokens: int | None = None,
 ) -> torch.Tensor:
     """Run varlen flash attention under Ulysses CP.
 
@@ -130,12 +164,18 @@ def ulysses_flash_attn_varlen_func(
     cp_size before the all-to-all (see `_replicate_kv_heads`), so each rank runs
     grouped attention on its query-head slice with the single matching KV head.
     """
-    q = _all_to_all_seq_to_head(q, cp_size, cp_group)
+    q = _all_to_all_seq_to_head(q, cp_size, cp_group, total_tokens)
     if k.shape[1] < cp_size:
         k = _replicate_kv_heads(k, cp_size)
         v = _replicate_kv_heads(v, cp_size)
-    k = _all_to_all_seq_to_head(k, cp_size, cp_group)
-    v = _all_to_all_seq_to_head(v, cp_size, cp_group)
+    k = _all_to_all_seq_to_head(k, cp_size, cp_group, total_tokens)
+    v = _all_to_all_seq_to_head(v, cp_size, cp_group, total_tokens)
+
+    if total_tokens == 0:
+        out = q + (k.sum() + v.sum()).to(q.dtype)
+        if learnable_sink is not None:
+            out = out + learnable_sink.sum().to(out.dtype)
+        return _all_to_all_head_to_seq(out, cp_size, cp_group, total_tokens)
 
     kwargs: dict = {"causal": causal}
     if window_size != (-1, -1):
@@ -159,8 +199,10 @@ def ulysses_flash_attn_varlen_func(
         kwargs["max_seqlen_k"] = max_seqlen_k
         out, _ = flash_fn(q, k, v, **kwargs)
     else:
+        # FA2/FA3's autograd Functions require distinct inputs under Dynamo.
+        cu_seqlens_k = cu_seqlens_k.clone()
         out = flash_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs)
-    return _all_to_all_head_to_seq(out, cp_size, cp_group)
+    return _all_to_all_head_to_seq(out, cp_size, cp_group, total_tokens)
 
 
 def substitute_ulysses_attn(
@@ -188,11 +230,11 @@ def substitute_ulysses_attn(
 
         flash_attn_version = 2
 
-    def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
+    def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen, cp_total_tokens=None):
         # cu_seqlens / max_seqlen passed in are for the *local* sharded sequence;
         # ulysses needs the *full* ones (each rank holds the full seq after a2a).
-        cu_seqlens_full = ULYSSES_PARAMS["cu_seqlens"]
-        max_seqlen_full = ULYSSES_PARAMS["max_seqlen"]
+        cu_seqlens_full = cu_seqlens if cp_total_tokens is not None else ULYSSES_PARAMS["cu_seqlens"]
+        max_seqlen_full = max_seqlen if cp_total_tokens is not None else ULYSSES_PARAMS["max_seqlen"]
 
         window_size = (-1, -1)
         sliding_window = getattr(self, "sliding_window", None)
@@ -213,6 +255,7 @@ def substitute_ulysses_attn(
             cp_size=cp_size,
             flash_attn_version=flash_attn_version,
             window_size=window_size,
+            total_tokens=cp_total_tokens,
         )
 
     from prime_rl.trainer.models.layers.attn import FlashAttention

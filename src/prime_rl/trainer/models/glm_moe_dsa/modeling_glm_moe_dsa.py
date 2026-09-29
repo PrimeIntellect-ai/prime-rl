@@ -21,6 +21,8 @@ from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.cp import gather_for_cp
+from prime_rl.utils.sequence import CPPartition
 
 
 def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
@@ -182,7 +184,10 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         position_ids: torch.LongTensor,
         cp_group: dist.ProcessGroup,
         cp_world_size: int,
+        total_tokens: int | None = None,
     ) -> torch.LongTensor:
+        if total_tokens is not None:
+            return gather_for_cp(position_ids, cp_group, total_tokens)
         gathered_position_ids = [torch.empty_like(position_ids) for _ in range(cp_world_size)]
         dist.all_gather(gathered_position_ids, position_ids.contiguous(), group=cp_group)
         return torch.cat(gathered_position_ids, dim=1)
@@ -197,12 +202,15 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         *,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutputWithPast:
         """
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced context parallelism.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
-            Per-document lengths of the packed row (PrimeRL packed-batch contract). Unused.
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Unused.
         """
@@ -212,9 +220,13 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
+        if self.cp_context.cp_unpadded and cp_total_tokens is None:
+            cp_total_tokens = int(seq_lens.sum().item())
         cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
         if self.cp_context.cp_enabled:
-            position_ids_full = self._gather_position_ids_for_cp(position_ids, self.cp_context.cp_group, cp_world_size)
+            position_ids_full = self._gather_position_ids_for_cp(
+                position_ids, self.cp_context.cp_group, cp_world_size, cp_total_tokens
+            )
         else:
             position_ids_full = position_ids
 
@@ -233,9 +245,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids_full)
 
         if cp_world_size > 1:
-            s_local = S_full // cp_world_size
-            ks = ks_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()
-            ke = ke_full[cp_rank * s_local : (cp_rank + 1) * s_local].contiguous()
+            partition = CPPartition(S_full, cp_world_size)
+            ks = partition.shard(ks_full, cp_rank, dim=0).contiguous()
+            ke = partition.shard(ke_full, cp_rank, dim=0).contiguous()
         else:
             ks, ke = ks_full, ke_full
 
@@ -293,6 +305,7 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -308,6 +321,8 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced context parallelism.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
@@ -325,6 +340,9 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
 
         hidden_states = outputs.last_hidden_state

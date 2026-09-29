@@ -661,6 +661,9 @@ class OrchestratorConfig(BaseConfig):
     pad_to_multiple_of: int = Field(1, ge=1)
     """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
 
+    inactive_micro_batches: bool = True
+    """Send explicit zero-token slots for distributed iteration alignment. Managed RL copies this setting from the trainer."""
+
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 

@@ -126,9 +126,9 @@ class LagunaFlashAttention(FlashAttention):
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        cp_total_tokens: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
 
         query_states, key_states, value_states = self.project_qkv(hidden_states)
 
@@ -136,9 +136,9 @@ class LagunaFlashAttention(FlashAttention):
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
 
-        query_states = query_states.view(hidden_shape)
-        key_states = key_states.view(hidden_shape)
-        value_states = value_states.view(hidden_shape)
+        query_states = query_states.view(*input_shape, self.qkv_sizes[0] // self.head_dim, self.head_dim)
+        key_states = key_states.view(*input_shape, self.qkv_sizes[1] // self.head_dim, self.head_dim)
+        value_states = value_states.view(*input_shape, self.qkv_sizes[2] // self.head_dim, self.head_dim)
 
         if self.use_qk_norm and self.qk_norm_type == "per_head":
             query_states = self.q_norm(query_states)
@@ -156,7 +156,14 @@ class LagunaFlashAttention(FlashAttention):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        attn_output = self._compute_attention(
+            query_states[0],
+            key_states[0],
+            value_states[0],
+            cu_seqlens,
+            max_seqlen,
+            **({"cp_total_tokens": cp_total_tokens} if cp_total_tokens is not None else {}),
+        )
         attn_output = attn_output.contiguous().view(*input_shape, self.num_heads, self.head_dim)
         if self.gating:
             gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
@@ -164,7 +171,7 @@ class LagunaFlashAttention(FlashAttention):
             # one-per-channel and line up with the [..., num_heads, head_dim] view.
             gate = gate.unsqueeze(-1) if self.gate_per_head else gate.view(*attn_output.shape)
             attn_output = attn_output * gate
-        attn_output = attn_output.view(*input_shape, -1)
+        attn_output = attn_output.view(*input_shape, self.num_heads * self.head_dim)
         return self.o_proj(attn_output), None
 
 
@@ -232,6 +239,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        cp_total_tokens: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -242,6 +250,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            cp_total_tokens=cp_total_tokens,
         )
         hidden_states = residual + hidden_states
 
@@ -306,6 +315,7 @@ class LagunaModel(LagunaPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -317,9 +327,13 @@ class LagunaModel(LagunaPreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
         causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
 
         hidden_states = inputs_embeds
@@ -336,6 +350,7 @@ class LagunaModel(LagunaPreTrainedModel):
                 position_embeddings=position_embeddings[self.config.layer_types[layer_idx]],
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cp_total_tokens=cp_total_tokens,
                 routed_experts=routed_experts_layer,
             )
 
@@ -382,6 +397,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"
@@ -395,6 +411,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep

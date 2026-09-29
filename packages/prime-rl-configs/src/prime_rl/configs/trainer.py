@@ -315,6 +315,12 @@ class ModelConfig(BaseModelConfig):
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
 
+    cp_unpadded: bool = True
+    """Distribute original tokens into balanced CP shards, including empty shards for short rows."""
+
+    inactive_micro_batches: bool = True
+    """Align distributed iterations with zero-token slots that retain parameter and expert participation. Requires cp_unpadded when CP is enabled."""
+
     cp_style: Literal["ring", "ulysses"] = "ring"
     """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
@@ -369,6 +375,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_cp(self):
+        if self.inactive_micro_batches and self.cp > 1 and not self.cp_unpadded:
+            raise ValueError("inactive_micro_batches with CP requires cp_unpadded")
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
         if self.cp > 1 and self.impl not in ("custom", "auto"):

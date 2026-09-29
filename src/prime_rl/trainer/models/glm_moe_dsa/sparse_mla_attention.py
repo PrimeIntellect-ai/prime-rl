@@ -8,6 +8,7 @@ from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
+from prime_rl.utils.sequence import CPPartition
 
 try:
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
@@ -78,14 +79,15 @@ class Indexer(nn.Module):
         w = self.weights_proj(hidden_states_local[0])
 
         if cp_world_size > 1:
-            k_idx = gather_for_cp(k_idx_local.unsqueeze(0), cp_group).squeeze(0)
+            k_idx = gather_for_cp(k_idx_local.unsqueeze(0), cp_group, position_embeddings_full[0].shape[1]).squeeze(0)
         else:
             k_idx = k_idx_local
 
         cos_full, sin_full = position_embeddings_full
         if cp_world_size > 1:
-            cos_local = cos_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
-            sin_local = sin_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
+            partition = CPPartition(cos_full.shape[1], cp_world_size)
+            cos_local = partition.shard(cos_full, cp_rank)
+            sin_local = partition.shard(sin_full, cp_rank)
         else:
             cos_local, sin_local = cos_full, sin_full
 
@@ -105,6 +107,8 @@ class Indexer(nn.Module):
         q_idx = torch.cat([q_pe, q_nope], dim=-1)
         k_idx = torch.cat([k_pe, k_nope], dim=-1)
 
+        if s_local == 0:
+            return torch.empty((1, 0, 1, index_topk), device=q_idx.device, dtype=torch.int32)
         indices = fp8_indexer(q_idx, k_idx, w, ks, ke, index_topk, self.weight_scale)
         # indices shape: [S_local, topk] in K's coordinate space (sentinel = s_full)
         # KV passed to sparse MLA has length s_full + 1 (sentinel zeros at index s_full).
@@ -169,8 +173,9 @@ class GlmMoeDsaAttention(nn.Module):
         cos_full, sin_full = position_embeddings_full
         if self.cp_context.cp_enabled:
             cp_rank = self.cp_context.cp_rank
-            cos_local = cos_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
-            sin_local = sin_full[:, cp_rank * s_local : (cp_rank + 1) * s_local, :]
+            partition = CPPartition(s_full, self.cp_context.cp_world_size)
+            cos_local = partition.shard(cos_full, cp_rank)
+            sin_local = partition.shard(sin_full, cp_rank)
         else:
             cos_local, sin_local = cos_full, sin_full
 
@@ -206,8 +211,10 @@ class GlmMoeDsaAttention(nn.Module):
         q_latent, k_compressed_normed, k_rope = self.mla_latents(hidden_states)
 
         if self.cp_context.cp_enabled:
-            k_compressed_normed = gather_for_cp(k_compressed_normed, self.cp_context.cp_group)
-            k_rope = gather_for_cp(k_rope, self.cp_context.cp_group)
+            k_compressed_normed = gather_for_cp(
+                k_compressed_normed, self.cp_context.cp_group, position_embeddings[0].shape[1]
+            )
+            k_rope = gather_for_cp(k_rope, self.cp_context.cp_group, position_embeddings[0].shape[1])
 
         indices = cached_indices
         if not self.skip_topk:
@@ -230,9 +237,12 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
+        if sparse_q.shape[1] == 0:
+            out = sparse_q[..., : self.kv_lora_rank] + sparse_kv.sum().to(sparse_q.dtype)
+        else:
+            out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
         batch_size, total_tokens = out.shape[:2]
-        out = out.reshape(batch_size, total_tokens, -1)
+        out = out.reshape(batch_size, total_tokens, self.num_heads * self.v_head_dim)
         cached_indices = indices if self.use_index_cache else None
         return self.o_proj(out), cached_indices

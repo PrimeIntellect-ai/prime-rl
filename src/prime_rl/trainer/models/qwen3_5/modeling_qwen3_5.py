@@ -24,7 +24,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
 from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import CPPartition, get_cu_seqlens_from_seq_lens
 
 
 class Qwen3_5SharedExpert(FeedForward):
@@ -93,6 +93,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -101,6 +102,7 @@ class Qwen3_5DecoderLayer(nn.Module):
             hidden_states = self.linear_attn(
                 hidden_states,
                 cu_seqlens,
+                cp_total_tokens=cp_total_tokens,
             )
         else:
             hidden_states, _ = self.self_attn(
@@ -108,6 +110,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 position_embeddings,
                 cu_seqlens,
                 max_seqlen,
+                cp_total_tokens=cp_total_tokens,
             )
         hidden_states = residual + hidden_states
 
@@ -172,6 +175,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -180,9 +184,13 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -193,6 +201,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 position_embeddings,
                 cu_seqlens,
                 max_seqlen,
+                cp_total_tokens=cp_total_tokens,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
@@ -227,20 +236,18 @@ class Qwen3_5VLMModel(nn.Module):
         if has_images:
             pixel_values = pixel_values.to(self.visual.dtype)
         else:
-            merge_size = self.config.vision_config.spatial_merge_size
-            num_patches = merge_size**2
             patch_dim = (
                 self.config.vision_config.in_channels
                 * self.config.vision_config.temporal_patch_size
                 * self.config.vision_config.patch_size**2
             )
             pixel_values = torch.zeros(
-                num_patches,
+                0,
                 patch_dim,
                 device=inputs_embeds.device,
                 dtype=self.visual.dtype,
             )
-            vision_grid = torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)
+            vision_grid = torch.empty((0, 3), device=inputs_embeds.device, dtype=torch.long)
 
         image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
@@ -276,6 +283,7 @@ class Qwen3_5VLMModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutput:
         inputs_embeds, position_ids = self.prepare_inputs(
             input_ids,
@@ -287,16 +295,25 @@ class Qwen3_5VLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-            setup_cp_attention_params(
-                position_ids,
-                cp_group=self.cp_context.cp_group,
-                cp_style=self.cp_context.cp_style,
-                seq_lens=seq_lens,
+            partition = None
+            if self.cp_context.cp_unpadded:
+                cp_total_tokens = inputs_embeds.shape[1]
+                partition = CPPartition(cp_total_tokens, world_size)
+            else:
+                setup_cp_attention_params(
+                    position_ids,
+                    cp_group=self.cp_context.cp_group,
+                    cp_style=self.cp_context.cp_style,
+                    seq_lens=seq_lens,
+                )
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size, partition=partition)
+            position_ids = shard_position_ids_for_cp(
+                position_ids, cp_rank=rank, cp_world_size=world_size, partition=partition
             )
-            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
-            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
             if routed_experts is not None:
-                routed_experts = shard_for_cp(routed_experts, cp_rank=rank, cp_world_size=world_size)
+                routed_experts = shard_for_cp(
+                    routed_experts, cp_rank=rank, cp_world_size=world_size, partition=partition
+                )
             seq_lens_are_pre_shard = True
 
         return self.language_model(
@@ -305,6 +322,7 @@ class Qwen3_5VLMModel(nn.Module):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
 
 
@@ -343,6 +361,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> PrimeLmOutput:
         if self.is_vlm:
             outputs = self.model(
@@ -354,6 +373,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                cp_total_tokens=cp_total_tokens,
             )
         else:
             outputs = self.model(
@@ -363,6 +383,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                cp_total_tokens=cp_total_tokens,
             )
 
         return self.lm_head(

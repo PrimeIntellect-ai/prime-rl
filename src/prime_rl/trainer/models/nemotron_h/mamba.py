@@ -9,48 +9,11 @@ along the sequence.
 import math
 
 import torch
-import torch.distributed as dist
 from torch import nn
 
-from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
+from prime_rl.trainer.models.layers.ulysses_attn import head_to_sequence_parallel, sequence_to_head_parallel
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.utils.cp import CPContext
-
-
-def sequence_to_head_parallel(
-    tensor: torch.Tensor,
-    process_group: dist.ProcessGroup,
-    world_size: int,
-) -> torch.Tensor:
-    """Redistribute ``[B, S/world, D]`` into ``[B, S, D/world]``."""
-    batch_size, local_sequence_length, feature_size = tensor.shape
-    local_feature_size = feature_size // world_size
-    tensor = tensor.reshape(batch_size, local_sequence_length, world_size, local_feature_size)
-    tensor = tensor.permute(2, 0, 1, 3).contiguous()
-    tensor = all_to_all_single_equal(tensor, process_group)
-    return tensor.permute(1, 0, 2, 3).reshape(
-        batch_size,
-        world_size * local_sequence_length,
-        local_feature_size,
-    )
-
-
-def head_to_sequence_parallel(
-    tensor: torch.Tensor,
-    process_group: dist.ProcessGroup,
-    world_size: int,
-) -> torch.Tensor:
-    """Redistribute ``[B, S, D/world]`` into ``[B, S/world, D]``."""
-    batch_size, sequence_length, local_feature_size = tensor.shape
-    local_sequence_length = sequence_length // world_size
-    tensor = tensor.reshape(batch_size, world_size, local_sequence_length, local_feature_size)
-    tensor = tensor.permute(1, 0, 2, 3).contiguous()
-    tensor = all_to_all_single_equal(tensor, process_group)
-    return tensor.permute(1, 2, 0, 3).reshape(
-        batch_size,
-        local_sequence_length,
-        world_size * local_feature_size,
-    )
 
 
 class GatedRMSNorm(nn.Module):
@@ -127,7 +90,9 @@ class NemotronHMamba2(nn.Module):
 
         self.cp_context = CPContext()
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, cp_total_tokens: int | None = None
+    ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         projected_states = self.in_proj(hidden_states)
         gate, convolution_input, time_step = torch.split(
@@ -150,8 +115,8 @@ class NemotronHMamba2(nn.Module):
             cp_group = self.cp_context.cp_group
             world_size = self.cp_context.cp_world_size
             rank = self.cp_context.cp_rank
-            gate = sequence_to_head_parallel(gate, cp_group, world_size)
-            time_step = sequence_to_head_parallel(time_step, cp_group, world_size)
+            gate = sequence_to_head_parallel(gate, cp_group, world_size, cp_total_tokens)
+            time_step = sequence_to_head_parallel(time_step, cp_group, world_size, cp_total_tokens)
 
             recurrent_input, state_input, state_output = torch.split(
                 convolution_input,
@@ -160,9 +125,9 @@ class NemotronHMamba2(nn.Module):
             )
             convolution_input = torch.cat(
                 [
-                    sequence_to_head_parallel(recurrent_input, cp_group, world_size),
-                    sequence_to_head_parallel(state_input, cp_group, world_size),
-                    sequence_to_head_parallel(state_output, cp_group, world_size),
+                    sequence_to_head_parallel(recurrent_input, cp_group, world_size, cp_total_tokens),
+                    sequence_to_head_parallel(state_input, cp_group, world_size, cp_total_tokens),
+                    sequence_to_head_parallel(state_output, cp_group, world_size, cp_total_tokens),
                 ],
                 dim=-1,
             )
@@ -198,38 +163,51 @@ class NemotronHMamba2(nn.Module):
                 )
             sequence_length = convolution_input.shape[1]
 
-        convolution_output, _ = self.causal_conv1d(
-            x=convolution_input,
-            weight=conv_weight.squeeze(1),
-            bias=conv_bias,
-            activation=self.activation,
-            cu_seqlens=cu_seqlens,
-        )
-        local_group_state_size = num_groups * self.state_size
-        hidden_states, state_input, state_output = torch.split(
-            convolution_output,
-            [intermediate_size, local_group_state_size, local_group_state_size],
-            dim=-1,
-        )
+        if sequence_length == 0:
+            anchor = (
+                convolution_input.sum()
+                + time_step.sum()
+                + conv_weight.sum()
+                + state_decay.sum()
+                + skip.sum()
+                + dt_bias.sum()
+            )
+            if conv_bias is not None:
+                anchor = anchor + conv_bias.sum()
+            hidden_states = gate + anchor.to(gate.dtype)
+        else:
+            convolution_output, _ = self.causal_conv1d(
+                x=convolution_input,
+                weight=conv_weight.squeeze(1),
+                bias=conv_bias,
+                activation=self.activation,
+                cu_seqlens=cu_seqlens,
+            )
+            local_group_state_size = num_groups * self.state_size
+            hidden_states, state_input, state_output = torch.split(
+                convolution_output,
+                [intermediate_size, local_group_state_size, local_group_state_size],
+                dim=-1,
+            )
 
-        scan_kwargs = {}
-        if self.time_step_limit is not None:
-            scan_kwargs["dt_limit"] = self.time_step_limit
-        hidden_states = self.scan(
-            hidden_states.reshape(batch_size, sequence_length, num_heads, self.head_dim),
-            time_step,
-            state_decay,
-            state_input.reshape(batch_size, sequence_length, num_groups, self.state_size),
-            state_output.reshape(batch_size, sequence_length, num_groups, self.state_size),
-            chunk_size=self.chunk_size,
-            D=skip,
-            z=None,
-            seq_idx=self.prepare_sequence_ids(cu_seqlens).to(torch.int32).unsqueeze(0),
-            return_final_states=False,
-            dt_bias=dt_bias,
-            dt_softplus=True,
-            **scan_kwargs,
-        ).reshape(batch_size, sequence_length, intermediate_size)
+            scan_kwargs = {}
+            if self.time_step_limit is not None:
+                scan_kwargs["dt_limit"] = self.time_step_limit
+            hidden_states = self.scan(
+                hidden_states.reshape(batch_size, sequence_length, num_heads, self.head_dim),
+                time_step,
+                state_decay,
+                state_input.reshape(batch_size, sequence_length, num_groups, self.state_size),
+                state_output.reshape(batch_size, sequence_length, num_groups, self.state_size),
+                chunk_size=self.chunk_size,
+                D=skip,
+                z=None,
+                seq_idx=self.prepare_sequence_ids(cu_seqlens).to(torch.int32).unsqueeze(0),
+                return_final_states=False,
+                dt_bias=dt_bias,
+                dt_softplus=True,
+                **scan_kwargs,
+            ).reshape(batch_size, sequence_length, intermediate_size)
         hidden_states = self.norm(hidden_states, gate, weight=norm_weight)
 
         if self.cp_context.cp_enabled:
@@ -237,6 +215,7 @@ class NemotronHMamba2(nn.Module):
                 hidden_states,
                 self.cp_context.cp_group,
                 self.cp_context.cp_world_size,
+                cp_total_tokens,
             )
         return self.out_proj(hidden_states)
 

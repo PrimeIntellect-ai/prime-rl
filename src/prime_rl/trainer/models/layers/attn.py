@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
+from prime_rl.utils.cp import CPContext
 
 from .norms import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
@@ -91,6 +92,7 @@ class FlashAttention(nn.Module):
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
+        self.cp_context = CPContext()
 
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""
@@ -98,8 +100,29 @@ class FlashAttention(nn.Module):
             return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
-    def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
+    def _compute_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen, cp_total_tokens=None
+    ):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        if self.cp_context.cp_enabled and cp_total_tokens is not None:
+            from .cp_attn import context_parallel_attention
+
+            sliding_window = getattr(self, "sliding_window", None)
+            window = (sliding_window - 1, 0) if sliding_window is not None else (-1, -1)
+            return context_parallel_attention(
+                self.func,
+                q,
+                k,
+                v,
+                cu_seqlens,
+                max_seqlen,
+                cp_total_tokens,
+                self.cp_context,
+                self._flash_attn_version,
+                window_size=window,
+            )
+        if q.shape[0] == 0:
+            return q + (k.sum() + v.sum()).to(q.dtype)
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
@@ -111,7 +134,8 @@ class FlashAttention(nn.Module):
             kwargs["cu_seqlens_k"] = cu_seqlens
             out, _ = self.func(q, k, v, **kwargs)
         else:
-            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+            cu_k = cu_seqlens.clone()
+            out = self.func(q, k, v, cu_seqlens, cu_k, max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(
@@ -120,9 +144,9 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        cp_total_tokens: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
 
         query_states, key_states, value_states = self.project_qkv(hidden_states)
 
@@ -130,9 +154,9 @@ class FlashAttention(nn.Module):
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
 
-        query_states = query_states.view(hidden_shape)
-        key_states = key_states.view(hidden_shape)
-        value_states = value_states.view(hidden_shape)
+        query_states = query_states.view(*input_shape, self.qkv_sizes[0] // self.head_dim, self.head_dim)
+        key_states = key_states.view(*input_shape, self.qkv_sizes[1] // self.head_dim, self.head_dim)
+        value_states = value_states.view(*input_shape, self.qkv_sizes[2] // self.head_dim, self.head_dim)
 
         if self.use_qk_norm and self.qk_norm_type == "per_head":
             query_states = self.q_norm(query_states)
@@ -151,8 +175,18 @@ class FlashAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = out.contiguous().view(1, out.shape[0], -1)
+        if cp_total_tokens is None:
+            out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        else:
+            out = self._compute_attention(
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                cu_seqlens,
+                max_seqlen,
+                cp_total_tokens=cp_total_tokens,
+            )
+        attn_output = out.contiguous().view(1, out.shape[0], self.qkv_sizes[0])
         attn_output = self.o_proj(attn_output)
         return attn_output, None
 

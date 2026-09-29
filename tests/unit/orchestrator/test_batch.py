@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import msgspec
 import numpy as np
 import pytest
 
@@ -89,8 +90,9 @@ def test_training_sample_requires_env_name():
 @pytest.mark.parametrize(
     ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
 )
+@pytest.mark.parametrize("inactive", [False, True])
 def test_prepare_batch_balances_micro_batches_across_workers(
-    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
+    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker, inactive
 ):
     examples = [make_training_example() for i in range(rollout_count)]
 
@@ -99,11 +101,13 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         seq_len=4,
         num_train_workers=num_train_workers,
         bin_cost=build_bin_cost(None),
+        inactive_micro_batches=inactive,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
 
     flat_batches = _flatten_batches(batches_per_gpu)
+    flat_batches = msgspec.msgpack.decode(msgspec.msgpack.encode(flat_batches), type=list[MicroBatch])
     assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
 
     # Identify real vs padding batches by content, not position — the packer
@@ -120,6 +124,9 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
     # Verify padded batches have zero advantages and loss mask
     for batch in dummy_batches:
+        assert batch.inactive == inactive
+        if inactive:
+            assert batch.input_ids == batch.sequence_lengths == batch.seq_lens == []
         assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
 
@@ -495,6 +502,27 @@ def test_prepare_batch_packs_multimodal_with_text():
     assert batch.mm_refs is not None
     assert [(ref.offset, ref.length) for ref in batch.mm_refs.images] == [(1, 1)]
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
+
+
+def test_split_to_align_groups_modalities_before_alignment():
+    samples = [make_sized_training_example(n) for n in [6, 6, 4, 4, 4, 4]]
+    for index, sample in enumerate(samples):
+        sample.trace_id = f"sample-{index}"
+        sample.branch_index = 0
+        if index < 2:
+            sample.mm_refs = MMRefs(images=[MMImageRef(url=f"fixture://{index}", offset=1, length=1)])
+            sample.mm_token_type_ids = [0, 1] + [0] * (len(sample.token_ids) - 2)
+    lanes = prepare_batch(samples, 10, 4, build_bin_cost(None))
+    batches = _flatten_batches(lanes)
+    real = [batch for batch in batches if batch.trace_ids is not None]
+    dummy = [batch for batch in batches if batch.trace_ids is None]
+    assert len(dummy) == 2
+    assert all(batch.inactive and not batch.input_ids for batch in dummy)
+    assert sum(len(batch.input_ids) for batch in real) == 28
+    assert sum(sum(batch.loss_mask) for batch in real) == 6
+    assert sorted(trace for batch in real for trace in batch.trace_ids) == [f"sample-{i}" for i in range(6)]
+    assert all(_is_multimodal_sample(lane[0]) or lane[0].inactive for lane in lanes)
+    assert all(not _is_multimodal_sample(lane[1]) and not lane[1].inactive for lane in lanes)
 
 
 def test_split_to_align_splits_multimodal_bins():
