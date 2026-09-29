@@ -4,25 +4,19 @@ vLLM ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.scale_out.token_in_token_out.serving.ServingTokens`` that covers
 prefix-cache salting, lora dispatch, multimodal content parts and features,
 prompt logprobs, priority, ``data_parallel_rank`` header routing, server-side
-``max_tokens`` defaulting and ``usage`` reporting. We subclass it for the bits
-still missing from the upstream handler:
-
-1. Compact ``routed_experts`` export — when the engine emits routing
-   decisions, surface them as ``{data, shape, start, dtype}`` base64 raw-byte
-   objects (the form the PD router can merge and the renderers parse) instead
-   of upstream's single ``.npy`` base64 string.
-
-2. Prompt metadata — return the effective engine prompt and authoritative
-   multimodal placeholder ranges after expansion. Drop this once upstream's
-   response includes these fields.
+``max_tokens`` defaulting, ``usage`` reporting, and expanded prompt metadata.
+We subclass it for the one bit still missing from the upstream handler: compact
+``routed_experts`` export. When the engine emits routing decisions, surface them
+as ``{data, shape, start, dtype}`` base64 raw-byte objects (the form the PD
+router can merge and the renderers parse) instead of upstream's single ``.npy``
+base64 string.
 
 Everything else delegates to upstream so we track future vLLM changes for free.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterable
-from contextvars import ContextVar
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
@@ -30,7 +24,6 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
-    PlaceholderRangeInfo,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
@@ -47,27 +40,6 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
-    prompt_token_ids: list[int] | None = None
-    mm_placeholders: dict[str, list[PlaceholderRangeInfo]] | None = None
-
-
-_response_mm_placeholders: ContextVar[dict[str, list[PlaceholderRangeInfo]] | None] = ContextVar(
-    "response_mm_placeholders", default=None
-)
-
-
-def _extract_mm_placeholders(
-    engine_input: Any,
-) -> dict[str, list[PlaceholderRangeInfo]] | None:
-    if not isinstance(engine_input, dict) or engine_input.get("type") != "multimodal":
-        return None
-    return {
-        modality: [
-            PlaceholderRangeInfo(offset=placeholder.offset, length=placeholder.length)
-            for placeholder in sorted(ranges, key=lambda placeholder: placeholder.offset)
-        ]
-        for modality, ranges in engine_input["mm_placeholders"].items()
-    }
 
 
 class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
@@ -82,29 +54,8 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
         return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
-class _PromptTokenIdsCapture:
-    def __init__(self, source: AsyncIterable[RequestOutput]) -> None:
-        self._source = source
-        self.prompt_token_ids: list[int] | None = None
-
-    async def __aiter__(self) -> AsyncGenerator[RequestOutput, None]:
-        async for output in self._source:
-            self.prompt_token_ids = output.prompt_token_ids
-            yield output
-
-
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens with Prime's remaining response and PD extensions."""
-
-    def _log_inputs(
-        self,
-        request_id: str,
-        inputs: Any,
-        params: Any,
-        lora_request: Any,
-    ) -> None:
-        _response_mm_placeholders.set(_extract_mm_placeholders(inputs))
-        super()._log_inputs(request_id, inputs, params, lora_request)
+    """ServingTokens with compact routed experts."""
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,
@@ -122,22 +73,15 @@ class PrimeRlServingTokens(ServingTokens):
             )
             result_generator = routed_experts
 
-        prompt_capture = _PromptTokenIdsCapture(result_generator)
         response = await super().serve_tokens_full_generator(
             request,
-            prompt_capture,
+            result_generator,
             request_id,
             model_name,
             request_metadata,
         )
 
-        if not isinstance(response, GenerateResponse):
-            return response
-
-        if routed_experts is not None:
+        if routed_experts is not None and isinstance(response, GenerateResponse):
             response = routed_experts.post_process(response)
-        else:
-            response = PrimeRlGenerateResponse(**response.model_dump())
-        response.prompt_token_ids = prompt_capture.prompt_token_ids
-        response.mm_placeholders = _response_mm_placeholders.get()
+
         return response

@@ -17,14 +17,13 @@ import pybase64
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateResponse,
     GenerateResponseChoice,
+    PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
-from vllm.multimodal.inputs import PlaceholderRange
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
-    _extract_mm_placeholders,
     _GenerateRoutedExpertsCapture,
 )
 
@@ -79,16 +78,11 @@ def test_generate_response_post_process_preserves_prompt_metadata():
             )
         ],
         usage=usage,
+        prompt_token_ids=[10, 11, 12, 13],
+        mm_placeholders={"image": [PlaceholderRangeInfo(offset=1, length=2)]},
     )
 
     processed = capture.post_process(response)
-    processed.prompt_token_ids = [10, 11, 12, 13]
-    processed.mm_placeholders = _extract_mm_placeholders(
-        {
-            "type": "multimodal",
-            "mm_placeholders": {"image": [PlaceholderRange(offset=1, length=2)]},
-        }
-    )
 
     assert processed.choices[0].routed_experts == compact_routed_experts
     assert processed.model == "test-model"
