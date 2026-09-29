@@ -8,11 +8,12 @@ rollouts still owed run (``prime_rl.eval.resume``)."""
 
 from __future__ import annotations
 
+from collections import Counter
+
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
-from prime_rl.orchestrator.utils import eval_work
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
@@ -25,7 +26,7 @@ class Eval:
 
     async def run(self) -> None:
         config = self.config
-        landed: list[dict] = []
+        landed: list[resume.Landed] = []
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             landed = resume.take_landed(config.run_dir, {source.resolved_name for source in config.source})
@@ -42,14 +43,13 @@ class Eval:
         )
         resume.stamp_config(config.run_dir, dump_resolved_config(config))
         await self.runner.setup()
-        restored: list = []
+        kept: list[resume.Landed] = []
         if config.resume:
-            restored, owed, groups = resume.plan(landed, self.runner.eval_envs)
-            # the restored episodes are the only copy the epoch needs; release the raw records
+            kept, owed, groups = resume.plan(landed, self.runner.eval_envs)
             del landed
             self.runner.eval_source.restore(owed, groups)
             get_logger().info(
-                f"Resuming from the trace stream: {len(restored)} episodes restored, "
+                f"Resuming from the trace stream: {len(kept)} episodes restored, "
                 f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed"
             )
 
@@ -57,10 +57,15 @@ class Eval:
         # With groups_per_step, the owed rollouts start after the steps the restored ones
         # were dispatched at, so no batch mixes the two.
         step = 0
-        if config.groups_per_step is not None and restored:
-            step = max(eval_work(episode).step for episode in restored) + 1
+        if config.groups_per_step is not None and kept:
+            step = max(episode.step for episode in kept) + 1
         fired = self.runner.eval_source.trigger(step)
-        await self.runner.run_epoch(fired, step, restored=restored)
+        await self.runner.run_epoch(
+            fired,
+            step,
+            restored=resume.replay(config.run_dir, kept) if kept else (),
+            restored_by_env=Counter(episode.env_name for episode in kept),
+        )
         await self.runner.drain()
 
 
