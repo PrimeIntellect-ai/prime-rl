@@ -2,8 +2,9 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
-from prime_rl.orchestrator.clients import prefill_logprobs
+from prime_rl.orchestrator.clients import prefill_logprobs, prefill_logprobs_with_max
 
 
 class _FakeOpenAIClient:
@@ -35,7 +36,11 @@ def test_prefill_logprobs_uses_inference_generate():
                 "request_id": "gen-test",
                 "choices": [],
                 # Upstream wire shape: list[dict[token_id, Logprob] | None]
-                "prompt_logprobs": [None, {"11": {"logprob": -0.7}}, {"12": {"logprob": -0.3}}],
+                "prompt_logprobs": [
+                    None,
+                    {"99": {"logprob": -0.1}, "2": {"logprob": -0.7}},
+                    {"3": {"logprob": -0.3}},
+                ],
                 "kv_transfer_params": None,
             }
         )
@@ -60,3 +65,42 @@ def test_prefill_logprobs_uses_inference_generate():
         ]
 
     asyncio.run(_run())
+
+
+@pytest.mark.parametrize("target_first", [True, False])
+def test_prefill_target_and_maximum_are_independent_of_dictionary_order(target_first):
+    pairs = [("2", {"logprob": -4.0}), ("99", {"logprob": -0.1})]
+    entry = dict(pairs if target_first else reversed(pairs))
+    client = _FakeOpenAIClient({"prompt_logprobs": [None, entry, {"3": {"logprob": -0.2}}]})
+    assert asyncio.run(prefill_logprobs_with_max(client, "policy", [1, 2, 3])) == (
+        [0.0, -4.0, -0.2],
+        [0.0, -0.1, -0.2],
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"prompt_logprobs": None},
+        {"prompt_logprobs": []},
+        {"prompt_logprobs": [None]},
+        {"prompt_logprobs": [None, None]},
+        {"prompt_logprobs": [None, {}]},
+        {"prompt_logprobs": [None, {"99": {"logprob": -0.1}}]},
+        {"prompt_logprobs": [None, {"2": {}}]},
+        {"prompt_logprobs": [None, {"2": {"logprob": 0.1}}]},
+        {"prompt_logprobs": [None, {"2": {"logprob": float("nan")}}]},
+        {"prompt_logprobs": [None, {"2": {"logprob": -float("inf")}}]},
+    ],
+)
+def test_prefill_rejects_incomplete_or_invalid_scores(payload):
+    with pytest.raises(ValueError):
+        asyncio.run(prefill_logprobs_with_max(_FakeOpenAIClient(payload), "policy", [1, 2]))
+
+
+def test_prefill_rejects_empty_input_without_request():
+    client = _FakeOpenAIClient({})
+    with pytest.raises(ValueError, match="at least one token"):
+        asyncio.run(prefill_logprobs_with_max(client, "policy", []))
+    assert client.calls == []

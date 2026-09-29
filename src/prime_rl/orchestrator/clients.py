@@ -10,6 +10,7 @@ import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
@@ -54,6 +55,12 @@ class PrefillScorer:
         self._client: AsyncOpenAI | None = None
 
     async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
+        logprobs, _ = await self.score_with_max(config, model, token_ids)
+        return logprobs
+
+    async def score_with_max(
+        self, config: vf.ClientConfig, model: str, token_ids: list[int]
+    ) -> tuple[list[float], list[float]]:
         if self._client is None:
             # Build the OpenAI client straight from the config fields — works for any
             # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
@@ -63,7 +70,7 @@ class PrefillScorer:
                 api_key=resolve_api_key(config.api_key_var),
                 default_headers=config.headers or None,
             )
-        return await prefill_logprobs(self._client, model, token_ids)
+        return await prefill_logprobs_with_max(self._client, model, token_ids)
 
     async def aclose(self) -> None:
         if self._client is not None:
@@ -104,6 +111,10 @@ class InferenceClient:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
         return await self._scorer.score(self.train_client, self.model_name, token_ids)
+
+    async def score_with_max(self, token_ids: list[int]) -> tuple[list[float], list[float]]:
+        """Return aligned target-token and maximum next-token prefill logprobs."""
+        return await self._scorer.score_with_max(self.train_client, self.model_name, token_ids)
 
     async def aclose(self) -> None:
         await self._scorer.aclose()
@@ -520,12 +531,35 @@ async def init_nixl_broadcast(
     )
 
 
+class _PromptLogprob(BaseModel):
+    logprob: float = Field(le=0, allow_inf_nan=False)
+
+
+class _PrefillResponse(BaseModel):
+    # Validate the wire fields used by CPU orchestrators without importing vLLM.
+    prompt_logprobs: list[dict[int, _PromptLogprob] | None]
+
+
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
     """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
-    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
+    logprobs, _ = await prefill_logprobs_with_max(openai, model, token_ids)
+    return logprobs
+
+
+async def prefill_logprobs_with_max(
+    openai: AsyncOpenAI, model: str, token_ids: list[int]
+) -> tuple[list[float], list[float]]:
+    """Score the target token and the best alternative with ``prompt_logprobs=1``.
+
+    vLLM returns both the requested top token and the actual prompt token at
+    every position. Target lookup must use token IDs, not dictionary order.
+    Only the leading token may omit logprobs (it has no preceding context).
+    """
+    if not token_ids:
+        raise ValueError("prefill scoring requires at least one token")
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
     # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
@@ -542,15 +576,20 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
             "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
         },
     )
-    response = GenerateResponse.model_validate_json(http_response.content)
+    response = _PrefillResponse.model_validate_json(http_response.content)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
     # leading token (no preceding context). Flatten to `list[float]`.
     flat: list[float] = []
-    for entry in response.prompt_logprobs or []:
-        if not entry:
+    maxima: list[float] = []
+    if len(response.prompt_logprobs) != len(token_ids):
+        raise ValueError("prompt_logprobs must align with the requested token_ids")
+    for i, (token_id, entry) in enumerate(zip(token_ids, response.prompt_logprobs, strict=True)):
+        if i == 0 and entry is None:
             flat.append(0.0)
+            maxima.append(0.0)
             continue
-        first = next(iter(entry.values()))
-        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-        flat.append(float(lp) if lp is not None else 0.0)
-    return flat
+        if not entry or token_id not in entry:
+            raise ValueError(f"prompt_logprobs missing target token {token_id} at position {i}")
+        flat.append(entry[token_id].logprob)
+        maxima.append(max(candidate.logprob for candidate in entry.values()))
+    return flat, maxima

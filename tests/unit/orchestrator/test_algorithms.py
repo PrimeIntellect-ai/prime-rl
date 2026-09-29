@@ -35,6 +35,7 @@ def _ref_kind(ref):
     ("algorithm_type", "build_kwargs", "source", "action_loss_type"),
     [
         ("grpo", {}, "policy", "rl"),
+        ("cripo_s", {}, "policy", "rl"),
         ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
