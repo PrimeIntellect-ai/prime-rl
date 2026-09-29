@@ -39,7 +39,7 @@ def broadcast_expert_bias(
     )
 
 
-class GroupedGemmExpertCompute(ExpertCompute):
+class GroupedGemmExpertCompute:
     def __init__(
         self,
         gemm: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],

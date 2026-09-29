@@ -5,13 +5,11 @@ from sonicmoe import moe_general_routing_inputs
 from sonicmoe.enums import ActivationType
 from torch.distributed.tensor import DTensor
 
-from prime_rl.trainer.models.layers.expert_compute import ExpertCompute
-
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-class SonicMoEExpertCompute(ExpertCompute):
+class SonicMoEExpertCompute:
     token_group_alignment = 8
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
