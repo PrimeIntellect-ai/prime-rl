@@ -144,6 +144,11 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
 # (the PyPI wheel) first, so the fix would silently not apply. Libraries carry
 # RUNPATH=/opt/ucx/lib, so no LD_LIBRARY_PATH is needed at runtime.
 # Opt out via `--build-arg INCLUDE_NIXL_FROM_SOURCE=0`.
+#
+# NIXL's [build-system] requires are unpinned, so pip's build isolation picks up
+# new backends as they are released. meson-python 0.22.0 stopped keeping Meson's
+# build RPATH in wheel libraries, which dropped RUNPATH=/opt/ucx/lib and failed
+# the linkage check below on every build. Pin the validated backend.
 ARG INCLUDE_NIXL_FROM_SOURCE=1
 ARG NIXL_VERSION=0.10.1
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
@@ -151,11 +156,19 @@ RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
         && cd /tmp/nixl \
         && uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml \
+        && printf 'meson-python==0.21.1\n' > /tmp/nixl-build-constraints.txt \
         && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
            /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/tmp/nixl-whl \
+               --build-constraint /tmp/nixl-build-constraints.txt \
         && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /tmp/nixl-whl/nixl_cu13-*.whl \
-        && ldd /app/.venv/lib/python3.12/site-packages/.nixl_cu13.mesonpy.libs/plugins/libplugin_UCX.so | grep -q /opt/ucx/lib/libucp.so \
-        && rm -rf /tmp/nixl /tmp/nixl-whl; \
+        && PLUGIN=/app/.venv/lib/python3.12/site-packages/.nixl_cu13.mesonpy.libs/plugins/libplugin_UCX.so \
+        && if ! ldd "$PLUGIN" | grep -q /opt/ucx/lib/libucp.so; then \
+               echo "ERROR: $PLUGIN does not link /opt/ucx/lib. RUNPATH and ldd output:" >&2; \
+               readelf -d "$PLUGIN" | grep -E 'RUNPATH|RPATH' >&2 || true; \
+               ldd "$PLUGIN" >&2; \
+               exit 1; \
+           fi \
+        && rm -rf /tmp/nixl /tmp/nixl-whl /tmp/nixl-build-constraints.txt; \
     fi
 
 # Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
