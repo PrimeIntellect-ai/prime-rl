@@ -147,6 +147,8 @@ class Orchestrator:
         get_logger().info(
             f"source-overlay-test marker: PRIME_RL_SOURCE_COMMIT={os.environ.get('PRIME_RL_SOURCE_COMMIT', '<unset>')}"
         )
+        if config.source_overlay_test:
+            get_logger().info(f"source-overlay-test field: {config.source_overlay_test}")
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
