@@ -607,6 +607,11 @@ class OrchestratorConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
+    source_overlay_test: str | None = None
+    """Throwaway field for the runtime source overlay end-to-end test on dev: a
+    config option the validator's pinned schema has never seen. Logged at
+    orchestrator startup when set."""
+
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
