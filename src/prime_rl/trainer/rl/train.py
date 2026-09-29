@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
+import os
 from contextlib import nullcontext
 import time
 import asyncio
@@ -83,6 +84,9 @@ def train(config: TrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
+    logger.info(
+        f"source-overlay-test marker: PRIME_RL_SOURCE_COMMIT={os.environ.get('PRIME_RL_SOURCE_COMMIT', '<unset>')}"
+    )
 
     # Setup the monitors
     asyncio.run(

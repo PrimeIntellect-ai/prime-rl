@@ -144,6 +144,9 @@ class Orchestrator:
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         get_logger().info("Starting orchestrator")
+        get_logger().info(
+            f"source-overlay-test marker: PRIME_RL_SOURCE_COMMIT={os.environ.get('PRIME_RL_SOURCE_COMMIT', '<unset>')}"
+        )
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
