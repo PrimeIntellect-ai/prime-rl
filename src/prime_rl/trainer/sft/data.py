@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs, template_field_names
@@ -743,6 +743,55 @@ def _encode_conflicting_columns(datasets: list[Dataset]) -> list[Dataset]:
     ]
 
 
+def interleave_indices(
+    lengths: list[int],
+    probabilities: list[float],
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"],
+    seed: int = 0,
+    block_size: int = 1 << 20,
+) -> np.ndarray:
+    """Indices into the concatenated datasets, identical to ``interleave_datasets`` with ``probabilities``.
+
+    ``datasets`` builds them in a Python loop, one source draw at a time, which takes
+    minutes for tens of millions of rows. The draws match because ``Generator.choice``
+    with ``p`` is ``cdf.searchsorted(rng.random(n), side="right")``, and one long
+    ``rng.random`` call yields the same values as its batches of 1000.
+    """
+    lengths_arr = np.asarray(lengths, dtype=np.int64)
+    offsets = np.cumsum(np.concatenate([[0], lengths_arr[:-1]]))
+    cdf = np.cumsum(np.asarray(probabilities, dtype=np.float64))
+    cdf /= cdf[-1]
+    rng = np.random.default_rng(seed)
+    num_sources = len(lengths_arr)
+    counts = np.zeros(num_sources, dtype=np.int64)
+    exhausted_at = np.full(num_sources, -1, dtype=np.int64)
+    blocks = []
+    drawn = 0
+    while True:
+        sources = cdf.searchsorted(rng.random(block_size), side="right")
+        # Each draw's occurrence number within its source, counting earlier blocks.
+        order = np.argsort(sources, kind="stable")
+        first = np.searchsorted(sources[order], np.arange(num_sources))
+        occurrence = np.empty(block_size, dtype=np.int64)
+        occurrence[order] = np.arange(block_size) - first[sources[order]]
+        occurrence += counts[sources]
+        counts += np.bincount(sources, minlength=num_sources)
+        blocks.append(offsets[sources] + occurrence % lengths_arr[sources])
+        # A source is exhausted by the draw that takes its last row the first time.
+        last = np.flatnonzero(occurrence == lengths_arr[sources] - 1)
+        exhausted_at[sources[last]] = drawn + last
+        drawn += block_size
+        done = exhausted_at >= 0
+        if stopping_strategy == "first_exhausted" and done.any():
+            stop = exhausted_at[done].min()
+            break
+        if stopping_strategy == "all_exhausted" and done.all():
+            stop = exhausted_at.max()
+            break
+    # The draw that meets the stopping condition is kept, as in ``datasets``.
+    return np.concatenate(blocks)[: stop + 1]
+
+
 def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     sources = config.resolved_sources()
@@ -757,12 +806,10 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         probabilities = config.probabilities
     get_logger().debug(f"Interleaving sources with {probabilities=} and {config.stopping_strategy=}")
     # Seed 0 rather than data.seed keeps the interleaved order of existing runs, which resume by position.
-    return interleave_datasets(
-        datasets,
-        probabilities=probabilities,
-        stopping_strategy=config.stopping_strategy,
-        seed=0,
-    )
+    if probabilities is None:
+        return interleave_datasets(datasets, stopping_strategy=config.stopping_strategy, seed=0)
+    indices = interleave_indices([len(dataset) for dataset in datasets], probabilities, config.stopping_strategy)
+    return concatenate_datasets(datasets).select(indices)
 
 
 def validate_source_renderer_args(config: RendererConfig, sources: list[ResolvedSFTSource]) -> None:
