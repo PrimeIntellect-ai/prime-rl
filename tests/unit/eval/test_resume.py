@@ -40,9 +40,14 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest() -> None
         _record("code", "c0", ok=False),  # errored: owed again
     ]
 
-    kept, owed, groups = resume.plan([record for record in landed if record["ok"]], envs)
+    summaries = [
+        resume.Landed(id=str(i), env_name=r["env"]["name"], key=r["task"]["key"], group_id=r["group"]["id"], step=0)
+        for i, r in enumerate(landed)
+        if r["ok"]
+    ]
+    kept, owed, groups = resume.plan(summaries, envs)
 
-    assert [(episode.env.name, episode.task.key) for episode in kept] == [
+    assert [(episode.env_name, episode.key) for episode in kept] == [
         ("math", "m0"),
         ("math", "m0"),
         ("math", "m1"),
@@ -86,14 +91,18 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
         stream.close()
 
     land("m0", "m1")
-    assert [record["id"] for record in resume.take_landed(tmp_path, {"math"})] == ["m0", "m1"]
+    assert [episode.id for episode in resume.take_landed(tmp_path, {"math"})] == ["m0", "m1"]
     assert not get_file_monitor_dir(tmp_path).exists()
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
 
     # the resumed attempt re-logged one episode and landed a new one before it died
     land("m0", "m2")
-    assert [record["id"] for record in resume.take_landed(tmp_path, {"math"})] == ["m0", "m1", "m2"]
+    landed = resume.take_landed(tmp_path, {"math"})
+    assert [episode.id for episode in landed] == ["m0", "m1", "m2"]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
+
+    # the kept episodes are re-read one at a time, each once, in stream order
+    assert [episode.id for episode in resume.replay(tmp_path, [landed[0], landed[2]])] == ["m0", "m2"]
 
     # envs the resumed run no longer configures are not read into memory
     assert resume.take_landed(tmp_path, {"code"}) == []
