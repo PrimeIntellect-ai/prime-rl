@@ -145,7 +145,7 @@ class Orchestrator:
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         get_logger().info("Starting orchestrator")
         get_logger().info(
-            f"source-overlay-test marker: PRIME_RL_SOURCE_COMMIT={os.environ.get('PRIME_RL_SOURCE_COMMIT', '<unset>')}"
+            f"source-overlay-test marker (T3): PRIME_RL_SOURCE_COMMIT={os.environ.get('PRIME_RL_SOURCE_COMMIT', '<unset>')}"
         )
         if config.source_overlay_test:
             get_logger().info(f"source-overlay-test field: {config.source_overlay_test}")
