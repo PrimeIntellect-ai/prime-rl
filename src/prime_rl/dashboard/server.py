@@ -272,13 +272,14 @@ def eval_env(config: dict) -> str | None:
 
 
 def source_total_episodes(source: dict) -> int | None:
-    """What one ``[[source]]`` will produce, from its config alone: ``num_examples = -1``
-    means the whole taskset, unknown up front unless the source names its tasks."""
-    tasks = ((source.get("env") or {}).get("taskset") or {}).get("tasks")
-    count = source.get("num_examples") or -1
-    if count < 0 and not tasks:
+    """What one ``[[source]]`` will produce, from its config alone: without a
+    ``select.limit`` the count is unknown up front unless the source names its tasks."""
+    taskset = (source.get("env") or {}).get("taskset") or {}
+    limit = (source.get("select") or {}).get("limit")
+    tasks = taskset.get("tasks")
+    if limit is None and not tasks:
         return None
-    return (count if count >= 0 else len(tasks)) * (source.get("group_size") or 1)
+    return (limit if limit is not None else len(tasks)) * (source.get("group_size") or 1)
 
 
 def eval_totals(config: dict) -> dict[str, int | None]:
@@ -294,7 +295,7 @@ def eval_total_episodes(config: dict) -> int | None:
     if sources:
         totals = [source_total_episodes(s) for s in sources]
         return None if any(t is None for t in totals) else sum(totals) or None
-    return (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None
+    return ((config.get("select") or {}).get("limit") or 0) * (config.get("num_rollouts") or 0) or None
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -823,6 +824,8 @@ def message_text(message: dict) -> str:
 def timeline_status(trace: dict) -> str:
     if not trace.get("is_completed"):
         return "running"
+    if trace.get("is_timeout"):
+        return "timeout"
     if not trace.get("ok") and (trace.get("errors") or trace.get("stop_condition") == "error"):
         return "failed"
     return "completed"
@@ -1822,6 +1825,7 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
                 "ok",
                 "num_errors",
                 "truncated",
+                "timeout",
                 "stop_condition",
                 "duration",
                 "reward",

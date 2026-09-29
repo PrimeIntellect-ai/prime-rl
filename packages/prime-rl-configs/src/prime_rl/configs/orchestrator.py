@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, ValidationError, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -166,8 +166,8 @@ class EnvConfig(BaseConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
-    shuffle: bool = False
-    """Shuffle the source's finite taskset once with a fixed seed. The shuffled order is fixed for the whole run; infinite tasksets cannot be shuffled."""
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Which of the taskset's tasks this source uses: ``include``/``exclude`` by ``idx``, ``ids``, ``keys`` or ``names``, then ``shuffle``, ``skip`` and ``limit``, applied in that order."""
 
     @model_validator(mode="before")
     @classmethod
@@ -192,6 +192,51 @@ class EnvConfig(BaseConfig):
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
         return self
+
+
+def merge_group_defaults(data: Any) -> Any:
+    """Shared ``mode="before"`` body for source groups: layer the group's ``env`` and
+    ``select`` blocks under those of each raw source. A source's own values win; a
+    source's ``include`` or ``exclude`` replaces the group's whole block."""
+    if not isinstance(data, dict):
+        return data
+    sources = data.get("source") or []
+    if data.get("env") is not None:
+        try:
+            shared = vf.SharedEnvConfig.model_validate(data["env"])
+        except ValidationError:
+            shared = None  # the ``env`` field reports the errors once, not once per source
+        if shared is not None:
+            sources = [
+                {**source, "env": vf.merge_env_defaults(shared, source.get("env"))}
+                if isinstance(source, dict)
+                else source
+                for source in sources
+            ]
+    if data.get("select") is not None:
+        group = select_fields(data["select"], vf.SelectCLIConfig)
+        if group is not None:
+            sources = [
+                {**source, "select": group | own}
+                if isinstance(source, dict)
+                and (own := select_fields(source.get("select"), vf.SelectConfig)) is not None
+                else source
+                for source in sources
+            ]
+    if sources:
+        data["source"] = sources
+    return data
+
+
+def select_fields(raw: Any, select_type: type[vf.SelectConfig]) -> dict | None:
+    """The fields a raw ``select`` block sets, under their canonical names; None when
+    the block is invalid, which leaves it to report its own errors."""
+    if raw is None:
+        return {}
+    try:
+        return select_type.model_validate(raw).model_dump(exclude_unset=True)
+    except ValidationError:
+        return None
 
 
 class StandardSamplerConfig(BaseConfig):
@@ -290,9 +335,6 @@ class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
-    num_examples: int = -1
-    """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
-
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
@@ -308,8 +350,21 @@ class TrainConfig(BaseConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
 
+    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
+    """Env knobs that every training source inherits: the fields every env and taskset
+    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
+
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
+
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Task selection that every training source inherits. Each field a source sets on
+    its own ``select`` wins over this one."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_group_defaults(cls, data):
+        return merge_group_defaults(data)
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -341,19 +396,30 @@ class EvalSourcesConfig(BaseConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
+    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
+    """Env knobs that every eval source inherits: the fields every env and taskset
+    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
+
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
 
-    num_examples: int = -1
-    """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Task selection that every eval source inherits, e.g. ``limit = 128`` to evaluate
+    128 tasks of each taskset. Each field a source sets on its own ``select`` wins over
+    this one."""
 
     group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_group_defaults(cls, data):
+        return merge_group_defaults(data)
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples and
-        group_size (the worker ``pool`` is configured per env, default elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling and group_size (the
+        worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
         for source in self.source:
             if "sampling" not in source.model_fields_set:
@@ -361,8 +427,6 @@ class EvalSourcesConfig(BaseConfig):
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in source.model_fields_set:
-                source.num_examples = self.num_examples
             if "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
         return self

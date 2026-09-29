@@ -10,6 +10,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
@@ -30,6 +31,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
+from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -240,36 +242,67 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+    model: nn.Module,
+    group: dist.ProcessGroup | None = None,
 ) -> dict[str, Tensor | None]:
+    """Compute routing stats after summing raw counts across the group, if given."""
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     language_model = get_language_model(model)
+    block_mlps = []
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
         block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
-            continue
-        tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        if block_mlp is not None and hasattr(block_mlp, "tokens_per_expert"):
+            block_mlps.append(block_mlp)
+    if not block_mlps:
+        return {"max_vio": None, "routing_confidence": None}
+
+    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
+    if group is not None:
+        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
+        packed_stats = torch.cat(
+            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
+        )
+        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
+        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
+
+    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        if try_to_avoid_padding_experts:
-            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
+        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.detach())
 
-        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        routing_confidence = routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
-        if reset_stats:
-            block_mlp.tokens_per_expert.zero_()
-            block_mlp.routing_confidence_sum.zero_()
-    if len(per_layer_max_vio) == 0:
-        return {"max_vio": None, "routing_confidence": None}
+        block_mlp.tokens_per_expert.zero_()
+        block_mlp.routing_confidence_sum.zero_()
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
     }
+
+
+def get_global_moe_stats(
+    model: nn.Module,
+    ep_group: dist.ProcessGroup | None,
+    dp_cp_group: dist.ProcessGroup,
+) -> dict[str, Tensor]:
+    """Reduce one microstep's routing stats across EP, then DP and CP ranks."""
+    stats = {}
+    for name, values in get_load_balance_stats(model, group=ep_group).items():
+        if values is None:
+            continue
+        value = values.max() if name == "max_vio" else values.mean()
+        if name == "max_vio":
+            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
+        else:
+            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            value /= dist.get_world_size(dp_cp_group)
+        stats[name] = value.to("cpu")
+    return stats
 
 
 def get_model(
@@ -889,6 +922,7 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
+            module.routing_confidence_sum.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:
@@ -1055,12 +1089,8 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
-    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
-    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
-    # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it comes from the renderer rather than the processor.
     mm_kwargs: dict[str, Tensor] | None = None,
+    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -1078,13 +1108,15 @@ def forward(
         kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
-        # Forward the per-model multimodal tensors verbatim, plus the
-        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
-        # token→modality mapping via ``mm_token_type_id_map``).
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        if "image_grid_thw" not in mm_kwargs:
+        # SFT still uses its existing eager processor path and does not provide
+        # an adapter policy yet, so preserve its current kwargs-based behavior.
+        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
+        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
+            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
+        if policy.pass_position_ids:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
