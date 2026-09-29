@@ -1,5 +1,6 @@
+import numpy as np
 import pytest
-from datasets import Dataset
+from datasets import Dataset, interleave_datasets
 from renderers import DeepSeekV4RendererConfig
 
 import prime_rl.trainer.sft.data as sft_data
@@ -7,6 +8,7 @@ from prime_rl.configs.sft import SFTDataConfig
 from prime_rl.trainer.sft.data import (
     RendererResolver,
     decode_json_columns,
+    interleave_indices,
     load_sft_dataset,
     validate_source_renderer_args,
 )
@@ -148,3 +150,20 @@ def test_validate_source_renderer_args_rejects_unknown_fields():
     unknown_column = SFTDataConfig.model_validate({"name": "org/a", "columns": {"renderer": {"depth": "d"}}})
     with pytest.raises(ValueError, match="accepts only"):
         validate_source_renderer_args(config, unknown_column.resolved_sources())
+
+
+@pytest.mark.parametrize("stopping_strategy", ["first_exhausted", "all_exhausted"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_interleave_indices_match_datasets(stopping_strategy, seed):
+    rng = np.random.default_rng(seed)
+    lengths = rng.integers(1, 400, size=int(rng.integers(2, 12))).tolist()
+    probabilities = rng.dirichlet(np.full(len(lengths), 0.5)).tolist()
+    datasets = [
+        Dataset.from_dict({"row": list(range(sum(lengths[:i]), sum(lengths[: i + 1])))}) for i in range(len(lengths))
+    ]
+    expected = interleave_datasets(
+        datasets, probabilities=probabilities, stopping_strategy=stopping_strategy, seed=seed
+    )["row"]
+    # A small block size also covers stopping conditions that span several blocks.
+    indices = interleave_indices(lengths, probabilities, stopping_strategy, seed=seed, block_size=64)
+    assert indices.tolist() == expected
