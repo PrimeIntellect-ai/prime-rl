@@ -17,6 +17,7 @@ import pybase64
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateResponse,
     GenerateResponseChoice,
+    PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 
@@ -61,7 +62,7 @@ def test_serialize_routed_experts_uses_compact_raw_payload():
     np.testing.assert_array_equal(decoded, routed_experts)
 
 
-def test_generate_response_post_process_replaces_upstream_routed_experts():
+def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
     capture = _GenerateRoutedExpertsCapture(_empty_request_outputs())
     capture.routed_experts[0] = compact_routed_experts
@@ -77,6 +78,8 @@ def test_generate_response_post_process_replaces_upstream_routed_experts():
             )
         ],
         usage=usage,
+        prompt_token_ids=[10, 11, 12, 13],
+        mm_placeholders={"image": [PlaceholderRangeInfo(offset=1, length=2)]},
     )
 
     processed = capture.post_process(response)
@@ -86,4 +89,6 @@ def test_generate_response_post_process_replaces_upstream_routed_experts():
     assert processed.usage == usage
     payload = processed.model_dump(mode="json")
     assert payload["choices"][0]["routed_experts"] == compact_routed_experts
+    assert payload["prompt_token_ids"] == [10, 11, 12, 13]
+    assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
