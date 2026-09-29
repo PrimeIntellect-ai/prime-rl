@@ -224,7 +224,7 @@ class Orchestrator:
             set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
-            self.heart = Heartbeat(config.heartbeat.url)
+            self.heart = Heartbeat(config.heartbeat)
 
         config_dir = get_config_dir(config.output_dir)
         self.train_envs = TrainEnvs(

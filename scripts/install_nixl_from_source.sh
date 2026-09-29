@@ -94,7 +94,13 @@ export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:
 WHEEL_DIR="$PROJECT_DIR/deps"
 mkdir -p "$WHEEL_DIR"
 uv pip install pip 2>/dev/null
-"$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR"
+# NIXL's [build-system] requires are unpinned; meson-python 0.22.0 stopped
+# keeping Meson's build RPATH in wheel libraries, which drops the link to the
+# UCX built above. Constrain the backend to the version these wheels were
+# validated with (same pin as Dockerfile.cuda).
+printf 'meson-python==0.21.1\n' > "$WORKSPACE/nixl-build-constraints.txt"
+"$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR" \
+    --build-constraint "$WORKSPACE/nixl-build-constraints.txt"
 
 WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"$NIXL_VERSION"-*.whl | head -1)
 echo "=== NIXL wheel built at: $WHEEL ==="

@@ -669,6 +669,11 @@ class InferenceConfig(BaseConfig):
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
 
+        # The orchestrator generates through /inference/v1/generate, a scale-out
+        # endpoint that vLLM registers only with `--enable-scale-out`.
+        if "enable_scale_out" not in extra_fields:
+            namespace.enable_scale_out = True
+
         # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
         # `moe_router_dtype` off the HF config to pick the router logits dtype.
         if self.enable_fp32_router_logits:

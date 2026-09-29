@@ -245,6 +245,12 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
 
+    assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
+    assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+
+    with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
+
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
