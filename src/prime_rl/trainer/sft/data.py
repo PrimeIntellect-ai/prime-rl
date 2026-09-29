@@ -11,7 +11,6 @@ from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
-from renderers import AutoRendererConfig, PluginRendererConfig, RendererConfig
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -600,7 +599,16 @@ class CatDataset(StatefulIterableDataset):
             remaining -= kept
         pad_len = seq_len - len(result["input_ids"])
         if pad_len > 0:
-            result["input_ids"].extend([0] * pad_len)
+            # Identical pad tokens get identical hidden states, so an MoE router sends all of them to
+            # the same experts, and the expert-parallel rank hosting those experts can run out of
+            # memory on a heavily padded pack. Repeating the pack's own tokens routes padding like
+            # real text. Pads stay loss-masked and follow every real token, so they cannot change the
+            # loss. Multimodal packs keep token 0 so no placeholder id lands outside its item.
+            if packed["mm_kwargs"] is None and result["input_ids"]:
+                content = result["input_ids"]
+                result["input_ids"].extend((content * (pad_len // len(content) + 1))[:pad_len])
+            else:
+                result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
