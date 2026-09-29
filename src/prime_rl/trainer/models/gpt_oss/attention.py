@@ -143,7 +143,9 @@ def substitute_gpt_oss_ring_attention(
 
         return torch.cat(outputs, dim=1)
 
-    GptOssAttention.compute_attention = ring_attention
+    # Reads per-batch metadata from the global DATA_PARAMS, which Dynamo would guard on and recompile
+    # for every batch; keep it out of the compiled graph.
+    GptOssAttention.compute_attention = torch._dynamo.disable(ring_attention)
 
 
 def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.ProcessGroup) -> None:
