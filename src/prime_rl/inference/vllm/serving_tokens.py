@@ -65,13 +65,13 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        capture: _GenerateRoutedExpertsCapture | None = None
+        routed_experts: _GenerateRoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
-            capture = _GenerateRoutedExpertsCapture(
+            routed_experts = _GenerateRoutedExpertsCapture(
                 result_generator,
                 start=request.sampling_params.routed_experts_prompt_start,
             )
-            result_generator = capture
+            result_generator = routed_experts
 
         response = await super().serve_tokens_full_generator(
             request,
@@ -81,7 +81,7 @@ class PrimeRlServingTokens(ServingTokens):
             request_metadata,
         )
 
-        if capture is not None and isinstance(response, GenerateResponse):
-            response = capture.post_process(response)
+        if routed_experts is not None and isinstance(response, GenerateResponse):
+            response = routed_experts.post_process(response)
 
         return response
