@@ -3,3 +3,6 @@ model = "RedHatAI/Qwen3-4B-speculator.dspark"
 revision = "bdffaa5f011da5a1a58ad841a1f6ced3e87f2f23"
 method = "dspark"
 num_speculative_tokens = 7
+
+[vllm.compilation_config.pass_config]
+fuse_allreduce_rms = false

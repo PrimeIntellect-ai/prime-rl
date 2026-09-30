@@ -64,6 +64,9 @@ gpu_memory_utilization = 0.5
 method = "dspark"
 num_speculative_tokens = 7
 
+[inference.vllm.compilation_config.pass_config]
+fuse_allreduce_rms = false
+
 [ckpt]
 interval = 2
 keep_last = 2

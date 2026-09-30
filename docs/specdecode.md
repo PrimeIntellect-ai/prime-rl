@@ -19,6 +19,8 @@ uv run eval @ examples/specdecode/aime25.toml --run.name dspark-aime25
 
 Omit the DSpark overlay to measure the target alone. The evaluation uses all 30 AIME 2025 questions with eight completions per question. Keep sampling, context length, concurrency and hardware fixed when comparing throughput and accuracy.
 
+The DSpark and joint RL examples set `vllm.compilation_config.pass_config.fuse_allreduce_rms = false`. This avoids a vLLM 0.30.0 / FlashInfer illegal-memory-access failure observed when restarting TP2 × DP2 inference from its compilation cache. Torch compilation and CUDA graphs remain enabled. Apply the same setting to an exported model's inference config.
+
 ## Standalone draft training
 
 `uv run specdecode` validates upstream training options, records the resolved configuration, and launches `speculators.train` with local `torchrun` workers. Its `train` tables follow the upstream configuration schema. `num_gpus` controls the number of workers; `output_dir` holds configuration snapshots and checkpoints. Use `--dry-run` to validate a recipe before loading models.
