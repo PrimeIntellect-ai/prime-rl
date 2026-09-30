@@ -6569,11 +6569,15 @@ function syncFilterControls() {
   }
   for (const button of document.querySelectorAll(".flt-status button")) button.classList.toggle("on", !!f.status[button.dataset.status]);
   for (const button of document.querySelectorAll(".flt-outcome button")) button.classList.toggle("on", !!f.outcome[button.dataset.outcome]);
+  // the overview's copy has no status row, so its count leaves that pair out
   const active = activeFilters();
-  for (const button of document.querySelectorAll(".flt-btn")) button.classList.toggle("active", active > 0);
-  for (const badge of document.querySelectorAll(".flt-count")) {
-    badge.hidden = !active;
-    badge.textContent = active;
+  const shown = (wrap) => (wrap.id === "overview-filter-wrap" && !(f.status.live && f.status.done) ? active - 1 : active);
+  for (const wrap of document.querySelectorAll(".flt-wrap")) {
+    const n = shown(wrap);
+    wrap.querySelector(".flt-btn").classList.toggle("active", n > 0);
+    const badge = wrap.querySelector(".flt-count");
+    badge.hidden = !n;
+    badge.textContent = n;
   }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-sort", "#tm-sort"])
