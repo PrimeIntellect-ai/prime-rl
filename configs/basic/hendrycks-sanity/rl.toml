@@ -16,8 +16,10 @@ name = "hendrycks-sanity"
 
 [orchestrator]
 batch_size = 128
-group_size = 8
 seq_len = 8192
+
+[orchestrator.train]
+group_size = 8
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"

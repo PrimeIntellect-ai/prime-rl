@@ -69,8 +69,10 @@ type = "muon"
 
 [orchestrator]
 batch_size = 256
-group_size = 16
 max_off_policy_steps = 32
+
+[orchestrator.train]
+group_size = 16
 
 [orchestrator.concurrency]
 initial_inflight = 256
@@ -80,10 +82,10 @@ max_inflight = 512
 name = "glm-4.5"
 thinking_retention = "all"
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
+[orchestrator.train.algo.length_penalty]
 type = "linear"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1

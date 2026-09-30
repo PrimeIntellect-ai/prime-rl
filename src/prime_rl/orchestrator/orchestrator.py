@@ -224,7 +224,7 @@ class Orchestrator:
             set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
-            self.heart = Heartbeat(config.heartbeat.url)
+            self.heart = Heartbeat(config.heartbeat)
 
         config_dir = get_config_dir(config.output_dir)
         self.train_envs = TrainEnvs(
@@ -432,6 +432,13 @@ class Orchestrator:
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
+            # ``progress.step`` points at the next (unshipped) step; the last finished step is
+            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
+            # first ship). Saved before finalize, which tells the launcher the run is done.
+            if self.config.ckpt is not None and self.progress.step > 1:
+                self.progress.step -= 1
+                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
+                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -445,13 +452,6 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            # ``progress.step`` points at the next (unshipped) step; the last finished step is
-            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
-            # first ship).
-            if self.config.ckpt is not None and self.progress.step > 1:
-                self.progress.step -= 1
-                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")
@@ -883,7 +883,7 @@ class Orchestrator:
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
             f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%}"
+            f"Truncation {eff.is_truncated.mean():.1%} | Timeout {episodes.metrics.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
@@ -904,7 +904,7 @@ class Orchestrator:
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
-                f"Truncation {env_eff.is_truncated.mean():.1%}"
+                f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {pool.metrics.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
@@ -952,7 +952,8 @@ class Orchestrator:
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Timeout {full.is_timeout.mean():.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

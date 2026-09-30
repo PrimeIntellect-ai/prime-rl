@@ -41,25 +41,10 @@
 <main>
   <section id="tab-overview">
     <div class="controls">
-      <div id="overview-filter-wrap" class="dd-wrap" hidden>
-        <button id="overview-filter-btn" class="btn dd-btn" title="filter">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
-          filter
-        </button>
-        <div class="dd-menu dd-filters" id="overview-filter-menu" hidden>
-          <div class="dd-sec">filter</div>
-          <label class="dd-row" id="overview-env-row"><span class="t-label">env</span>
-            <select id="overview-env"></select>
-          </label>
-          <label class="toggle dd-row"><input type="checkbox" id="overview-errors"><span class="dot"></span>include errors</label>
-        </div>
-      </div>
+      <div id="overview-filter-wrap" class="dd-wrap flt-wrap"></div>
       <input id="overview-search" class="search" type="search" placeholder="regex filter, e.g. reward or ^inference/">
       <label class="ctl">smooth <input id="overview-smooth" type="range" min="1" max="50" value="1"><span id="overview-smooth-val">off</span></label>
       <span id="overview-status" class="muted"></span>
-      <div class="spacer"></div>
-      <button id="overview-collapse" class="btn">collapse</button>
-      <button id="overview-expand" class="btn">expand</button>
     </div>
     <div id="overview-body"></div>
     <div id="swarm-tip" hidden></div>
@@ -111,32 +96,7 @@
         <button data-mode="stream" class="active" title="every episode, newest first">Stream</button>
         <button data-mode="step" title="the cohort shipped at one step">Step</button>
       </div>
-      <div id="trace-filter-wrap" class="dd-wrap">
-        <button id="trace-filter-btn" class="btn dd-btn" title="filter">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
-          filter
-          <span id="trace-filter-count" class="badge" hidden></span>
-        </button>
-        <div class="dd-menu dd-filters" id="trace-filter-menu" hidden>
-          <div class="dd-sec">filter</div>
-          <div class="dd-row"><span class="t-label">status</span>
-            <div class="seg toggle-seg" id="trace-status-filter">
-              <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
-              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
-            </div>
-          </div>
-          <div class="dd-row"><span class="t-label">kind</span>
-            <div class="seg toggle-seg" id="trace-kinds">
-              <button data-kind="train" class="on">train</button>
-              <button data-kind="eval" class="on">eval</button>
-            </div>
-          </div>
-          <label class="dd-row"><span class="t-label">env</span>
-            <select id="trace-env"><option value="">all envs</option></select>
-          </label>
-          <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
-        </div>
-      </div>
+      <div id="trace-filter-wrap" class="dd-wrap flt-wrap"></div>
       <select id="trace-sort" title="sort" data-label="sort">
         <option value="arrival:desc">arrival ↓</option>
         <option value="arrival:asc">arrival ↑</option>
@@ -221,31 +181,7 @@
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
     </div>
     <div class="tm-head tm-ctlrow">
-      <div id="tm-filter-wrap" class="dd-wrap">
-        <button id="tm-filter-btn" class="btn dd-btn" title="filter">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
-          filter
-        </button>
-        <div class="dd-menu dd-filters" id="tm-filter-menu" hidden>
-          <div class="dd-sec">filter</div>
-          <div class="dd-row"><span class="t-label">status</span>
-            <div class="seg toggle-seg" id="tm-status-filter">
-              <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
-              <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
-            </div>
-          </div>
-          <div class="dd-row"><span class="t-label">kind</span>
-            <div class="seg toggle-seg" id="tm-kinds">
-              <button data-kind="train" class="on">train</button>
-              <button data-kind="eval" class="on">eval</button>
-            </div>
-          </div>
-          <label class="dd-row"><span class="t-label">env</span>
-            <select id="tm-env"><option value="">all envs</option></select>
-          </label>
-          <label class="toggle dd-row"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
-        </div>
-      </div>
+      <div id="tm-filter-wrap" class="dd-wrap flt-wrap"></div>
       <select id="tm-sort" title="sort" data-label="sort">
         <option value="arrival:desc">arrival ↓</option>
         <option value="arrival:asc">arrival ↑</option>
@@ -302,6 +238,7 @@
       <button id="tm-expand" class="btn">expand</button>
       <button id="drawer-close" class="btn">✕</button>
     </div>
+    <div id="tm-episode-errors" hidden></div>
     <div class="tm-head tm-tabs-row" id="tm-tabs-row" hidden>
       <div id="tm-trace-tabs" class="seg" hidden></div>
       <div id="tm-branch-tabs" class="seg" hidden></div>
@@ -323,6 +260,40 @@
     <div id="tm-meta"></div>
   </aside>
 </div>
+
+<!-- one filter over every view: the overview, the traces table and the trace viewer
+     each host a copy, and a change in any of them shows up in all -->
+<template id="filter-tpl">
+  <button class="btn dd-btn flt-btn" title="filter">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+    filter
+    <span class="badge flt-count" hidden></span>
+  </button>
+  <div class="dd-menu dd-filters" hidden>
+    <div class="dd-sec">filter</div>
+    <div class="dd-row flt-status-row"><span class="t-label">status</span>
+      <div class="seg toggle-seg flt-status">
+        <button data-status="live" class="on" title="live rollouts, streamed by their env servers">live</button>
+        <button data-status="done" class="on" title="episodes in the finished stream">completed</button>
+      </div>
+    </div>
+    <div class="dd-row"><span class="t-label">kind</span>
+      <div class="seg toggle-seg flt-kinds">
+        <button data-kind="train" class="on">train</button>
+        <button data-kind="eval" class="on">eval</button>
+      </div>
+    </div>
+    <label class="dd-row"><span class="t-label">env</span>
+      <select class="flt-env"><option value="">all envs</option></select>
+    </label>
+    <div class="dd-row"><span class="t-label">outcome</span>
+      <div class="seg toggle-seg flt-outcome">
+        <button data-outcome="ok" class="on" title="episodes that finished without an error">ok</button>
+        <button data-outcome="error" class="on" title="episodes that errored">error</button>
+      </div>
+    </div>
+  </div>
+</template>
 
 <script src="/static/vendor/uPlot.iife.min.js"></script>
 <script src="/static/app.js"></script>

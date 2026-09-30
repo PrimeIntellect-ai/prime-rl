@@ -63,6 +63,10 @@ def test_selective_policy_saves_default_and_custom_targets():
         _selective_checkpoint_policy(context, torch.ops.aten.topk.default, targets=custom_targets)
         is CheckpointPolicy.MUST_SAVE
     )
+    assert (
+        _selective_checkpoint_policy(context, torch.ops.prime_rl.fp8_indexer.default, targets=custom_targets)
+        is CheckpointPolicy.MUST_SAVE
+    )
 
 
 @pytest.mark.parametrize("mode", ["full", "selective"])
@@ -99,6 +103,7 @@ def test_mandatory_policy_only_retains_non_replayable_ops():
     context = SelectiveCheckpointContext(is_recompute=False)
 
     assert _mandatory_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
+    assert _mandatory_checkpoint_policy(context, torch.ops.prime_rl.fp8_indexer.default) is CheckpointPolicy.MUST_SAVE
     assert (
         _mandatory_checkpoint_policy(context, torch.ops.prime_rl.record_moe_routing_statistics.default)
         is CheckpointPolicy.MUST_SAVE

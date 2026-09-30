@@ -27,6 +27,8 @@ lr = 1e-5
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 8
 
 [orchestrator.train.sampling]

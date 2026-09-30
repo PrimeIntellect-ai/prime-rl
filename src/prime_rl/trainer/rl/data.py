@@ -11,6 +11,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
     MicroBatch,
+    MMRefs,
     TransportConfig,
     setup_batch_receiver,
 )
@@ -46,12 +47,8 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Generic multimodal kwargs — flat dict matching the model's forward
-    # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
-    # Qwen3-VL; ``{"pixel_values": ...}`` for Gemma3-VL). The trainer
-    # ``**`` -unpacks this into the forward call, so any HF VLM whose
-    # processor and forward agree on kwarg names works out of the box.
-    mm_kwargs: dict[str, Tensor] | None
+    # Materialized immediately before this microbatch's forward pass.
+    mm_refs: MMRefs | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -135,7 +132,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
-            "mm_kwargs": None,
+            "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -167,7 +164,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
-            "mm_kwargs": None,
+            "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -201,15 +198,6 @@ class DataLoader:
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-        mm_kwargs: dict[str, Tensor] | None = None
-        if micro_batch.mm_kwargs:
-            # Each value is an EncodedTensor (dtype, shape, raw bytes).
-            # No batch dim — the orchestrator concatenates per-image along
-            # dim=0 generically, matching what each HF VLM's forward expects.
-            mm_kwargs = {
-                key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
-                for key, payload in micro_batch.mm_kwargs.items()
-            }
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -249,7 +237,7 @@ class DataLoader:
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
-            mm_kwargs=mm_kwargs,
+            mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,

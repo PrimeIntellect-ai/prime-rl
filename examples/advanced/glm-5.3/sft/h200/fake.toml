@@ -1,0 +1,8 @@
+[model.debug]
+force_balanced_routing = true
+
+[data]
+type = "fake"
+batch_size = 8
+micro_batch_size = 1
+seq_len = 131072

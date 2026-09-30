@@ -44,6 +44,9 @@ lr = 1e-6
 batch_size = 512
 max_off_policy_steps = 8
 
+[orchestrator.train]
+group_size = 8
+
 [orchestrator.concurrency]
 initial_inflight = 1024
 

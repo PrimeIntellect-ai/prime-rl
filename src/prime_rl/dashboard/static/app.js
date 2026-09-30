@@ -33,7 +33,7 @@ const state = {
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     searches: { overview: prefs.overviewSearch ?? "", metrics: prefs.metricsSearch ?? "" },
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150, includeErrors: prefs.includeErrors ?? false,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 300, paneH: prefs.paneH ?? 170,
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
@@ -47,19 +47,26 @@ const state = {
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
     view: prefs.logView ?? "merge", level: "DEBUG", maximized: null, buffers: new Map(), gseq: 0,
   },
-  traces: {
-    loaded: false, steps: [], step: null, env: "",
-    mode: prefs.traceMode ?? "stream",
+  /* one filter over every view of a run: the overview narrows its sections and
+     distributions to it, the traces table and the trace viewer list what matches it.
+     Each pair reads "both on means no filter; exactly one narrows to it" (the last
+     one on stays on) */
+  filter: {
+    env: "",
+    envs: [],
     kinds: { train: true, eval: true },
+    status: { live: prefs.filterStatus?.live ?? true, done: prefs.filterStatus?.done ?? true },
+    outcome: { ok: prefs.filterOutcome?.ok ?? true, error: prefs.filterOutcome?.error ?? true },
+  },
+  traces: {
+    loaded: false, steps: [], step: null,
+    mode: prefs.traceMode ?? "stream",
     bin: null,
     episodes: [],
     live: [],
     landing: new Map(),
-    // both on means no filter; exactly one narrows to it (the last one on stays on)
-    status: { live: prefs.traceStatus?.live ?? true, done: prefs.traceStatus?.done ?? true },
     total: 0,
     paging: false,
-    errorsOnly: prefs.traceErrorsOnly ?? false,
     sorts: {
       stream: SORT_OPTIONS.has(prefs.traceSortStream) ? prefs.traceSortStream : DEFAULT_SORTS.stream,
       step: SORT_OPTIONS.has(prefs.traceSortStep) ? prefs.traceSortStep : DEFAULT_SORTS.step,
@@ -177,14 +184,11 @@ async function toggleCompare(name, on) {
   renderMetricsBody();
 }
 
-/* eval runs have one env and no steps: the step bar, kind/subset toggles and
-   smoothing make no sense there, and the overview is the episode pane */
+/* eval runs have no steps: the step bar, mode toggles and smoothing make no
+   sense there, and the overview is the episode pane */
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
-  $("#overview-filter-wrap").hidden = !isEval;
   $("#overview-search").hidden = isEval;
-  $("#overview-collapse").hidden = isEval;
-  $("#overview-expand").hidden = isEval;
   $("#overview-smooth").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -206,8 +210,10 @@ async function selectRun(name, deferTab = false) {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
-    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, evalEnv: null, allStrips: new Set(),
+    evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, allStrips: new Set(),
   };
+  // the env filter is per run: a name from the last run means nothing in this one
+  state.filter = { ...state.filter, env: "", envs: [] };
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
     files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
@@ -218,7 +224,7 @@ async function selectRun(name, deferTab = false) {
   };
   state.traces = {
     ...state.traces,
-    loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
+    loaded: false, fetching: false, steps: [], step: null, episodes: [], envs: [], etag: null,
     key: null, total: 0, bin: null, hist: null, live: [], liveEtag: null, liveAt: 0, landing: new Map(),
   };
   state.report = {
@@ -226,6 +232,7 @@ async function selectRun(name, deferTab = false) {
     loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
   };
   applyRunTypeControls();
+  syncFilterControls();
   renderOverview();
   renderCompareMenu();
   updateHash();
@@ -382,7 +389,7 @@ async function activateTab(tab, force = false) {
   if (tab === "logs" && !state.logs.loaded) await initLogs();
   if (tab === "traces") {
     if (!state.traces.loaded) await initTraces();
-    else if (state.live) await refreshTraces();
+    else if (state.live || state.traces.key !== traceKey()) await refreshTraces(); // a filter set elsewhere
   }
   if (tab === "report") {
     if (!state.report.loaded) await initReport();
@@ -423,12 +430,13 @@ function rowsChartHere() {
 }
 
 const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
-const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/has_error/mean"];
+const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
-const SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"];
-const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/step", "time/forward_backward", "time/save_ckpt"];
+// max_vio only exists on MoE models: a regex panel stays away on dense ones
+const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
+const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];
 
 // Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
 // paired with the cross-engine tail that flags a single sick engine.
@@ -525,7 +533,10 @@ async function fetchMetricRows(m) {
     }
     if ((data.rows.length || compared) && rowsChartHere()) {
       if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
-      else updateCharts(compared ? null : touched); // compares may touch any panel
+      else {
+        updateCharts(compared ? null : touched); // compares may touch any panel
+        updateTrainHead();
+      }
     }
     // A writer can leave one incomplete JSONL record at EOF. Wait for the
     // next poll instead of repeatedly requesting the same partial record.
@@ -584,21 +595,6 @@ function evalEnvs() {
   return [...new Set([...(meta.eval_envs || []), ...Object.keys(meta.eval_plan || {}), ...streamed])];
 }
 
-/* the pane shows one env at a time; the first is the default */
-function evalEnv() {
-  const envs = evalEnvs();
-  if (!envs.includes(state.metrics.evalEnv)) state.metrics.evalEnv = envs[0] ?? null;
-  return state.metrics.evalEnv;
-}
-
-function renderEvalEnvs() {
-  const envs = evalEnvs();
-  const current = evalEnv();
-  $("#overview-env-row").hidden = !envs.length;
-  $("#overview-env").innerHTML = envs.map((env) => `<option value="${esc(env)}" ${env === current ? "selected" : ""}>${esc(env)}</option>`).join("");
-  syncDressedSelects();
-}
-
 /* the episodes of one env, as indices into the series */
 function evalIndices(env) {
   const column = state.metrics.evalSeries?.env || [];
@@ -615,50 +611,49 @@ function evalExpected(env) {
 
 const EP_CELL_CAP = 400;
 
+/* a block bar: one cell per unit up to the cap (each landed or live cell carries its
+   own marks and attributes), past it a cell stands for a share of the units */
+function blockBarHtml(done, live, total) {
+  const n = Math.max(total ?? 0, done.length + live.length);
+  if (n <= EP_CELL_CAP)
+    return (
+      done.map((c) => `<span class="ep-cell done ${c.cls ?? ""}" ${c.attrs ?? ""}></span>`).join("") +
+      live.map((c) => `<span class="ep-cell live" ${c.attrs ?? ""}></span>`).join("") +
+      `<span class="ep-cell"></span>`.repeat(Math.max(0, n - done.length - live.length)) || `<span class="ep-cell"></span>`
+    );
+  const doneCells = Math.round((done.length / n) * EP_CELL_CAP);
+  const liveCells = Math.round((live.length / n) * EP_CELL_CAP);
+  return (
+    `<span class="ep-cell done"></span>`.repeat(doneCells) +
+    `<span class="ep-cell live"></span>`.repeat(liveCells) +
+    `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells))
+  );
+}
+
+/* the bar with its count beside it: done / total and the share, or done / ∞ without
+   a horizon, where the cells keep their size and wrap so the bar grows instead of
+   reading as full. A name above it heads the block */
+function progressHtml(cells, done, total, { name = "" } = {}) {
+  const label = total ? `${done.toLocaleString()}/${total.toLocaleString()} (${Math.round(Math.min(100, (done / total) * 100))}%)` : `${done.toLocaleString()}/∞`;
+  return (
+    `<div class="eval-progress">${name ? `<div class="ep-head"><span class="name">${name}</span></div>` : ""}` +
+    `<div class="ep-row"><div class="ep-blocks${total ? "" : " open"}">${cells}</div><span class="ep-pct">${label}</span></div></div>`
+  );
+}
+
+/* landed episodes in arrival order (click opens one), the live ones (click follows
+   one), then what is still to come */
 function evalProgressHtml(env, idx, live) {
   const series = state.metrics.evalSeries || {};
-  const done = idx.length;
   const total = evalExpected(env);
-  const n = Math.max(total ?? 0, done + live.length);
-  const pct = total ? Math.min(100, (done / total) * 100) : null;
-  let cells;
-  if (n <= EP_CELL_CAP) {
-    // one cell per episode: landed ones in arrival order (click opens it), the
-    // live ones (click follows it), then what is still to come
-    cells =
-      idx
-        .map((i) => {
-          const err = series.ok?.[i] === false;
-          const reward = series.reward?.[i];
-          return (
-            `<span class="ep-cell done${err ? " err" : ""}" data-line="${series.line?.[i]}" ` +
-            `title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${err ? " · error" : ""}"></span>`
-          );
-        })
-        .join("") +
-      live
-        .map(
-          (r) =>
-            `<span class="ep-cell live" ${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"></span>`
-        )
-        .join("") +
-      `<span class="ep-cell"></span>`.repeat(Math.max(0, n - done - live.length));
-  } else {
-    // past the cap a cell stands for a share of the episodes
-    const doneCells = Math.round((done / n) * EP_CELL_CAP);
-    const liveCells = Math.round((live.length / n) * EP_CELL_CAP);
-    cells =
-      `<span class="ep-cell done"></span>`.repeat(doneCells) +
-      `<span class="ep-cell live"></span>`.repeat(liveCells) +
-      `<span class="ep-cell"></span>`.repeat(Math.max(0, EP_CELL_CAP - doneCells - liveCells));
-  }
-  // the toolbar line reads like the traces tab's
-  $("#overview-status").textContent = [...(live.length ? [`${live.length} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
-  return (
-    `<div class="eval-progress"><div class="ep-head"><span class="name">${esc(env)}</span></div>` +
-    `<div class="ep-row"><div class="ep-blocks">${cells || `<span class="ep-cell"></span>`}</div>` +
-    `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span></div></div>`
-  );
+  const done = idx.map((i) => {
+    const mark = outcomeClass(series, i);
+    const reward = series.reward?.[i];
+    const note = mark === "err" ? " · error" : mark === "timeout" ? " · timeout" : "";
+    return { cls: mark, attrs: `data-line="${series.line?.[i]}" title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${note}"` };
+  });
+  const running = live.map((r) => ({ attrs: `${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"` }));
+  return progressHtml(blockBarHtml(done, running, total), idx.length, total, { name: esc(env) });
 }
 
 function quantile(sorted, q) {
@@ -745,7 +740,7 @@ function dotPlotSvg(entry, W, H) {
         const col = Math.floor(j / perCol), rowN = j % perCol;
         const cx = x0 + col * (2 * r + 1);
         const cy = top + plotH - r - rowN * (2 * r + 1);
-        return `<circle data-i="${i}" class="${p.err ? "err" : ""}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
+        return `<circle data-i="${i}" class="${markClass(p)}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}"></circle>`;
       })
       .join("");
     const n = counts.get(v);
@@ -763,7 +758,7 @@ function dotPlotSvg(entry, W, H) {
 
 function swarmCardHtml(entry) {
   return (
-    `<div class="chart-card swarm-card" data-key="${esc(entry.key)}"><div class="chart-head"><div class="chart-title" title="${esc(entry.key)}">${esc(entry.label)}</div>` +
+    `<div class="chart-card swarm-card" data-key="${esc(entry.key)}"><div class="chart-head"><div class="chart-title" title="${esc(entry.key.slice(entry.key.indexOf("|") + 1))}">${esc(entry.label)}</div>` +
     `<div class="chart-last">${entry.headline}</div></div><div class="swarm-host"></div>` +
     `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div><div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div></div>`
   );
@@ -829,7 +824,7 @@ function swarmSvg(entry, W, H) {
     stacks.set(column, k + 1);
     const offset = Math.ceil(k / 2) * d * (k % 2 ? -1 : 1);
     const y = Math.max(r, Math.min(plotH - r, mid + offset));
-    return `<circle data-i="${i}" class="${points[i].err ? "err" : ""}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
+    return `<circle data-i="${i}" class="${markClass(points[i])}" cx="${px.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"></circle>`;
   });
   // the x axis: a baseline under the plot, round-valued ticks with grid lines
   const label = (v) => tickLabel(v, entry.fmt);
@@ -868,6 +863,16 @@ function drawSwarms() {
 
 const SWARM_STAT_ROWS = ["min", "p10", "median", "p90", "max"];
 
+/* an episode's outcome mark: a timeout reads yellow, an error red, a clean one unmarked */
+function outcomeClass(series, i) {
+  if (series.timeout?.[i] === true) return "timeout";
+  return series.ok?.[i] === false ? "err" : "";
+}
+
+function markClass(point) {
+  return point.timeout ? "timeout" : point.err ? "err" : "";
+}
+
 function swarmTipHtml(entry, point) {
   const row = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   if (point) {
@@ -875,6 +880,7 @@ function swarmTipHtml(entry, point) {
       ? [row("rollouts", point.n), row(entry.label, entry.fmt(point.v))]
       : [row(entry.label, entry.fmt(point.v)), ...(point.reward != null ? [row("reward", fmtReward(point.reward))] : [])];
     if (point.err) rows.push(row("errors", point.group ? "in a rollout" : "yes"));
+    if (point.timeout) rows.push(row("timeout", point.group ? "in a rollout" : "yes"));
     rows.push(row("", point.group ? "click opens its first rollout" : "click opens the trace"));
     return `<div class="tip-head">${point.group ? `task ${esc(point.group.slice(0, 8))}` : `episode #${point.line}`}</div>${rows.join("")}`;
   }
@@ -898,7 +904,7 @@ function passAtK(rewards) {
   return out;
 }
 
-function evalScoreEntries(idx, filter) {
+function evalScoreEntries(idx, filter, env) {
   const series = state.metrics.evalSeries || {};
   const entries = [];
   const byTask = new Map();
@@ -907,17 +913,18 @@ function evalScoreEntries(idx, filter) {
     const reward = series.reward?.[i] ?? (series.ok?.[i] === false ? 0 : null);
     if (reward == null) continue;
     const task = series.group?.[i] ?? String(i);
-    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false });
+    if (!byTask.has(task)) byTask.set(task, { group: task, line: series.line?.[i], rewards: [], err: false, timeout: false });
     const t = byTask.get(task);
     t.rewards.push(reward);
     if (series.ok?.[i] === false) t.err = true;
+    if (series.timeout?.[i] === true) t.timeout = true;
   }
   const tasks = [...byTask.values()];
   if (!tasks.length) return entries;
   const k = Math.max(...tasks.map((t) => t.rewards.length));
-  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err });
+  const taskPoint = (t, v) => ({ v, group: t.group, line: t.line, n: t.rewards.length, err: t.err, timeout: t.timeout });
   if (!filter || filter.test("avg@k"))
-    entries.push(swarmEntry("avg@k", `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
+    entries.push(swarmEntry(`${env}|avg@k`, `avg@${k}`, tasks.map((t) => taskPoint(t, t.rewards.reduce((a, b) => a + b, 0) / t.rewards.length)), fmtReward));
   if ((!filter || filter.test("pass@k")) && tasks.every((t) => t.rewards.every((r) => r === 0 || r === 1))) {
     const perTask = tasks.map((t) => ({ task: t, pass: passAtK(t.rewards) }));
     const ks = [...new Set(perTask.flatMap((p) => Object.keys(p.pass).map(Number)))].sort((a, b) => a - b);
@@ -927,7 +934,7 @@ function evalScoreEntries(idx, filter) {
     };
     const top = ks[ks.length - 1];
     entries.push(
-      swarmEntry("pass@k", `pass@${top}`, perTask.map((p) => taskPoint(p.task, p.pass[top])), fmtReward, {
+      swarmEntry(`${env}|pass@k`, `pass@${top}`, perTask.map((p) => taskPoint(p.task, p.pass[top])), fmtReward, {
         headline: fmtReward(mean(top)),
         rows: ks.map((kk) => [`pass@${kk}`, fmtReward(mean(kk))]),
       })
@@ -963,8 +970,7 @@ function onColor(hex) {
   return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? "#111" : "#eee";
 }
 
-let timingModel = null;
-let tokensModel = null;
+const compModels = new Map(); // pane key -> {rows, segments, meanTotal, kids}
 let paneTips = [];
 
 /* phases in the order a rollout runs them; anything unknown follows, by name */
@@ -997,14 +1003,14 @@ function timingLeaves(series) {
 
 /* a composition pane's shell: a horizontal legend, then the plots (the section's
    heading names it, the summary tiles carry its mean) */
-function compositionPaneHtml(cls, parts, color) {
+function compositionPaneHtml(key, parts, color) {
   const legend = parts
     .map((name) => `<span class="tm-node child" data-part="${esc(name)}"><span class="phase-dot" style="background:${color(name)}"></span>${esc(name)}</span>`)
     .join("");
-  return `<div class="chart-card comp-pane ${cls}"><div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`;
+  return `<div class="chart-card comp-pane" data-model="${esc(key)}"><div class="tm-legend">${legend}</div><div class="tm-icicle"></div><div class="tm-strips"></div></div>`;
 }
 
-function timingPaneHtml(idx) {
+function timingPaneHtml(idx, env) {
   const series = state.metrics.evalSeries || {};
   const leaves = timingLeaves(series);
   if (!leaves.length) return "";
@@ -1015,7 +1021,7 @@ function timingPaneHtml(idx) {
       if (total == null) return null;
       const parts = leaves.map((p) => ({ name: p.split("/").pop(), v: series[`timing/${p}`]?.[i] ?? 0 }));
       parts.push({ name: "other", v: Math.max(0, total - parts.reduce((a, p) => a + p.v, 0)) });
-      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total, parts };
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, timeout: series.timeout?.[i] === true, total, parts };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
@@ -1025,19 +1031,19 @@ function timingPaneHtml(idx) {
     const stats = distStats(rows.map((r) => r.parts[k].v));
     return { name, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
-  timingModel = { rows, segments, meanTotal, kids: names };
-  return compositionPaneHtml("timing-pane", names, phaseColor);
+  compModels.set(`timing:${env}`, { rows, segments, meanTotal, kids: names });
+  return compositionPaneHtml(`timing:${env}`, names, phaseColor);
 }
 
 /* usage: the same composition view over an episode's tokens, input beside output */
-function tokensPaneHtml(idx) {
+function tokensPaneHtml(idx, env) {
   const series = state.metrics.evalSeries || {};
   if (!series.input_tokens && !series.output_tokens) return "";
   const rows = idx
     .map((i) => {
       const input = series.input_tokens?.[i] ?? 0, output = series.output_tokens?.[i] ?? 0;
       if (!input && !output) return null;
-      return { i, line: series.line?.[i], err: series.ok?.[i] === false, total: input + output, parts: [{ name: "input", v: input }, { name: "output", v: output }] };
+      return { i, line: series.line?.[i], err: series.ok?.[i] === false, timeout: series.timeout?.[i] === true, total: input + output, parts: [{ name: "input", v: input }, { name: "output", v: output }] };
     })
     .filter(Boolean)
     .sort((a, b) => b.total - a.total);
@@ -1047,15 +1053,22 @@ function tokensPaneHtml(idx) {
     const stats = distStats(rows.map((r) => r.parts[k].v));
     return { name, path: null, stats, share: meanTotal ? stats.mean / meanTotal : 0, zoomable: false };
   });
-  tokensModel = { rows, segments, meanTotal, kids: ["input", "output"] };
-  return compositionPaneHtml("tokens-pane", ["input", "output"], (n) => TOKEN_COLORS[n]);
+  compModels.set(`tokens:${env}`, { rows, segments, meanTotal, kids: ["input", "output"] });
+  return compositionPaneHtml(`tokens:${env}`, ["input", "output"], (n) => TOKEN_COLORS[n]);
 }
 
 const TM_MAX_STRIPS = 40;
 
+const COMP_KINDS = {
+  timing: { fmt: fmtDuration, time: true, color: phaseColor },
+  tokens: { fmt: (v) => fmtCompact(Math.round(v)), time: false, color: (n) => TOKEN_COLORS[n] || "#3a3a3a" },
+};
+
 function drawTiming() {
-  drawComposition(document.querySelector("#overview-body .timing-pane"), timingModel, { kind: "timing", fmt: fmtDuration, time: true, color: phaseColor });
-  drawComposition(document.querySelector("#overview-body .tokens-pane"), tokensModel, { kind: "tokens", fmt: (v) => fmtCompact(Math.round(v)), time: false, color: (n) => TOKEN_COLORS[n] || "#3a3a3a" });
+  for (const pane of document.querySelectorAll("#overview-body .comp-pane")) {
+    const kind = pane.dataset.model.split(":")[0];
+    drawComposition(pane, compModels.get(pane.dataset.model), { kind, ...COMP_KINDS[kind] });
+  }
 }
 
 /* an icicle of the mean composition above one strip per episode; every segment
@@ -1113,7 +1126,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
       const t = tip(
         `<div class="tip-head">episode #${r.line} · ${fmt(r.total)}</div>` +
           parts.map((p) => rowTip(p.name, `${fmt(p.v)} · ${Math.round((p.v / (r.total || 1)) * 100)}%`)).join("") +
-          `${r.err ? rowTip("errors", "yes") : ""}${rowTip("", "click opens the trace")}`
+          `${r.err ? rowTip("errors", "yes") : ""}${r.timeout ? rowTip("timeout", "yes") : ""}${rowTip("", "click opens the trace")}`
       );
       const segs = parts
         .map((p) => {
@@ -1126,7 +1139,7 @@ function drawComposition(pane, model, { kind, fmt, time, color }) {
         .join("");
       return (
         `<rect class="tm-row-hit" data-tip="${t}" data-row="${n}" data-line="${r.line}" x="0" y="${y - GAP / 2}" width="${W}" height="${SH + GAP}"></rect>` +
-        `<text class="hax tm-line${r.err ? " err" : ""}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
+        `<text class="hax tm-line ${markClass(r)}" data-row="${n}" x="${PAD_L - 6}" y="${y + SH - 1}" style="text-anchor:end">#${r.line}</text>${segs}`
       );
     })
     .join("");
@@ -1161,26 +1174,37 @@ function rateClass(rate) {
   return rate > 0.5 ? " rate-bad" : rate > 0.1 ? " rate-warn" : "";
 }
 
+const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
+
+/* a summary tile: a label, its headline with an optional change mark beside it, a hover card */
+function tileHtml(label, value, tipHtml, { cls = "", corner = "" } = {}) {
+  return (
+    `<div class="stat-card sum-tile${cls}" data-tip="${paneTips.push(tipHtml) - 1}">` +
+    `<div class="stat-label">${esc(label)}</div><div class="stat-value">${value}${corner}</div></div>`
+  );
+}
+
 function summaryTilesHtml(idx, all, scoreEntries) {
   const series = state.metrics.evalSeries || {};
-  const tip = (html) => paneTips.push(html) - 1;
-  const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
   const tiles = [];
-  const tile = (label, value, tipHtml, { cls = "" } = {}) =>
-    tiles.push(
-      `<div class="stat-card sum-tile${cls}" data-tip="${tip(tipHtml)}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div></div>`
-    );
+  const tile = (label, value, tipHtml, opts) => tiles.push(tileHtml(label, value, tipHtml, opts));
   for (const entry of scoreEntries.filter(Boolean)) {
     const rows = entry.rows ?? SWARM_STAT_ROWS.map((k) => [k, entry.fmt(entry.stats[k])]);
     tile(entry.label, entry.headline, `<div class="tip-head">${esc(entry.label)} · ${fmtCompact(entry.stats.n)} tasks</div>${rows.map(([k, v]) => rowTip(k, v)).join("")}`, { cls: " score" });
   }
-  // failure rates count every landed episode, the errors filter notwithstanding
+  // failure rates count every landed episode, the errors filter notwithstanding;
+  // the timeout rate reads yellow as soon as any episode timed out
   if (all.length) {
-    const errored = all.filter((i) => series.ok?.[i] === false || (series.num_errors?.[i] ?? 0) > 0).length;
+    const errored = all.filter((i) => series.ok?.[i] === false).length;
     const truncated = all.filter((i) => (series.truncated?.[i] ?? TRUNCATING_STOPS.has(series.stop_condition?.[i])) === true).length;
-    for (const [label, n, what] of [["error rate", errored, "errored"], ["truncation rate", truncated, "truncated"]]) {
+    const timedOut = all.filter((i) => series.timeout?.[i] === true).length;
+    for (const [label, n, what, cls] of [
+      ["error rate", errored, "errored", rateClass],
+      ["truncation rate", truncated, "truncated", rateClass],
+      ["timeout rate", timedOut, "timed out", (rate) => (rate > 0 ? " rate-timeout" : "")],
+    ]) {
       const rate = n / all.length;
-      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: rateClass(rate) });
+      tile(label, `${Math.round(rate * 100)}%`, `<div class="tip-head">${esc(label)}</div>${rowTip(what, `${n} of ${all.length} episodes`)}`, { cls: cls(rate) });
     }
   }
   const turns = distStats(idx.map((i) => series.turns?.[i]));
@@ -1209,33 +1233,54 @@ function summaryTilesHtml(idx, all, scoreEntries) {
 
 
 function renderEvalPane(body) {
-  const m = state.metrics;
-  const series = m.evalSeries || {};
-  const filter = makeFilter(m.searches.overview.trim());
-  renderEvalEnvs();
-  const env = evalEnv();
-  $("#overview-status").textContent = "";
-  $("#overview-errors").checked = !!m.includeErrors;
-  $("#overview-filter-btn").classList.toggle("active", !!m.includeErrors);
+  const f = state.filter;
+  const filter = makeFilter(state.metrics.searches.overview.trim());
   swarmRegistry.clear();
-  if (!env) {
+  compModels.clear();
+  const envs = evalEnvs().filter((env) => !f.env || env === f.env);
+  if (!envs.length) {
     body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
+    $("#overview-status").textContent = "";
     return;
   }
+  let done = 0, live = 0;
+  for (const env of envs) {
+    // several envs follow one another as blocks; the progress head names each
+    let host = body;
+    if (envs.length > 1) {
+      host = document.createElement("div");
+      host.className = "eval-env";
+      body.appendChild(host);
+    }
+    const counts = renderEvalEnv(host, env, filter);
+    done += counts.done;
+    live += counts.live;
+  }
+  // the toolbar line reads like the traces tab's
+  $("#overview-status").textContent = [...(live ? [`${live} live`] : []), `${fmtCompact(done)} completed episode${done === 1 ? "" : "s"}`].join(" · ");
+  drawSwarms();
+  drawTiming();
+}
+
+/* one env's block: its progress, summary tiles and the distributions of everything
+   its episodes carry */
+function renderEvalEnv(body, env, filter) {
+  const series = state.metrics.evalSeries || {};
   const all = evalIndices(env);
   const live = (state.traces.live || []).filter((r) => r.env === env);
   body.insertAdjacentHTML("beforeend", evalProgressHtml(env, all, live));
-  // errored episodes stay out of the distributions unless asked in, where they read red
-  const idx = m.includeErrors ? all : all.filter((i) => series.ok?.[i] !== false);
+  // the outcome filter picks the episodes the distributions read; errored ones read red
+  const idx = all.filter((i) => (series.ok?.[i] === false ? state.filter.outcome.error : state.filter.outcome.ok));
   const episodeEntry = (key, label, fmt, opts) =>
     swarmEntry(
-      key,
+      `${env}|${key}`,
       label,
       idx.map((i) => ({
         v: series[key]?.[i],
         line: series.line?.[i],
         reward: series.reward?.[i],
         err: series.ok?.[i] === false,
+        timeout: series.timeout?.[i] === true,
       })),
       fmt,
       opts
@@ -1245,9 +1290,8 @@ function renderEvalPane(body) {
       .filter((k) => k.startsWith(prefix) && (!filter || filter.test(k)))
       .sort()
       .map((k) => episodeEntry(k, k.slice(prefix.length), fmt));
-  // constants sit in a chip row above the section's panes: a pane for a value every
-  // episode shares would only take space
-  // sections are flat: a muted heading, the constants as chips, then the panes
+  // sections are flat: a muted heading, the constants as chips (a pane for a value
+  // every episode shares would only take space), then the panes
   const evalSection = (name, inner) => {
     body.insertAdjacentHTML("beforeend", `<div class="eval-sec"><div class="eval-sec-title">${esc(name)}</div>${inner}</div>`);
   };
@@ -1265,34 +1309,26 @@ function renderEvalPane(body) {
     return kept.length;
   };
   let shown = 0;
-  paneTips = [];
-  const scores = evalScoreEntries(idx, filter);
+  const scores = evalScoreEntries(idx, filter, env);
   const summary = summaryTilesHtml(idx, all, scores);
   if (summary) {
     evalSection("summary", summary);
     shown += 1;
   }
   shown += section("env metrics", [...keyed("rewards/", fmtReward), ...keyed("metrics/", fmtNum)]);
-  const tokensHtml = tokensPaneHtml(idx);
+  const tokensHtml = tokensPaneHtml(idx, env);
   if (tokensHtml) {
     evalSection("usage", tokensHtml);
     shown += 1;
   }
-  const timingHtml = timingPaneHtml(idx);
+  const timingHtml = timingPaneHtml(idx, env);
   if (timingHtml) {
     evalSection("timing", timingHtml);
     shown += 1;
   }
   if (!shown && !idx.length) body.insertAdjacentHTML("beforeend", emptyState("no episodes yet", "metrics appear as episodes land"));
-  drawSwarms();
-  drawTiming();
+  return { done: all.length, live: live.length };
 }
-
-$("#overview-errors").addEventListener("change", (e) => {
-  state.metrics.includeErrors = e.target.checked;
-  savePrefs();
-  renderMetricsBody();
-});
 
 $("#overview-body").addEventListener("mousemove", (e) => {
   const tip = $("#swarm-tip");
@@ -1326,11 +1362,6 @@ $("#overview-body").addEventListener("mouseleave", () => {
   document.querySelectorAll("#overview-body .comp-pane").forEach((p) => highlightPart(p, null));
 });
 
-$("#overview-env").addEventListener("change", (e) => {
-  state.metrics.evalEnv = e.target.value;
-  renderMetricsBody();
-});
-
 $("#overview-body").addEventListener("click", (e) => {
   const strip = e.target.closest(".tm-strip-seg[data-line], .tm-row-hit[data-line]");
   if (strip) {
@@ -1352,9 +1383,10 @@ $("#overview-body").addEventListener("click", (e) => {
     if (line != null) openEpisode(line);
     return;
   }
-  const cell = e.target.closest(".ep-cell[data-line], .ep-cell[data-live]");
+  const cell = e.target.closest(".ep-cell[data-line], .ep-cell[data-live], .ep-cell[data-step]");
   if (!cell) return;
   if (cell.dataset.live) openLiveTrace(cell.dataset.live);
+  else if (cell.dataset.step) openStep(+cell.dataset.step);
   else openEpisode(+cell.dataset.line);
 });
 
@@ -1385,8 +1417,10 @@ async function fetchCompares() {
 
 function buildSections(meta) {
   // panel order: reward (effective, then all) -> turns/tokens/branches -> truncation/error
-  const trainSection = (name, scope) => ({
+  const trainSection = (name, scope, env) => ({
     name,
+    kind: "train",
+    env,
     panels: [
       // one banded plot per agent, not a multi-color overlay
       { regex: `${escRe(scope)}/effective/[^/]+/reward/mean`, split: true },
@@ -1395,14 +1429,16 @@ function buildSections(meta) {
       ...COMMON_REGEXES.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
     ],
   });
-  const evalSection = (name, envPattern, configured = false) => ({
+  const evalSection = (name, envPattern, configured = false, env = undefined) => ({
     name,
+    kind: "eval",
+    env,
     configured,
+    // avg@k is the mean reward over the same traces reward/mean averages, so it
+    // stands alone as the score
     panels: [
-      { regex: `eval/${envPattern}/all/[^/]+/avg@.*` },
-      { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
-      { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
-      { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/all/[^/]+/avg@.*`, split: true },
+      { regex: `eval/${envPattern}/effective/[^/]+/avg@.*`, split: true },
       { regex: `eval/${envPattern}/all/cancelled/mean` },
       ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
@@ -1411,23 +1447,19 @@ function buildSections(meta) {
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
-    const trainMetrics = meta.has_validation
-      ? SFT_TRAIN_METRICS
-      : SFT_TRAIN_METRICS.filter((m) => !m.startsWith("val/"));
-    sections.push({ name: "train", panels: trainMetrics.map((m) => ({ metric: m })) });
-    if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
+    // the val panes show once a validation value is logged, not on the config alone
+    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => (m.startsWith("val/") ? { regex: escRe(m) } : { metric: m })) });
+    if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
     else sections.push(evalSection("eval", ".*"));
-    sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
+    sections.push({ name: "stability", panels: SFT_STABILITY_PANELS });
     sections.push({ name: "performance", panels: SFT_PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
     return sections;
   }
   const trainEnvs = meta.train_envs || [];
-  if (trainEnvs.length === 1) sections.push(trainSection(`train/${trainEnvs[0]}`, `train/${trainEnvs[0]}`));
-  else if (trainEnvs.length > 1) {
-    sections.push(trainSection("train/agg", "train/agg"));
-    sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`)));
-  } else sections.push(trainSection("train", "train/agg"));
-  if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
+  // one section per env; the cross-env aggregate stays on the metrics tab
+  if (trainEnvs.length) sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`, e)));
+  else sections.push(trainSection("train", "train/agg"));
+  if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
   else sections.push(evalSection("eval", ".*"));
   sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
   sections.push({ name: "inference", panels: INFERENCE_PANELS.map((metrics) => ({ metrics })) });
@@ -1436,6 +1468,71 @@ function buildSections(meta) {
 }
 
 let activeFilter = null;
+
+/* the overview names its panels for reading and says how each is computed; the raw
+   key stays in the panel's hover card, and the metrics tab keeps every key as logged.
+   Group 1 of a pattern is the agent, `$k` the k of avg@k / pass@k */
+const PANEL_INFO = [
+  [/\/effective\/([^/]+)\/reward\/mean$/, "mean reward", "mean reward over the effective traces of the batch (error-free and trainable), one point per step"],
+  [/\/all\/([^/]+)\/reward\/mean$/, "mean reward (all)", "mean reward over every trace of the batch, errored ones counted as zero"],
+  [/\/all\/([^/]+)\/avg@(\d+)$/, "avg@$k", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts counted as zero"],
+  [/\/effective\/([^/]+)\/avg@(\d+)$/, "avg@$k (effective)", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts left out"],
+  [/\/effective\/([^/]+)\/pass@(\d+)$/, "pass@$k", "share of tasks with at least one correct rollout among $k, the unbiased estimate"],
+  [/\/effective\/num_turns\/mean$/, "mean turns", "mean turns per episode"],
+  [/\/effective\/num_total_tokens\/mean$/, "mean tokens", "mean tokens per episode, prompt and completion together"],
+  [/\/effective\/num_branches\/mean$/, "mean branches", "mean prefix branches per episode"],
+  [/\/effective\/([^/]+)\/is_truncated\/mean$/, "truncation rate", "share of the effective traces cut off by a length or turn limit"],
+  [/\/all\/([^/]+)\/is_timeout\/mean$/, "timeout rate", "share of the batch's traces that hit a stage timeout"],
+  [/\/all\/([^/]+)\/has_error\/mean$/, "error rate", "share of the batch's traces that errored"],
+  [/\/all\/cancelled\/mean$/, "cancelled rate", "share of the eval's episodes the pipeline cancelled"],
+  ["optim/grad_norm", "grad norm", "gradient norm of the optimizer step"],
+  ["optim/lr", "learning rate", "learning rate of the optimizer step"],
+  ["entropy/all/mean", "entropy", "mean token entropy of the policy over the batch"],
+  ["mismatch_kl/all/mean", "mismatch KL", "KL between the trainer's logprobs and the sampling logprobs of the same tokens"],
+  ["kl_ent_ratio/mean", "KL / entropy", "mismatch KL over entropy"],
+  ["max_vio/mean", "max vio", "expert load imbalance: the busiest expert's tokens over the balanced load, minus one; mean over layers, the worst layer dashed"],
+  ["loss/mean", "loss", "mean training loss of the step"],
+  ["loss/perplexity", "perplexity", "perplexity of the training loss"],
+  ["val/loss", "val loss", "mean loss over the validation set"],
+  ["val/perplexity", "val perplexity", "perplexity over the validation set"],
+  ["loss/nan_count", "NaN count", "non-finite losses in the step"],
+  ["progress/epoch", "epoch", "passes over the dataset so far"],
+  ["progress/num_samples", "total samples", "samples trained on so far"],
+  ["progress/num_tokens", "total tokens", "tokens trained on so far"],
+  ["perf/mfu", "MFU", "model FLOPs utilization of the trainer"],
+  ["perf/throughput", "throughput", "trainer tokens per second"],
+  ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer"],
+  ["time/step", "step time", "wall time of one training step"],
+  ["time/wait_for_batch", "wait for batch", "time the trainer waited for the next batch"],
+  ["time/wait_for_policy", "wait for policy", "time the orchestrator waited for the next policy"],
+  ["time/forward_backward", "forward / backward", "time of the step's forward and backward passes"],
+  ["time/save_ckpt", "checkpoint time", "time spent saving the checkpoint"],
+  ["inference/agg/kv_cache_usage_perc/mean", "KV cache usage", "share of the KV cache in use, mean / min / max over the engines"],
+  ["inference/agg/num_preemptions_total:rate/sum", "preemptions", "preemptions per second, sum / max over the engines"],
+  ["inference/agg/num_requests_running/mean", "running requests", "requests running per engine, mean / min / max"],
+  ["inference/agg/num_requests_waiting/mean", "waiting requests", "requests queued per engine, mean / min / max"],
+  ["inference/agg/prefix_cache_hit_rate/pooled", "prefix cache hit rate", "share of prompt tokens served from the prefix cache, pooled / min over the engines"],
+  ["inference/agg/generation_tokens_total:rate/sum", "generation tok/s", "completion tokens generated per second over the engines"],
+  ["inference/agg/prompt_tokens_total:rate/sum", "prompt tok/s", "prompt tokens processed per second over the engines"],
+  ["dispatcher/inflight/train", "inflight rollouts", "rollouts in flight, train and eval, against the concurrency limit"],
+];
+
+function describeKey(key) {
+  for (const [pattern, label, info] of PANEL_INFO) {
+    if (typeof pattern === "string") {
+      if (pattern === key) return { label, info, agent: null };
+      continue;
+    }
+    const m = key.match(pattern);
+    if (m) return { label: label.replace("$k", m[2]), info: info.replaceAll("$k", m[2]), agent: m[1] ?? null };
+  }
+  return null;
+}
+
+/* the hover card of a described panel or tile: what it is, how it is computed, its key */
+function infoTipHtml(label, info, key, rows = "") {
+  return `<div class="tip-head">${esc(label)}</div><div class="tip-note">${esc(info)}</div>${rows}<div class="tip-key">${esc(key)}</div>`;
+}
 
 function compareStores() {
   const stores = [{ run: state.run, store: state.metrics }];
@@ -1856,8 +1953,14 @@ function renderPanelCard(grid, panel, lazy = false) {
   const sectionName = grid.parentElement?.dataset?.name;
   const title = panelTitle(panel, series, sectionName);
   card.dataset.title = title;
+  const keys = series.length ? series.map((s) => s.key) : [panel.metric ?? panel.metrics?.[0] ?? ""];
+  const key = keys.find(describeKey) ?? keys[0];
+  const described = metricsMode() === "overview" ? describeKey(key) : null;
+  // several agents in one section fan the same metric out: the agent tells the cards apart
+  const label = described ? described.label + (panel.tagAgent && described.agent ? ` · ${described.agent}` : "") : title;
+  const info = described ? `<span class="chart-info" data-tip="${paneTips.push(infoTipHtml(label, described.info, key)) - 1}">i</span>` : "";
   card.innerHTML =
-    `<div class="chart-head" draggable="true"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
+    `<div class="chart-head" draggable="true"><div class="chart-title" title="${esc(title)}">${esc(label)}</div>${info}<div class="chart-last"></div></div>` +
     `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div>` +
     `<div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div>`;
   grid.appendChild(card);
@@ -1892,7 +1995,7 @@ function paneOrderKey(sectionName) {
 }
 
 function persistPaneOrder(grid) {
-  const sectionName = grid?.closest("details.section")?.dataset?.name;
+  const sectionName = grid?.closest(".section")?.dataset?.name;
   if (!sectionName) return;
   state.metrics.paneOrder[paneOrderKey(sectionName)] = [...grid.querySelectorAll(".chart-card")].map(
     (c) => c.dataset.title
@@ -1901,7 +2004,7 @@ function persistPaneOrder(grid) {
 }
 
 function applyPaneOrder(grid) {
-  const sectionName = grid.closest("details.section")?.dataset?.name;
+  const sectionName = grid.closest(".section")?.dataset?.name;
   const saved = sectionName && state.metrics.paneOrder[paneOrderKey(sectionName)];
   if (!saved) return;
   const rank = new Map(saved.map((t, i) => [t, i]));
@@ -1928,16 +2031,22 @@ function updateCharts(touched = null) {
   }
 }
 
+/* the overview reads top to bottom under plain headings; the metrics tab, with a
+   section per key family, folds its sections */
 function addSection(body, name, count, display = name) {
-  const div = document.createElement("details");
-  div.className = "section";
+  const flat = metricsMode() === "overview";
+  const div = document.createElement(flat ? "div" : "details");
+  div.className = flat ? "section eval-sec" : "section";
   div.dataset.name = name;
-  // an active search auto-expands sections so hits are visible; the persisted
-  // collapse state comes back when the query clears
-  div.open = activeFilter ? true : !state.metrics.collapsedSections.has(name);
-  div.innerHTML =
-    `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
-    `<span class="sec-chev">›</span></summary>`;
+  if (flat) div.innerHTML = `<div class="eval-sec-title">${esc(display)}</div>`;
+  else {
+    // an active search auto-expands sections so hits are visible; the persisted
+    // collapse state comes back when the query clears
+    div.open = activeFilter ? true : !state.metrics.collapsedSections.has(name);
+    div.innerHTML =
+      `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
+      `<span class="sec-chev">›</span></summary>`;
+  }
   const grid = document.createElement("div");
   grid.className = "chart-grid";
   div.appendChild(grid);
@@ -1980,7 +2089,10 @@ function renderMetricsBody() {
   m.renderedKeys = m.byKey.size;
   const view = chartView();
   const body = $(view.body);
+  // a re-render (new episodes, new keys) keeps the reader where they were
+  const scrollTop = body.scrollTop;
   for (const other of chartBodies()) other.innerHTML = ""; // the other tab's panes lost their charts above
+  paneTips = [];
   lazyObserver?.disconnect();
   lazyObserver = new IntersectionObserver(
     (entries) => {
@@ -1992,7 +2104,11 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  if (state.tab === "overview" && state.meta?.type === "eval") return renderEvalPane(body);
+  if (state.tab === "overview" && state.meta?.type === "eval") {
+    renderEvalPane(body);
+    body.scrollTop = scrollTop;
+    return;
+  }
   activeFilter = makeFilter(m.searches[state.tab].trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics yet");
@@ -2001,11 +2117,18 @@ function renderMetricsBody() {
   }
   if (view.mode === "overview") {
     $(view.status).textContent = "";
+    const f = state.filter;
+    if (!activeFilter) body.insertAdjacentHTML("beforeend", `<div class="ov-head">${trainProgressHtml() + trainTilesHtml()}</div>`);
     for (const section of buildSections(state.meta)) {
+      // the filter narrows the rollout sections; the run-level ones always show
+      if (section.kind && !f.kinds[section.kind]) continue;
+      if (f.env && section.kind && section.env !== f.env) continue;
       const { div, grid } = addSection(body, section.name);
       for (const panel of section.panels) {
-        if (panel.split) for (const key of splitPanelKeys(panel)) renderPanelCard(grid, { metric: key });
-        else renderPanelCard(grid, panel);
+        if (panel.split) {
+          const keys = splitPanelKeys(panel);
+          for (const key of keys) renderPanelCard(grid, { metric: key, tagAgent: keys.length > 1 });
+        } else renderPanelCard(grid, panel);
       }
       if (!grid.children.length) {
         // a configured eval env stays visible before its first eval fires
@@ -2015,6 +2138,7 @@ function renderMetricsBody() {
     }
     if (activeFilter && !body.children.length)
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
+    body.scrollTop = scrollTop;
     return;
   }
   // all: one pane per key - flat lists a section per parent path, nested walks
@@ -2047,6 +2171,113 @@ function renderMetricsBody() {
     return;
   }
   for (const [group, groupKeys] of bySegment(keys, (segments) => segments[0])) renderKeyTree(body, group, groupKeys, 1);
+}
+
+/* the latest value of a key with the first logged one as the base to read its change from */
+function keyTrend(key) {
+  const producers = state.metrics.byKey.get(key);
+  if (!producers?.size) return null;
+  const points = producers.values().next().value;
+  let minX = Infinity, maxX = -Infinity;
+  for (const x of points.keys()) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+  }
+  return { key, x: maxX, v: points.get(maxX), baseX: minX, base: points.get(minX) };
+}
+
+function keysMatching(regex) {
+  const re = new RegExp(`^(?:${regex})$`);
+  return [...state.metrics.byKey.keys()].filter((k) => re.test(k)).sort();
+}
+
+/* the change from the base value beside a tile's headline, green when it moved the right way */
+function deltaCorner(trend, fmt, { lowerIsBetter = false } = {}) {
+  if (!trend || trend.baseX === trend.x || trend.base == null || trend.v == null) return "";
+  const d = trend.v - trend.base;
+  const tone = d === 0 ? "flat" : d > 0 !== lowerIsBetter ? "good" : "bad";
+  const arrow = d > 0 ? "▲" : d < 0 ? "▼" : "•";
+  return `<span class="tile-delta ${tone}" title="change since step ${trend.baseX}">${arrow} ${d > 0 ? "+" : ""}${fmt(d)}</span>`;
+}
+
+const fmtPct = (v) => (v == null || Number.isNaN(v) ? "n/a" : `${Math.round(v * 100)}%`);
+
+/* the step bar: one cell per step shipped so far (click opens its batch), the rest
+   to the configured horizon; an open-ended run has no rest, its bar just grows */
+function trainProgressHtml() {
+  const meta = state.meta;
+  const step = currentStep();
+  const total = meta.max_steps;
+  const shown = step != null && total ? Math.min(step, total) : step;
+  const done = Array.from({ length: shown ?? 0 }, (_, i) => ({ attrs: `data-step="${i + 1}" title="step ${i + 1} · click for its batch"` }));
+  return progressHtml(blockBarHtml(done, [], total), shown ?? 0, total);
+}
+
+/* the headline tiles of a training run: the scores the filter keeps (reward per train
+   env, avg@k per eval env, each against its base value), the failure rates of the
+   shown scope, and the run's pace: the step time, or for SFT the samples and tokens processed, throughput and MFU */
+function trainTilesHtml() {
+  const meta = state.meta;
+  const f = state.filter;
+  const tiles = [];
+  const trendRows = (trend, fmt) =>
+    trend ? rowTip(`latest · step ${trend.x}`, fmt(trend.v)) + (trend.baseX !== trend.x ? rowTip(`base · step ${trend.baseX}`, fmt(trend.base)) : "") : rowTip("latest", "no data yet");
+  // one tile per matched key: with several agents in a scope the agent tells them apart
+  const trendTiles = (regex, label, fmt, { cls = "", lowerIsBetter = false, delta = true, empty = false } = {}) => {
+    const keys = keysMatching(regex);
+    if (!keys.length && empty) tiles.push(tileHtml(label(null), "–", infoTipHtml(label(null), "no data yet", regex)));
+    for (const key of keys) {
+      const trend = keyTrend(key);
+      const described = describeKey(key);
+      const name = keys.length > 1 && described?.agent ? `${label(described)} · ${described.agent}` : label(described);
+      const tip = infoTipHtml(name, described?.info ?? "", key, trendRows(trend, fmt));
+      const tone = typeof cls === "function" ? cls(trend?.v ?? 0) : cls;
+      tiles.push(tileHtml(name, fmt(trend?.v), tip, { cls: tone, corner: delta ? deltaCorner(trend, fmt, { lowerIsBetter }) : "" }));
+    }
+  };
+  const envs = (meta.train_envs || []).filter((e) => !f.env || e === f.env);
+  const evalEnvs = (meta.eval_envs || []).filter((e) => !f.env || e === f.env);
+  if (meta.type === "sft") {
+    trendTiles("loss/mean", () => "loss", fmtNum, { cls: " score", lowerIsBetter: true });
+    trendTiles("val/loss", () => "val loss", fmtNum, { cls: " score", lowerIsBetter: true });
+  } else if (f.kinds.train) {
+    // with several envs the aggregate is a section of its own, so its tile would only repeat them
+    const scopes = envs.length ? envs.map((e) => [`train/${escRe(e)}`, e]) : [["train/agg", "train"]];
+    for (const [scope, name] of scopes) trendTiles(`${scope}/effective/[^/]+/reward/mean`, () => `${name} reward`, fmtReward, { cls: " score" });
+  }
+  if (f.kinds.eval)
+    for (const env of evalEnvs) trendTiles(`eval/${escRe(env)}/all/[^/]+/avg@\\d+`, (d) => `${env} ${d?.label ?? "avg@k"}`, fmtReward, { cls: " score", empty: true });
+  if (meta.type !== "sft" && f.kinds.train) {
+    const scope = f.env ? `train/${escRe(f.env)}` : (meta.train_envs || []).length > 1 ? "train/agg" : `train/${escRe(meta.train_envs?.[0] ?? "agg")}`;
+    trendTiles(`${scope}/all/[^/]+/has_error/mean`, () => "error rate", fmtPct, { cls: rateClass, lowerIsBetter: true });
+    trendTiles(`${scope}/effective/[^/]+/is_truncated/mean`, () => "truncation rate", fmtPct, { cls: rateClass, lowerIsBetter: true });
+    trendTiles(`${scope}/all/[^/]+/is_timeout/mean`, () => "timeout rate", fmtPct, { cls: (rate) => (rate > 0 ? " rate-timeout" : ""), lowerIsBetter: true });
+  }
+  if (meta.type === "sft") {
+    trendTiles("progress/num_samples", () => "total samples", fmtCompact, { delta: false });
+    trendTiles("progress/num_tokens", () => "total tokens", fmtCompact, { delta: false });
+    trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
+    trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
+  } else trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
+  return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
+}
+
+/* new rows for known keys only redraw the charts; the step bar and tiles read the
+   latest values, so they are rebuilt on their own (their hover cards join paneTips) */
+function updateTrainHead() {
+  const head = document.querySelector("#overview-body .ov-head");
+  if (head) head.innerHTML = trainProgressHtml() + trainTilesHtml();
+}
+
+/* a step cell on the overview opens the batch shipped at that step */
+async function openStep(step) {
+  const t = state.traces;
+  t.mode = "step";
+  t.step = step;
+  t.bin = null;
+  savePrefs();
+  await activateTab("traces", true);
+  if (t.loaded && !state.live) await refreshTraces();
 }
 
 async function initMetrics() {
@@ -2746,11 +2977,23 @@ function showTraceEmpty(title, detail) {
   $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
 }
 
+/* the live rows arrive by their own poll, so the filter the server applied to the
+   table is applied to them here: kind and env, and an outcome that is still open */
+function liveMatches(r) {
+  const f = state.filter;
+  const kind = activeKind();
+  return (!kind || r.kind === kind) && (!f.env || r.env === f.env) && activeOutcome() == null;
+}
+
+function liveRows() {
+  return (state.traces.live || []).filter(liveMatches);
+}
+
 function traceStatusText(total) {
-  const live = state.traces.live?.length || 0;
+  const live = liveRows().length;
   const parts = [];
-  if (live && state.traces.status.live) parts.push(`${live} live`);
-  if (state.traces.status.done) {
+  if (live && state.filter.status.live) parts.push(`${live} live`);
+  if (state.filter.status.done) {
     const n = total ?? state.traces.total ?? 0;
     parts.push(`${fmtCompact(n)} completed episode${n === 1 ? "" : "s"}`);
   }
@@ -2762,8 +3005,14 @@ const PAGE = 128;
 /* both kinds on means no filter; exactly one narrows to it. Turning both off would
    only ever show nothing, so the last one on stays on. */
 function activeKind() {
-  const { train, eval: ev } = state.traces.kinds;
+  const { train, eval: ev } = state.filter.kinds;
   return train && ev ? "" : train ? "train" : ev ? "eval" : "";
+}
+
+/* the outcome the filter narrows to: true for clean episodes, false for errored, null for every one */
+function activeOutcome() {
+  const { ok, error } = state.filter.outcome;
+  return ok && error ? null : ok;
 }
 
 function traceSort() {
@@ -2773,10 +3022,12 @@ function traceSort() {
 function traceQuery(extra = {}) {
   const t = state.traces;
   const [sort, order] = traceSort().split(":");
-  const qs = new URLSearchParams({ sort, order, errors_only: t.errorsOnly });
+  const qs = new URLSearchParams({ sort, order });
   const kind = activeKind();
   if (kind) qs.set("kind", kind);
-  if (t.env) qs.set("env", t.env);
+  const outcome = activeOutcome();
+  if (outcome != null) qs.set("ok", outcome);
+  if (state.filter.env) qs.set("env", state.filter.env);
   if (t.mode === "step" && t.step != null) qs.set("step", t.step);
   if (t.bin) {
     qs.set("start", t.bin[0]);
@@ -2787,8 +3038,13 @@ function traceQuery(extra = {}) {
 }
 
 function traceFiltered() {
-  const t = state.traces;
-  return !!(activeKind() || t.env || t.errorsOnly || t.bin || !(t.status.live && t.status.done));
+  return !!(activeFilters() || state.traces.bin);
+}
+
+/* how many of the shared filter's controls narrow anything */
+function activeFilters() {
+  const f = state.filter;
+  return [f.env, activeKind(), activeOutcome() != null, !(f.status.live && f.status.done)].filter(Boolean).length;
 }
 
 /* what a loaded table answers to: the run and the exact query that produced it, so
@@ -2801,7 +3057,7 @@ function traceKey() {
    any length costs the same to open */
 async function loadEpisodes({ append = false, poll = false } = {}) {
   const traces = state.traces;
-  syncTraceFilterControls();
+  syncFilterControls();
   if (traces.mode === "step" && traces.step == null) {
     $("#trace-status").textContent = "";
     showTraceEmpty("no shipped batches yet");
@@ -2842,14 +3098,10 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   traces.key = key;
   traces.total = data.total;
   traces.runKinds = data.kinds;
+  traces.envs = data.envs;
   if (fresh) traces.lines = data.lines;
   traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
-  const currentEnv = traces.env;
-  for (const sel of ["#trace-env", "#tm-env"])
-    $(sel).innerHTML =
-      `<option value="">all envs</option>` +
-      data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
-  syncDressedSelects();
+  syncFilterControls();
   if (!data.total) {
     $("#trace-status").textContent = traceStatusText(0);
     renderEpisodeRows(fresh); // live rollouts, or the empty state
@@ -3022,10 +3274,12 @@ function fmtSpan(dispatched, arrived, elapsed) {
 }
 
 function episodeRowHtml(ep) {
-  const failed = !ep.ok || !!ep.num_errors;
+  // an ok episode keeps the errors of the attempts it recovered from; they mark the
+  // row as retried, not as failed
+  const failed = !ep.ok;
   const phase = failed ? "error" : "done";
   const dispatched = ep.dispatch ?? (ep.arrival != null && ep.duration != null ? ep.arrival - ep.duration : null);
-  return `<tr data-line="${ep.line}" class="${failed ? "err" : ""}"${failed ? ` title="${ep.num_errors || 1} error${ep.num_errors === 1 ? "" : "s"}"` : ""}>
+  return `<tr data-line="${ep.line}" class="${episodeRowClass(ep)}" title="${esc(episodeRowTitle(ep))}">
         <td class="muted">${ep.line}</td>
         <td><span class="badge stage stage-${phase}">${phase}</span></td>
         <td class="muted nowrap">${fmtSpan(dispatched, ep.arrival, ep.duration)}</td>
@@ -3066,11 +3320,11 @@ function liveRowHtml(r) {
    then the finished episodes, as the status filter allows */
 function traceRows() {
   const t = state.traces;
-  const streaming = t.status.live && t.mode === "stream";
+  const streaming = state.filter.status.live && t.mode === "stream";
   // an episode already in the table hides its live row (the done event may trail it)
   const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
-  const live = streaming ? [...(t.live || []), ...landingRows()].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
-  const episodes = t.status.done ? t.episodes || [] : [];
+  const live = streaming ? [...liveRows(), ...landingRows().filter(liveMatches)].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = state.filter.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
 }
 
@@ -3091,8 +3345,7 @@ function renderEpisodeRows(reset = false) {
     episodeRowH = 0;
   }
   if (!rows.length) {
-    const t = state.traces;
-    if (!t.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
+    if (!state.filter.status.done) showTraceEmpty("no live rollouts", "rollouts show here while their env servers stream them");
     else if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
     else showTraceEmpty("no traces yet");
     return;
@@ -3209,7 +3462,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     semanticExpandedRuns.clear();
     clearSemanticTranscriptOrigin();
     $("#sg-inspector").hidden = true;
-    $("#tm-messages").innerHTML = `<div class="chart-empty">loading live trace…</div>`;
+    resetTranscript(`<div class="chart-empty">loading live trace…</div>`);
     $("#tm-timeline").innerHTML = "";
     $("#tm-meta").innerHTML = "";
   }
@@ -3305,8 +3558,8 @@ function copyText(text, el) {
    mode), then the finished episodes */
 function filteredRollouts() {
   const t = state.traces;
-  const live = t.mode === "stream" && t.status.live ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
-  const episodes = t.status.done ? t.episodes || [] : [];
+  const live = t.mode === "stream" && state.filter.status.live ? liveRows().filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const episodes = state.filter.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes];
 }
 
@@ -3325,7 +3578,7 @@ function tmItemHtml(item) {
   }
   const e = item;
   return (
-    `<div class="tm-item ${rolloutActive(item) ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${rolloutActive(item) ? "active" : ""} ${episodeRowClass(e)}" data-line="${e.line}" title="${esc(episodeRowTitle(e))}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -3426,7 +3679,7 @@ async function modalStep(delta) {
     currentLine = null;
     currentEpisode = null;
     renderRolloutList();
-    $("#tm-messages").innerHTML = emptyState("no episodes", "this step has no rollouts for the current filters");
+    resetTranscript(emptyState("no episodes", "this step has no rollouts for the current filters"));
     $("#tm-meta").innerHTML = "";
   }
 }
@@ -3474,6 +3727,15 @@ async function ensureTokens() {
   currentEpisode = episode;
 }
 
+/* Every path that replaces the transcript with a placeholder goes through here, so the
+   previous episode's error strip never outlives its episode. */
+function resetTranscript(html) {
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.hidden = true;
+  episodeErrors.innerHTML = "";
+  $("#tm-messages").innerHTML = html;
+}
+
 async function openEpisode(line, target = {}) {
   currentLive = null;
   $("#tm-live-label").textContent = "";
@@ -3486,7 +3748,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = null;
   renderModalStep();
   renderRolloutList();
-  $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  resetTranscript(`<div class="chart-empty">loading episode…</div>`);
   const timelineTarget = $("#tm-timeline");
   timelineTarget.classList.remove("semantic-canvas");
   delete timelineTarget.dataset.semanticEpisode;
@@ -3940,7 +4202,7 @@ function judgeEvidenceHtml(trace) {
 
 function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
-  const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
+  const errors = scopedErrorsHtml("trace", scopedErrors(currentEpisode, trace).trace);
   if (!rendered) return errors + emptyState("rendered text not loaded", "select this view again to load recorded token IDs");
   const path = currentPath(trace, branches);
   const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
@@ -3980,42 +4242,69 @@ function renderedBoxHtml(tokenCount, body, canCopyText) {
 
 let entriesObserver = null;
 
-function episodeErrors(ep, trace) {
-  // one failure is often recorded twice, on the episode and on its trace; show it
-  // once, keeping whichever copy carries the traceback
-  const byMessage = new Map();
-  for (const error of [...(ep.errors || []), ...(trace?.errors || [])]) {
-    const record = error && typeof error === "object" ? error : { message: String(error) };
-    const key = `${record.type ?? "Error"}|${record.message ?? ""}`;
-    const kept = byMessage.get(key);
-    if (!kept || (!kept.traceback && record.traceback)) byMessage.set(key, record);
+/* Errors carried by the episode and by the open trace, each split by what they mean.
+   Verifiers keeps every attempt's errors on the final record and stamps success as `ok`,
+   so the errors of an ok episode or trace are history it recovered from, while a failed
+   one's errors describe its outcome. A failure recorded on both the episode and its
+   trace shows once, as the trace's, keeping whichever copy carries the traceback. */
+function scopedErrors(ep, trace) {
+  const record = (error) => (error && typeof error === "object" ? error : { message: String(error) });
+  const key = (r) => `${r.type ?? "Error"}|${r.message ?? ""}`;
+  const keep = (map, r) => {
+    const kept = map.get(key(r));
+    if (!kept || (!kept.traceback && r.traceback)) map.set(key(r), r);
+  };
+  const onTrace = new Map();
+  for (const error of trace?.errors || []) keep(onTrace, record(error));
+  const onEpisode = new Map();
+  for (const error of ep.errors || []) {
+    const r = record(error);
+    if (onTrace.has(key(r))) keep(onTrace, r);
+    else keep(onEpisode, r);
   }
-  return [...byMessage.values()];
+  const split = (records, ok) => ({ failed: ok ? [] : records, recovered: ok ? records : [] });
+  return { episode: split([...onEpisode.values()], ep.ok), trace: split([...onTrace.values()], trace?.ok) };
 }
 
-function errorBannersHtml(errors) {
-  if (!errors.length) return "";
+function errorEntryHtml(scope, record) {
+  const type = record.type ?? "Error";
+  const message = record.message ?? "No error message";
+  const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
   return (
-    `<div class="trace-errors">` +
-    errors
-      .map((error) => {
-        const record = error && typeof error === "object" ? error : { message: String(error) };
-        const type = record.type ?? "Error";
-        const message = record.message ?? "No error message";
-        const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
-        return (
-          `<section class="trace-error-banner">` +
-          `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
-          (traceback
-            ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
-            : "") +
-          `</section>`
-        );
-      })
-      .join("") +
-    `</div>`
+    `<div class="trace-error-message"><span class="trace-error-scope">${scope} error</span><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+    (traceback
+      ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
+      : "")
   );
 }
+
+function scopedErrorsHtml(scope, { failed, recovered }) {
+  const banners = failed.length
+    ? `<div class="trace-errors">${failed.map((record) => `<section class="trace-error-banner">${errorEntryHtml(scope, record)}</section>`).join("")}</div>`
+    : "";
+  const history = recovered.length
+    ? `<details class="trace-recovered"><summary><span>recovered from ${recovered.length} ${scope} error${recovered.length === 1 ? "" : "s"} in earlier attempts</span><span class="entry-chev">›</span></summary>` +
+      recovered.map((record) => `<section class="trace-recovered-item">${errorEntryHtml(scope, record)}</section>`).join("") +
+      `</details>`
+    : "";
+  return banners + history;
+}
+
+function episodeRowClass(ep) {
+  if (ep.timeout) return "timeout";
+  if (!ep.ok) return "err";
+  return ep.num_errors ? "retried" : "";
+}
+
+function episodeRowTitle(ep) {
+  const n = ep.num_errors || 0;
+  const errors = `${n || 1} error${n === 1 ? "" : "s"}`;
+  const timeout = ep.timeout ? `timed out (${ep.stop_condition ?? "timeout"})` : "";
+  if (!ep.ok) return [timeout, errors].filter(Boolean).join(" · ");
+  if (timeout) return timeout;
+  return n ? `recovered from ${errors} in earlier attempts` : "";
+}
+
 
 function normalizedCallUsage(usage = {}) {
   let input = usage.prompt_tokens;
@@ -4036,7 +4325,7 @@ function normalizedCallUsage(usage = {}) {
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
-  const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
+  const errorsHtml = scopedErrorsHtml("trace", scopedErrors(ep, trace).trace);
   if (!trace) {
     container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
@@ -4305,6 +4594,7 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
     parts.push(metaRow("is_truncated", traceTruncated(trace)));
+    parts.push(metaRow("is_timeout", !!trace.is_timeout));
     parts.push(metaRow("ok", trace.ok));
 
     const durations = [];
@@ -4479,6 +4769,8 @@ function semanticEdgeKind(type) {
   if (type === "continuation") return "continuation";
   if (type === "subagent_call") return "subagent-call";
   if (type === "subagent_return") return "subagent-return";
+  if (type === "subagent_cancel") return "subagent-cancel";
+  if (type === "subagent_failed") return "subagent-failed";
   if (type === "compaction_attempt") return "compaction-attempt";
   if (type === "compaction") return "compaction";
   return "custom";
@@ -4976,6 +5268,8 @@ function renderSemanticGraph() {
     continuation: "#767676",
     "subagent-call": "#4a9eff",
     "subagent-return": "#ff6b4a",
+    "subagent-cancel": "#ff4539",
+    "subagent-failed": "#ff4539",
     "compaction-attempt": "#b7a6fa",
     compaction: "#b7a6fa",
     custom: "#b6ff3c",
@@ -5487,12 +5781,17 @@ function renderEpisode() {
   const trace = traces[currentTraceIdx];
   const branches = trace ? traceBranches(trace) : [];
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
+  // the episode's own errors sit above the agent and branch selectors: they belong to
+  // the whole episode, not to whichever trace is open
+  const episodeErrors = $("#tm-episode-errors");
+  episodeErrors.innerHTML = scopedErrorsHtml("episode", scopedErrors(ep, trace).episode);
+  episodeErrors.hidden = !episodeErrors.innerHTML;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}${trace.is_timeout ? " timeout" : trace.ok ? "" : " err"}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -5998,12 +6297,12 @@ function primeTraceCommand(cmd) {
   const traces = state.traces;
   if (cmd.step != null) traces.step = cmd.step;
   // a command naming a kind narrows to it; both stay on otherwise
-  if (cmd.kind) traces.kinds = { train: cmd.kind === "train", eval: cmd.kind === "eval" };
+  if (cmd.kind) state.filter.kinds = { train: cmd.kind === "train", eval: cmd.kind === "eval" };
   // a citation addressed to a step wants the cohort view; `all` is the stream
   if (cmd.subset) traces.mode = cmd.subset === "effective" ? "step" : "stream";
   traces.bin = null;
-  traces.env = "";
-  traces.errorsOnly = false;
+  state.filter.env = "";
+  state.filter.outcome = { ok: true, error: true };
   if (cmd.highlight?.length) traces.viewMode = "messages";
   pendingHighlight = null;
 }
@@ -6258,31 +6557,45 @@ function dressSelect(select) {
   dressedSelects.add(select);
   syncDressedSelects();
 }
-/* the table and the trace viewer carry the same filter dropdown over one
-   shared state — a change in either view shows up in both */
-function syncTraceFilterControls() {
+/* every env the run knows: configured, planned, streamed, or in the traces index */
+function runEnvs() {
+  const meta = state.meta || {};
+  const streamed = (state.metrics.evalSeries?.env || []).filter(Boolean);
+  return [...new Set([...(meta.train_envs || []), ...(meta.eval_envs || []), ...Object.keys(meta.eval_plan || {}), ...streamed, ...(state.traces.envs || [])])];
+}
+
+/* the overview, the traces table and the trace viewer each carry a copy of the
+   filter menu over one shared state: a change in any of them shows up in all */
+function syncFilterControls() {
+  const f = state.filter;
   const t = state.traces;
-  for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
-  for (const sel of ["#trace-kinds", "#tm-kinds"])
-    for (const button of document.querySelectorAll(`${sel} button`)) {
-      button.classList.toggle("on", !!t.kinds[button.dataset.kind]);
-      // note a kind this run never produced, but leave it toggleable: disabling it
-      // would strand the toggle off the moment someone turned it off
-      const absent = t.runKinds && !t.runKinds.includes(button.dataset.kind);
-      button.classList.toggle("absent", !!absent);
-      button.title = absent ? `no ${button.dataset.kind} episodes in this run` : "";
-    }
+  f.envs = runEnvs();
+  if (f.env && !f.envs.includes(f.env)) f.env = "";
+  for (const sel of document.querySelectorAll(".flt-env"))
+    sel.innerHTML = `<option value="">all envs</option>` + f.envs.map((e) => `<option value="${esc(e)}" ${e === f.env ? "selected" : ""}>${esc(e)}</option>`).join("");
+  for (const button of document.querySelectorAll(".flt-kinds button")) {
+    button.classList.toggle("on", !!f.kinds[button.dataset.kind]);
+    // note a kind this run never produced, but leave it toggleable: disabling it
+    // would strand the toggle off the moment someone turned it off
+    const absent = t.runKinds && !t.runKinds.includes(button.dataset.kind);
+    button.classList.toggle("absent", !!absent);
+    button.title = absent ? `no ${button.dataset.kind} episodes in this run` : "";
+  }
+  for (const button of document.querySelectorAll(".flt-status button")) button.classList.toggle("on", !!f.status[button.dataset.status]);
+  for (const button of document.querySelectorAll(".flt-outcome button")) button.classList.toggle("on", !!f.outcome[button.dataset.outcome]);
+  // the overview's copy has no status row, so its count leaves that pair out
+  const active = activeFilters();
+  const shown = (wrap) => (wrap.id === "overview-filter-wrap" && !(f.status.live && f.status.done) ? active - 1 : active);
+  for (const wrap of document.querySelectorAll(".flt-wrap")) {
+    const n = shown(wrap);
+    wrap.querySelector(".flt-btn").classList.toggle("active", n > 0);
+    const badge = wrap.querySelector(".flt-count");
+    badge.hidden = !n;
+    badge.textContent = n;
+  }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
-  for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  for (const button of document.querySelectorAll("#trace-status-filter button, #tm-status-filter button"))
-    button.classList.toggle("on", !!t.status[button.dataset.status]);
   for (const sel of ["#trace-sort", "#tm-sort"])
     $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
-  const active = [t.env, activeKind(), t.errorsOnly, !(t.status.live && t.status.done)].filter(Boolean).length;
-  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
-  const badge = $("#trace-filter-count");
-  badge.hidden = !active;
-  badge.textContent = active;
   // the stream is not addressed by step, so its controls go away in that mode
   $("#step-bar").hidden = t.mode !== "step";
   $("#tm-stephead").hidden = t.mode !== "step";
@@ -6292,6 +6605,45 @@ function syncTraceFilterControls() {
   setActive("#tm-mode", "mode", t.mode);
   syncDressedSelects();
 }
+
+/* a filter change re-reads whatever is open on it: the chart tab's sections, the
+   traces table and histogram, the viewer's list. The status pair only picks rows
+   the table already holds, so it never refetches */
+async function applyFilter({ reload = true } = {}) {
+  savePrefs();
+  syncFilterControls();
+  if (state.tab === "overview" && state.metrics.loaded) renderMetricsBody();
+  if (state.traces.loaded) {
+    if (reload) {
+      await loadEpisodes();
+      await loadHistogram();
+    } else {
+      renderEpisodeRows(true);
+      $("#trace-status").textContent = traceStatusText();
+    }
+  }
+  if (!$("#trace-modal").hidden) {
+    if (reload) await refreshModalList();
+    else renderRolloutList();
+  }
+}
+
+// the copies of the filter menu share one set of listeners
+document.addEventListener("click", (e) => {
+  const button = e.target.closest(".dd-filters .toggle-seg button");
+  if (!button) return;
+  const pair = button.dataset.status ? state.filter.status : button.dataset.kind ? state.filter.kinds : state.filter.outcome;
+  const key = button.dataset.status ?? button.dataset.kind ?? button.dataset.outcome;
+  const other = Object.keys(pair).find((k) => k !== key);
+  if (pair[key] && !pair[other]) return; // never leave both off
+  pair[key] = !pair[key];
+  applyFilter({ reload: !button.dataset.status });
+});
+document.addEventListener("change", (e) => {
+  if (!e.target.matches(".flt-env")) return;
+  state.filter.env = e.target.value;
+  applyFilter();
+});
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
 
@@ -6331,10 +6683,10 @@ for (const [tab, view] of Object.entries(CHART_VIEWS)) {
       savePrefs();
     }, 250)
   );
-  $(`#${tab}-collapse`).addEventListener("click", () =>
+  $(`#${tab}-collapse`)?.addEventListener("click", () =>
     document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = false))
   );
-  $(`#${tab}-expand`).addEventListener("click", () =>
+  $(`#${tab}-expand`)?.addEventListener("click", () =>
     document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = true))
   );
   $(`#${tab}-smooth`).addEventListener("input", (e) => {
@@ -6538,7 +6890,7 @@ async function reopenFirstEpisode() {
   currentLine = null;
   currentEpisode = null;
   renderRolloutList();
-  $("#tm-messages").innerHTML = emptyState("no episodes", "nothing here for the current filters");
+  resetTranscript(emptyState("no episodes", "nothing here for the current filters"));
   $("#tm-meta").innerHTML = "";
 }
 
@@ -6547,27 +6899,6 @@ for (const [sel, inModal] of [["#trace-mode", false], ["#tm-mode", true]])
     b.addEventListener("click", () => {
       if (b.dataset.mode === state.traces.mode) return;
       setTraceMode(b.dataset.mode, inModal);
-    })
-  );
-for (const sel of ["#trace-env", "#tm-env"])
-  $(sel).addEventListener("change", async (e) => {
-    state.traces.env = e.target.value;
-    await loadEpisodes();
-    await loadHistogram();
-    await refreshModalList();
-  });
-for (const sel of ["#trace-kinds", "#tm-kinds"])
-  document.querySelectorAll(`${sel} button`).forEach((b) =>
-    b.addEventListener("click", async () => {
-      const kinds = state.traces.kinds;
-      const kind = b.dataset.kind;
-      const other = kind === "train" ? "eval" : "train";
-      if (kinds[kind] && !kinds[other]) return; // never leave both off
-      kinds[kind] = !kinds[kind];
-      await loadEpisodes();
-      await loadHistogram();
-      savePrefs();
-      await refreshModalList();
     })
   );
 $("#trace-clear-bin").addEventListener("click", async () => {
@@ -6603,14 +6934,6 @@ $("#trace-hist").addEventListener("click", async (e) => {
   await loadEpisodes();
   renderHistogram();
 });
-for (const sel of ["#trace-errors", "#tm-errors"])
-  $(sel).addEventListener("change", async (e) => {
-    state.traces.errorsOnly = e.target.checked;
-    await loadEpisodes();
-    await loadHistogram();
-    savePrefs();
-    await refreshModalList();
-  });
 for (const sel of ["#trace-sort", "#tm-sort"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.sorts[state.traces.mode] = e.target.value;
@@ -6624,20 +6947,6 @@ $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
-document.querySelectorAll("#trace-status-filter button, #tm-status-filter button").forEach((b) =>
-  b.addEventListener("click", async () => {
-    const status = state.traces.status;
-    const key = b.dataset.status;
-    const other = key === "live" ? "done" : "live";
-    if (status[key] && !status[other]) return; // never leave both off
-    status[key] = !status[key];
-    syncTraceFilterControls();
-    savePrefs();
-    renderEpisodeRows(true);
-    $("#trace-status").textContent = traceStatusText();
-    if (!$("#trace-modal").hidden) renderRolloutList(); // the viewer's sidebar follows the same filter
-  })
-);
 function rafThrottle(fn) {
   let pending = false;
   return () => {
@@ -7050,13 +7359,12 @@ function savePrefs() {
       allLayout: state.metrics.allLayout,
       paneMin: state.metrics.paneMin,
       paneH: state.metrics.paneH,
-      includeErrors: state.metrics.includeErrors,
       paneOrder: state.metrics.paneOrder,
       overviewSearch: state.metrics.searches.overview,
       metricsSearch: state.metrics.searches.metrics,
       collapsedSections: [...state.metrics.collapsedSections],
-      traceErrorsOnly: state.traces.errorsOnly,
-      traceStatus: state.traces.status,
+      filterStatus: state.filter.status,
+      filterOutcome: state.filter.outcome,
       traceMode: state.traces.mode,
       traceSortStream: state.traces.sorts.stream,
       traceSortStep: state.traces.sorts.step,
@@ -7121,7 +7429,7 @@ setInterval(pollDashboard, POLL_MS);
 const LIVE_POLL_MS = 1000;
 async function pollLive() {
   if (!state.live || !state.run || state.tab !== "traces" || !state.traces.loaded) return;
-  if (state.traces.mode !== "stream" || !state.traces.status.live) return;
+  if (state.traces.mode !== "stream" || !state.filter.status.live) return;
   await loadLive();
 }
 setInterval(pollLive, LIVE_POLL_MS);
@@ -7139,9 +7447,12 @@ document.addEventListener("visibilitychange", () => {
   const signal = prefs.tokenSignal ?? "";
   $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#overview-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
-    dressSelect($(sel));
-  syncTraceFilterControls();
+  for (const wrap of document.querySelectorAll(".flt-wrap")) wrap.append($("#filter-tpl").content.cloneNode(true));
+  // the status pair picks table rows; the overview has none to pick
+  $("#overview-filter-wrap .flt-status-row").hidden = true;
+  for (const sel of ["#run-select", "#trace-sort", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select", ...document.querySelectorAll(".flt-env")])
+    dressSelect(typeof sel === "string" ? $(sel) : sel);
+  syncFilterControls();
   setActive("#metrics-layout", "layout", state.metrics.allLayout);
   setActive("#log-view", "view", state.logs.view);
   applyPaneSize();

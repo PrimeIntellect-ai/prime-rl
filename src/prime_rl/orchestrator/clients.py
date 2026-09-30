@@ -333,7 +333,7 @@ async def check_health(
     admin_clients: list[AsyncClient],
     interval: int = 1,
     log_interval: int = 30,
-    timeout: int = 1800,
+    timeout: int = 3600,
     quiet: bool = False,
 ) -> None:
     """Wait until every client's /health responds. With ``quiet``, the periodic
