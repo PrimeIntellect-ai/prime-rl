@@ -24,7 +24,7 @@ def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
 
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, pack_lookahead=0)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -58,7 +58,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
     os.environ["LOCAL_WORLD_SIZE"] = str(2)
 
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, pack_lookahead=0)
     _, dataloader = setup_fake_dataloader(config, non_dp_size)
     dataiter = iter(dataloader)
 
@@ -75,7 +75,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
 
 
 def test_fake_dataset_single_rank_resume():
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1, pack_lookahead=0)
     dataset, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -101,7 +101,7 @@ def test_fake_dataset_single_rank_resume():
 
 
 def test_fake_dataset_single_rank_state_with_packing():
-    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1, pack_lookahead=0)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -110,14 +110,13 @@ def test_fake_dataset_single_rank_state_with_packing():
         micro_batch = next(dataiter)
         num_packed_examples = len(micro_batch["input_ids"][micro_batch["loss_mask"]].unique())
         step += num_packed_examples
-        assert micro_batch["input_ids"].shape == (1, 128)
+        assert micro_batch["input_ids"].shape[1] <= 128
+        assert micro_batch["loss_mask"].all()
         assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
         worker_state = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]["worker_0"]["dataset_state"]
-        pending_sample = worker_state.get("pending_sample")
-        expected_dataset_step = step + (pending_sample is not None)
-        assert get_dataset_state(dataloader) == {"worker_0": {"step": expected_dataset_step, "epoch": 0}}
-        if pending_sample is not None:
-            assert pending_sample["input_ids"][0] == step
+        buffer_steps = worker_state["buffer_steps"]
+        assert buffer_steps in ([], [step + 1])
+        assert get_dataset_state(dataloader) == {"worker_0": {"step": step + len(buffer_steps), "epoch": 0}}
 
     state_dict = dataloader.state_dict()
     rng_state = torch.random.get_rng_state()
@@ -167,6 +166,7 @@ def test_dataloader_shards_across_ranks_and_workers(
             seq_len=7,
             num_workers=num_workers,
             shuffle=False,
+            pack_lookahead=0,
         )
 
         def setup_epoch_dataloader():
@@ -244,6 +244,7 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
         num_workers=2,
         length="variable",
         input_ids="increasing",
+        pack_lookahead=0,
     )
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)

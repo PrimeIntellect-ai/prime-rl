@@ -236,6 +236,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
+| `data.pack_lookahead` | Samples buffered for packing (default `64`). Rows fill first-fit decreasing, so every data-parallel rank trains on close to `seq_len` tokens; `0` packs greedily in stream order |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |

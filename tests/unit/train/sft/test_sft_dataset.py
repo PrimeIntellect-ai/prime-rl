@@ -8,7 +8,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, StatefulIterableDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
@@ -421,26 +421,42 @@ def _sft_sample(
     }
 
 
+class _ListDataset(StatefulIterableDataset):
+    def __init__(self, samples: list[dict]):
+        super().__init__()
+        self.samples = samples
+
+    def sample_at(self, step: int) -> dict:
+        return self.samples[step - 1]
+
+    def __iter__(self):
+        while self.step < len(self.samples):
+            self.step += 1
+            yield self.samples[self.step - 1]
+
+
 def test_cat_dataset_packs_multimodal_samples():
     dataset = CatDataset(
-        [
-            _sft_sample(
-                [1, 2],
-                mm_kwargs={
-                    "pixel_values": torch.ones(2, 3),
-                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
-                },
-                mm_token_type_ids=[0, 1],
-            ),
-            _sft_sample(
-                [3, 4, 5],
-                mm_kwargs={
-                    "pixel_values": 2 * torch.ones(3, 3),
-                    "image_grid_thw": torch.tensor([[1, 1, 3]]),
-                },
-                mm_token_type_ids=[0, 1, 1],
-            ),
-        ],
+        _ListDataset(
+            [
+                _sft_sample(
+                    [1, 2],
+                    mm_kwargs={
+                        "pixel_values": torch.ones(2, 3),
+                        "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                    },
+                    mm_token_type_ids=[0, 1],
+                ),
+                _sft_sample(
+                    [3, 4, 5],
+                    mm_kwargs={
+                        "pixel_values": 2 * torch.ones(3, 3),
+                        "image_grid_thw": torch.tensor([[1, 1, 3]]),
+                    },
+                    mm_token_type_ids=[0, 1, 1],
+                ),
+            ]
+        ),
         seq_len=5,
     )
 
@@ -455,19 +471,21 @@ def test_cat_dataset_packs_multimodal_samples():
 
 def test_cat_dataset_packs_text_and_multimodal_samples_together():
     dataset = CatDataset(
-        [
-            _sft_sample([1]),
-            _sft_sample(
-                [2, 3],
-                mm_kwargs={
-                    "pixel_values": torch.ones(2, 3),
-                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
-                },
-                mm_token_type_ids=[0, 1],
-            ),
-            _sft_sample([4]),
-            _sft_sample([5, 6]),
-        ],
+        _ListDataset(
+            [
+                _sft_sample([1]),
+                _sft_sample(
+                    [2, 3],
+                    mm_kwargs={
+                        "pixel_values": torch.ones(2, 3),
+                        "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                    },
+                    mm_token_type_ids=[0, 1],
+                ),
+                _sft_sample([4]),
+                _sft_sample([5, 6]),
+            ]
+        ),
         seq_len=5,
     )
 
@@ -475,13 +493,51 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     packed = next(dataiter)
     text_pack = next(dataiter)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 0]
-    assert packed["loss_mask"] == [True, True, True, True, False]
-    assert packed["seq_lens"] == [1, 2, 2]
+    assert packed["input_ids"] == [1, 2, 3, 4]
+    assert packed["loss_mask"] == [True, True, True, True]
+    assert packed["seq_lens"] == [1, 2, 1]
     assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
-    assert text_pack["loss_mask"] == [True, True, False, False, False]
-    assert text_pack["seq_lens"] == [5]
+    assert packed["mm_token_type_ids"] == [0, 0, 1, 0]
+    assert text_pack["input_ids"] == [5, 6]
+    assert text_pack["loss_mask"] == [True, True]
+    assert text_pack["seq_lens"] == [2]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+def test_cat_dataset_pads_rows_to_a_multiple_of_cp():
+    dataset = CatDataset(_ListDataset([_sft_sample([1, 2, 3, 4, 5]), _sft_sample([6, 7])]), seq_len=8, cp_world_size=4)
+
+    (row,) = list(dataset)
+
+    # 7 tokens round up to 8 for 4 CP ranks; the pad token joins the last sample, loss-masked.
+    assert row["input_ids"] == [1, 2, 3, 4, 5, 6, 7, 0]
+    assert row["loss_mask"] == [True] * 7 + [False]
+    assert row["seq_lens"] == [5, 3]
+
+
+def test_cat_dataset_lookahead_fills_rows_first_fit_decreasing():
+    lengths = [6, 7, 3, 2, 4, 1]
+    samples = [_sft_sample(list(range(10 * i, 10 * i + length))) for i, length in enumerate(lengths)]
+
+    greedy = [row["seq_lens"] for row in CatDataset(_ListDataset(samples), seq_len=10)]
+    lookahead = [row["seq_lens"] for row in CatDataset(_ListDataset(samples), seq_len=10, lookahead=4)]
+
+    assert greedy == [[6], [7, 3], [2, 4, 1]]
+    # Each row starts with the oldest of the 4 buffered samples and fills the gap largest-first.
+    assert lookahead == [[6, 3], [7, 2, 1], [4]]
+
+
+def test_cat_dataset_lookahead_resumes_with_the_same_rows():
+    lengths = [5, 9, 2, 7, 3, 3, 8, 1, 6, 4, 2, 5]
+    samples = [_sft_sample(list(range(10 * i, 10 * i + length))) for i, length in enumerate(lengths)]
+
+    dataset = CatDataset(_ListDataset(samples), seq_len=10, lookahead=3)
+    dataiter = iter(dataset)
+    next(dataiter), next(dataiter)
+    state_dict = dataset.state_dict()
+    expected = [row["input_ids"] for row in dataiter]
+
+    resumed = CatDataset(_ListDataset(samples), seq_len=10, lookahead=3)
+    resumed.load_state_dict(state_dict)
+    assert [row["input_ids"] for row in resumed] == expected

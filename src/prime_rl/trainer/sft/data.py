@@ -52,7 +52,6 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
-        self.fast_forward = False
         self.non_dp_size = non_dp_size
         self._setup_world_info()
 
@@ -61,9 +60,12 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 
     def load_state_dict(self, state_dict: dict):
         assert "step" in state_dict and "epoch" in state_dict
-        self.fast_forward = True
         self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
+
+    def sample_at(self, step: int) -> "Sample":
+        """Rebuild the sample this rank drew at ``step``, without touching the iteration state."""
+        raise NotImplementedError
 
     def _setup_world_info(self):
         worker_info = get_worker_info()
@@ -97,32 +99,31 @@ class FakeDataset(StatefulIterableDataset):
         self.input_ids = input_ids
         self.seed = seed
 
-    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
-        # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
+    def sample_at(self, step: int) -> "Sample":
+        # Seed per step, so any sample can be rebuilt without replaying the ones before it
+        generator = torch.Generator().manual_seed(hash((self.seed, step)) & (2**63 - 1))
         seq_len = (
             int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
             if self.length == "variable"
             else self.seq_len
         )
-        random_input_ids = (
-            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+        input_ids = (
+            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
             if self.input_ids == "random"
-            else None
+            else [step - 1] * (seq_len + 1)
         )
-        return seq_len, random_input_ids
+        return {
+            "input_ids": input_ids[:-1],
+            "target_ids": input_ids[1:],
+            "position_ids": list(range(seq_len)),
+            "loss_mask": [True] * seq_len,
+            "seq_lens": [seq_len],
+            "mm_kwargs": None,
+            "mm_token_type_ids": None,
+        }
 
     def __iter__(self):
         self._setup_world_info()
-        # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
-        # the data loader reseeds the global PRNG per worker process
-        generator = torch.Generator().manual_seed(self.seed + self.data_rank)
-        if self.fast_forward:
-            # step counts globally emmited samples but this rank is only emitted every data_world_size-TH
-            already_emitted = len(range(self.data_rank, self.step, self.data_world_size))
-            for _ in range(already_emitted):
-                self._draw_sample(generator)
-            self.fast_forward = False
-
         while True:
             self.step += 1
 
@@ -130,21 +131,9 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len, random_input_ids = self._draw_sample(generator)
-            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
-            position_ids = list(range(seq_len))
-            loss_mask = [True] * seq_len
-            fake_sample = {
-                "input_ids": input_ids[:-1],
-                "target_ids": input_ids[1:],
-                "position_ids": position_ids,
-                "loss_mask": loss_mask,
-                "seq_lens": [seq_len],
-                "mm_kwargs": None,
-                "mm_token_type_ids": None,
-            }
+            fake_sample = self.sample_at(self.step)
             self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
+            self.num_tokens["fake"] += len(fake_sample["input_ids"]) + 1
             yield fake_sample
 
 
@@ -277,6 +266,7 @@ class SFTDataset(StatefulIterableDataset):
         self.max_examples = max_examples
         self.max_epochs = max_epochs
         self.multimodal = multimodal
+        self._cached_epoch_dataset: tuple[int, Dataset] | None = None
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -433,9 +423,23 @@ class SFTDataset(StatefulIterableDataset):
             "mm_token_type_ids": mm_token_type_ids,
         }
 
+    def _epoch_dataset(self, epoch: int) -> Dataset:
+        if self._cached_epoch_dataset is None or self._cached_epoch_dataset[0] != epoch:
+            dataset = self.dataset.shuffle(seed=epoch + self.seed) if self.shuffle else self.dataset
+            self._cached_epoch_dataset = (epoch, dataset)
+        return self._cached_epoch_dataset[1]
+
+    def _example_at(self, step: int) -> dict:
+        epoch = (step - 1) // self.num_examples
+        return cast(dict, self._epoch_dataset(epoch)[(step - 1) % self.num_examples])
+
+    def sample_at(self, step: int) -> Sample:
+        sample = self._process(self._example_at(step))
+        assert sample is not None, f"Step {step} yielded no sample, so it cannot be rebuilt"
+        return cast(Sample, sample)
+
     def __iter__(self):
         self._setup_world_info()
-        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
         while True:
             self.step += 1
 
@@ -446,27 +450,23 @@ class SFTDataset(StatefulIterableDataset):
             if self.max_epochs is not None and epoch >= self.max_epochs:
                 break
 
-            # Update stored epoch if new epoch is reached, optionally shuffle
-            if epoch > self.epoch:
-                self.epoch = epoch
-                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+            self.epoch = max(self.epoch, epoch)
 
             # Skip samples that don't belong to this data rank
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
             # Get example
-            example = dataset[(self.step - 1) % self.num_examples]
+            example = self._example_at(self.step)
 
             # Process example
-            processed_example = self._process(cast(dict, example))
+            processed_example = self._process(example)
 
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
                 continue
 
             # Yield the example
-            example = cast(dict, example)
             subset_or_split = example.get("__subset") or example.get("__split")
             self.logger.debug(
                 f"Yield example {example.get('__index', '')}"
@@ -479,103 +479,131 @@ class SFTDataset(StatefulIterableDataset):
 
 
 class CatDataset(StatefulIterableDataset):
-    """Concatenate text and multimodal samples into one fixed-length row."""
+    """Pack text and multimodal samples into rows of at most ``seq_len`` tokens.
 
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+    A row is as long as the samples it holds, padded to the next multiple of the CP degree so it
+    shards evenly. That adds at most ``cp_world_size - 1`` loss-masked tokens.
+
+    With ``lookahead == 0``, samples pack greedily in stream order: a row closes when the next
+    sample does not fit, and that sample starts the next row. With ``lookahead > 0``, the packer
+    keeps that many samples buffered. Each row starts with the oldest buffered sample, so no
+    sample waits for more than ``lookahead`` rows, and fills the rest of the row first-fit
+    decreasing from the buffer. Full rows keep the token count, and so the compute, of every
+    data-parallel rank close to ``seq_len``.
+    """
+
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int, cp_world_size: int = 1, lookahead: int = 0):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
-        self.pending_sample: Sample | None = None
+        self.cp_world_size = cp_world_size
+        self.lookahead = lookahead
+        # (dataset step, sample) of every sample drawn from the stream but not yet packed, oldest first
+        self.buffer: list[tuple[int, Sample]] = []
 
     def state_dict(self) -> dict:
-        state = {
+        return {
             "dataset": self.dataset.state_dict(),
             "progress": {
                 "num_samples": dict(self.dataset.num_samples),
                 "num_tokens": dict(self.dataset.num_tokens),
             },
+            # Steps, not samples: the snapshot travels from the worker with every batch.
+            "buffer_steps": [step for step, _ in self.buffer],
         }
-        if self.pending_sample is not None:
-            state["pending_sample"] = self.pending_sample
-        return state
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
         progress = state_dict.get("progress", {})
         self.dataset.num_samples.update(progress.get("num_samples", {}))
         self.dataset.num_tokens.update(progress.get("num_tokens", {}))
-        self.pending_sample = state_dict.get("pending_sample")
+        self.buffer = [(step, self.dataset.sample_at(step)) for step in state_dict.get("buffer_steps", [])]
+        pending_sample = state_dict.get("pending_sample")
+        if pending_sample is not None:
+            # Checkpoints of the fill-to-seq_len packer hold the last drawn sample itself.
+            self.buffer = [(self.dataset.step, pending_sample)]
 
     def __iter__(self):
-        packed_samples = defaultdict(list)
-        packed_samples["mm_kwargs"] = None
-        packed_samples["mm_token_type_ids"] = None
-        seq_len = 0
+        stream = iter(self.dataset)
+        exhausted = False
 
-        pending_sample = self.pending_sample
-        self.pending_sample = None
+        def fill(num_samples: int) -> None:
+            nonlocal exhausted
+            while not exhausted and len(self.buffer) < num_samples:
+                sample = next(stream, None)
+                if sample is None:
+                    exhausted = True
+                else:
+                    self.buffer.append((self.dataset.step, sample))
 
-        def samples():
-            if pending_sample is not None:
-                yield pending_sample
-            yield from self.dataset
+        while True:
+            fill(max(self.lookahead, 1))
+            if not self.buffer:
+                return
 
-        for sample in samples():
+            row = [self.buffer.pop(0)[1]]
+            row_len = len(row[0]["input_ids"])
+            if self.lookahead == 0:
+                while row_len < self.seq_len:
+                    fill(1)
+                    if not self.buffer or row_len + len(self.buffer[0][1]["input_ids"]) > self.seq_len:
+                        break
+                    row.append(self.buffer.pop(0)[1])
+                    row_len += len(row[-1]["input_ids"])
+            else:
+                picked = set()
+                by_length = sorted(range(len(self.buffer)), key=lambda i: -len(self.buffer[i][1]["input_ids"]))
+                for index in by_length:
+                    sample_len = len(self.buffer[index][1]["input_ids"])
+                    if row_len + sample_len <= self.seq_len:
+                        picked.add(index)
+                        row.append(self.buffer[index][1])
+                        row_len += sample_len
+                self.buffer = [entry for index, entry in enumerate(self.buffer) if index not in picked]
+
+            yield self._pack(row)
+
+    def _pack(self, samples: list[Sample]) -> dict:
+        packed: dict[str, Any] = defaultdict(list)
+        packed["mm_kwargs"] = None
+        packed["mm_token_type_ids"] = None
+        for sample in samples:
             sample_len = len(sample["input_ids"])
-            would_overflow = seq_len + sample_len > self.seq_len
-            if seq_len > 0 and would_overflow:
-                self.pending_sample = sample
-                yield self._finalize_pack(packed_samples, self.seq_len)
-                self.pending_sample = None
-                packed_samples = defaultdict(list)
-                packed_samples["mm_kwargs"] = None
-                packed_samples["mm_token_type_ids"] = None
-                seq_len = 0
-
-            existing_len = len(packed_samples["input_ids"])
+            existing_len = len(packed["input_ids"])
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                 value = sample[key]
                 assert isinstance(value, list)
-                packed_samples[key].extend(value)
-            packed_samples["seq_lens"].append(sample_len)
+                packed[key].extend(value)
+            packed["seq_lens"].append(sample_len)
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
             if sample_mm_kwargs is None:
-                if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
+                if packed["mm_token_type_ids"] is not None:
+                    packed["mm_token_type_ids"].extend([0] * sample_len)
+                continue
+
+            if packed["mm_kwargs"] is not None and (
+                (packed["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
+            ):
+                raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
+
+            if packed["mm_kwargs"] is None:
+                packed["mm_kwargs"] = dict(sample_mm_kwargs)
             else:
-                if packed_samples["mm_kwargs"] is not None and (
-                    (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
-                ):
-                    raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
+                if packed["mm_kwargs"].keys() != sample_mm_kwargs.keys():
+                    raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
+                for key, value in sample_mm_kwargs.items():
+                    packed["mm_kwargs"][key] = torch.cat([packed["mm_kwargs"][key], value], dim=0)
 
-                if packed_samples["mm_kwargs"] is None:
-                    packed_samples["mm_kwargs"] = dict(sample_mm_kwargs)
-                else:
-                    if packed_samples["mm_kwargs"].keys() != sample_mm_kwargs.keys():
-                        raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
-                    for key, value in sample_mm_kwargs.items():
-                        packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
+            if packed["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
+                packed["mm_token_type_ids"] = [0] * existing_len
+            if packed["mm_token_type_ids"] is not None:
+                packed["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+        return self._finalize_pack(packed)
 
-                if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
-                    packed_samples["mm_token_type_ids"] = [0] * existing_len
-                if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
-
-            seq_len += sample_len
-
-            if seq_len >= self.seq_len:
-                yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = defaultdict(list)
-                packed_samples["mm_kwargs"] = None
-                packed_samples["mm_token_type_ids"] = None
-                seq_len = 0
-
-        if seq_len > 0:
-            yield self._finalize_pack(packed_samples, self.seq_len)
-
-    def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
+    def _finalize_pack(self, packed: dict[str, Any]) -> dict:
+        seq_len = self.seq_len
         result: dict[str, Any] = {
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
@@ -588,7 +616,7 @@ class CatDataset(StatefulIterableDataset):
             if kept > 0:
                 result["seq_lens"].append(kept)
             remaining -= kept
-        pad_len = seq_len - len(result["input_ids"])
+        pad_len = -len(result["input_ids"]) % self.cp_world_size
         if pad_len > 0:
             result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
@@ -757,8 +785,15 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+def setup_dataloader(
+    dataset: StatefulIterableDataset, config: DataConfig, cp_world_size: int = 1
+) -> StatefulDataLoader:
+    packing_dataset = CatDataset(
+        dataset,
+        config.seq_len * config.micro_batch_size,
+        cp_world_size=cp_world_size,
+        lookahead=config.pack_lookahead,
+    )
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
