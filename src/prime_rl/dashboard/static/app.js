@@ -2194,7 +2194,6 @@ function deltaCorner(trend, fmt, { lowerIsBetter = false } = {}) {
 }
 
 const fmtPct = (v) => (v == null || Number.isNaN(v) ? "n/a" : `${Math.round(v * 100)}%`);
-const MFU_FMT = (v) => (v == null || Number.isNaN(v) ? "n/a" : `${fmtNum(v)}%`); // the trainer logs MFU in percent
 
 /* the step bar: one cell per step shipped so far (click opens its batch), the rest
    to the configured horizon */
@@ -2208,8 +2207,9 @@ function trainProgressHtml() {
   return progressHtml(name, blockBarHtml(done, [], total), total ? Math.min(100, ((shown ?? 0) / total) * 100) : null);
 }
 
-/* the headline tiles of a training run: the scores the filter keeps (each against its
-   base value), the failure rates of the shown scope, and the run's pace */
+/* the headline tiles of a training run: the scores the filter keeps (reward per train
+   env, avg@k per eval env, each against its base value), the failure rates of the
+   shown scope, and the step time */
 function trainTilesHtml() {
   const meta = state.meta;
   const f = state.filter;
@@ -2247,10 +2247,7 @@ function trainTilesHtml() {
     trendTiles(`${scope}/effective/[^/]+/is_truncated/mean`, () => "truncation rate", fmtPct, { cls: rateClass, lowerIsBetter: true });
     trendTiles(`${scope}/all/[^/]+/is_timeout/mean`, () => "timeout rate", fmtPct, { cls: (rate) => (rate > 0 ? " rate-timeout" : ""), lowerIsBetter: true });
   }
-  trendTiles("progress/total_rollouts", () => "rollouts", fmtCompact, { delta: false });
-  trendTiles("progress/total_tokens", () => "tokens", fmtCompact, { delta: false });
   trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
-  trendTiles("perf/mfu", () => "MFU", MFU_FMT, { delta: false });
   return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
 }
 
