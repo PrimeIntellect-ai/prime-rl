@@ -21,6 +21,28 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_request_tools_placement()
+    monkey_patch_dspark_dp_compile_cache()
+
+
+def monkey_patch_dspark_dp_compile_cache():
+    """Keep independent DP replicas in distinct draft compilation caches."""
+    from functools import wraps
+
+    from vllm.v1.worker.gpu.spec_decode.dspark import utils
+
+    original = utils._get_dspark_parallel_config
+    if getattr(original, "_prime_rl_preserves_dp_cache_index", False):
+        return
+
+    @wraps(original)
+    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size):
+        draft = original(parallel_config, tensor_parallel_size)
+        # Config replacement reconstructs this init=False field from the local rank.
+        draft.data_parallel_index = parallel_config.data_parallel_index
+        return draft
+
+    _get_dspark_parallel_config._prime_rl_preserves_dp_cache_index = True
+    utils._get_dspark_parallel_config = _get_dspark_parallel_config
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
