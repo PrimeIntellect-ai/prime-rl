@@ -9,6 +9,7 @@ from subprocess import Popen
 from threading import Event, Thread
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -72,6 +73,16 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
+def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
+    """The online-eval process's monitors: same W&B and file config as the trainer's,
+    with the platform monitor switched to the evaluation flavor under the same name."""
+    return EvalMonitorsConfig(
+        wandb=monitors.wandb,
+        file=monitors.file,
+        prime=PrimeEvalMonitorConfig(name=monitors.prime.name) if monitors.prime is not None else None,
+    )
+
+
 def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env servers itself; the
@@ -85,9 +96,14 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
+        # Same run dir as the trainer: the dashboard reads the eval's
+        # file-monitor artifacts from the run directory, so a separate
+        # output dir would hide them. The train-vs-eval record collision
+        # is resolved by record merging in prime_rl.monitors.prime, not
+        # by directory separation.
         output_dir=config.run_dir,
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        monitors=config.monitors,
+        monitors=build_online_eval_monitors(config.monitors),
     )
     return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
@@ -137,7 +153,7 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
 
 
 def write_slurm_script(
-    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str | None = None
+    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str, wandb_shared: bool
 ) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
@@ -210,6 +226,7 @@ def write_slurm_script(
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
+            wandb_shared=wandb_shared,
             run_name=config.run.name,
             online_eval=online_eval,
             use_nccl_broadcast=(
@@ -249,16 +266,14 @@ def sft_slurm(config: SFTConfig):
     write_config(config, config_path, exclude=exclude)
 
     # Trainer and online-eval processes log to a single shared W&B run.
-    prl_run_id: str | None = None
-    if online_eval and config.monitors.wandb is not None:
-        prl_run_id = os.environ["PRL_RUN_ID"]
+    wandb_shared = online_eval and config.monitors.wandb is not None
 
     launcher_dir = get_launcher_dir(config.run_dir)
     if online_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, log_dir, script_path, prl_run_id)
+    write_slurm_script(config, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
@@ -544,8 +559,12 @@ def sft(config: SFTConfig):
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model
+        from prime_rl.trainer.sft.data import pre_download_data
 
         pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
+        pre_download_data(config.data, config.env_vars)
+        if config.val is not None:
+            pre_download_data(config.val.data, config.env_vars)
 
     if config.slurm is not None:
         sft_slurm(config)

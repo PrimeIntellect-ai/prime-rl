@@ -311,7 +311,7 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    request_timeout_secs: int = Field(1800, ge=1)
+    request_timeout_secs: int = Field(14400, ge=1)
     """Maximum lifetime of a routed request, including streamed completions."""
 
     policy: str = "sticky_least_loaded"
@@ -639,6 +639,11 @@ class InferenceConfig(BaseConfig):
         # cache-discount billing counters parse them off /inference/v1/generate.
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
+
+        # The orchestrator generates through /inference/v1/generate, a scale-out
+        # endpoint that vLLM registers only with `--enable-scale-out`.
+        if "enable_scale_out" not in extra_fields:
+            namespace.enable_scale_out = True
 
         # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
         # `moe_router_dtype` off the HF config to pick the router logits dtype.

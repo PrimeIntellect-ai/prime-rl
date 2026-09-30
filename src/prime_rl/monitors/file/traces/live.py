@@ -176,31 +176,31 @@ def message_text(message: dict[str, Any]) -> str:
     return ""
 
 
-def trace_row(trace: dict[str, Any]) -> dict[str, Any]:
+def trace_row(record: dict[str, Any]) -> dict[str, Any]:
     """The live table's view of one trace: phase, turns, tokens, cost, last message."""
-    calls = trace.get("calls") or []
+    calls = record.get("calls") or []
     usage = [call.get("usage") or {} for call in calls]
     # The newest node is usually a tool result; the assistant's latest words say more.
     last = ""
-    for node in reversed(trace.get("nodes") or []):
+    for node in reversed(record.get("nodes") or []):
         message = node.get("message") or {}
         if message.get("role") == "assistant" and (last := " ".join(message_text(message).split())):
             break
     costs = [u["cost"] for u in usage if u.get("cost") is not None]
-    nodes = trace.get("nodes") or []
+    nodes = record.get("nodes") or []
     parents = {node.get("parent") for node in nodes if node.get("parent") is not None}
     return {
-        "trace": trace.get("id"),
-        "agent": (trace.get("agent") or {}).get("name", "agent"),
-        "stage": stage(trace),
+        "trace": record.get("id"),
+        "agent": (record.get("agent") or {}).get("name", "agent"),
+        "stage": stage(record),
         "turns": len(calls),
         "branches": sum(1 for index in range(len(nodes)) if index not in parents),
-        "input_tokens": sum(u.get("prompt_tokens") or 0 for u in usage),
-        "output_tokens": sum(u.get("completion_tokens") or 0 for u in usage),
+        "input_tokens": record.get("num_input_tokens"),
+        "output_tokens": record.get("num_output_tokens"),
         "cost": sum(costs) if costs else None,
-        "stop_condition": trace.get("stop_condition"),
-        "errors": len(trace.get("errors") or []),
-        "pending": len(trace.get("pending") or []),
+        "stop_condition": record.get("stop_condition"),
+        "errors": len(record.get("errors") or []),
+        "pending": len(record.get("pending") or []),
         "last": last[:SNIPPET_CHARS],
     }
 

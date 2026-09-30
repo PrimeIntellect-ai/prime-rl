@@ -47,6 +47,7 @@ class OnlineEval:
         await monitors.setup(
             producer="online-eval",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,

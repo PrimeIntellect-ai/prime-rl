@@ -268,8 +268,12 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         ep_degree = self.group.size()
         with torch.no_grad():
             num_tokens_per_expert_group = all_to_all_single_equal(num_tokens_per_expert, self.group)
-            input_splits = num_tokens_per_expert.view(ep_degree, -1).sum(dim=1)
-            output_splits = num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1)
+            input_splits, output_splits = torch.stack(
+                (
+                    num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
+                    num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
+                )
+            ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
 
         routed_input = self._dispatch_tokens(routed_input, output_splits, input_splits)
         experts_per_rank = self.num_experts // ep_degree

@@ -43,7 +43,7 @@ Namespaces are one honking great idea -- let's do more of those!
 
 ## Skills
 
-Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs).
+Skills live in `skills/` and are symlinked to `.claude/skills/` (Claude Code) and `.agents/skills/` (Codex). They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs).
 
 If a repository skill could benefit from an update, suggest the specific change, explain why it would help, and ask the user for approval before making it. Wait for approval before creating, modifying, renaming, or deleting skills, including their supporting files and symlinks. If the user has already explicitly requested or approved the skill change, proceed without asking again. Requests to change code, fix workflows, update documentation, or open a PR do not implicitly authorize skill changes. You may read and follow skills without changing them.
 

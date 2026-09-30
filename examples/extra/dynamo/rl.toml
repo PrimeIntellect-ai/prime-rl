@@ -13,6 +13,8 @@ num_infer_gpus = 1
 
 [orchestrator]
 batch_size = 32
+
+[orchestrator.train]
 group_size = 8
 
 [orchestrator.train.sampling]

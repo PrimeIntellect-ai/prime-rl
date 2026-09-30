@@ -197,7 +197,7 @@ class TraceMetrics(StatGroup):
         "num_turns",
         "num_branches",
     )
-    RATES = ("is_truncated", "is_completed")
+    RATES = ("is_truncated", "is_timeout", "is_completed")
 
     def stats(self) -> dict[str, Stat]:
         return {
@@ -320,6 +320,10 @@ class EpisodeMetrics:
     @property
     def is_truncated(self) -> Stat:
         return Stat([float(record.trace.is_truncated) for record in self.records])
+
+    @property
+    def is_timeout(self) -> Stat:
+        return Stat([float(record.trace.is_timeout) for record in self.records])
 
     @property
     def has_error(self) -> Stat:

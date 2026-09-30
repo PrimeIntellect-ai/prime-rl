@@ -5,9 +5,11 @@ import torch.nn as nn
 from torch import Tensor
 
 from prime_rl.trainer.models.layers.lm_head import (
+    IGNORE_INDEX,
     PrimeLmOutput,
     _online_logsumexp_and_weighted_update,
     _patch_model_forward,
+    cross_entropy_sum,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -26,14 +28,21 @@ class GemmaFusedOutputLinear(torch.nn.Linear):
         sampling_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "GemmaFusedOutputLinear requires labels for chunked logprob computation"
-        assert temperature is not None, "GemmaFusedOutputLinear requires per-token temperatures"
         assert sampling_mask is None, "sampling-mask replay is not supported with Gemma softcapped lm_heads"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
-        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
 
+        if temperature is None:
+            # Summed cross-entropy through the logprob path; IGNORE_INDEX rows are masked at the sum.
+            inv_t = torch.ones(b * s, device=hidden_states.device, dtype=torch.float32)
+            logprobs, _ = _GemmaChunkedLogProbEntropyFn.apply(
+                hidden_states, self.weight, labels, inv_t, self.chunk_size, self.softcap
+            )
+            return PrimeLmOutput(loss=-logprobs[labels != IGNORE_INDEX].sum())
+
+        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
         logprobs, entropy = _GemmaChunkedLogProbEntropyFn.apply(
             hidden_states, self.weight, labels, inv_t, self.chunk_size, self.softcap
         )
@@ -57,6 +66,8 @@ class GemmaVanillaOutputLinear(torch.nn.Linear):
     ) -> PrimeLmOutput:
         logits = super().forward(hidden_states)
         logits = self.softcap * torch.tanh(logits / self.softcap)
+        if labels is not None and temperature is None:
+            return PrimeLmOutput(loss=cross_entropy_sum(logits, labels))
         return PrimeLmOutput(logits=logits)
 
 

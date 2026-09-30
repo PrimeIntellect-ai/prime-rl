@@ -22,16 +22,18 @@ name = "ci-rl-sft"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.concurrency]
 max_inflight = 128
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "sft"
 
 # sft's teacher IS the model it samples from.
-[orchestrator.algo.sampling.source]
+[orchestrator.train.algo.sampling.source]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 
@@ -54,7 +56,9 @@ env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-num_examples = 16
+
+[orchestrator.eval.select]
+limit = 16
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

@@ -105,8 +105,8 @@ class NemotronHMamba2(nn.Module):
             bias=config.use_conv_bias,
         )
         self.dt_bias = nn.Parameter(torch.empty(self.num_heads))
-        self.A_log = nn.Parameter(torch.log(torch.arange(1, self.num_heads + 1, dtype=torch.float32)))
-        self.D = nn.Parameter(torch.ones(self.num_heads, dtype=torch.float32))
+        self.A_log = nn.Parameter(torch.arange(1, self.num_heads + 1, dtype=torch.get_default_dtype()).log())
+        self.D = nn.Parameter(torch.ones(self.num_heads))
         self.norm = GatedRMSNorm(
             self.intermediate_size,
             group_size=self.intermediate_size // self.num_groups,
@@ -142,7 +142,7 @@ class NemotronHMamba2(nn.Module):
         conv_weight = self.conv1d.weight
         conv_bias = self.conv1d.bias
         state_decay = -torch.exp(self.A_log.float())
-        skip = self.D
+        skip = self.D.float()
         dt_bias = self.dt_bias
         norm_weight = self.norm.weight
 

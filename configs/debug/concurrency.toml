@@ -88,13 +88,15 @@ type = "sign_sgd"
 
 [orchestrator]
 batch_size = 128
-group_size = 8
 max_off_policy_steps = 32
 
-[orchestrator.algo]
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
+[orchestrator.train.algo.length_penalty]
 type = "linear"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
@@ -117,7 +119,7 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-num_examples = 100
+select.limit = 100
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["debug-concurrency"]
