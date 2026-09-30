@@ -69,6 +69,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
+- Tool-use data may contain `tools` or `tool_defs`. Null/absent `tools` falls back to `tool_defs`; a non-null `tools` value, including an empty list, takes precedence. See `docs/training.md` for accepted formats.
 - SLURM: single- and multi-node
 - Multi-node online evals use one SLURM job with `num_train_nodes + num_infer_nodes` nodes. The generated `launcher/sft.sbatch` assigns inference nodes first, then trainer nodes.
 
