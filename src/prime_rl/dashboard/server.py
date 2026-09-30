@@ -81,7 +81,7 @@ _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
 """Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
-_index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_index_cache: OrderedDict[Path, tuple[int, bytes, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
@@ -1446,9 +1446,14 @@ def index_rows(path: Path) -> list[dict] | None:
     size = path.stat().st_size
     with _lock:
         cached = _lru_get(_index_cache, path)
+    # A resume rewrites/truncates the index (dropped errored rows, then re-grows it),
+    # so the bytes before the old EOF change: reusing the cache append-only would splice
+    # stale rows in. Detect it via file_checkpoint, exactly like line_offsets().
+    if cached and (cached[0] > size or (cached[0] and file_checkpoint(path, cached[0]) != cached[1])):
+        cached = None
     if cached and cached[0] == size:
-        return cached[1]
-    rows, read_from = (list(cached[1]), cached[0]) if cached and cached[0] < size else ([], 0)
+        return cached[2]
+    rows, read_from = (list(cached[2]), cached[0]) if cached else ([], 0)
     with path.open("rb") as f:
         f.seek(read_from)
         for raw in f:
@@ -1460,7 +1465,7 @@ def index_rows(path: Path) -> list[dict] | None:
                 break
             read_from += len(raw)
     with _lock:
-        _lru_put(_index_cache, path, (read_from, rows))
+        _lru_put(_index_cache, path, (read_from, file_checkpoint(path, read_from), rows))
     return rows
 
 
