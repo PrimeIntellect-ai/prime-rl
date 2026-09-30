@@ -627,14 +627,14 @@ function blockBarHtml(done, live, total) {
   );
 }
 
-/* without a horizon the cells keep their size and wrap, so the bar grows instead
-   of reading as full */
-function progressHtml(name, cells, pct, { open = false } = {}) {
+/* the bar with its count beside it: done / total and the share, or done / ∞ without
+   a horizon, where the cells keep their size and wrap so the bar grows instead of
+   reading as full. A name above it heads the block */
+function progressHtml(cells, done, total, { name = "" } = {}) {
+  const label = total ? `${done.toLocaleString()}/${total.toLocaleString()} (${Math.round(Math.min(100, (done / total) * 100))}%)` : `${done.toLocaleString()}/∞`;
   return (
-    `<div class="eval-progress"><div class="ep-head"><span class="name">${name}</span></div>` +
-    `<div class="ep-row"><div class="ep-blocks${open ? " open" : ""}">${cells}</div>` +
-    (open ? "" : `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span>`) +
-    `</div></div>`
+    `<div class="eval-progress">${name ? `<div class="ep-head"><span class="name">${name}</span></div>` : ""}` +
+    `<div class="ep-row"><div class="ep-blocks${total ? "" : " open"}">${cells}</div><span class="ep-pct">${label}</span></div></div>`
   );
 }
 
@@ -650,7 +650,7 @@ function evalProgressHtml(env, idx, live) {
     return { cls: mark, attrs: `data-line="${series.line?.[i]}" title="#${series.line?.[i]} · reward ${reward != null ? fmtReward(reward) : "n/a"}${note}"` };
   });
   const running = live.map((r) => ({ attrs: `${r.trace ? `data-live="${esc(r.trace)}"` : ""} title="${esc(r.stage)} · ${esc(r.task ?? "")}"` }));
-  return progressHtml(esc(env), blockBarHtml(done, running, total), total ? Math.min(100, (idx.length / total) * 100) : null);
+  return progressHtml(blockBarHtml(done, running, total), idx.length, total, { name: esc(env) });
 }
 
 function quantile(sorted, q) {
@@ -2207,8 +2207,7 @@ function trainProgressHtml() {
   const total = meta.max_steps;
   const shown = step != null && total ? Math.min(step, total) : step;
   const done = Array.from({ length: shown ?? 0 }, (_, i) => ({ attrs: `data-step="${i + 1}" title="step ${i + 1} · click for its batch"` }));
-  const name = `step ${shown != null ? shown.toLocaleString() : "–"} / ${total ? total.toLocaleString() : "∞"}`;
-  return progressHtml(name, blockBarHtml(done, [], total), total ? Math.min(100, ((shown ?? 0) / total) * 100) : null, { open: !total });
+  return progressHtml(blockBarHtml(done, [], total), shown ?? 0, total);
 }
 
 /* the headline tiles of a training run: the scores the filter keeps (reward per train

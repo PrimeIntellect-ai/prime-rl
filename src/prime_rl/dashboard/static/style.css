@@ -353,8 +353,8 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .ep-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .ep-row { display: flex; align-items: center; gap: 12px; }
 .ep-row .ep-blocks { flex: 1; }
-.ep-pct { font-size: 13px; color: var(--grey-6); min-width: 4ch; text-align: right; }
-.ep-head .name { font-size: 14px; color: var(--grey-6); }
+.ep-pct { font-size: 16px; font-weight: 500; color: var(--grey-6); white-space: nowrap; }
+.ep-head .name { font-size: 16px; font-weight: 600; color: var(--grey-6); }
 .ep-blocks { display: flex; gap: 2px; height: 28px; }
 /* no horizon: fixed cells that wrap, so the bar grows rather than fills */
 .ep-row .ep-blocks.open { flex: 0 1 auto; flex-wrap: wrap; height: auto; }
@@ -434,7 +434,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 #swarm-tip .tip-note { max-width: 320px; white-space: normal; color: var(--grey-5); margin-bottom: 4px; }
 #swarm-tip .tip-key { color: var(--grey-4); font-size: 10px; margin-top: 4px; }
 /* several eval envs follow one another, a rule between them */
-.eval-env + .eval-env { border-top: 1px solid var(--grey-3); padding-top: 18px; margin-top: 6px; }
+.eval-env + .eval-env { border-top: 2px solid var(--grey-3); padding-top: 22px; margin-top: 10px; }
 .tm-note { font-size: 10px; margin-top: 4px; }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }
