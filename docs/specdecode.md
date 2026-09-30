@@ -21,11 +21,19 @@ Omit the DSpark overlay to measure the target alone. The evaluation uses all 30 
 
 The DSpark and joint RL examples set `vllm.compilation_config.pass_config.fuse_allreduce_rms = false`. This avoids a vLLM 0.30.0 / FlashInfer illegal-memory-access failure observed when restarting TP2 × DP2 inference from its compilation cache. Torch compilation and CUDA graphs remain enabled. Apply the same setting to an exported model's inference config.
 
+### Accuracy and reproducibility
+
+Standard speculative decoding preserves the target distribution through rejection sampling: a proposal from distribution `q` is accepted with probability `min(1, p/q)`, where `p` is the target probability. A rejection draws from normalized `max(p-q, 0)`; greedy decoding accepts only target-argmax matches. A poor draft reduces acceptance and may slow inference, but does not change this mathematical guarantee. See the [speculative decoding algorithm](https://arxiv.org/abs/2211.17192).
+
+Use `rejection_sample_method = "standard"` for quality comparisons. Synthetic acceptance is a benchmarking option that bypasses this guarantee. A fixed request seed does not ensure identical sampled text across speculative and ordinary decoding because their random draws differ. Kernel and batch shapes can also cause small floating-point differences in target logits. Compare repeated samples with matched settings and per-question uncertainty, and use greedy token comparisons and weight fingerprints to investigate discrepancies. Avg@16 is mean correctness over sixteen completions per question; pass@16 measures whether any of those completions is correct.
+
 ## Standalone draft training
 
 `uv run specdecode` validates upstream training options, records the resolved configuration, and launches `speculators.train` with local `torchrun` workers. Its `train` tables follow the upstream configuration schema. `num_gpus` controls the number of workers; `output_dir` holds configuration snapshots and checkpoints. Use `--dry-run` to validate a recipe before loading models.
 
 First prepare tokenized target responses with upstream `uv run speculators prepare-data`. The saved dataset must include `input_ids`, `loss_mask`, and `seq_len`. Configure `train.data.data_path` to point to that dataset.
+
+For a target without a compatible draft, omit `train.draft.from_pretrained` and configure `num_layers`, `draft_arch`, and `target_layer_ids` to initialize a new draft through upstream Speculators. Generate responses with the intended target, preserve its actual token IDs and assistant loss masks, and keep validation questions separate from training questions. Match the intended domain and context lengths; exclude downstream evaluation questions from draft training. Check held-out loss and actual serving acceptance before using the checkpoint for RL.
 
 Online training requests missing target features from a running extraction server:
 
