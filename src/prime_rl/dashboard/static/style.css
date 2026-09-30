@@ -416,7 +416,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tile-delta.good { color: var(--positive); }
 .tile-delta.bad { color: var(--negative); }
 /* the overview's panels wear readable names, set like the tile labels; the mark opens how each is computed */
-#overview-body .chart-card .chart-title { text-transform: uppercase; letter-spacing: var(--track-caps); }
+#overview-body .chart-card .chart-title { flex: 0 1 auto; text-transform: uppercase; letter-spacing: var(--track-caps); }
 .chart-info {
   flex-shrink: 0;
   width: 13px;
@@ -485,7 +485,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   text-overflow: ellipsis;
   flex: 1;
 }
-.chart-last { font-size: 12px; font-weight: 500; color: var(--grey-6); }
+.chart-last { margin-left: auto; font-size: 15px; font-weight: 600; color: var(--grey-6); }
 .chart-empty {
   height: 120px;
   display: flex;
