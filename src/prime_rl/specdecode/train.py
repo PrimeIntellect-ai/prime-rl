@@ -31,7 +31,7 @@ def train(config: SpecDecodeConfig) -> None:
             "--standalone",
             f"--nproc_per_node={config.num_gpus}",
             "-m",
-            "speculators.train",
+            "prime_rl.specdecode.worker",
             "--config",
             str(config_path),
         ],

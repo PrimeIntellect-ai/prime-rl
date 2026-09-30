@@ -29,7 +29,7 @@ Use `rejection_sample_method = "standard"` for quality comparisons. Synthetic ac
 
 ## Standalone draft training
 
-`uv run specdecode` validates upstream training options, records the resolved configuration, and launches `speculators.train` with local `torchrun` workers. Its `train` tables follow the upstream configuration schema. `num_gpus` controls the number of workers; `output_dir` holds configuration snapshots and checkpoints. Use `--dry-run` to validate a recipe before loading models.
+`uv run specdecode` validates upstream training options, records the resolved configuration, and launches local `torchrun` workers through `prime_rl.specdecode.worker`. Each worker explicitly compiles the upstream FlexAttention function before calling the upstream Speculators trainer. This prevents activation-checkpoint recomputation from falling back to eager attention outside the compiled model. Its `train` tables follow the upstream configuration schema. `num_gpus` controls the number of workers; `output_dir` holds configuration snapshots and checkpoints. Use `--dry-run` to validate a recipe before loading models.
 
 First prepare tokenized target responses with upstream `uv run speculators prepare-data`. The saved dataset must include `input_ids`, `loss_mask`, and `seq_len`. Configure `train.data.data_path` to point to that dataset.
 
