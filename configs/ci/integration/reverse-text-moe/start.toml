@@ -20,6 +20,8 @@ impl = "custom"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.concurrency]

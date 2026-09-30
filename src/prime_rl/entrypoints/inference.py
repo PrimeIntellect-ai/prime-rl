@@ -181,6 +181,8 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.vllm.data_parallel_size_local or config.vllm.data_parallel_size),
         "--request-id-headers",
         "x-session-id",
+        "--request-timeout-secs",
+        str(config.router.request_timeout_secs),
         "--worker-startup-timeout-secs",
         "4200",
         "--prometheus-port",

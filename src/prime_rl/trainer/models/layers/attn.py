@@ -203,14 +203,6 @@ def substitute_ring_attn(
 
     AfmoeFlashAttention._compute_attention = _ring_compute_attention
 
-    from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
-
-    Qwen3_5MoeGatedFlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
-
-    Qwen3_5GatedFlashAttention._compute_attention = _ring_compute_attention
-
     from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ring_attention
 
     substitute_gpt_oss_ring_attention(process_group, heads_k_stride)

@@ -47,8 +47,7 @@ if _hub_kernels is not None:
         try:
             return _original_lazy_load_kernel(kernel_name, mapping)
         except OfflineModeIsEnabled:
-            # Return None so NemotronH skips hub kernels; prime-rl's
-            # _patch_mamba2_use_triton_ssd() uses mamba_ssm directly.
+            # Return None so callers can use their non-hub implementation.
             mapping[kernel_name] = None
             return None
 

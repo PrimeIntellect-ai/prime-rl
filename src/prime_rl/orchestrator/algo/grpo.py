@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import torch
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
@@ -23,6 +22,8 @@ class GRPOAlgorithm(Algorithm):
         self.length_penalty = config.length_penalty
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
+        import torch  # only the trainer-side extras ship torch; an eval process never scores a group
+
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         length_penalty = self.length_penalty

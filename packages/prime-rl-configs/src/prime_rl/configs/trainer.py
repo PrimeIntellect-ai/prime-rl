@@ -1,8 +1,9 @@
+import re
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -83,6 +84,9 @@ OptimizerInBackwardOffload = Annotated[
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
+
+    mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
+    """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
 
 
 class FusionsConfig(BaseConfig):
@@ -180,19 +184,46 @@ class MXFP8Config(BaseConfig):
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
 
 
-class BF16MoEComputeConfig(BaseConfig):
+class MoEComputeConfigBase(BaseConfig):
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
+    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    """
+
+    @field_validator("apply_to")
+    @classmethod
+    def validate_apply_to(cls, value: str | list[int]) -> str | list[int]:
+        if isinstance(value, str) and value != "all":
+            if re.fullmatch(r"\d+(?:\.\d+)?%", value) is None or float(value[:-1]) > 100:
+                raise ValueError('apply_to must be "all", a percentage from "0%" to "100%", or a list of layer indices')
+        return value
+
+    def resolve_layers(self, num_layers: int) -> set[int]:
+        if isinstance(self.apply_to, list):
+            invalid = [index for index in self.apply_to if index >= num_layers]
+            if invalid:
+                raise ValueError(
+                    f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
+                )
+            return set(self.apply_to)
+        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
+        return set(range(count))
+
+
+class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
 
 
-class DeepGemmFP8MoEComputeConfig(BaseConfig):
+class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
 
-class MXFP8MoEComputeConfig(BaseConfig):
+class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"
@@ -314,7 +345,7 @@ class ModelConfig(BaseModelConfig):
     """Debugging knobs for the model and distributed training."""
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
@@ -540,14 +571,71 @@ class CheckpointConfig(BaseConfig):
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
-    eps: float = Field(0.1, ge=0)
+    eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
+
+    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
+    """Cap the importance weight of accepted tokens while preserving its policy gradient."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
-    kl_tau: float = Field(1e-3, ge=0)
+    kl_tau: float = Field(0.0, ge=0)
     """Temperature for the KL term."""
+
+
+class IcePopLossConfig(BaseConfig):
+    type: Literal["icepop"] = "icepop"
+
+    ratio_low: float = Field(0.2, gt=0)
+    """Lower accepted trainer-to-inference probability ratio."""
+
+    ratio_high: float = Field(5.0, gt=0)
+    """Upper accepted trainer-to-inference probability ratio."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    @model_validator(mode="after")
+    def validate_ratio_bounds(self):
+        if self.ratio_low > self.ratio_high:
+            raise ValueError("ratio_low must not exceed ratio_high")
+        return self
+
+
+class PPOLossConfig(BaseConfig):
+    type: Literal["ppo"] = "ppo"
+
+    ratio_low: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
+    """Lower ratio bound for the clipped surrogate."""
+
+    ratio_high: float = Field(1.2, ge=1, allow_inf_nan=False)
+    """Upper ratio bound for the clipped surrogate."""
+
+    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
+    """Cap the unbounded side of the surrogate while preserving its gradient."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    @model_validator(mode="after")
+    def validate_max_importance_ratio(self):
+        if self.max_importance_ratio < self.ratio_high:
+            raise ValueError("max_importance_ratio must be at least ratio_high")
+        return self
+
+
+class CISPOLossConfig(BaseConfig):
+    type: Literal["cispo"] = "cispo"
+
+    ratio_low: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
+    """Lower bound for the detached importance weight; zero disables lower clipping."""
+
+    ratio_high: float = Field(5.0, ge=1, allow_inf_nan=False)
+    """Upper bound for the detached importance weight."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -560,7 +648,9 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[
+    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -597,9 +687,6 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
-
-    quantize_in_weight_transfer: bool = False
-    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
@@ -711,16 +798,6 @@ class TrainerConfig(BaseConfig):
                 stacklevel=1,
             )
             self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
-    def vlms_require_bfloat16(self):
-        if self.model.vlm is not None and (
-            self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16"
-        ):
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
         return self
 
     @model_validator(mode="after")

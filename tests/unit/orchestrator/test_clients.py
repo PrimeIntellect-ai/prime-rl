@@ -81,7 +81,6 @@ def test_admin_plane_initializes_nccl():
             "rank_offset": 0,
             "inference_world_size": 1,
             "timeout": 1200,
-            "quantize_in_weight_transfer": False,
         },
     )
     asyncio.run(admin_plane.aclose())

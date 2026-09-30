@@ -27,7 +27,7 @@ uv run inference --vllm.model Qwen/Qwen3-0.6B
 
 ```bash
 # Run this in the other terminal
-uv run eval reverse-text --harness.id null -m Qwen/Qwen3-0.6B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval @ examples/basic/reverse-text/eval.toml
 ```
 
 This is of course just a quick vibe check and no full-fledged evaluation, but we can see that the model struggles with this task. In this specific instance, we got an **average reward of ~0.05** across the 20x3 rollouts. Let's do some training!
@@ -94,7 +94,7 @@ uv run inference --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 
 ```bash
 # Run this in the other terminal
-uv run eval reverse-text --harness.id null -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval @ examples/basic/reverse-text/eval.toml -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 ```
 
 Way better! Now we get an **average reward of ~0.8**.
@@ -197,10 +197,9 @@ kubectl exec -it my-exp-inference-0 -- bash
 uv run inference --vllm.model /data/outputs/weights_hf/step_20
 
 # Back in trainer pod, run evaluation
-uv run eval reverse-text --harness.id null \
+uv run eval @ examples/basic/reverse-text/eval.toml \
   -m /data/outputs/weights_hf/step_20 \
-  --client.base-url $INFERENCE_URL \
-  -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+  --client.base-url $INFERENCE_URL
 ```
 
 ### Clean Up

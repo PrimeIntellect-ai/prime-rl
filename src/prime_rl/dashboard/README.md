@@ -1,8 +1,8 @@
 # Dashboard
 
 `uv run dashboard [output_dir ...]` — a local web dashboard for run output
-directories (metrics, resolved configs, rollout traces, cited reports,
-component logs) at
+directories (a curated overview, every logged metric, resolved configs,
+rollout traces, cited reports, component logs) at
 http://localhost:7788. The trace viewer includes transcript, synchronized
 agent timeline, and terminal replay views; timeline activities open the
 corresponding transcript call. Needs the `dashboard` extra. Every instance also serves

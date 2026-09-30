@@ -33,7 +33,7 @@ class WandbMonitor(Monitor):
         config: BaseConfig | None = None,
         train_env_names: list[str] | None = None,
         eval_env_names: list[str] | None = None,
-        overview_flavor: Literal["rl", "sft"] = "rl",
+        overview_flavor: Literal["rl", "sft", "eval"] = "rl",
     ) -> None:
         # W&B reads the start command off sys.argv; the launcher passes the original
         # command to subprocesses via $WANDB_ARGS.

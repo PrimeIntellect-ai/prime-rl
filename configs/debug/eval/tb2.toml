@@ -1,0 +1,13 @@
+# Terminal-Bench 2 at avg@4: every task 4 times with the bash harness in prime
+# sandboxes (PRIME_API_KEY authenticates sandbox creation) against Prime Inference.
+#
+#   uv run eval @ configs/debug/eval/tb2.toml
+
+group_size = 4
+
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["ProviderError", "SandboxError"]

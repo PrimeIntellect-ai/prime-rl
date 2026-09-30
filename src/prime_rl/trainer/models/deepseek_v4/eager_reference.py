@@ -1,13 +1,56 @@
-"""Naive DeepSeek V4 attention reference.
+"""Naive DeepSeek V4 attention and mHC references.
 
 Nothing in the production path calls these. They exist for the tests, where a dense, obviously
-correct implementation is the standard the fused kernel is measured against. They take plain
-tensors, so this module imports nothing from `attention.py` and the dependency runs one way only.
+correct implementation is the standard the fused kernel is measured against, and where it is the
+only implementation that runs at shapes the kernel cannot tile. The dependency runs one way only:
+this module reads `attention.py`, which is kernel-only and never reads back.
 """
+
+import types
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
+from torch import Tensor, nn
+
+from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, SparseAttnInputs
+
+
+def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
+    """Rotate consecutive channel pairs: `(x0, x1, x2, x3, ...) -> (-x1, x0, -x3, x2, ...)`.
+
+    Not the same as `prime_rl.trainer.models.layers.rotary_emb.rotate_half`, which pairs
+    channel `i` with channel `i + dim / 2` (the GPT-NeoX layout). DeepSeek-V4 stores each
+    rotary pair adjacently, so the two are not interchangeable.
+    """
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    return torch.stack((-x2, x1), dim=-1).flatten(-2)
+
+
+def apply_rotary_pos_emb_interleaved(
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
+) -> torch.Tensor:
+    """Apply interleaved RoPE to the trailing rotary slice of `x`.
+
+    `cos` and `sin` arrive at half width (one entry per interleaved pair) and are widened
+    with `repeat_interleave`. Each head is laid out as `[nope | rope]`, so only the last
+    `2 * cos.shape[-1]` channels rotate and the leading ones pass through untouched.
+    The rotation itself runs in fp32 and is cast back to `x`'s dtype.
+
+    Args:
+        x: Tensor whose last dimension is the head dimension.
+        cos: Half-width cosines, shape `(batch, seq, rope_dim / 2)`.
+        sin: Half-width sines, same shape as `cos`.
+        unsqueeze_dim: Axis of `x` that `cos` / `sin` must broadcast over. Use `1` for a
+            `(batch, heads, seq, head_dim)` layout and `2` for `(batch, seq, heads, head_dim)`.
+    """
+    cos = cos.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
+    sin = sin.repeat_interleave(2, dim=-1).unsqueeze(unsqueeze_dim)
+    rope_dim = cos.shape[-1]
+    nope, rope = x[..., :-rope_dim], x[..., -rope_dim:]
+    rotated = ((rope.float() * cos) + (rotate_half_interleaved(rope).float() * sin)).to(x.dtype)
+    return torch.cat([nope, rotated], dim=-1)
 
 
 def eager_attention_with_sinks(
@@ -91,3 +134,97 @@ def dense_mask_from_indices(indices: Tensor, n_positions: int, dtype: torch.dtyp
     mask = torch.full((batch, 1, seq_len, n_positions + 1), float("-inf"), dtype=dtype, device=indices.device)
     mask.scatter_(-1, safe, 0.0)
     return mask[..., :n_positions].contiguous()
+
+
+def eager_attention_forward(
+    module: DeepseekV4Attention, hidden_states: Tensor, packed: PackedContext
+) -> tuple[Tensor, None]:
+    """`DeepseekV4Attention.forward` with a dense softmax where the fused kernel goes.
+
+    The projections and the RoPE are reimplemented rather than called through, so a change to that
+    method has to be mirrored here. The slot layout is not: both consumers read the same
+    `SparseAttnInputs`, which is what makes a disagreement between them one about attention math.
+    """
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, module.head_dim)
+    cos, sin = module.rotary_emb(packed.position_ids, module.rope_layer_type, dtype=torch.float32)
+
+    q_residual = module.q_a_norm(module.q_a_proj(hidden_states))
+    q = module.q_b_proj(q_residual).view(*hidden_shape).transpose(1, 2)
+    q = apply_rotary_pos_emb_interleaved(module.q_b_norm(q), cos, sin).to(q.dtype)
+
+    kv = module.kv_norm(module.kv_proj(hidden_states))
+    kv = kv.view(*kv.shape[:2], 1, module.head_dim)
+    kv = apply_rotary_pos_emb_interleaved(kv, cos, sin, unsqueeze_dim=2)
+    if module.cp_context.cp_enabled:
+        kv = dsv4_attention.gather_for_cp(kv, module.cp_context.cp_group)
+    kv = kv.transpose(1, 2)
+
+    compressed = (
+        module.compressor(
+            hidden_states,
+            q_residual,
+            packed,
+            cp_group=module.cp_context.cp_group,
+            cp_world_size=module.cp_context.cp_world_size,
+        )
+        if module.compressor is not None
+        else None
+    )
+    compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+    inputs = SparseAttnInputs.build(
+        kv=kv,
+        compressed_kv=compressed_kv,
+        top_k_indices=top_k_indices,
+        window_indices=packed.window_indices,
+    )
+
+    attention_mask = dense_mask_from_indices(inputs.indices, inputs.kv_buf.shape[1], q.dtype)
+    keys = inputs.kv_buf.transpose(1, 2)
+    attn_output = eager_attention_with_sinks(
+        q,
+        keys,
+        keys,
+        module.sinks,
+        attention_mask,
+        scaling=module.scaling,
+        dropout=module.attention_dropout,
+        training=module.training,
+    )
+
+    attn_output = apply_rotary_pos_emb_interleaved(attn_output, cos, -sin, unsqueeze_dim=2)
+    grouped = module.o_a_proj(attn_output.reshape(*input_shape, module.config.o_groups, -1)).flatten(2)
+    return module.o_b_proj(grouped), None
+
+
+def use_eager_attention(module: nn.Module) -> None:
+    """Rebind every `DeepseekV4Attention` under `module` to the dense reference consumer.
+
+    `modules()` yields `module` itself, so this covers a lone attention layer as well as a model
+    holding several of them.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, DeepseekV4Attention):
+            submodule.forward = types.MethodType(eager_attention_forward, submodule)
+
+
+def eager_sinkhorn(logits: Tensor, num_iterations: int, eps: float) -> Tensor:
+    """Project `logits` onto the doubly-stochastic manifold by alternating row and column sums."""
+    comb = torch.softmax(logits, dim=-1) + eps
+    comb = comb / (comb.sum(dim=-2, keepdim=True) + eps)
+    for _ in range(num_iterations - 1):
+        comb = comb / (comb.sum(dim=-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(dim=-2, keepdim=True) + eps)
+    return comb
+
+
+def eager_update_states(post: Tensor, comb: Tensor, sublayer_out: Tensor, mhc_states: Tensor) -> Tensor:
+    """Broadcast the sublayer output over the streams via `post` and remix them via `comb`.
+
+    `comb` is consumed summing over the *source* stream axis, i.e. transposed; the fused kernel
+    applies that transpose internally, so both take `comb` untransposed.
+    """
+    dtype = mhc_states.dtype
+    return post.to(dtype).unsqueeze(-1) * sublayer_out.unsqueeze(-2) + torch.matmul(
+        comb.to(dtype).transpose(-1, -2), mhc_states
+    )

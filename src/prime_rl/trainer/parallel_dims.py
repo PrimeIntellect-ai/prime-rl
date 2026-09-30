@@ -280,6 +280,7 @@ def _is_moe_model(config: ModelConfig) -> bool:
     from transformers import AutoConfig
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    model_config = getattr(model_config, "text_config", model_config)
     return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
 
 

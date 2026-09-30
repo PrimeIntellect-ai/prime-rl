@@ -8,7 +8,6 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
@@ -22,6 +21,7 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
+    setup_context_parallel,
     setup_cp_params,
     shard_for_cp,
 )
@@ -29,20 +29,23 @@ from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
-    compute_importance_ratio_and_mismatch_kl,
+    _mismatch_kl_from_log_ratio,
     selective_log_softmax,
     selective_log_softmax_with_sampling_mask,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.multimodal import get_multimodal_adapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    setup_model,
+    get_global_moe_stats,
     is_tt_moe_model,
-    get_load_balance_stats,
+    setup_model,
+    setup_processor,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -96,7 +99,7 @@ def train(config: TrainerConfig):
     heart = None
     if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
-        heart = Heartbeat(config.heartbeat.url)
+        heart = Heartbeat(config.heartbeat)
 
     # Setup metrics server (full on master, health-only on other nodes' local rank 0)
     metrics_server = None
@@ -142,12 +145,20 @@ def train(config: TrainerConfig):
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
-    # Initialize the model and tokenizer
+    # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
+
+    processor = None
+    mm_adapter = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+        mm_adapter = get_multimodal_adapter(model.config.model_type)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -191,31 +202,10 @@ def train(config: TrainerConfig):
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
     if parallel_dims.cp_enabled:
-        cp_group = parallel_dims.world_mesh["cp"].get_group()
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        if config.model.cp_style == "ring":
-            # Delayed import: ring_flash_attn imports flash_attn at module scope, which
-            # only the ring path needs.
-            from ring_flash_attn import substitute_hf_flash_attn
+        setup_context_parallel(model, config.model, parallel_dims)
 
-            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        else:
-            from prime_rl.trainer.models.layers.ulysses_attn import (
-                substitute_hf_ulysses_attn,
-                substitute_ulysses_attn,
-            )
-
-            substitute_hf_ulysses_attn(cp_group)
-            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
-
-        # sparse MLA is softmax (works with both ring and ulysses).
-        setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        # Linear-attn / Mamba layers are only configured under ulysses; models that have them
-        # declare ulysses-only in `cp_support`, so `get_model` already rejected ring.
-        if config.model.cp_style == "ulysses":
-            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
+    is_moe_model = is_tt_moe_model(model)
+    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
     # carries no adapter weights); a checkpoint resume below overwrites it.
@@ -383,17 +373,17 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            # Multimodal kwargs are an opaque per-model dict (e.g.
-            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
-            # just {"pixel_values": ...} for Gemma3-VL) — we move every
-            # tensor to CUDA and let the model's forward sort them.
-            mm_kwargs_raw = micro_batch.get("mm_kwargs")
-            mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
-            if mm_kwargs is not None and config.model.vlm is None:
-                raise ValueError(
-                    "Received multimodal samples but [model.vlm] is not set. "
-                    "Set [model.vlm] to train on multimodal samples."
-                )
+            mm_kwargs = None
+            mm_forward_policy = None
+            mm_refs = micro_batch.get("mm_refs")
+            if mm_refs is not None:
+                if processor is None or mm_adapter is None:
+                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
+                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
+                mm_forward_policy = materialized.forward_policy
+                micro_batch["mm_refs"] = None
+                del materialized, mm_refs
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -411,8 +401,9 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                # MRoPE batches must merge image embeddings before sharding.
-                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                defer_vlm_cp_to_model = bool(
+                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
+                )
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,
@@ -465,6 +456,7 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
+                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -521,6 +513,8 @@ def train(config: TrainerConfig):
                 loss.backward()
                 finish_backward(gradient_manager)
 
+            mm_kwargs = None
+
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
@@ -549,8 +543,9 @@ def train(config: TrainerConfig):
                 has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():
-                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-                mismatch_kl = mismatch_kl[mismatch_mask].detach().to("cpu")
+                    log_ratio = out["logprobs"][mismatch_mask] - inference_logprobs[mismatch_mask]
+                    mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
+                mismatch_kl = mismatch_kl.detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 mismatch_env_names = [
                     env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
@@ -563,11 +558,9 @@ def train(config: TrainerConfig):
 
             annotation_writer.export(micro_batch, out)
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    if v is not None:
-                        tensors[k].append(v)
+            if is_moe_model:
+                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                    tensors[name].append(value.reshape(1))
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
@@ -577,10 +570,6 @@ def train(config: TrainerConfig):
             micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
             if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
-            if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"
-            if "routing_confidence" in tensors:
-                micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         annotation_writer.flush()

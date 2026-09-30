@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import pytest
 import tomli_w
@@ -8,9 +8,15 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.env_server import EnvServerConfig
-from prime_rl.configs.evals import EvalsConfig
+from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.orchestrator import (
+    EvalSourcesConfig,
+    OrchestratorConfig,
+    RLOnlineEvalConfig,
+    ScheduledEvalConfig,
+    TrainConfig,
+)
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -25,7 +31,7 @@ CONFIG_CLASSES = [
     OrchestratorConfig,
     InferenceConfig,
     EnvServerConfig,
-    EvalsConfig,
+    EvalConfig,
 ]
 
 
@@ -40,16 +46,33 @@ def get_config_files() -> list[Path]:
     return config_files + example_files + k8s_files
 
 
+def can_parse(config_cls: type, args: list[str]) -> bool:
+    """Whether `cli` parses the given `@` config file args into `config_cls`."""
+    try:
+        cli(config_cls, args=args)
+        return True
+    except (ValidationError, ConfigFileError, SystemExit):
+        return False
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
-    """Tests that all config files can be loaded by at least one config class."""
-    could_parse = []
-    for config_cls in CONFIG_CLASSES:
-        try:
-            cli(config_cls, args=["@", config_file.as_posix()])
-            could_parse.append(True)
-        except (ValidationError, ConfigFileError, SystemExit):
-            could_parse.append(False)
+    """Tests that all config files can be loaded by at least one config class.
+
+    A file that no class parses standalone is an overlay — a checked-in config that only carries
+    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
+    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
+    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
+    "TOML Composition").
+    """
+    could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
+    if not any(could_parse):
+        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
+        could_parse = [
+            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
+            for base in sibling_bases
+            for config_cls in CONFIG_CLASSES
+        ]
     assert any(could_parse), f"No config class could be parsed from {config_file}"
 
 
@@ -164,6 +187,25 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
+    default_config = TrainerConfig()
+    assert default_config.loss.type == "ipo"
+
+    config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
+    assert config.loss.type == "icepop"
+    assert config.loss.ratio_low == 0.2
+    assert config.loss.ratio_high == 5.0
+
+    with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
+
+    assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
+    assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+
+    with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
+
+
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
 
@@ -189,7 +231,46 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     ],
 )
 def test_supported_moe_runtime_configs(model):
-    TrainerModelConfig.model_validate(model)
+    config = TrainerModelConfig.model_validate(model)
+    assert config.moe.compute.resolve_layers(43) == set(range(43))
+
+
+@pytest.mark.parametrize("backend", ["bf16", "deepgemm_fp8", "mxfp8"])
+@pytest.mark.parametrize(
+    ("selection", "num_layers", "selected"),
+    [
+        ("all", 10, set(range(10))),
+        ("85%", 48, set(range(40))),
+        ("100%", 3, {0, 1, 2}),
+        ("0%", 3, set()),
+        ("33.3%", 10, {0, 1, 2}),
+        ([], 10, set()),
+        ([2, 0], 10, {0, 2}),
+        ([0, 2, 2], 3, {0, 2}),
+    ],
+)
+def test_moe_compute_apply_to(backend, selection, num_layers, selected):
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": backend, "apply_to": selection}}})
+    config = TrainerModelConfig.model_validate_json(config.model_dump_json())
+    assert config.moe.compute.resolve_layers(num_layers) == selected
+
+
+@pytest.mark.parametrize("selection", ["*", "model.layers.*", "", "101%", "-1%", "nan%", [-1], [1.5], [True]])
+def test_moe_compute_rejects_invalid_apply_to(selection):
+    with pytest.raises(ValidationError, match="apply_to"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+
+
+def test_moe_compute_rejects_out_of_range_layer():
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [3]}}})
+    with pytest.raises(ValueError, match="out of range"):
+        config.moe.compute.resolve_layers(3)
+
+
+@pytest.mark.parametrize(("selection", "selected"), [("all", {0, 1, 2}), ("50%", {0}), ("[0, 2]", {0, 2})])
+def test_moe_compute_apply_to_cli(selection, selected):
+    config = cli(TrainerModelConfig, args=["--moe.compute.type", "mxfp8", "--moe.compute.apply-to", selection])
+    assert config.moe.compute.resolve_layers(3) == selected
 
 
 @pytest.mark.parametrize(
@@ -317,44 +398,107 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded == config
 
 
-def test_env_algo_overrides_top_level():
+def test_env_algo_inherits_the_group_algo():
     config = OrchestratorConfig.model_validate(
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
-            "algo": {"type": "echo"},
             "train": {
+                "algo": {"type": "echo", "roles": {"user": {"alpha": 0.1}}},
                 "source": [
                     {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
                     {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
-                ]
+                    {"env": {"taskset": {"id": "reverse-text"}}, "name": "c", "algo": {"roles": {"tool": {}}}},
+                ],
             },
         }
     )
-    env_a, env_b = config.train.source
-    # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
-    assert env_a.algo is not None and env_a.algo.type == "grpo"
-    assert env_b.algo is not None and env_b.algo.type == "echo"
+    env_a, env_b, env_c = config.train.source
+    # A different type is the env's own algorithm; no type keeps the group's.
+    assert env_a.algo.type == "grpo"
+    assert env_b.algo.type == "echo" and env_b.algo.roles.user.alpha == 0.1
+    assert env_c.algo.type == "echo" and env_c.algo.roles.user.alpha == 0.1 and env_c.algo.roles.tool is not None
 
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+    assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
+
+def test_sources_inherit_the_group_fields_they_leave_unset():
+    config = EvalConfig.model_validate(
+        {
+            "r": 4,
+            "sampling": {"temperature": 0.5, "extra_body": {"a": 1}},
+            "select": {"limit": 8, "include": {"idx": [":100"]}},
+            "env": {"retries": {"max_retries": 3}},
+            "source": [
+                {"env": {"taskset": {"id": "gsm8k"}}},
+                {
+                    "name": "b",
+                    "env": {"taskset": {"id": "gsm8k"}},
+                    "group_size": 2,
+                    "sampling": {"extra_body": {"b": 2}},
+                    "select": {"include": {"names": ["x"]}},
+                },
+            ],
+        }
+    )
+    a, b = config.source
+    assert (a.group_size, b.group_size) == (4, 2)
+    assert b.sampling.temperature == 0.5 and b.sampling.extra_body == {"a": 1, "b": 2}
+    assert b.select.limit == 8 and b.select.include.idx == [":100"] and b.select.include.names == ["x"]
+    assert a.env.retries.max_retries == 3 and b.env.retries.max_retries == 3
+    reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
+    assert reloaded.source[1].model_dump() == b.model_dump()
+
+    online = RLOnlineEvalConfig.model_validate(
+        {
+            "interval": 5,
+            "source": [
+                {"env": {"taskset": {"id": "gsm8k"}}},
+                {"name": "b", "env": {"taskset": {"id": "gsm8k"}}, "interval": 2},
+            ],
+        }
+    )
+    assert online.intervals == {"gsm8k": 5, "b": 2}
+
+
+def test_train_sources_can_use_their_own_group_sizes():
+    def orchestrator(batch_size: int, **concurrency) -> OrchestratorConfig:
+        return OrchestratorConfig.model_validate(
             {
-                "renderer": {"name": "qwen3"},
-                "train": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "train": {
+                    "group_size": 16,
+                    "source": [
+                        {"env": {"taskset": {"id": "reverse-text"}}},
+                        {"env": {"taskset": {"id": "reverse-text"}}, "name": "b", "group_size": 8},
+                    ],
+                },
             }
         )
 
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
-            }
-        )
+    assert [source.group_size for source in orchestrator(64).train.source] == [16, 8]
+    with pytest.raises(ValidationError, match="divisible by every train source"):
+        orchestrator(40)
+    with pytest.raises(ValidationError, match="largest train group_size"):
+        orchestrator(64, max_inflight=8)
+
+
+@pytest.mark.parametrize(
+    "group", [TrainConfig, EvalSourcesConfig, ScheduledEvalConfig, EvalConfig, SFTOnlineEvalConfig]
+)
+def test_group_defaults_match_source_defaults(group):
+    # An unset group field is not layered, so its default must be the source's.
+    def default(field):
+        value = field.get_default(call_default_factory=True)
+        return value.model_dump() if isinstance(value, BaseModel) else value
+
+    (source,) = get_args(group.model_fields["source"].annotation)
+    for name, field in group.model_fields.items():
+        if name not in ("source", "env") and name in source.model_fields:
+            assert default(field) == default(source.model_fields[name]), f"{group.__name__}.{name}"
 
 
 def test_policy_sources_accept_different_top_p_values():
@@ -756,7 +900,7 @@ def test_run_dir_propagates_through_cli(tmp_path):
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "monitors": {"wandb": {}},
             "trainer": {},
-            "orchestrator": {"batch_size": 16, "group_size": 1},
+            "orchestrator": {"batch_size": 16, "train": {"group_size": 1}},
             "inference": {},
         },
     )

@@ -2,24 +2,16 @@
 
 vLLM ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.scale_out.token_in_token_out.serving.ServingTokens`` that covers
-prefix-cache salting, lora dispatch, multimodal features, prompt logprobs,
-priority, ``data_parallel_rank`` header routing, server-side ``max_tokens``
-defaulting and ``usage`` reporting. We subclass it for the bits still missing
-from the upstream handler:
+prefix-cache salting, lora dispatch, multimodal content parts and features,
+prompt logprobs, priority, ``data_parallel_rank`` header routing, server-side
+``max_tokens`` defaulting, ``usage`` reporting, and expanded prompt metadata.
+We subclass it for the one bit still missing from the upstream handler: compact
+``routed_experts`` export. When the engine emits routing decisions, surface them
+as ``{data, shape, start, dtype}`` base64 raw-byte objects (the form the PD
+router can merge and the renderers parse) instead of upstream's single ``.npy``
+base64 string.
 
-1. Compact ``routed_experts`` export — when the engine emits routing
-   decisions, surface them as ``{data, shape, start, dtype}`` base64 raw-byte
-   objects (the form the PD router can merge and the renderers parse) instead
-   of upstream's single ``.npy`` base64 string.
-
-2. ``kv_transfer_params`` bridging — upstream ``ServingTokens.serve_tokens``
-   parses ``request.kv_transfer_params`` but never threads it into the engine,
-   so PD disagg never fires on ``/inference/v1/generate``. Fixed upstream by
-   https://github.com/vllm-project/vllm/pull/42644, which missed the 0.28.0
-   cut — drop the bridge once we pin a release that includes it.
-
-Everything else (request/response schema, sampling params, error handling)
-delegates to upstream so we track future vLLM changes for free.
+Everything else delegates to upstream so we track future vLLM changes for free.
 """
 
 from __future__ import annotations
@@ -27,26 +19,22 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import Request
-from vllm.entrypoints.openai.engine.protocol import (
-    ErrorResponse,
-    RequestResponseMetadata,
-)
+from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    # Overrides upstream's base64 ``.npy`` string form with the compact
-    # ``{data, shape, start, dtype}`` object the PD router merges and the
-    # renderers parse.
+    # Overrides upstream's base64 ``.npy`` string form with the compact object
+    # the PD router merges and the renderers parse.
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
 
 
@@ -63,29 +51,11 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
             )
             for choice in response.choices
         ]
-        return PrimeRlGenerateResponse(**{**dict(response), "choices": choices})
+        return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens + compact routed experts + PD kv_transfer_params bridging."""
-
-    async def serve_tokens(
-        self,
-        request: GenerateRequest,
-        raw_request: Request | None = None,
-    ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
-        # Upstream parses ``request.kv_transfer_params`` but never threads it
-        # into the engine, so decode receives an empty NIXL handshake and
-        # re-prefills the prompt locally (~100x slower under concurrency).
-        # Bridge it through ``sampling_params.extra_args`` so the engine's KV
-        # connector picks the params up. Fixed upstream by vllm#42644 (merged
-        # after 0.28.0) — drop once we pin a release that includes it.
-        if request.kv_transfer_params is not None:
-            extra = request.sampling_params.extra_args or {}
-            extra["kv_transfer_params"] = request.kv_transfer_params
-            request.sampling_params.extra_args = extra
-
-        return await super().serve_tokens(request, raw_request)
+    """ServingTokens with compact routed experts."""
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,
@@ -95,22 +65,23 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        # Capture routed_experts as vLLM streams request outputs, then post-process
-        # the final response into our GenerateResponse subclass so the encoded
-        # experts surface in the JSON.
-        capture: _GenerateRoutedExpertsCapture | None = None
+        routed_experts: _GenerateRoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
-            capture = _GenerateRoutedExpertsCapture(
+            routed_experts = _GenerateRoutedExpertsCapture(
                 result_generator,
                 start=request.sampling_params.routed_experts_prompt_start,
             )
-            result_generator = capture
+            result_generator = routed_experts
 
         response = await super().serve_tokens_full_generator(
-            request, result_generator, request_id, model_name, request_metadata
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            request_metadata,
         )
 
-        if capture is not None and isinstance(response, GenerateResponse):
-            response = capture.post_process(response)
+        if routed_experts is not None and isinstance(response, GenerateResponse):
+            response = routed_experts.post_process(response)
 
         return response

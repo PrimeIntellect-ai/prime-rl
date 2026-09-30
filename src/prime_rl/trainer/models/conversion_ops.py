@@ -27,10 +27,9 @@ Design constraints:
 * **Every op is present-guarded** — it no-ops when its inputs are absent — so
   the same per-layer op list can be emitted for every layer and simply skips
   dense / non-matching layers, exactly as the imperative loops did.
-* **"Backward" means "what the imperative ``*_to_hf`` did"**, not a strict
-  mathematical inverse: a few conversions are intentionally lossy (e.g.
-  NemotronH shifts a router bias one way and does not undo it). Such ops carry
-  an explicit backward (see :class:`MapValue`).
+* **"Backward" means "what the imperative ``*_to_hf`` did"**, not necessarily
+  a strict mathematical inverse. Value transforms can provide an explicit
+  backward through :class:`MapValue`.
 """
 
 from __future__ import annotations

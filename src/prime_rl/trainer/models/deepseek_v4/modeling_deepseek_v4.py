@@ -2,8 +2,9 @@
 
 This is where the pieces built in `attention.py`, `moe.py`, `hyperconnections.py` and
 `rotary.py` come together. The one structural surprise is the residual: it is not a single
-stream but `hc_mult` parallel ones, carried as `(batch, seq, hc_mult, hidden)` from the
-embedding all the way to `hc_head`, which collapses them back before the final norm.
+stream but `hc_mult` parallel ones, carried as `mhc_states` of shape
+`(batch, seq, hc_mult, hidden)` from the embedding all the way to `hc_head`, which collapses
+them back before the final norm.
 """
 
 from __future__ import annotations
@@ -19,7 +20,10 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
-from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
+from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
+    DeepseekV4HyperConnection,
+    DeepseekV4HyperHead,
+)
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -40,10 +44,10 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     dtype before mixing, so the residual keeps the dtype it entered with.
     """
 
-    def __init__(self, config: DeepseekV4Config, layer_idx: int):
+    def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
         self.layer_idx = layer_idx
-        self.self_attn = DeepseekV4Attention(config, layer_idx)
+        self.self_attn = DeepseekV4Attention(config, layer_idx, rotary_emb)
         self.mlp = DeepseekV4MoE(config, layer_idx)
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
@@ -52,27 +56,21 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        mhc_states: torch.Tensor,
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
         *,
         packed: PackedContext,
     ) -> torch.Tensor:
-        dtype = hidden_states.dtype
-
-        post, comb, collapsed = self.attn_hc(hidden_states)
+        post, comb, collapsed = self.attn_hc(mhc_states)
         attn_output, _ = self.self_attn(self.input_layernorm(collapsed), packed=packed)
-        hidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
-        post, comb, collapsed = self.ffn_hc(hidden_states)
+        post, comb, collapsed = self.ffn_hc(mhc_states)
         mlp_output = self.mlp(
             self.post_attention_layernorm(collapsed), input_ids=input_ids, routed_experts=routed_experts
         )
-        return post.to(dtype).unsqueeze(-1) * mlp_output.unsqueeze(-2) + torch.matmul(
-            comb.to(dtype).transpose(-1, -2), hidden_states
-        )
+        return self.ffn_hc.update_states(post, comb, mlp_output, mhc_states)
 
 
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
@@ -112,9 +110,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def cp_support(cls, config) -> CPSupport:
         return CPSupport(
-            frozenset(),
-            "its sliding window is built from post-shard document boundaries, "
-            "which CP's global (pre-shard) boundaries cannot address",
+            frozenset({"ring"}),
+            "currently only supporting the minimal ring strategy where all keys, or tensors "
+            "required to form the keys are all-gathered in the CP region.",
         )
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -165,9 +163,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     def init_buffers_post_meta(self) -> None:
         # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
         # buffer is restored either here or by the checkpoint. Rebuilt here are the ones no
-        # checkpoint carries: the rotary tables (non-persistent, and there is one rotary per
-        # compressor and per indexer on top of the model-level one, so every instance has to be
-        # walked) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
+        # checkpoint carries: the rotary tables (non-persistent, and the one rotary every attention
+        # layer shares) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
         # hash layer's `tid2eid`, are in the checkpoint that `dcp_load` applies next, so they are
         # left to it.
         for module in self.modules():
@@ -184,11 +181,15 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
+        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.layers = nn.ModuleList(
-            [DeepseekV4DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [
+                DeepseekV4DecoderLayer(config, layer_idx, self.rotary_emb)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.hc_head = DeepseekV4HyperHead(config)
         self.gradient_checkpointing = False
 
@@ -229,19 +230,26 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4 shards the
+            queries alone and keeps every key, entry and index value global, so it needs the
+            whole row's boundaries: this must be set exactly when context parallelism is on.
         """
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if seq_lens_are_pre_shard:
-            raise NotImplementedError(
-                "DeepSeek V4 does not support context parallelism: the sliding window and the "
-                "compressors' entry layout become indices into this shard's own KV buffer, and "
-                "boundaries for the whole row would put them past its end."
-            )
+        assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
+
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
+            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
+        )
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
+        total_tokens = int(seq_lens.sum())
+        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
+            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
+            f"{inputs_embeds.shape[1]} tokens each"
+        )
 
         # Every layer type attends over the same local window; the compressed variants add their
         # own out-of-window entries and the per-query bias that gates them. One layout per distinct
@@ -250,23 +258,24 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         packed = PackedContext.build(
             rotary_emb=self.rotary_emb,
             seq_lens=seq_lens,
-            dtype=inputs_embeds.dtype,
             device=inputs_embeds.device,
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
         )
         if position_ids is not None:
             packed.check_position_ids(position_ids)
 
-        hidden_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states = decoder_layer(
-                hidden_states,
+            mhc_states = decoder_layer(
+                mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
             )
 
-        hidden_states = self.norm(self.hc_head(hidden_states))
+        hidden_states = self.norm(self.hc_head(mhc_states))
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
 

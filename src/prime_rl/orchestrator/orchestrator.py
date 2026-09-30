@@ -11,7 +11,7 @@ and drives the pipeline. Components are single-purpose:
 - ``TrainEpisodes`` / ``EvalEpisodes`` preserve episode boundaries and build per-step metrics.
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
-  ``_timestamp``-axis pipeline log.
+  pipeline log, a time-keyed row through the monitors.
 
 Components don't reference the orchestrator. The orchestrator wires them
 in ``setup()`` and drives them from ``main_loop()``.
@@ -41,7 +41,7 @@ from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
+from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -78,7 +78,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -88,9 +88,6 @@ monkey_patch_chat_completion_logprobs()
 # Wall-clock budget for post-training cleanup; force-exit if graceful
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
-
-# Abort after this many consecutive train batches contain no samples.
-MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
@@ -111,7 +108,6 @@ class Orchestrator:
     stopped: asyncio.Event
     draining: bool
     last_batch_at: float | None
-    consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
@@ -161,7 +157,6 @@ class Orchestrator:
         self.last_batch_at = None
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
-        self.consecutive_empty_batches = 0
         self.gate_closed_at = None
         # Pulsed after inference applies a policy so held work can re-check it.
         self.version_advanced = asyncio.Event()
@@ -229,16 +224,18 @@ class Orchestrator:
             set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
-            self.heart = Heartbeat(config.heartbeat.url)
+            self.heart = Heartbeat(config.heartbeat)
 
+        config_dir = get_config_dir(config.output_dir)
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
+            config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
         if config.resume is not None:
             if config.resume.dir is not None:
@@ -325,7 +322,8 @@ class Orchestrator:
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
-                config.eval,
+                intervals=config.eval.intervals,
+                skip_first_step=config.eval.skip_first_step,
                 is_resumed=self.resume_step is not None,
             )
             if config.eval is not None and self.eval_envs is not None
@@ -333,7 +331,6 @@ class Orchestrator:
         )
 
         log_interval = config.log.interval
-        wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
@@ -395,24 +392,7 @@ class Orchestrator:
         self.periodic_logger = PeriodicLogger(
             name="Pipeline",
             collect=self.collect_pipeline_view,
-            metric_keys=[
-                *list(self.dispatcher.gauges().keys()),
-                *list(self.concurrency.gauges().keys()),
-                *DispatcherMetrics.drain_keys(
-                    train_envs={e.name for e in self.train_envs},
-                    eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
-                ),
-                *list(self.watcher.gauges().keys()),
-                "event_loop_lag/min",
-                "event_loop_lag/mean",
-                "event_loop_lag/median",
-                "event_loop_lag/p90",
-                "event_loop_lag/p99",
-                "event_loop_lag/max",
-                "event_loop_lag/n",
-            ],
             interval=log_interval,
-            wandb_enabled=wandb_enabled,
         )
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
@@ -452,24 +432,26 @@ class Orchestrator:
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
+            # ``progress.step`` points at the next (unshipped) step; the last finished step is
+            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
+            # first ship). Saved before finalize, which tells the launcher the run is done.
+            if self.config.ckpt is not None and self.progress.step > 1:
+                self.progress.step -= 1
+                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
+                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
-                # The collector logs to the W&B run, so it must stop before
-                # finalize marks the run finished
+                # The background loggers write through the monitors, so they must
+                # stop before finalize marks the run finished
                 if self.inference_metrics is not None:
                     await self.inference_metrics.stop()
+                if self.periodic_logger is not None:
+                    await self.periodic_logger.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            # ``progress.step`` points at the next (unshipped) step; the last finished step is
-            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
-            # first ship).
-            if self.config.ckpt is not None and self.progress.step > 1:
-                self.progress.step -= 1
-                get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")
@@ -610,19 +592,10 @@ class Orchestrator:
             return
 
         if not batch.samples:
-            self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: empty train batch after {len(batch.episodes)} finalized episodes "
-                f"(consecutive empty batches: "
-                f"{self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
+                f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
             )
-            if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
-                raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check algorithm credit and task difficulty."
-                )
             return
-        self.consecutive_empty_batches = 0
         effective = batch.cohort.effective
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
@@ -821,11 +794,13 @@ class Orchestrator:
             env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         }
+        for env_name, expected in census.items():
+            await monitors.log_eval_plan(env_name, step, expected)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
-        ``(console_body, wandb_payload)``. Per-env ``(env=N, …)``
+        ``(console_body, payload)``. Per-env ``(env=N, …)``
         breakdowns inline only when there's more than one train / eval env;
         the eval halves drop entirely when nothing is accumulating."""
         disp_gauges = self.dispatcher.gauges()
@@ -857,7 +832,7 @@ class Orchestrator:
             train_batch_part += f" (+{train_buffered} buffered)"
 
         eval_batch_part = ""
-        for env, _step, eb, exp, _ebuf in eval_batches:
+        for env, _step, eb, exp in eval_batches:
             eval_pct = eb / exp if exp else 0.0
             eval_batch_part += f" | {env} {eb}/{exp} ({eval_pct:.1%})"
 
@@ -908,7 +883,7 @@ class Orchestrator:
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
             f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%}"
+            f"Truncation {eff.is_truncated.mean():.1%} | Timeout {episodes.metrics.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
@@ -929,7 +904,7 @@ class Orchestrator:
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
-                f"Truncation {env_eff.is_truncated.mean():.1%}"
+                f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {pool.metrics.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
@@ -977,7 +952,8 @@ class Orchestrator:
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Timeout {full.is_timeout.mean():.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

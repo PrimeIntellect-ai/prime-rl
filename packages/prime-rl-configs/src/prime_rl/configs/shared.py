@@ -171,7 +171,7 @@ class DynamoConfig(BaseConfig):
 
 
 class ClientConfig(BaseConfig):
-    wait_for_ready_timeout: int = 1800
+    wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
 
     base_url: str = "http://localhost:8000/v1"
@@ -221,6 +221,11 @@ class TrainerLogConfig(LogConfig):
 class HeartbeatConfig(BaseConfig):
     url: str
     """URL to send the heartbeat to."""
+
+    min_interval: float = Field(30.0, gt=0)
+    """Minimum seconds between pings. Beats can arrive far more often (evals beat once
+    per landed episode); surplus beats are dropped to stay under Better Stack's heartbeat
+    rate limit. Size it well under the monitor's period."""
 
 
 class MetricsServerConfig(BaseConfig):

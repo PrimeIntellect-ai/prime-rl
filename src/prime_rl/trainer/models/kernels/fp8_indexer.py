@@ -22,9 +22,9 @@ def _per_token_group_quant_fp8(
     group_size,
     y_num_columns,
     y_row_stride,
-    eps,
-    fp8_min,
-    fp8_max,
+    eps: tl.constexpr,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
     use_ue8m0: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
@@ -97,7 +97,7 @@ def per_token_group_quant_fp8(
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
     ],
-    key=["S_Q", "S_K"],
+    key=["S_Q", "S_K_BUCKET", "H", "D"],
 )
 @triton.jit
 def _triton_fp8_indexer_kernel(
@@ -116,6 +116,7 @@ def _triton_fp8_indexer_kernel(
     stride_ws,
     H: tl.constexpr,
     D: tl.constexpr,
+    S_K_BUCKET: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
@@ -168,7 +169,16 @@ def _triton_fp8_indexer_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
-def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
+@torch.library.custom_op("prime_rl::fp8_indexer", mutates_args=())
+def fp8_indexer(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    w: torch.Tensor,
+    ks: torch.Tensor,
+    ke: torch.Tensor,
+    topk: int,
+    weight_scale: float = 1.0,
+) -> torch.Tensor:
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
     Args:
@@ -221,6 +231,9 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
         w.stride(0),
         H=H,
         D=D,
+        # Packed document tails change S_k between batches. Reuse tuning within
+        # a size bucket; exact S_k still controls strides and all bounds masks.
+        S_K_BUCKET=triton.next_power_of_2(S_k),
     )
 
     actual_topk = min(topk, S_k)
@@ -236,3 +249,8 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     indices = indices.masked_fill(out_of_range, S_k)
 
     return indices.to(torch.int32)
+
+
+@fp8_indexer.register_fake
+def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0):
+    return q.new_empty((q.shape[0], topk), dtype=torch.int32)

@@ -1,13 +1,17 @@
 import json
+import time
 import uuid
 from collections import defaultdict
-from typing import Any, Literal, TypedDict, cast
+from pathlib import Path
+from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
+from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
-from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample
+from renderers import AutoRendererConfig, RendererConfig
+from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -18,6 +22,7 @@ from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 
 
 class Sample(TypedDict):
@@ -204,13 +209,53 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
+def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> RendererConfig:
+    """Copy ``config`` with its ``reasoning_effort`` field set, validated by the config class."""
+    if isinstance(config, AutoRendererConfig):
+        raise ValueError(
+            "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
+            "not renderer.name = 'auto'"
+        )
+    if "reasoning_effort" not in type(config).model_fields:
+        raise ValueError(f"Renderer {config.name!r} has no reasoning_effort field, but a row sets {reasoning_effort!r}")
+    return type(config).model_validate({**config.model_dump(), "reasoning_effort": reasoning_effort})
+
+
+class RendererResolver:
+    """Picks the renderer for a dataset row.
+
+    A ``reasoning_effort`` column overrides the configured renderer's field of
+    the same name per row. Renderer configs are frozen, so renderers are cached
+    per config and rows that resolve to the same config share one instance.
+    """
+
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
+        self.tokenizer = tokenizer
+        self.config = config
+        self.processor = processor
+        self.renderers: dict[RendererConfig, Renderer] = {}
+
+    def __call__(self, example: dict) -> Renderer:
+        config = self.config
+        reasoning_effort = example.get("reasoning_effort")
+        if reasoning_effort is not None:
+            config = with_reasoning_effort(config, reasoning_effort)
+        renderer = self.renderers.get(config)
+        if renderer is None:
+            renderer = create_renderer(self.tokenizer, config)
+            if self.processor is not None and hasattr(renderer, "_processor"):
+                renderer._processor = self.processor
+            self.renderers[config] = renderer
+        return renderer
+
+
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
     def __init__(
         self,
         dataset: Dataset,
-        renderer: Renderer,
+        renderers: Callable[[dict], Renderer],
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -224,7 +269,7 @@ class SFTDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
-        self.renderer = renderer
+        self.renderers = renderers
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
@@ -311,8 +356,9 @@ class SFTDataset(StatefulIterableDataset):
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <|im_start|>assistant) the harness emits.
         content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
+        renderer = self.renderers(example)
         sample = build_training_sample(
-            self.renderer,
+            renderer,
             messages,
             role_to_mask=role_to_mask,
             tools=tools,
@@ -352,7 +398,7 @@ class SFTDataset(StatefulIterableDataset):
             if mm.mm_items:
                 mm = _truncate_mm_data(mm, cut)
 
-        if was_mm_truncated and not set(self.renderer.get_stop_token_ids()) & set(target_ids):
+        if was_mm_truncated and not set(renderer.get_stop_token_ids()) & set(target_ids):
             return None
 
         if sum(loss_mask[: self.seq_len]) == 0:
@@ -365,7 +411,7 @@ class SFTDataset(StatefulIterableDataset):
             f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
         )
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
-        assert set(self.renderer.get_stop_token_ids()) & set(target_ids), (
+        assert set(renderer.get_stop_token_ids()) & set(target_ids), (
             "A renderer stop token must be present in target_ids"
         )
 
@@ -575,18 +621,41 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
+def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if not isinstance(data, SFTDataConfig):
+        return
+    if Path(data.name).exists():
+        get_logger().info(f"Data {data.name} found at local path, skipping download")
+        return
+
+    dataset_name = data.name
+    t0 = time.perf_counter()
+    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
+    snapshot = snapshot_download(
+        repo_id=dataset_name,
+        repo_type="dataset",
+        revision=data.revision,
+        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    )
+    data.name = snapshot
+    get_logger().debug(
+        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
+    )
+
+
 def setup_and_interleave_datasets(
     dataset_name: str,
     subsets_and_splits: list[tuple[str | None, str]],
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
+    revision: str | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -615,6 +684,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -623,6 +693,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -631,6 +702,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -640,6 +712,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            revision=config.revision,
         )
 
 
@@ -650,7 +723,8 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
-    renderer: Renderer | None = None,
+    renderer_config: RendererConfig | None = None,
+    processor: Any | None = None,
     multimodal: bool = False,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
@@ -663,13 +737,14 @@ def setup_dataset(
             non_dp_size=non_dp_size,
         )
     elif config.type == "sft":
-        if renderer is None:
-            raise ValueError("SFT data requires a renderer.")
+        if renderer_config is None:
+            raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
         return SFTDataset(
             raw_dataset,
-            renderer,
+            renderers,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,

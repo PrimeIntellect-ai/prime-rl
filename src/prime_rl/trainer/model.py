@@ -10,6 +10,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
@@ -18,6 +19,7 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.tensor import Shard
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -30,6 +32,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
+from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -56,7 +59,6 @@ from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
@@ -86,277 +88,6 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
-
-
-def _patch_qwen3_5_moe_conversion_mapping():
-    """Fix Qwen3.5 MoE conversion mapping incorrectly applying qwen2_moe expert weight splitting.
-
-    Qwen3.5 MoE stores expert weights as fused 3D tensors natively in the checkpoint
-    (e.g. experts.gate_up_proj [num_experts, 2*intermediate, hidden]). The upstream mapping
-    incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
-    causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
-
-    Remove once an official Transformers release fixes this.
-    """
-    from transformers.conversion_mapping import (
-        get_checkpoint_conversion_mapping,
-        register_checkpoint_conversion_mapping,
-    )
-
-    # qwen3_5_moe_text: keep only the qwen3_5_text renaming, remove qwen2_moe expert conversion
-    qwen3_5_text_mapping = get_checkpoint_conversion_mapping("qwen3_5_text")
-    if qwen3_5_text_mapping is not None:
-        register_checkpoint_conversion_mapping("qwen3_5_moe_text", qwen3_5_text_mapping, overwrite=True)
-
-    # qwen3_5_moe: remove the qwen2_moe fallback entirely
-    register_checkpoint_conversion_mapping("qwen3_5_moe", [], overwrite=True)
-
-
-def _patch_qwen3_5_text_position_ids():
-    """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
-
-    Upstream fix: https://github.com/huggingface/transformers/pull/44399
-    Remove once an official Transformers release includes this fix.
-    """
-    import inspect
-
-    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5TextModel
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer, Qwen3_5MoeTextModel
-
-    for text_model_cls, decoder_layer_cls in [
-        (Qwen3_5TextModel, Qwen3_5DecoderLayer),
-        (Qwen3_5MoeTextModel, Qwen3_5MoeDecoderLayer),
-    ]:
-        source = inspect.getsource(text_model_cls.forward)
-        if "decoder_layer" in source and "position_ids=text_position_ids" in source.split("decoder_layer")[-1]:
-            continue  # already fixed upstream
-
-        _original_forward = decoder_layer_cls.forward
-
-        def _make_patched_forward(original):
-            def _patched_forward(self, hidden_states, position_ids=None, **kwargs):
-                if position_ids is not None and position_ids.ndim == 3:
-                    position_ids = position_ids[0]
-                return original(self, hidden_states, position_ids=position_ids, **kwargs)
-
-            return _patched_forward
-
-        decoder_layer_cls.forward = _make_patched_forward(_original_forward)
-
-
-def _patch_qwen3_5_linear_attn_varlen():
-    """Thread cu_seqlens through Qwen3.5 GatedDeltaNet so packed batches don't
-    leak conv/SSM state across sequences.
-
-    HF's forward hardcodes seq_idx=None for causal_conv1d and omits cu_seqlens
-    for chunk_gated_delta_rule, so packed RL training sees ~0.23 Mismatch KL vs
-    vLLM (target <0.01). Mirrors the NemotronH mamba fix.
-    """
-    import torch.nn.functional as F
-    from transformers.models.qwen3_5.modeling_qwen3_5 import (
-        Qwen3_5DecoderLayer,
-        Qwen3_5GatedDeltaNet,
-        Qwen3_5TextModel,
-        apply_mask_to_padding_states,
-    )
-
-    try:
-        from fla.modules.convolution import causal_conv1d as fla_causal_conv1d
-        from fla.ops.cp import build_cp_context
-    except ImportError:
-        build_cp_context = None
-        fla_causal_conv1d = None
-
-    if fla_causal_conv1d is not None:
-        # The CP boundary-state exchange inside fla's conv is not dynamo-traceable;
-        # graph-break deliberately so the rest of the layer still compiles.
-        fla_causal_conv1d = torch.compiler.disable(fla_causal_conv1d)
-
-    if getattr(Qwen3_5GatedDeltaNet.forward, "_prl_varlen_patched", False):
-        return
-
-    _gdn_orig = Qwen3_5GatedDeltaNet.forward
-
-    def _build_cp_context(self, local_seq_len: int, device: torch.device, cu_seqlens=None):
-        cp_group = getattr(self, "cp_group", None)
-        if cp_group is None or build_cp_context is None:
-            return None
-        global_seq_len = local_seq_len * self.cp_world_size
-        if cu_seqlens is not None and int(cu_seqlens[-1].item()) == global_seq_len:
-            global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
-        else:
-            global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
-        return build_cp_context(
-            cu_seqlens=global_cu_seqlens,
-            group=cp_group,
-            conv1d_kernel_size=self.conv_kernel_size,
-        )
-
-    def _gdn_forward(self, hidden_states, cache_params=None, attention_mask=None, cu_seqlens=None):
-        if cu_seqlens is None or cache_params is not None:
-            return _gdn_orig(self, hidden_states, cache_params=cache_params, attention_mask=attention_mask)
-
-        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
-        batch_size, seq_len, _ = hidden_states.shape
-
-        mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
-        z = self.in_proj_z(hidden_states).reshape(batch_size, seq_len, -1, self.head_v_dim)
-        b = self.in_proj_b(hidden_states)
-        a = self.in_proj_a(hidden_states)
-
-        cp_context = _build_cp_context(self, seq_len, hidden_states.device, cu_seqlens)
-
-        if cp_context is not None and fla_causal_conv1d is not None:
-            mixed_qkv, _ = fla_causal_conv1d(
-                x=mixed_qkv.transpose(1, 2),
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                cp_context=cp_context,
-            )
-            mixed_qkv = mixed_qkv.transpose(1, 2)
-        elif self.causal_conv1d_fn is not None:
-            seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
-            seq_idx = torch.repeat_interleave(
-                torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
-                seg_lens,
-            ).unsqueeze(0)
-            mixed_qkv = self.causal_conv1d_fn(
-                x=mixed_qkv,
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                seq_idx=seq_idx,
-            )
-        else:
-            # Per-segment conv1d so the kernel-1 left pad only draws from within each sequence.
-            cu = cu_seqlens.tolist()
-            conv_outs = []
-            for i in range(len(cu) - 1):
-                s, e = cu[i], cu[i + 1]
-                if s == e:
-                    continue
-                conv_outs.append(self.conv1d(mixed_qkv[:, :, s:e])[:, :, : e - s])
-            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
-
-        mixed_qkv = mixed_qkv.transpose(1, 2)
-        query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
-        key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
-        value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
-
-        beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-        if self.num_v_heads // self.num_k_heads > 1:
-            query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
-            key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
-
-        if cp_context is not None:
-            core_attn_out, _ = self.chunk_gated_delta_rule(
-                query,
-                key,
-                value,
-                g=g,
-                beta=beta,
-                use_qk_l2norm_in_kernel=True,
-                cu_seqlens=cp_context.cu_seqlens,
-                cp_context=cp_context,
-            )
-        else:
-            core_attn_out, _ = self.chunk_gated_delta_rule(
-                query,
-                key,
-                value,
-                g=g,
-                beta=beta,
-                initial_state=None,
-                output_final_state=False,
-                use_qk_l2norm_in_kernel=True,
-                cu_seqlens=cu_seqlens,
-            )
-
-        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
-        z = z.reshape(-1, self.head_v_dim)
-        core_attn_out = self.norm(core_attn_out, z)
-        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
-        return self.out_proj(core_attn_out)
-
-    _gdn_forward._prl_varlen_patched = True
-    Qwen3_5GatedDeltaNet.forward = _gdn_forward
-
-    _dec_orig = Qwen3_5DecoderLayer.forward
-
-    def _dec_forward(
-        self,
-        hidden_states,
-        position_embeddings,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        cu_seqlens=None,
-        **kwargs,
-    ):
-        if position_ids is not None and position_ids.ndim == 3:
-            position_ids = position_ids[0]
-        if self.layer_type != "linear_attention":
-            return _dec_orig(
-                self,
-                hidden_states,
-                position_embeddings=position_embeddings,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                **kwargs,
-            )
-
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.linear_attn(
-            hidden_states=hidden_states,
-            cache_params=past_key_values,
-            attention_mask=attention_mask,
-            cu_seqlens=cu_seqlens,
-        )
-        hidden_states = residual + hidden_states
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        return residual + hidden_states
-
-    Qwen3_5DecoderLayer.forward = _dec_forward
-
-    _text_orig = Qwen3_5TextModel.forward
-
-    def _text_forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        use_cache=None,
-        **kwargs,
-    ):
-        attn_impl = getattr(self.config, "_attn_implementation", None)
-        cu_seqlens = None
-        if attn_impl in ("flash_attention_2", "flash_attention_3", "flash_attention_4") and position_ids is not None:
-            pids = position_ids
-            if pids.ndim == 3:
-                pids = pids[0]
-            cu_seqlens, _ = get_cu_seqlens_from_position_ids(pids)
-        kwargs["cu_seqlens"] = cu_seqlens
-        return _text_orig(
-            self,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            **kwargs,
-        )
-
-    Qwen3_5TextModel.forward = _text_forward
 
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -507,40 +238,72 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
 
 
 def is_tt_moe_model(model: nn.Module) -> bool:
-    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+    config = getattr(model.config, "text_config", model.config)
+    return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
 def get_load_balance_stats(
-    model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
+    model: nn.Module,
+    group: dist.ProcessGroup | None = None,
 ) -> dict[str, Tensor | None]:
+    """Compute routing stats after summing raw counts across the group, if given."""
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     language_model = get_language_model(model)
+    block_mlps = []
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
         block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
-            continue
-        tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        if block_mlp is not None and hasattr(block_mlp, "tokens_per_expert"):
+            block_mlps.append(block_mlp)
+    if not block_mlps:
+        return {"max_vio": None, "routing_confidence": None}
+
+    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
+    if group is not None:
+        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
+        packed_stats = torch.cat(
+            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
+        )
+        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
+        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
+
+    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        if try_to_avoid_padding_experts:
-            tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
+        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
         per_layer_max_vio.append(max_vio.detach())
 
-        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        routing_confidence = routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
-        if reset_stats:
-            block_mlp.tokens_per_expert.zero_()
-            block_mlp.routing_confidence_sum.zero_()
-    if len(per_layer_max_vio) == 0:
-        return {"max_vio": None, "routing_confidence": None}
+        block_mlp.tokens_per_expert.zero_()
+        block_mlp.routing_confidence_sum.zero_()
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
     }
+
+
+def get_global_moe_stats(
+    model: nn.Module,
+    ep_group: dist.ProcessGroup | None,
+    dp_cp_group: dist.ProcessGroup,
+) -> dict[str, Tensor]:
+    """Reduce one microstep's routing stats across EP, then DP and CP ranks."""
+    stats = {}
+    for name, values in get_load_balance_stats(model, group=ep_group).items():
+        if values is None:
+            continue
+        value = values.max() if name == "max_vio" else values.mean()
+        if name == "max_vio":
+            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
+        else:
+            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            value /= dist.get_world_size(dp_cp_group)
+        stats[name] = value.to("cpu")
+    return stats
 
 
 def get_model(
@@ -564,23 +327,7 @@ def get_model(
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
-        if config.optimization_dtype != "bfloat16" or config.reduce_dtype != "bfloat16":
-            raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
-            )
 
-    # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
-    if getattr(model_config, "model_type", "").startswith("qwen3_5"):
-        _patch_qwen3_5_text_position_ids()
-        _patch_qwen3_5_moe_conversion_mapping()
-        _patch_qwen3_5_linear_attn_varlen()
-    if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses":
-        vision_config = getattr(model_config, "vision_config", None)
-        if vision_config is not None:
-            logger.info("Using SDPA for VLM vision encoder under CP")
-            vision_config._attn_implementation = "sdpa"
-            if hasattr(vision_config, "_attn_implementation_internal"):
-                vision_config._attn_implementation_internal = "sdpa"
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
@@ -632,15 +379,6 @@ def get_model(
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
-
-    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
-    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
-    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
-    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
-    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
-    # to keep model init offline-safe.
-    if getattr(model_config, "model_type", "") == "nemotron_h":
-        model_config.use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
@@ -767,15 +505,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
-    shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
+    fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
+    hsdp_mesh = parallel_dims.get_mesh("hsdp")
+    shard_size = parallel_dims.get_mesh("dp_shard_cp").size()
+
+    def shard_placement_fn(parameter: nn.Parameter) -> Shard | None:
+        # Qwen's single-row shared-expert gates need equal shards for Muon's all-to-all.
+        if parameter.ndim == 2 and parameter.shape[0] == 1 and parameter.shape[1] % shard_size == 0:
+            return Shard(1)
+        return fused_shard_placement_fn(parameter) if fused_shard_placement_fn is not None else None
+
     fsdp_config = {
         "mp_policy": mp_policy,
         "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
         "shard_placement_fn": shard_placement_fn,
     }
-
-    hsdp_mesh = parallel_dims.get_mesh("hsdp")
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -816,6 +561,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
             )
+            # Keep the router reduction from waiting for the expert reduction's input buffer.
+            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -1129,8 +876,10 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph)
-    get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    get_logger().info(
+        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+    )
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
@@ -1146,9 +895,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
-        if capability != (10, 0):
+        if capability[0] < 10:
             raise ValueError(
-                f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
+                f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 
@@ -1181,6 +930,7 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
+            module.routing_confidence_sum.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:
@@ -1206,14 +956,14 @@ def _validate_flash_attn_4_installed() -> None:
 def resolve_auto_attn(config: ModelConfig) -> None:
     """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
 
-    FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
-    Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
-    can't run the Hopper-only FA3 kernels, so they fall back to FA2.
+    FA4 on datacenter Blackwell (SM10x/SM11x, e.g. B200, B300), FA3 on Hopper (SM90), FA2
+    otherwise. FA4 is built around the tcgen05/TMEM instructions of the SM10x/SM11x families.
+    Workstation Blackwell (SM12x, e.g. RTX PRO 6000) lacks them, so it gets FA2.
     """
     if config.attn != "auto":
         return
     major, minor = torch.cuda.get_device_capability()
-    if (major, minor) == (10, 0):
+    if major in (10, 11):
         resolved = "flash_attention_4"
     elif major == 9:
         resolved = "flash_attention_3"
@@ -1347,12 +1097,8 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
-    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
-    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
-    # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it comes from the renderer rather than the processor.
     mm_kwargs: dict[str, Tensor] | None = None,
+    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -1370,13 +1116,15 @@ def forward(
         kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
-        # Forward the per-model multimodal tensors verbatim, plus the
-        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
-        # token→modality mapping via ``mm_token_type_id_map``).
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        if "image_grid_thw" not in mm_kwargs:
+        # SFT still uses its existing eager processor path and does not provide
+        # an adapter policy yet, so preserve its current kwargs-based behavior.
+        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
+        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
+            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
+        if policy.pass_position_ids:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids

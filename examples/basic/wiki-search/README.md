@@ -77,13 +77,7 @@ Evaluate the base model:
 
 ```bash
 # Run this in the other terminal
-uv run eval wiki-search --harness.id null \
-  -m Qwen/Qwen3-4B-Instruct-2507 \
-  --client.base-url http://localhost:8000/v1 \
-  -n 20 \
-  -r 3 \
-  --sampling.max-tokens 512 \
-  --no-push
+uv run eval @ examples/basic/wiki-search/eval.toml
 ```
 
 ## RL Training
@@ -116,13 +110,7 @@ uv run inference --vllm.enable-lora --vllm.model <user>/Qwen3-4B-Instruct-WikiSe
 
 ```bash
 # Run this in the other terminal
-uv run eval wiki-search --harness.id null \
-  -m <user>/Qwen3-4B-Instruct-WikiSearch-RL \
-  --client.base-url http://localhost:8000/v1 \
-  -n 20 \
-  -r 3 \
-  --sampling.max-tokens 512 \
-  --no-push
+uv run eval @ examples/basic/wiki-search/eval.toml -m <user>/Qwen3-4B-Instruct-WikiSearch-RL
 ```
 
 ## Taskset Configuration

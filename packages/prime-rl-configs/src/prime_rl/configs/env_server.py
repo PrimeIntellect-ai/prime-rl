@@ -9,14 +9,19 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 class EnvServerConfig(BaseConfig):
     """``uv run env-server``: what to serve (``[env]``) and how it's hosted (``[serve]``).
-    The ``rl`` launcher writes one of these per train/eval source, with ``serve.address``
-    set to the source's derived address."""
+    The launchers write one of these per train/eval source they manage, with
+    ``address_file`` set: the server binds an OS-assigned port and publishes it there."""
 
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServeConfig = vf.ServeConfig()
     """How it's served: the worker pool, the bind address, each worker's episode bound."""
+
+    address_file: Path | None = None
+    """Publish the bound address to this file once serving. Set by the launchers for the
+    servers they spawn, so the address never has to be agreed on up front (``serve.address``
+    unset binds an OS-assigned port)."""
 
     log: LogConfig = LogConfig()
 

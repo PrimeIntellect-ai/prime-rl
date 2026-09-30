@@ -9,8 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-import torch
-import torch.distributed as dist
 import wandb
 
 from prime_rl.utils.logger import get_logger
@@ -39,10 +37,17 @@ def import_object(dotted_path: str) -> Any:
     return getattr(module, name)
 
 
+def destroy_process_group() -> None:
+    dist = sys.modules.get("torch.distributed")
+    if dist is not None and dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def clean_exit(func: Callable) -> Callable:
     """
     A decorator that ensures the a torch.distributed process group is properly
-    cleaned up after the decorated function runs or raises an exception.
+    cleaned up after the decorated function runs or raises an exception. Torch is
+    looked up lazily: a process that never imported it (eval) has no group.
     """
     if asyncio.iscoroutinefunction(func):
 
@@ -60,8 +65,7 @@ def clean_exit(func: Callable) -> Callable:
                 # the event loop swallows it and the process hangs indefinitely.
                 sys.exit(1)
             finally:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
+                destroy_process_group()
 
         return async_wrapper
     else:
@@ -78,8 +82,7 @@ def clean_exit(func: Callable) -> Callable:
                 # sys.exit raises SystemExit so the finally block still runs.
                 sys.exit(1)
             finally:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
+                destroy_process_group()
 
         return sync_wrapper
 
@@ -166,6 +169,8 @@ def get_free_port() -> int:
 
 @contextmanager
 def default_dtype(dtype):
+    import torch
+
     prev = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

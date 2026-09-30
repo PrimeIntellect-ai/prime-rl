@@ -10,9 +10,11 @@ name = "debug-max-rl"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "max_rl"
 
 [orchestrator.renderer]
@@ -29,7 +31,9 @@ env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-num_examples = 128
+
+[orchestrator.eval.select]
+limit = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

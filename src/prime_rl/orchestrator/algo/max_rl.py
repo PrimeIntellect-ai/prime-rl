@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import torch
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
@@ -20,6 +19,8 @@ class MaxRLAlgorithm(Algorithm):
     <= 0 carries no signal and gets zero advantages."""
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
+        import torch  # only the trainer-side extras ship torch; an eval process never scores a group
+
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         mean = rewards.mean()

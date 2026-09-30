@@ -1,0 +1,47 @@
+# Multimodal (VLM) SFT on a Mixture-of-Experts model — single 8xH200 node.
+max_steps = 1000
+dist_timeout_seconds = 3600
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+impl = "custom"
+attn = "flash_attention_2"
+ep = 8                      # keep in sync with deployment.num_train_gpus
+
+[renderer]
+name = "auto"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[model.lora]
+rank = 32
+alpha = 32
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "experts"]
+
+[model.ac]
+mode = "selective"
+
+[data]
+type = "sft"
+name = "your-org/your-multimodal-dataset"
+batch_size = 8
+micro_batch_size = 1       # required for VLM SFT
+seq_len = 16384
+
+[data.loss_mask]
+assistant = true # only assistant turns contribute to the loss; system/user/tool default to false
+
+[optim]
+lr = 1e-5
+
+[ckpt]
+interval = 200
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
