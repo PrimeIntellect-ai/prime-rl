@@ -349,7 +349,8 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 }
 .stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 0; }
 /* eval progress: one cell per expected episode */
-.eval-progress { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+/* the tab already leaves 12px under its toolbar: 4px more reads as 16px, matching the gap below */
+.eval-progress { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 16px; }
 .ep-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .ep-row { display: flex; align-items: center; gap: 12px; }
 .ep-row .ep-blocks { flex: 1; }
