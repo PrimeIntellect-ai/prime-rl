@@ -1020,7 +1020,10 @@ def timeline_lane(
         None,
     )
     status = (
-        (terminal or ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running"))
+        (
+            terminal
+            or ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        )
         if branch
         else timeline_status(trace)
     )
