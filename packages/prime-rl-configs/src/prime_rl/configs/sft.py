@@ -49,6 +49,9 @@ class BaseDataConfig(BaseConfig):
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
+    pack_lookahead: int = Field(64, ge=0)
+    """Samples to keep buffered for packing. Rows hold at most ``seq_len * micro_batch_size`` tokens and are padded only to a multiple of the CP degree. With 0, samples pack greedily in stream order, so a row closes as soon as the next sample does not fit. With N > 0, each row starts with the oldest of N buffered samples and fills the rest first-fit decreasing from the buffer. This keeps rows, and the compute of every data-parallel rank, close to full, at the cost of reordering samples by at most N rows."""
+
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.micro_batch_size != 0:
