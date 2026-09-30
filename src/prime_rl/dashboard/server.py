@@ -81,7 +81,7 @@ _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
 """Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
 _annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
-_index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_index_cache: OrderedDict[Path, tuple[int, bytes, list[dict]]] = OrderedDict()
 _rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
@@ -351,7 +351,6 @@ def run_meta(run_dir: Path) -> dict:
         "platform": platform,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
-        "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": eval_env(config),
         "total_episodes": eval_total_episodes(config),
         "eval_totals": eval_totals(config),
@@ -1016,8 +1015,15 @@ def timeline_lane(
     starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
     ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
     started = started_at if started_at is not None else min(starts or ends, default=None)
+    terminal = next(
+        (span["status"] for span in lifecycle if span["status"] in {"cancelled", "failed", "timeout"}),
+        None,
+    )
     status = (
-        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        (
+            terminal
+            or ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        )
         if branch
         else timeline_status(trace)
     )
@@ -1208,6 +1214,13 @@ def semantic_context_lanes(
 
     ordered_components = sorted(components, key=lambda component: (component_start(component), component))
     cross_edges = [edge for edge in edges if component_for[edge["source_node"]] != component_for[edge["target_node"]]]
+    # subagent_failed (child -> parent) marks its source; subagent_cancel (parent -> child) its target.
+    context_outcome = {}
+    for edge in cross_edges:
+        if edge["type"] == "subagent_failed":
+            context_outcome[component_for[edge["source_node"]]] = "failed"
+        elif edge["type"] == "subagent_cancel":
+            context_outcome[component_for[edge["target_node"]]] = "cancelled"
     created_components = {
         component_for[edge["target_node"]]
         for edge in cross_edges
@@ -1277,6 +1290,10 @@ def semantic_context_lanes(
             default=None,
         )
         completed = bool(trace.get("is_completed"))
+        # A cancelled/failed context is done even if the trace as a whole is not.
+        outcome = context_outcome.get(component)
+        status = outcome or ("completed" if completed else "running")
+        ended_at = end if (outcome is not None or completed) else None
         label = f"{agent_label} · context {context_index}"
         lifecycle = (
             [
@@ -1285,8 +1302,8 @@ def semantic_context_lanes(
                     "label": label,
                     "track": "lifecycle",
                     "started_at": start,
-                    "ended_at": end if completed else None,
-                    "status": "completed" if completed else "running",
+                    "ended_at": ended_at,
+                    "status": status,
                 }
             ]
             if start != float("inf")
@@ -1305,6 +1322,8 @@ def semantic_context_lanes(
             "agent": agent_label,
             "index": context_index,
         }
+        if outcome is not None:
+            lane["context"]["outcome"] = outcome
         if component in unlinked_components:
             lane["context"]["unlinked"] = True
         if component in attempt_by_component:
@@ -1447,9 +1466,14 @@ def index_rows(path: Path) -> list[dict] | None:
     size = path.stat().st_size
     with _lock:
         cached = _lru_get(_index_cache, path)
+    # A resume rewrites/truncates the index (dropped errored rows, then re-grows it),
+    # so the bytes before the old EOF change: reusing the cache append-only would splice
+    # stale rows in. Detect it via file_checkpoint, exactly like line_offsets().
+    if cached and (cached[0] > size or (cached[0] and file_checkpoint(path, cached[0]) != cached[1])):
+        cached = None
     if cached and cached[0] == size:
-        return cached[1]
-    rows, read_from = (list(cached[1]), cached[0]) if cached and cached[0] < size else ([], 0)
+        return cached[2]
+    rows, read_from = (list(cached[2]), cached[0]) if cached else ([], 0)
     with path.open("rb") as f:
         f.seek(read_from)
         for raw in f:
@@ -1461,7 +1485,7 @@ def index_rows(path: Path) -> list[dict] | None:
                 break
             read_from += len(raw)
     with _lock:
-        _lru_put(_index_cache, path, (read_from, rows))
+        _lru_put(_index_cache, path, (read_from, file_checkpoint(path, read_from), rows))
     return rows
 
 
@@ -1522,7 +1546,7 @@ def row_filter(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     start: float | None = None,
     end: float | None = None,
 ):
@@ -1539,7 +1563,7 @@ def row_filter(
             return False
         if episode is not None and row.get("id") != episode:
             return False
-        if errors_only and row.get("ok"):
+        if ok is not None and bool(row.get("ok")) != ok:
             return False
         arrival = row.get("arrival") or 0
         return not ((start is not None and arrival < start) or (end is not None and arrival >= end))
@@ -1567,7 +1591,7 @@ def list_stream_episodes(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     sort: str = "arrival",
     order: str = "desc",
     offset: int = Query(default=0, ge=0),
@@ -1594,7 +1618,7 @@ def list_stream_episodes(
     if upto is not None:
         rows = rows[:upto]
     envs, kinds = index_facets(run_dir)
-    keep = row_filter(step=step, kind=kind, env=env, episode=episode, errors_only=errors_only, start=start, end=end)
+    keep = row_filter(step=step, kind=kind, env=env, episode=episode, ok=ok, start=start, end=end)
     if sort == "arrival":
         # the index is already in arrival order: walk it from the right end and stop
         # once the page is full, so the common view costs a page rather than a run
@@ -1629,7 +1653,7 @@ def episode_histogram(
     step: int | None = None,
     kind: str | None = None,
     env: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     bars: int = Query(default=80, ge=8, le=500),
 ) -> dict:
     """Episodes finishing per time bin, over the same filters as the table — the
@@ -1637,7 +1661,7 @@ def episode_histogram(
     the episodes and the bin is the roundest interval that keeps the bar count sane,
     so a run of any length reads the same."""
     run_dir = get_run_dir(run)
-    rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, errors_only=errors_only)
+    rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, ok=ok)
     arrivals = sorted(row["arrival"] for row in rows if isinstance(row.get("arrival"), (int, float)))
     if not arrivals:
         return {"bins": [], "bin": 60, "start": None, "end": None, "total": 0}

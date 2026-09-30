@@ -32,8 +32,10 @@ freq = 1
 
 [orchestrator]
 batch_size = 512
-group_size = 16
 max_off_policy_steps = 32
+
+[orchestrator.train]
+group_size = 16
 
 [[orchestrator.train.source]]
 env.taskset.id = "general-agent"

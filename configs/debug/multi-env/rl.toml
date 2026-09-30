@@ -9,6 +9,8 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.renderer]

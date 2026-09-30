@@ -41,6 +41,9 @@ num_decode_replicas = 1
 # skip warmup for faster start in cost of some jit overhead early
 # ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason
 [inference.deployment.prefill_env_vars]
+# vLLM >= 0.29 auto-enables breakable CUDA graphs for GLM-5 (GlmMoeDsaForCausalLM); capturing
+# the DeepEP high-throughput prefill dispatch then fails ("DeepEP error: timeout (dispatch CPU)").
+"VLLM_USE_BREAKABLE_CUDAGRAPH" = "0"
 "VLLM_ENABLE_MOE_DP_CHUNK" = "0"
 "VLLM_DEEP_GEMM_WARMUP" = "skip"
 "UCX_RCACHE_MAX_UNRELEASED" = "1024"
@@ -109,8 +112,10 @@ weight_decay = 0.0
 
 [orchestrator]
 batch_size = 256
-group_size = 16
 max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
+
+[orchestrator.train]
+group_size = 16
 
 [orchestrator.concurrency]
 initial_inflight = 256

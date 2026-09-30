@@ -1,7 +1,6 @@
 max_steps = 20
 seq_len = 2048
 batch_size = 128
-group_size = 16
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -9,6 +8,9 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [monitors.wandb]
 project = "reverse-text"
 name = "reverse-text"
+
+[train]
+group_size = 16
 
 [train.sampling]
 max_completion_tokens = 128

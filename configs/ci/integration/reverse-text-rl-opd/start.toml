@@ -22,15 +22,17 @@ name = "ci-rl-opd"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.concurrency]
 max_inflight = 128
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "opd"
 
-[orchestrator.algo.teacher]
+[orchestrator.train.algo.teacher]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = "http://localhost:8001/v1"
 

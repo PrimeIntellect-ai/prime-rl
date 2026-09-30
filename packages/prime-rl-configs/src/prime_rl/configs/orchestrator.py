@@ -1,9 +1,10 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias, get_args
 
 import verifiers.v1 as vf
-from pydantic import Field, SerializeAsAny, ValidationError, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
+from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -194,49 +195,32 @@ class EnvConfig(BaseConfig):
         return self
 
 
-def merge_group_defaults(data: Any) -> Any:
-    """Shared ``mode="before"`` body for source groups: layer the group's ``env`` and
-    ``select`` blocks under those of each raw source. A source's own values win; a
-    source's ``include`` or ``exclude`` replaces the group's whole block."""
-    if not isinstance(data, dict):
-        return data
-    sources = data.get("source") or []
-    if data.get("env") is not None:
-        try:
-            shared = vf.SharedEnvConfig.model_validate(data["env"])
-        except ValidationError:
-            shared = None  # the ``env`` field reports the errors once, not once per source
-        if shared is not None:
-            sources = [
-                {**source, "env": vf.merge_env_defaults(shared, source.get("env"))}
-                if isinstance(source, dict)
-                else source
-                for source in sources
-            ]
-    if data.get("select") is not None:
-        group = select_fields(data["select"], vf.SelectCLIConfig)
-        if group is not None:
-            sources = [
-                {**source, "select": group | own}
-                if isinstance(source, dict)
-                and (own := select_fields(source.get("select"), vf.SelectConfig)) is not None
-                else source
-                for source in sources
-            ]
-    if sources:
-        data["source"] = sources
-    return data
+def inherit_defaults(defaults: dict[str, Any], source: dict) -> dict:
+    """Fill in one raw source with its group's ``defaults`` (field name to validated
+    group value). A config block such as ``sampling`` is filled in key by key with
+    ``vf.merge_defaults``; a plain value such as ``group_size`` is used only when the
+    source leaves it unset. The source's own values always win, and a block that the
+    source passes as an already-built config is kept as is."""
+    merged = dict(source)
+    for name, value in defaults.items():
+        own = source.get(name)
+        if isinstance(value, BaseModel):
+            if own is None or isinstance(own, dict):
+                merged[name] = vf.merge_defaults(value, own)
+        elif name not in source:
+            merged[name] = value
+    return merged
 
 
-def select_fields(raw: Any, select_type: type[vf.SelectConfig]) -> dict | None:
-    """The fields a raw ``select`` block sets, under their canonical names; None when
-    the block is invalid, which leaves it to report its own errors."""
-    if raw is None:
-        return {}
-    try:
-        return select_type.model_validate(raw).model_dump(exclude_unset=True)
-    except ValidationError:
-        return None
+def raw_field(data: dict, name: str, field: FieldInfo) -> tuple[bool, Any]:
+    """Whether raw ``data`` sets field ``name``, under its name or an alias (``-r``
+    arrives as ``r``), and the value it sets."""
+    alias = field.validation_alias
+    keys = [name, *(alias.choices if isinstance(alias, AliasChoices) else [alias] if alias else [])]
+    for key in keys:
+        if isinstance(key, str) and key in data:
+            return True, data[key]
+    return False, None
 
 
 class StandardSamplerConfig(BaseConfig):
@@ -318,13 +302,14 @@ class TrainSourceConfig(EnvConfig):
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     group_size: int = Field(1, ge=1)
-    """Rollouts generated per example for GRPO group-relative advantages.
-    Inherits from ``orchestrator.group_size`` when unset."""
+    """Rollouts generated per example for GRPO group-relative advantages. Overrides the
+    train group's ``group_size`` for this env, so envs can use different sizes."""
 
-    algo: AlgoConfig | None = None
-    """Training algorithm for this env. Inherits from the top-level
-    ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
-    this env its own algorithm."""
+    algo: AlgoConfig = GRPOAlgoConfig()
+    """Training algorithm for this env: sampling plus the per-token training signal
+    (credit assignment and loss routing, fused — its ``type`` names the algorithm).
+    Setting only some params keeps the group's algorithm; a different ``type`` is
+    this env's own algorithm."""
 
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
@@ -343,41 +328,68 @@ class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""
 
     interval: int = Field(100, ge=1)
-    """Per-env eval interval. If unset, inherits from the group-level eval interval."""
+    """Step interval at which to evaluate this env."""
 
 
-class TrainConfig(BaseConfig):
-    source: list[TrainSourceConfig] = Field(default_factory=list)
-    """Training sources."""
+class SourceGroupConfig(BaseConfig):
+    """A list of sources plus defaults for them.
+
+    Any field that both the group and its source type declare (``env``, ``sampling``,
+    ``select``, ``group_size``, ...) is a default. Before validation, each source gets
+    the group's value for every such field that the group sets:
+
+    - a field the source sets itself keeps the source's value;
+    - a nested block is filled in key by key (``vf.merge_defaults``);
+    - a block with a different ``type``/``id`` (e.g. another ``algo``) is the source's
+      alone.
+
+    A field the group leaves unset is not passed on, so each group field must default
+    to the same value as the source field it feeds."""
 
     env: vf.SharedEnvConfig = vf.SharedEnvConfig()
-    """Env knobs that every training source inherits: the fields every env and taskset
-    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
-
-    sampling: TrainSamplingConfig = TrainSamplingConfig()
-    """Shared training sampling configuration."""
-
-    select: vf.SelectConfig = vf.SelectConfig()
-    """Task selection that every training source inherits. Each field a source sets on
-    its own ``select`` wins over this one."""
+    """Env knobs that every source inherits: the fields every env and taskset has, such
+    as ``retries`` and ``timeout``."""
 
     @model_validator(mode="before")
     @classmethod
-    def resolve_group_defaults(cls, data):
-        return merge_group_defaults(data)
+    def inherit_group_defaults(cls, data: Any) -> Any:
+        """Pass the group's set defaults down into each raw source."""
+        if not isinstance(data, dict) or not isinstance(data.get("source"), list):
+            return data
+        (source_type,) = get_args(cls.model_fields["source"].annotation)
+        defaults: dict[str, Any] = {}
+        for name, field in cls.model_fields.items():
+            if name == "source" or name not in source_type.model_fields:
+                continue
+            is_set, raw = raw_field(data, name, field)
+            if not is_set:
+                continue
+            try:
+                defaults[name] = TypeAdapter(field.rebuild_annotation()).validate_python(raw)
+            except ValidationError:
+                continue  # the group field reports its own errors once, not once per source
+        data["source"] = [
+            inherit_defaults(defaults, source) if isinstance(source, dict) else source for source in data["source"]
+        ]
+        return data
 
-    @model_validator(mode="after")
-    def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
-        is configured per env, defaulting to elastic)."""
-        group_sampling = self.sampling.model_dump()
-        for env in self.source:
-            if "sampling" not in env.model_fields_set:
-                env.sampling = TrainSamplingConfig(**group_sampling)
-            else:
-                merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
-                env.sampling = TrainSamplingConfig(**merged)
-        return self
+
+class TrainConfig(SourceGroupConfig):
+    source: list[TrainSourceConfig] = Field(default_factory=list)
+    """Training sources."""
+
+    sampling: TrainSamplingConfig = TrainSamplingConfig()
+    """Sampling that every training source inherits."""
+
+    select: vf.SelectConfig = vf.SelectConfig()
+    """Task selection that every training source inherits."""
+
+    group_size: int = Field(1, ge=1)
+    """Rollouts generated per example that every training source inherits unless it
+    sets its own. ``batch_size`` must be divisible by every source's group size."""
+
+    algo: AlgoConfig = GRPOAlgoConfig()
+    """Training algorithm that every training source inherits. Defaults to ``grpo``."""
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
@@ -390,46 +402,21 @@ class TrainConfig(BaseConfig):
         return self
 
 
-class EvalSourcesConfig(BaseConfig):
-    """Eval sources and the group-level defaults they inherit."""
+class EvalSourcesConfig(SourceGroupConfig):
+    """Eval sources and the defaults they inherit."""
 
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    env: vf.SharedEnvConfig = vf.SharedEnvConfig()
-    """Env knobs that every eval source inherits: the fields every env and taskset
-    has, such as ``retries`` and ``timeout``. A source's own ``env`` values win."""
-
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
-    """Shared eval sampling configuration; can differ from training sampling."""
+    """Sampling that every eval source inherits; can differ from training sampling."""
 
     select: vf.SelectConfig = vf.SelectConfig()
     """Task selection that every eval source inherits, e.g. ``limit = 128`` to evaluate
-    128 tasks of each taskset. Each field a source sets on its own ``select`` wins over
-    this one."""
+    128 tasks of each taskset."""
 
     group_size: int = Field(1, ge=1)
-    """Default rollouts per example. Can be overridden per env."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def resolve_group_defaults(cls, data):
-        return merge_group_defaults(data)
-
-    @model_validator(mode="after")
-    def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling and group_size (the
-        worker ``pool`` is configured per env, default elastic)."""
-        group_sampling = self.sampling.model_dump()
-        for source in self.source:
-            if "sampling" not in source.model_fields_set:
-                source.sampling = EvalSamplingConfig(**group_sampling)
-            else:
-                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
-                source.sampling = EvalSamplingConfig(**merged)
-            if "group_size" not in source.model_fields_set:
-                source.group_size = self.group_size
-        return self
+    """Rollouts per example that every eval source inherits."""
 
     @model_validator(mode="after")
     def validate_non_empty_sources(self):
@@ -458,7 +445,7 @@ class ScheduledEvalConfig(EvalSourcesConfig):
     """Evaluation sources, each with its own step interval."""
 
     interval: int = Field(100, ge=1)
-    """Step interval at which to evaluate the model."""
+    """Step interval that every eval source inherits."""
 
     skip_first_step: bool = False
     """If True, skip the startup eval that otherwise runs before any
@@ -468,14 +455,6 @@ class ScheduledEvalConfig(EvalSourcesConfig):
     """If True, re-trigger evals at the checkpoint step on resume (e.g. after a
     crash that left in-flight evals unfinished). By default, assumes a clean
     exit where all evals already completed."""
-
-    @model_validator(mode="after")
-    def resolve_env_intervals(self):
-        """Per-env intervals inherit the group-level interval."""
-        for source in self.source:
-            if "interval" not in source.model_fields_set:
-                source.interval = self.interval
-        return self
 
     @property
     def intervals(self) -> dict[str, int]:
@@ -580,12 +559,6 @@ TRAIN_TOP_K_BOUND = 512
 
 
 class OrchestratorConfig(BaseConfig):
-    algo: AlgoConfig = GRPOAlgoConfig()
-    """Training algorithm: sampling plus the per-token training signal (credit
-    assignment and loss routing, fused — its ``type`` names the algorithm).
-    Defaults to ``grpo``. Override per source via ``[[orchestrator.train.source]]``'s
-    ``algo``."""
-
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
@@ -649,9 +622,6 @@ class OrchestratorConfig(BaseConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
-    group_size: int = Field(1, ge=1)
-    """Output sequences returned per example during training."""
-
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
 
@@ -689,19 +659,9 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def inherit_env_algorithms(self):
-        """Envs without their own algorithm inherit the top-level one.
-        Declared before any validator that reads ``algo``."""
-        for env_cfg in self.train.source:
-            if env_cfg.algo is None:
-                env_cfg.algo = self.algo.model_copy(deep=True)
-        return self
-
-    @model_validator(mode="after")
     def validate_env_algorithms(self):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
-            assert env_cfg.algo is not None  # resolved by inherit_env_algorithms
             env_cfg.algo.validate_env(env_cfg.env)
         return self
 
@@ -712,9 +672,9 @@ class OrchestratorConfig(BaseConfig):
         Owned here: every truncating config gets a top-k bound (bounds the sampling
         masks); opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations). Frozen-source envs sample externally and are exempt."""
-        policy_samplings = [
-            env.sampling for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
-        ] or ([self.train.sampling] if not self.train.source else [])
+        policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
+            [self.train.sampling] if not self.train.source else []
+        )
         truncating = [sampling for sampling in policy_samplings if sampling.truncates_distribution()]
         if not truncating:
             return self
@@ -744,7 +704,7 @@ class OrchestratorConfig(BaseConfig):
             for sampling in unbounded:
                 sampling.top_k = TRAIN_TOP_K_BOUND
 
-        algos = [env.algo for env in self.train.source if env.algo is not None] or [self.algo]
+        algos = [env.algo for env in self.train.source] or [self.train.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):
             raise ValueError(
                 "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
@@ -757,7 +717,7 @@ class OrchestratorConfig(BaseConfig):
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
+        return any(env.algo.sampling.source == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
@@ -804,18 +764,18 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if self.batch_size is not None and self.batch_size % self.group_size != 0:
-            raise ValueError("Batch size must be divisible by the number of samples per problem")
+        group_sizes = [source.group_size for source in self.train.source] or [self.train.group_size]
+        if self.batch_size is not None and any(self.batch_size % size for size in group_sizes):
+            raise ValueError(
+                f"Batch size {self.batch_size} must be divisible by every train source's group_size {sorted(set(group_sizes))}"
+            )
 
         for field in ("max_inflight", "initial_inflight"):
             value = getattr(self.concurrency, field)
-            if value is not None and value < self.group_size:
-                raise ValueError(f"concurrency.{field} must be at least the number of rollouts per example")
-
-        # Propagate the top-level ``group_size`` into each train env that didn't set its own.
-        for env_cfg in self.train.source:
-            if "group_size" not in env_cfg.model_fields_set:
-                env_cfg.group_size = self.group_size
+            if value is not None and value < max(group_sizes):
+                raise ValueError(
+                    f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
+                )
 
         return self
 
@@ -825,7 +785,6 @@ class OrchestratorConfig(BaseConfig):
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            assert env.algo is not None
             if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
@@ -835,9 +794,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_policy_top_k_consistency(self):
         """Require one top-k capture mode across the live policy server."""
-        policy_sources = [
-            env for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
-        ]
+        policy_sources = [env for env in self.train.source if env.algo.sampling.source == "policy"]
         enabled = [env for env in policy_sources if env.sampling.top_k is not None]
         disabled = [env for env in policy_sources if env.sampling.top_k is None]
         if enabled and disabled:

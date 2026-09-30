@@ -10,9 +10,11 @@ name = "debug-rae"
 
 [orchestrator]
 batch_size = 32
+
+[orchestrator.train]
 group_size = 1
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "rae"
 
 [orchestrator.renderer]

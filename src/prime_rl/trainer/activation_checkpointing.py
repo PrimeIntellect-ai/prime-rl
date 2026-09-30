@@ -69,6 +69,9 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
+        "quack::gemm_act_out",
+        "quack::gemm_gated_out",
+        "quack::gemm_out",
     }
 )
 # An operation target matches one qualified operator name, while a namespace

@@ -5,8 +5,10 @@ import torch.nn.functional as F
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import is_tt_moe_model
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
-from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm
+from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
@@ -40,37 +42,62 @@ def test_moe_detection_for_text_and_vlm(config_cls, expected):
 
 
 @pytest.mark.parametrize("selection", [[], [0], "0%", "50%"])
-def test_unselected_moe_uses_bf16_without_loading_quantization_backend(selection):
+@pytest.mark.parametrize("compute", [{"type": "mxfp8"}, {"type": "bf16", "backend": "sonicmoe"}])
+def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, compute):
     moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None)
     parameters = dict(moe.named_parameters())
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Identity(), moe])
-    config = ModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
+    config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection}}})
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
 
     configure_moe_runtime(model, config, dims)
 
-    assert isinstance(moe.experts.grouped_gemm, BF16GroupedGemm)
+    assert isinstance(moe.experts.compute, BF16ExpertCompute)
     assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
-    assert moe.token_dispatcher.token_group_alignment == moe.experts.grouped_gemm.token_group_alignment
+    assert moe.token_dispatcher.token_group_alignment == moe.experts.compute.token_group_alignment
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
-def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
+@pytest.mark.parametrize(
+    ("expert_cls", "kwargs", "fused", "error"),
+    [
+        pytest.param(GroupedExperts, {}, True, None, id="swiglu"),
+        pytest.param(GroupedExperts, {}, False, "fused gate/up", id="unfused"),
+        pytest.param(GroupedExperts, {"expert_type": "non_gated"}, False, "gated experts", id="non-gated"),
+        pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
+        pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
+        pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
+        pytest.param(DeepseekV4Experts, {"swiglu_limit": 10.0}, True, "standard SwiGLU", id="deepseek-v4"),
+    ],
+)
+def test_set_compute_validates_sonic_expert_structure(expert_cls, kwargs, fused, error):
+    pytest.importorskip("sonicmoe")
+    from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
+
+    experts = expert_cls(dim=4, hidden_dim=8, num_experts=2, **kwargs)
+    if fused:
+        fuse_gate_up_projections(experts)
+    original_compute = experts.compute
+    compute = SonicMoEExpertCompute()
+
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            experts.set_compute(compute)
+        assert experts.compute is original_compute
+    else:
+        experts.set_compute(compute)
+        assert experts.compute is compute
+
+
+def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     outputs = []
     start = 0
     for expert, end in enumerate(offs.tolist()):
         outputs.append(x[start:end] @ weights[expert])
         start = end
     return torch.cat(outputs)
-
-
-class ReferenceGroupedGemm:
-    token_group_alignment = 1
-
-    def __call__(self, x: torch.Tensor, weights: torch.Tensor, *, offs: torch.Tensor) -> torch.Tensor:
-        return _grouped_mm_reference(x, weights, offs=offs)
 
 
 def _scaled_square_experts(x: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -149,8 +176,9 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         expert_type=expert_type,
         activation=activation,
         bias=True,
-        grouped_gemm=ReferenceGroupedGemm(),
     )
+    experts.set_compute(GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1))
+    assert experts.token_group_alignment == 1
     experts.init_weights(0.02)
 
     has_gate = expert_type == "gated"
