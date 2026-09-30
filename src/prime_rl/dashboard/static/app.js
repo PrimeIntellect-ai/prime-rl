@@ -1471,14 +1471,14 @@ let activeFilter = null;
    key stays in the panel's hover card, and the metrics tab keeps every key as logged.
    Group 1 of a pattern is the agent, `$k` the k of avg@k / pass@k */
 const PANEL_INFO = [
-  [/\/effective\/([^/]+)\/reward\/mean$/, "reward", "mean reward over the effective traces of the batch (error-free and trainable), one point per step"],
-  [/\/all\/([^/]+)\/reward\/mean$/, "reward (all)", "mean reward over every trace of the batch, errored ones counted as zero"],
+  [/\/effective\/([^/]+)\/reward\/mean$/, "mean reward", "mean reward over the effective traces of the batch (error-free and trainable), one point per step"],
+  [/\/all\/([^/]+)\/reward\/mean$/, "mean reward (all)", "mean reward over every trace of the batch, errored ones counted as zero"],
   [/\/all\/([^/]+)\/avg@(\d+)$/, "avg@$k", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts counted as zero"],
   [/\/effective\/([^/]+)\/avg@(\d+)$/, "avg@$k (effective)", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts left out"],
   [/\/effective\/([^/]+)\/pass@(\d+)$/, "pass@$k", "share of tasks with at least one correct rollout among $k, the unbiased estimate"],
-  [/\/effective\/num_turns\/mean$/, "#turns", "mean turns per episode"],
-  [/\/effective\/num_total_tokens\/mean$/, "#tokens", "mean tokens per episode, prompt and completion together"],
-  [/\/effective\/num_branches\/mean$/, "#branches", "mean prefix branches per episode"],
+  [/\/effective\/num_turns\/mean$/, "mean turns", "mean turns per episode"],
+  [/\/effective\/num_total_tokens\/mean$/, "mean tokens", "mean tokens per episode, prompt and completion together"],
+  [/\/effective\/num_branches\/mean$/, "mean branches", "mean prefix branches per episode"],
   [/\/effective\/([^/]+)\/is_truncated\/mean$/, "truncation rate", "share of the effective traces cut off by a length or turn limit"],
   [/\/all\/([^/]+)\/is_timeout\/mean$/, "timeout rate", "share of the batch's traces that hit a stage timeout"],
   [/\/all\/([^/]+)\/has_error\/mean$/, "error rate", "share of the batch's traces that errored"],
