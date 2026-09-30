@@ -463,6 +463,34 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
     assert online.intervals == {"gsm8k": 5, "b": 2}
 
 
+def test_eval_sources_block_network_by_default():
+    config = EvalConfig.model_validate(
+        {
+            "source": [
+                {"env": {"taskset": {"id": "gsm8k"}}},
+                {"name": "open", "env": {"taskset": {"id": "gsm8k", "network_allow": ["*"]}}},
+                {"name": "host", "env": {"taskset": {"id": "gsm8k"}, "agent": {"runtime": {"type": "subprocess"}}}},
+            ],
+        }
+    )
+    blocked, opened, host = config.source
+    assert blocked.env.taskset.network_allow == []
+    assert opened.env.taskset.network_allow == ["*"]
+    assert host.env.taskset.network_allow is None
+    # A group-level policy reaches every source, and the resolved config round-trips it.
+    grouped = EvalConfig.model_validate(
+        {"env": {"taskset": {"network_allow": ["*"]}}, "source": [{"env": {"taskset": {"id": "gsm8k"}}}]}
+    )
+    assert grouped.source[0].env.taskset.network_allow == ["*"]
+    reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
+    assert [s.env.taskset.network_allow for s in reloaded.source] == [[], ["*"], None]
+
+    train = OrchestratorConfig.model_validate(
+        {"train": {"source": [{"env": {"taskset": {"id": "gsm8k"}}}]}, "batch_size": 8}
+    )
+    assert train.train.source[0].env.taskset.network_allow is None
+
+
 def test_train_sources_can_use_their_own_group_sizes():
     def orchestrator(batch_size: int, **concurrency) -> OrchestratorConfig:
         return OrchestratorConfig.model_validate(
