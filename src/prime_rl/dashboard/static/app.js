@@ -2208,7 +2208,7 @@ function trainProgressHtml() {
 
 /* the headline tiles of a training run: the scores the filter keeps (reward per train
    env, avg@k per eval env, each against its base value), the failure rates of the
-   shown scope, and the step time */
+   shown scope, the step time, and for SFT the trainer's throughput and MFU */
 function trainTilesHtml() {
   const meta = state.meta;
   const f = state.filter;
@@ -2247,6 +2247,10 @@ function trainTilesHtml() {
     trendTiles(`${scope}/all/[^/]+/is_timeout/mean`, () => "timeout rate", fmtPct, { cls: (rate) => (rate > 0 ? " rate-timeout" : ""), lowerIsBetter: true });
   }
   trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
+  if (meta.type === "sft") {
+    trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
+    trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
+  }
   return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
 }
 
