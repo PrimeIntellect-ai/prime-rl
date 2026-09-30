@@ -189,8 +189,6 @@ async function toggleCompare(name, on) {
 function applyRunTypeControls() {
   const isEval = state.meta?.type === "eval";
   $("#overview-search").hidden = isEval;
-  $("#overview-collapse").hidden = isEval;
-  $("#overview-expand").hidden = isEval;
   $("#overview-smooth").closest(".ctl").hidden = isEval;
   $("#step-bar").hidden = isEval;
   // an eval run has no steps to switch between, so it is stream-only
@@ -1240,8 +1238,13 @@ function renderEvalPane(body) {
   }
   let done = 0, live = 0;
   for (const env of envs) {
-    // several envs stack as sections of their own; a lone one is the pane itself
-    const host = envs.length > 1 ? addSection(body, `eval/${env}`, null, env, "eval-env").grid : body;
+    // several envs follow one another as blocks; the progress head names each
+    let host = body;
+    if (envs.length > 1) {
+      host = document.createElement("div");
+      host.className = "eval-env";
+      body.appendChild(host);
+    }
     const counts = renderEvalEnv(host, env, filter);
     done += counts.done;
     live += counts.live;
@@ -1985,7 +1988,7 @@ function paneOrderKey(sectionName) {
 }
 
 function persistPaneOrder(grid) {
-  const sectionName = grid?.closest("details.section")?.dataset?.name;
+  const sectionName = grid?.closest(".section")?.dataset?.name;
   if (!sectionName) return;
   state.metrics.paneOrder[paneOrderKey(sectionName)] = [...grid.querySelectorAll(".chart-card")].map(
     (c) => c.dataset.title
@@ -1994,7 +1997,7 @@ function persistPaneOrder(grid) {
 }
 
 function applyPaneOrder(grid) {
-  const sectionName = grid.closest("details.section")?.dataset?.name;
+  const sectionName = grid.closest(".section")?.dataset?.name;
   const saved = sectionName && state.metrics.paneOrder[paneOrderKey(sectionName)];
   if (!saved) return;
   const rank = new Map(saved.map((t, i) => [t, i]));
@@ -2021,18 +2024,24 @@ function updateCharts(touched = null) {
   }
 }
 
-function addSection(body, name, count, display = name, cls = "chart-grid") {
-  const div = document.createElement("details");
-  div.className = "section";
+/* the overview reads top to bottom under plain headings; the metrics tab, with a
+   section per key family, folds its sections */
+function addSection(body, name, count, display = name) {
+  const flat = metricsMode() === "overview";
+  const div = document.createElement(flat ? "div" : "details");
+  div.className = flat ? "section eval-sec" : "section";
   div.dataset.name = name;
-  // an active search auto-expands sections so hits are visible; the persisted
-  // collapse state comes back when the query clears
-  div.open = activeFilter ? true : !state.metrics.collapsedSections.has(name);
-  div.innerHTML =
-    `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
-    `<span class="sec-chev">›</span></summary>`;
+  if (flat) div.innerHTML = `<div class="eval-sec-title">${esc(display)}</div>`;
+  else {
+    // an active search auto-expands sections so hits are visible; the persisted
+    // collapse state comes back when the query clears
+    div.open = activeFilter ? true : !state.metrics.collapsedSections.has(name);
+    div.innerHTML =
+      `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
+      `<span class="sec-chev">›</span></summary>`;
+  }
   const grid = document.createElement("div");
-  grid.className = cls;
+  grid.className = "chart-grid";
   div.appendChild(grid);
   body.appendChild(div);
   return { div, grid };
@@ -6639,10 +6648,10 @@ for (const [tab, view] of Object.entries(CHART_VIEWS)) {
       savePrefs();
     }, 250)
   );
-  $(`#${tab}-collapse`).addEventListener("click", () =>
+  $(`#${tab}-collapse`)?.addEventListener("click", () =>
     document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = false))
   );
-  $(`#${tab}-expand`).addEventListener("click", () =>
+  $(`#${tab}-expand`)?.addEventListener("click", () =>
     document.querySelectorAll(`${view.body} details.section`).forEach((s) => (s.open = true))
   );
   $(`#${tab}-smooth`).addEventListener("input", (e) => {

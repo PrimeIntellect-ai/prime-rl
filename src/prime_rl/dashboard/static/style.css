@@ -429,8 +429,8 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .chart-info:hover { color: var(--grey-6); border-color: var(--grey-5); }
 #swarm-tip .tip-note { max-width: 320px; white-space: normal; color: var(--grey-5); margin-bottom: 4px; }
 #swarm-tip .tip-key { color: var(--grey-4); font-size: 10px; margin-top: 4px; }
-/* several eval envs stack as sections, each holding a full pane */
-details.section > .eval-env { padding-top: 4px; }
+/* several eval envs follow one another, a rule between them */
+.eval-env + .eval-env { border-top: 1px solid var(--grey-3); padding-top: 18px; margin-top: 6px; }
 .tm-note { font-size: 10px; margin-top: 4px; }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }
