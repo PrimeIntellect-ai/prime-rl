@@ -68,8 +68,10 @@ type = "muon"
 
 [orchestrator]
 batch_size = 256
-group_size = 16
 max_off_policy_steps = 32
+
+[orchestrator.train]
+group_size = 16
 
 [orchestrator.concurrency]
 initial_inflight = 256
@@ -79,10 +81,10 @@ max_inflight = 512
 name = "glm-4.5"
 thinking_retention = "all"
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
+[orchestrator.train.algo.length_penalty]
 type = "linear"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
@@ -148,7 +150,7 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "browsecomp"
-num_examples = 500 # full set is 1266; cap eval at 500
+select.limit = 500 # full set is 1266; cap eval at 500
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
 env.agent.harness.forward_env = ["SERPER_API_KEY"]

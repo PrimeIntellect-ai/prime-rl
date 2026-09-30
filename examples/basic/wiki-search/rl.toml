@@ -31,6 +31,8 @@ target_modules = [
 
 [orchestrator]
 batch_size = 512
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.concurrency]

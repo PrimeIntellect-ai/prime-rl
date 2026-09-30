@@ -10,7 +10,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.monitors import MonitorsConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
     HeartbeatConfig,
@@ -229,8 +229,8 @@ class SFTConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
@@ -249,7 +249,8 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory and W&B run name to it when not set explicitly."""
+        default the run directory, W&B run name and platform run name to it when not
+        set explicitly."""
         if self.run.name is None:
             dataset = str(getattr(self.data, "name", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
@@ -259,6 +260,8 @@ class SFTConfig(BaseConfig):
             self.run.dir = self.run.name
         if self.monitors.wandb is not None and self.monitors.wandb.name is None:
             self.monitors.wandb.name = self.run.name
+        if self.monitors.prime is not None and self.monitors.prime.name is None:
+            self.monitors.prime.name = self.run.name
         return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"

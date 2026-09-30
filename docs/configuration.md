@@ -171,16 +171,31 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — takes an `env` block that each of its sources inherits. A source's own `env` values win. The block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source:
+Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — holds defaults for its sources. Every field that a group and its sources both have is a default: `env`, `sampling`, `select` and `group_size`, plus `algo` on the train group and `interval` on the eval groups of a training run. Each source inherits the fields that its group sets. One rule applies to all of them: nested blocks merge key by key, a source's own values win, and a block whose `type` (e.g. of `algo`) differs from the group's is the source's alone.
 
 ```toml
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[[orchestrator.train.source]]
+env.taskset.id = "math"
+group_size = 32  # this source's own value wins over the group's 16
+
 [orchestrator.eval.env]
 retries.max_retries = 3
 retries.include = ["ProviderError", "SandboxError"]
 timeout.episode = 7200
+
+[orchestrator.eval.select]  # evaluate 128 tasks of each taskset
+limit = 128
 ```
 
-`ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire (inherited from the group-level `interval` when unset); a standalone eval has neither.
+The group `env` block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source. `select` picks which tasks of a source's taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order.
+
+`ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire; a standalone eval has neither.
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 

@@ -16,10 +16,12 @@ name = "debug-self-distill"
 
 [orchestrator]
 batch_size = 32
+
+[orchestrator.train]
 group_size = 1
 
 # reverse-text's demo lives in the "answer" column.
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "opsd"
 demo_key = "answer"
 
@@ -37,7 +39,9 @@ env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-num_examples = 128
+
+[orchestrator.eval.select]
+limit = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
