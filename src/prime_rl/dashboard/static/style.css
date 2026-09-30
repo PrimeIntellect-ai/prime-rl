@@ -398,14 +398,39 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .tm-line.timeout { fill: var(--timeout); }
 .comp-pane [data-part].dim { opacity: 0.2; }
 .comp-pane .tm-node.dim { opacity: 0.35; }
-/* the summary is one row whatever the count: the tiles share the width equally */
-.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; }
+/* the summary tiles share the width equally and wrap only once they would squeeze */
+.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 .sum-tile { cursor: default; padding: 14px 16px; min-height: 96px; display: flex; flex-direction: column; justify-content: center; }
 .sum-tile .stat-label, .sum-tile .stat-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
 .sum-tile.rate-timeout .stat-value { color: var(--timeout); }
+/* a tile's corner reads the change from its base value */
+.sum-tile .stat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.sum-tile .stat-head .stat-label { min-width: 0; }
+.tile-delta { flex-shrink: 0; font-size: 11px; color: var(--grey-4); white-space: nowrap; }
+.tile-delta.good { color: var(--positive); }
+.tile-delta.bad { color: var(--negative); }
+/* the overview's panels wear readable names; the mark opens how each is computed */
+.chart-info {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--grey-3);
+  border-radius: 50%;
+  font: 500 9px var(--font-mono);
+  line-height: 12px;
+  text-align: center;
+  color: var(--grey-4);
+  cursor: help;
+  align-self: center;
+}
+.chart-info:hover { color: var(--grey-6); border-color: var(--grey-5); }
+#swarm-tip .tip-note { max-width: 320px; white-space: normal; color: var(--grey-5); margin-bottom: 4px; }
+#swarm-tip .tip-key { color: var(--grey-4); font-size: 10px; margin-top: 4px; }
+/* several eval envs stack as sections, each holding a full pane */
+details.section > .eval-env { padding-top: 4px; }
 .tm-note { font-size: 10px; margin-top: 4px; }
 .tm-more { color: var(--grey-5); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tm-more:hover { color: var(--grey-6); }

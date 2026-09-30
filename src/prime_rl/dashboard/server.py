@@ -1522,7 +1522,7 @@ def row_filter(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     start: float | None = None,
     end: float | None = None,
 ):
@@ -1539,7 +1539,7 @@ def row_filter(
             return False
         if episode is not None and row.get("id") != episode:
             return False
-        if errors_only and row.get("ok"):
+        if ok is not None and bool(row.get("ok")) != ok:
             return False
         arrival = row.get("arrival") or 0
         return not ((start is not None and arrival < start) or (end is not None and arrival >= end))
@@ -1567,7 +1567,7 @@ def list_stream_episodes(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     sort: str = "arrival",
     order: str = "desc",
     offset: int = Query(default=0, ge=0),
@@ -1594,7 +1594,7 @@ def list_stream_episodes(
     if upto is not None:
         rows = rows[:upto]
     envs, kinds = index_facets(run_dir)
-    keep = row_filter(step=step, kind=kind, env=env, episode=episode, errors_only=errors_only, start=start, end=end)
+    keep = row_filter(step=step, kind=kind, env=env, episode=episode, ok=ok, start=start, end=end)
     if sort == "arrival":
         # the index is already in arrival order: walk it from the right end and stop
         # once the page is full, so the common view costs a page rather than a run
@@ -1629,7 +1629,7 @@ def episode_histogram(
     step: int | None = None,
     kind: str | None = None,
     env: str | None = None,
-    errors_only: bool = False,
+    ok: bool | None = None,
     bars: int = Query(default=80, ge=8, le=500),
 ) -> dict:
     """Episodes finishing per time bin, over the same filters as the table — the
@@ -1637,7 +1637,7 @@ def episode_histogram(
     the episodes and the bin is the roundest interval that keeps the bar count sane,
     so a run of any length reads the same."""
     run_dir = get_run_dir(run)
-    rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, errors_only=errors_only)
+    rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, ok=ok)
     arrivals = sorted(row["arrival"] for row in rows if isinstance(row.get("arrival"), (int, float)))
     if not arrivals:
         return {"bins": [], "bin": 60, "start": None, "end": None, "total": 0}
