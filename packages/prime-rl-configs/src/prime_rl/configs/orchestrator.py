@@ -616,9 +616,6 @@ class OrchestratorConfig(BaseConfig):
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
-    require_routed_experts: bool = False
-    """Drop incomplete traces before dispatch when the trainer replays expert routing."""
-
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 

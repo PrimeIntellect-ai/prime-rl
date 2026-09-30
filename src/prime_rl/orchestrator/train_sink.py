@@ -19,7 +19,7 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
-from prime_rl.orchestrator.trajectories import missing_routed_expert_branches, trace_to_samples
+from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
@@ -104,11 +104,6 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
-        self.missing_routed_groups_by_env: dict[str, int] = defaultdict(int)
-
-    def _record_missing_routed_group(self, env_name: str) -> int:
-        self.missing_routed_groups_by_env[env_name] += 1
-        return self.missing_routed_groups_by_env[env_name]
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -267,20 +262,6 @@ class TrainSink:
             return
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
-        if self.config.require_routed_experts and survivors:
-            missing = {trace.id: branches for trace in survivors if (branches := missing_routed_expert_branches(trace))}
-            if missing:
-                missing_count = self._record_missing_routed_group(env_name)
-                self.pending_episodes.extend(group, admitted=False)
-                self._record_zero_output(group, [], n_owed)
-                message = (
-                    f"Dropped group missing routed-expert metadata: {missing} "
-                    f"({missing_count} groups for env {env_name})"
-                )
-                if missing_count >= 3:
-                    raise RuntimeError(message)
-                get_logger().warning(message)
-                return
         if survivors:
             await env.algorithm.finalize_group(group)
         admitted = self._admit(group) if group else False
@@ -297,12 +278,7 @@ class TrainSink:
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
         for trace in survivors:
-            samples = await asyncio.to_thread(
-                trace_to_samples,
-                trace,
-                env_name=env_name,
-                require_routed_experts=self.config.require_routed_experts,
-            )
+            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_sampling_masks and sample.sampling_mask is None:
