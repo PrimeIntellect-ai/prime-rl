@@ -571,6 +571,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
+            self.orchestrator.require_routed_experts = True
             if self.inference is not None:
                 if self.inference.vllm.enable_return_routed_experts is False:
                     warnings.warn(

@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import numpy as np
 import pydantic
 import pytest
 import verifiers.v1 as vf
@@ -9,7 +10,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.trajectories import missing_routed_expert_branches, trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
@@ -475,3 +476,17 @@ def test_echo_filter_narrows_selection():
     episode = _two_turn_episode()
     with pytest.raises(ValueError, match="span the branch's tokens"):
         asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_episode(episode))
+
+
+def test_trace_to_samples_rejects_partial_routed_experts_when_required():
+    episode = _two_turn_episode()
+    trace = episode.traces[0]
+    for node in trace.nodes[:-1]:
+        node.routed_experts = np.zeros((len(node.token_ids), 1, 1), dtype=np.uint8)
+
+    assert missing_routed_expert_branches(trace) == [0]
+    with pytest.raises(ValueError, match="missing routed-expert metadata"):
+        trace_to_samples(trace, require_routed_experts=True)
+
+    trace.nodes[-1].routed_experts = np.zeros((len(trace.nodes[-1].token_ids), 1, 1), dtype=np.uint8)
+    assert missing_routed_expert_branches(trace) == []

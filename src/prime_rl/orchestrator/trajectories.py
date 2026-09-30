@@ -24,6 +24,22 @@ from prime_rl.transports.batch.types import RoutedExperts, SamplingMask
 from prime_rl.utils.logger import get_logger
 
 
+class MissingRoutedExpertsError(ValueError):
+    """A trainable trace is incomplete for router replay."""
+
+
+def missing_routed_expert_branches(trace: vf.Trace) -> list[int]:
+    """Return trainable branch indices with missing or misaligned routing rows."""
+    missing: list[int] = []
+    for branch, _ in iter_trainable_branches(trace):
+        nodes = [node for node in branch.nodes if node.token_ids]
+        if not nodes or any(
+            node.routed_experts is None or node.routed_experts.shape[0] != len(node.token_ids) for node in nodes
+        ):
+            missing.append(branch.index)
+    return missing
+
+
 def _image_urls(branch: vf.Branch) -> list[str]:
     urls: list[str] = []
     for node in branch.nodes:
@@ -147,7 +163,9 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def trace_to_samples(
+    trace: vf.Trace, *, env_name: str = "", require_routed_experts: bool = False
+) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
@@ -161,6 +179,9 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
+        routed_experts = branch.routed_experts
+        if require_routed_experts and routed_experts is None:
+            raise MissingRoutedExpertsError(f"trace {trace.id} branch {branch.index} is missing routed-expert metadata")
         mm_token_type_ids: list[int] | None = None
         mm_refs: MMRefs | None = None
         image_urls = _image_urls(branch)
@@ -179,7 +200,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ref_logprobs=branch.reference_logprobs,
                 mm_refs=mm_refs,
                 mm_token_type_ids=mm_token_type_ids,
-                routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                routed_experts=_encode_routed_experts(routed_experts, len(token_ids)),
                 rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),

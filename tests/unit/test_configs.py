@@ -187,6 +187,23 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_custom_vlm_can_trust_checkpoint_vision_code():
+    config = TrainerModelConfig.model_validate(
+        {
+            "impl": "custom",
+            "trust_remote_code": True,
+            "vlm": {"vision_encoder_attr": "model.vision_model", "language_model_attr": "model.language_model"},
+        }
+    )
+
+    assert config.trust_remote_code is True
+
+
+def test_custom_text_model_cannot_trust_remote_code():
+    with pytest.raises(ValidationError, match="custom VLM"):
+        TrainerModelConfig.model_validate({"impl": "custom", "trust_remote_code": True})
+
+
 def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     default_config = TrainerConfig()
     assert default_config.loss.type == "ipo"
@@ -1037,3 +1054,14 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_router_replay_requires_routed_experts_in_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"enable_router_replay": True},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+
+    assert config.orchestrator.require_routed_experts is True
