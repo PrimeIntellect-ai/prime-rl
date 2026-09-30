@@ -1492,6 +1492,8 @@ const PANEL_INFO = [
   ["val/perplexity", "val perplexity", "perplexity over the validation set"],
   ["loss/nan_count", "NaN count", "non-finite losses in the step"],
   ["progress/epoch", "epoch", "passes over the dataset so far"],
+  ["progress/num_samples", "samples", "samples trained on so far"],
+  ["progress/num_tokens", "tokens", "tokens trained on so far"],
   ["perf/mfu", "MFU", "model FLOPs utilization of the trainer"],
   ["perf/throughput", "throughput", "trainer tokens per second"],
   ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer"],
@@ -2208,7 +2210,7 @@ function trainProgressHtml() {
 
 /* the headline tiles of a training run: the scores the filter keeps (reward per train
    env, avg@k per eval env, each against its base value), the failure rates of the
-   shown scope, the step time, and for SFT the trainer's throughput and MFU */
+   shown scope, the step time, and for SFT the samples and tokens processed, throughput and MFU */
 function trainTilesHtml() {
   const meta = state.meta;
   const f = state.filter;
@@ -2248,6 +2250,8 @@ function trainTilesHtml() {
   }
   trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
   if (meta.type === "sft") {
+    trendTiles("progress/num_samples", () => "samples", fmtCompact, { delta: false });
+    trendTiles("progress/num_tokens", () => "tokens", fmtCompact, { delta: false });
     trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
     trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
   }
