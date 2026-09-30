@@ -434,8 +434,9 @@ const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeo
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
-const SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"];
-const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/step", "time/forward_backward", "time/save_ckpt"];
+// max_vio only exists on MoE models: a regex panel stays away on dense ones
+const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
+const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];
 
 // Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
 // paired with the cross-engine tail that flags a single sick engine.
@@ -1447,7 +1448,7 @@ function buildSections(meta) {
     sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => (m.startsWith("val/") ? { regex: escRe(m) } : { metric: m })) });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
     else sections.push(evalSection("eval", ".*"));
-    sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
+    sections.push({ name: "stability", panels: SFT_STABILITY_PANELS });
     sections.push({ name: "performance", panels: SFT_PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
     return sections;
   }
@@ -1486,6 +1487,7 @@ const PANEL_INFO = [
   ["entropy/all/mean", "entropy", "mean token entropy of the policy over the batch"],
   ["mismatch_kl/all/mean", "mismatch KL", "KL between the trainer's logprobs and the sampling logprobs of the same tokens"],
   ["kl_ent_ratio/mean", "KL / entropy", "mismatch KL over entropy"],
+  ["max_vio/mean", "max vio", "expert load imbalance: the busiest expert's tokens over the balanced load, minus one; mean over layers, the worst layer dashed"],
   ["loss/mean", "loss", "mean training loss of the step"],
   ["loss/perplexity", "perplexity", "perplexity of the training loss"],
   ["val/loss", "val loss", "mean loss over the validation set"],
@@ -1948,7 +1950,8 @@ function renderPanelCard(grid, panel, lazy = false) {
   const sectionName = grid.parentElement?.dataset?.name;
   const title = panelTitle(panel, series, sectionName);
   card.dataset.title = title;
-  const key = series[0]?.key ?? panel.metric ?? panel.metrics?.[0] ?? "";
+  const keys = series.length ? series.map((s) => s.key) : [panel.metric ?? panel.metrics?.[0] ?? ""];
+  const key = keys.find(describeKey) ?? keys[0];
   const described = metricsMode() === "overview" ? describeKey(key) : null;
   // several agents in one section fan the same metric out: the agent tells the cards apart
   const label = described ? described.label + (panel.tagAgent && described.agent ? ` · ${described.agent}` : "") : title;
@@ -2210,7 +2213,7 @@ function trainProgressHtml() {
 
 /* the headline tiles of a training run: the scores the filter keeps (reward per train
    env, avg@k per eval env, each against its base value), the failure rates of the
-   shown scope, the step time, and for SFT the samples and tokens processed, throughput and MFU */
+   shown scope, and the run's pace: the step time, or for SFT the samples and tokens processed, throughput and MFU */
 function trainTilesHtml() {
   const meta = state.meta;
   const f = state.filter;
@@ -2248,13 +2251,12 @@ function trainTilesHtml() {
     trendTiles(`${scope}/effective/[^/]+/is_truncated/mean`, () => "truncation rate", fmtPct, { cls: rateClass, lowerIsBetter: true });
     trendTiles(`${scope}/all/[^/]+/is_timeout/mean`, () => "timeout rate", fmtPct, { cls: (rate) => (rate > 0 ? " rate-timeout" : ""), lowerIsBetter: true });
   }
-  trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
   if (meta.type === "sft") {
     trendTiles("progress/num_samples", () => "samples", fmtCompact, { delta: false });
     trendTiles("progress/num_tokens", () => "tokens", fmtCompact, { delta: false });
     trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
     trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
-  }
+  } else trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
   return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
 }
 
