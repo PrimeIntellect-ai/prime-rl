@@ -4,7 +4,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
-from prime_rl.configs.monitors import EvalMonitorsConfig, MonitorsConfig
+from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
 from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
@@ -28,11 +28,12 @@ class ServedEvalConfig(EvalSourcesConfig):
     rate limiting."""
 
     heartbeat: HeartbeatConfig | None = None
-    """BetterStack heartbeat for the run: one ping per landed episode — the first
+    """BetterStack heartbeat for the run: pinged by landed episodes — the first
     landed episode is the first beat, so the run's boot never shows up as a
-    stale-prone silence. When episodes stop landing, the pings stop and the heartbeat
-    goes stale on Better Stack after its grace period. Size that period + grace above
-    the longest legitimate gap between episodes."""
+    stale-prone silence. Pings are throttled to at most one every
+    ``heartbeat.min_interval`` seconds. When episodes stop landing, the pings stop
+    and the heartbeat goes stale on Better Stack after its grace period. Size that
+    period + grace above the longest legitimate gap between episodes."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str | None]:
@@ -157,8 +158,14 @@ class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
 
     log: LogConfig = LogConfig()
 
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    monitors: EvalMonitorsConfig = EvalMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
+
+    ``EvalMonitorsConfig``, not the base ``MonitorsConfig``: the launcher
+    converts the trainer's ``[monitors.prime]`` into a
+    ``PrimeEvalMonitorConfig`` for the online-eval process, and the base
+    type would drop (or forbid) the prime block at the eval.json
+    dump/re-parse boundary."""
 
     @model_validator(mode="after")
     def auto_setup_broadcasts_dir(self):

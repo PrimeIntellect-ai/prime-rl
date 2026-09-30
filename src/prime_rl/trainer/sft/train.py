@@ -80,6 +80,7 @@ def train(config: SFTConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.run_dir,
             run_config=config,
@@ -92,7 +93,7 @@ def train(config: SFTConfig):
     heart = None
     if config.heartbeat is not None and world.rank == 0:
         logger.info("Initializing heartbeat")
-        heart = Heartbeat(config.heartbeat.url)
+        heart = Heartbeat(config.heartbeat)
 
     # Set precision
     setup_torch_distributed(
@@ -676,6 +677,7 @@ def train(config: SFTConfig):
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("SFT trainer finished")
+    asyncio.run(monitors.finalize())
 
 
 def main():

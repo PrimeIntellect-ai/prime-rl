@@ -451,8 +451,7 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
 #
 # `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
 # `original_seq_len > 0`, so a pure sliding-window layer gets plain RoPE at `rope_theta` and every
-# compressed layer gets YaRN at `compress_rope_theta`. vLLM's `build_deepseek_v4_rope` branches the
-# base but not the scaling, which `monkey_patch_deepseek_v4_per_layer_rope` corrects.
+# compressed layer gets YaRN at `compress_rope_theta`. vLLM's `build_deepseek_v4_rope` must match.
 #
 # The real checkpoint's beta range and factor, but a reduced `original_max_position_embeddings`:
 # the cos/sin cache is `original_max * factor` rows of fp32, which at the checkpoint's 65536 would
@@ -474,13 +473,15 @@ ROPE_SCALING = {
 }
 
 # The nested `main`/`compress` schema, which HF's own `DeepseekV4Config` and this repo's port both
-# write and which vLLM's config shim cannot read. A config.json can also carry the flat legacy
-# `rope_scaling` the real checkpoint ships, or no YaRN parameters at all; the nested scaled form
-# is asserted here because it is the one the patch has the most normalization to do on.
+# write. A config.json can also carry the flat legacy `rope_scaling` the real checkpoint ships.
 ROPE_NESTED_PLAIN = {"rope_type": "default", "partial_rotary_factor": 0.125}
 ROPE_PARAMETERS = {
     "main": dict(ROPE_NESTED_PLAIN),
-    "compress": {**ROPE_SCALING, "partial_rotary_factor": 0.125},
+    "compress": {
+        "rope_type": "yarn",
+        **{key: value for key, value in ROPE_SCALING.items() if key != "type"},
+        "partial_rotary_factor": 0.125,
+    },
 }
 
 
@@ -522,12 +523,11 @@ def _vllm_rope_freqs(rotary_emb) -> torch.Tensor:
 
 @pytest.fixture
 def vllm_rope_builder():
-    """`build_deepseek_v4_rope`, patched, under the live vLLM config its `CustomOp` base asserts on.
+    """`build_deepseek_v4_rope` under the live vLLM config its `CustomOp` base asserts on.
 
-    The builder is resolved off the module at call time rather than bound at import, because the
-    patch rebinds that attribute. The config goes through vLLM's own `patch_rope_parameters`, the
-    same normalization the engine runs: it renames the legacy `type` key and, for the nested
-    schema, injects a top-level `rope_type="default"` beside the sub-dicts.
+    The config goes through vLLM's own `patch_rope_parameters`, the same normalization the engine
+    runs: it renames the legacy `type` key and, for the nested schema, injects a top-level
+    `rope_type="default"` beside the sub-dicts.
     """
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.model_executor.layers import rotary_embedding
@@ -536,9 +536,6 @@ def vllm_rope_builder():
     from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
     from vllm.utils.torch_utils import set_default_torch_dtype
 
-    from prime_rl.inference.patches import monkey_patch_deepseek_v4_per_layer_rope
-
-    monkey_patch_deepseek_v4_per_layer_rope()
     rotary_embedding._ROPE_DICT.clear()
 
     def build(compress_ratio: int):

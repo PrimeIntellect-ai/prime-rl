@@ -99,7 +99,7 @@ def train(config: TrainerConfig):
     heart = None
     if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
-        heart = Heartbeat(config.heartbeat.url)
+        heart = Heartbeat(config.heartbeat)
 
     # Setup metrics server (full on master, health-only on other nodes' local rank 0)
     metrics_server = None
