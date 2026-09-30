@@ -70,10 +70,6 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
 
-    offload = config.kv_cache_offload
-    is_mooncake = offload is not None and offload.type == "mooncake"
-    is_lmcache = offload is not None and offload.type == "lmcache"
-
     template_vars = dict(
         **config.slurm.template_vars,
         config_path=config_path,
@@ -88,12 +84,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         router=config.router,
         router_port=config.server.port,
         is_disaggregated=is_disaggregated,
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if (is_mooncake or is_lmcache) else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
-        kv_offload_lmcache=offload if is_lmcache else None,
+        kv_offload=config.kv_cache_offload,
         inference_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars},
     )
 

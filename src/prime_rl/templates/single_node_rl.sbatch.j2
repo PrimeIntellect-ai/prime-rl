@@ -124,7 +124,7 @@ timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2
     exit 1
 }
 {% endif %}
-{% if kv_offload_lmcache %}
+{% if kv_offload and kv_offload.type == "lmcache" %}
 LOG_DIR="$PRL_ATTEMPT_LOG_DIR"
 INFER_NODE_RANK=0
 ulimit -l unlimited

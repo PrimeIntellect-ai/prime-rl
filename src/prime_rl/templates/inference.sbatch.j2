@@ -192,10 +192,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
-{%- if kv_offload_mooncake %}
+{%- if kv_offload and kv_offload.type == "mooncake" %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
-{%- if kv_offload_lmcache %}
+{%- if kv_offload and kv_offload.type == "lmcache" %}
 {% include "_lmcache_store.sh.j2" %}
 {%- endif %}
 
