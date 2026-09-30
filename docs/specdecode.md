@@ -19,7 +19,7 @@ uv run eval @ examples/specdecode/aime25.toml --run.name dspark-aime25
 
 Omit the DSpark overlay to measure the target alone. The evaluation uses all 30 AIME 2025 questions with eight completions per question. Keep sampling, context length, concurrency and hardware fixed when comparing throughput and accuracy.
 
-The DSpark and joint RL examples set `vllm.compilation_config.pass_config.fuse_allreduce_rms = false`. This avoids a vLLM 0.30.0 / FlashInfer illegal-memory-access failure observed when restarting TP2 × DP2 inference from its compilation cache. Torch compilation and CUDA graphs remain enabled. Apply the same setting to an exported model's inference config.
+The DSpark and joint RL examples set `vllm.compilation_config.pass_config.fuse_allreduce_rms = false` while retaining compilation, CUDA graphs, and vLLM's default backend and AOT settings. This pass combines tensor-parallel all-reduce with RMSNorm; TP1 has no tensor-parallel all-reduce to fuse. Disabling the pass is not a complete workaround for observed vLLM 0.30.0 TP2 × DP2 startup failures: ordinary all-reduce can still dispatch to FlashInfer independently. Validate startup and cached restart for the deployment configuration.
 
 ### Accuracy and reproducibility
 
