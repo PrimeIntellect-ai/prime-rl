@@ -1,0 +1,24 @@
+output_dir = "outputs/specdecode/frozen-trainer"
+max_steps = 3
+
+[model]
+name = "Qwen/Qwen3-4B"
+seq_len = 512
+optim_cpu_offload = false
+
+[data.fake]
+batch_size = 2
+generate_samples = true
+
+[speculator]
+name = "RedHatAI/Qwen3-4B-speculator.dspark"
+freeze_backbone = true
+lr = 0.00001
+
+[speculator.training]
+max_anchors = 8
+loss_fn = '{"ce": 0.1, "tv": 0.9}'
+
+[ckpt]
+interval = 1
+keep_last = 2

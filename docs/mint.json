@@ -9,6 +9,7 @@
                 "training",
                 "eval",
                 "inference",
+                "specdecode",
                 "scaling",
                 "algorithms",
                 "advanced",

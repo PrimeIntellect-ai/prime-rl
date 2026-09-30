@@ -2,12 +2,11 @@ import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
-from torch.nn import Module
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.inference.vllm.worker.weight_transfer import WeightInspectionMixin, WeightTarget, load_policy_weights
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -85,7 +84,7 @@ class NCCLWeightBroadcastReceiver:
                 yield key, value
 
 
-class NCCLWeightUpdateWorker(Worker):
+class NCCLWeightUpdateWorker(WeightInspectionMixin, Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
     def init_broadcaster(
@@ -129,19 +128,7 @@ class NCCLWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
-    def update_weights_from_path(self, weight_dir: str) -> None:
+    def update_weights_from_path(self, weight_dir: str, target: WeightTarget = "model") -> None:
         """Update weights with the nccl communicator."""
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
-        assert isinstance(model, Module)
-
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        load_policy_weights(self.model_runner, state_iter, self.vllm_config, target)

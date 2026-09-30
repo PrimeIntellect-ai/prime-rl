@@ -18,7 +18,7 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import resolve_wire_dtype
+from prime_rl.utils.weights import resolve_wire_dtype, weight_state_dict
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -142,21 +142,36 @@ class NCCLBroadcaster:
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        state_dict = model.state_dict()
+        state_dict = weight_state_dict(model, include_draft_projections=True)
+        draft_state = {
+            key.removeprefix("speculator."): state_dict.pop(key)
+            for key in list(state_dict)
+            if key.startswith("speculator.")
+        }
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
+        streams = [(model, state_dict, layer_prefix, num_layers, "")]
+        if draft_state:
+            draft = model.speculator
+            draft_layer_prefix = "layers." if hasattr(draft, "layers") else get_layer_prefix(draft.config)
+            draft_num_layers = get_max_layer_num(draft_state, draft_layer_prefix)
+            num_state_dict_to_send += draft_num_layers + 1
+            streams.append((draft, draft_state, draft_layer_prefix, draft_num_layers, "speculator."))
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
-        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
-            layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
-            if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+        for module, weights, layer_prefix, num_layers, namespace in streams:
+            keep_in_fp32 = getattr(module, "keep_in_fp32_for_weight_transfer", None)
+            for layer_id, layer_state_dict in filter_state_dict_by_layers(weights, num_layers, layer_prefix):
+                layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
+                layer_state_dict = preprocess_layer_checkpoint(module, layer_state_dict, layer_id)
+                if namespace:
+                    layer_state_dict = {namespace + key: value for key, value in layer_state_dict.items()}
+                if self.world.is_master:
+                    broadcast_state_dict(layer_state_dict, self.communicator)
 
 
 class NCCLWeightSender(WeightSender):

@@ -28,6 +28,17 @@ RATIO_METRICS = {
     "prefix_cache_hit_rate": (
         ("prefix_cache_hits", "prefix_cache_hits_total"),
         ("prefix_cache_queries", "prefix_cache_queries_total"),
+        0.0,
+    ),
+    "spec_decode_acceptance_rate": (
+        ("spec_decode_num_accepted_tokens", "spec_decode_num_accepted_tokens_total"),
+        ("spec_decode_num_draft_tokens", "spec_decode_num_draft_tokens_total"),
+        0.0,
+    ),
+    "spec_decode_acceptance_length": (
+        ("spec_decode_num_accepted_tokens", "spec_decode_num_accepted_tokens_total"),
+        ("spec_decode_num_drafts", "spec_decode_num_drafts_total"),
+        1.0,
     ),
 }
 
@@ -165,6 +176,25 @@ def histogram_quantile(buckets: dict[float, float], quantile: float) -> float | 
     return None
 
 
+def ratio_deltas(sample: EngineSample, previous: TimedSnapshot | None) -> dict[str, tuple[float, float]]:
+    """Valid interval numerator/denominator pairs, including the bonus token in acceptance length."""
+    if previous is None or sample.timestamp <= previous.timestamp:
+        return {}
+    deltas = {}
+    for name, (numerator_names, denominator_names, offset) in RATIO_METRICS.items():
+        operands = []
+        for aliases in (numerator_names, denominator_names):
+            key = next((key for key in aliases if key in sample.snapshot.counters), None)
+            if key is None or key not in previous.snapshot.counters:
+                break
+            operands.append(sample.snapshot.counters[key] - previous.snapshot.counters[key])
+        if len(operands) == 2:
+            numerator, denominator = operands
+            if numerator >= 0 and denominator > 0:
+                deltas[name] = (numerator + offset * denominator, denominator)
+    return deltas
+
+
 def engine_values(sample: EngineSample, previous: TimedSnapshot | None) -> dict[str, float]:
     """Pass-through values plus interval-derived rates and means for one engine.
 
@@ -199,15 +229,8 @@ def engine_values(sample: EngineSample, previous: TimedSnapshot | None) -> dict[
     # Per-engine ratios so the scope aggregations include min/max — the pooled
     # scope-level ratio alone hides a single engine's collapse (e.g. one engine
     # thrashing at a 5% prefix hit rate inside a healthy fleet average).
-    for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
-        numerator = sum(
-            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in numerator_names
-        )
-        denominator = sum(
-            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in denominator_names
-        )
-        if numerator >= 0 and denominator > 0:
-            values[name] = numerator / denominator
+    for name, (numerator, denominator) in ratio_deltas(sample, previous).items():
+        values[name] = numerator / denominator
     return values
 
 
@@ -228,7 +251,7 @@ def build_scope_metrics(
     scope: str,
     values_per_engine: list[dict[str, float]],
     bucket_deltas_per_engine: list[dict[str, dict[float, float]]],
-    counter_deltas: dict[str, float],
+    ratios: dict[str, tuple[float, float]],
 ) -> dict[str, float]:
     """Aggregate per-engine values into ``inference/{scope}/{metric}/{agg}`` series."""
     prefix = f"inference/{scope}"
@@ -251,11 +274,8 @@ def build_scope_metrics(
             if value is not None:
                 metrics[f"{prefix}/{name}/{label}"] = value
 
-    for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
-        numerator = sum(counter_deltas.get(candidate, 0.0) for candidate in numerator_names)
-        denominator = sum(counter_deltas.get(candidate, 0.0) for candidate in denominator_names)
-        if denominator > 0:
-            metrics[f"{prefix}/{name}/pooled"] = numerator / denominator
+    for name, (numerator, denominator) in ratios.items():
+        metrics[f"{prefix}/{name}/pooled"] = numerator / denominator
 
     return metrics
 
@@ -429,21 +449,18 @@ class InferenceMetricsCollector:
                     scopes.append((role, indices))
 
         for scope, indices in scopes:
-            counter_deltas: dict[str, float] = {}
+            ratios: dict[str, tuple[float, float]] = {}
             for i in indices:
                 previous = self.previous.get(samples[i].key)
-                if previous is None:
-                    continue
-                for name, value in samples[i].snapshot.counters.items():
-                    delta = value - previous.snapshot.counters.get(name, 0.0)
-                    if delta >= 0:
-                        counter_deltas[name] = counter_deltas.get(name, 0.0) + delta
+                for name, (numerator, denominator) in ratio_deltas(samples[i], previous).items():
+                    pooled_numerator, pooled_denominator = ratios.get(name, (0.0, 0.0))
+                    ratios[name] = (pooled_numerator + numerator, pooled_denominator + denominator)
             metrics.update(
                 build_scope_metrics(
                     scope,
                     [values_per_engine[i] for i in indices],
                     [bucket_deltas_per_engine[i] for i in indices],
-                    counter_deltas,
+                    ratios,
                 )
             )
         return metrics

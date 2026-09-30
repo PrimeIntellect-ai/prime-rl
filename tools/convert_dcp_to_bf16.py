@@ -31,6 +31,7 @@ import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
+from prime_rl.configs.specdecode import SpeculatorConfig
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
@@ -69,7 +70,7 @@ def resolve_dcp_dir(ckpt_dir: Path) -> Path:
     raise FileNotFoundError(f"No DCP checkpoint found at {ckpt_dir} (expected {ckpt_dir}/trainer/.metadata)")
 
 
-def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
+def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig, SpeculatorConfig | None]:
     """Model/tokenizer configs from the run's resolved config."""
     logger = get_logger()
     config_dir = get_config_dir(step_dir.parent.parent)
@@ -87,7 +88,8 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
 
     model = ModelConfig(**run_config["model"])
     tokenizer = TokenizerConfig(**run_config["tokenizer"])
-    return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
+    speculator = SpeculatorConfig(**run_config["speculator"]) if run_config.get("speculator") else None
+    return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer, speculator
 
 
 def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
@@ -150,7 +152,7 @@ def load_and_convert(ckpt_dir: Path):
 
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
-    model_config, tokenizer_config = resolve_run_configs(step_dir)
+    model_config, tokenizer_config, speculator_config = resolve_run_configs(step_dir)
     check_not_lora(model_config, dcp_dir)
 
     setup_single_process_env()
@@ -159,6 +161,10 @@ def load_and_convert(ckpt_dir: Path):
     resolve_ep(model_config)
     parallel_dims = get_parallel_dims(model_config)
     model = setup_model(model_config, parallel_dims, loading_from_checkpoint_later=True)
+    if speculator_config is not None:
+        from prime_rl.specdecode.training import SpeculatorTraining
+
+        SpeculatorTraining(model, speculator_config, model_config, parallel_dims)
 
     logger.info(f"Loading DCP checkpoint from {dcp_dir}")
     dcp_load(state_dict={"app": AppState(model, [], None, None)}, checkpoint_id=dcp_dir)
@@ -172,10 +178,28 @@ def load_and_convert(ckpt_dir: Path):
     return model, model_config, tokenizer_config, state_dict, step_dir
 
 
+def save_speculator(model, state_dict: dict, output_dir: Path) -> None:
+    """Export the draft separately; the remaining state dict contains only policy weights."""
+    if not hasattr(model, "speculator"):
+        return
+    draft_weights = {
+        key.removeprefix("speculator."): state_dict.pop(key)
+        for key in list(state_dict)
+        if key.startswith("speculator.")
+    }
+    draft_dir = output_dir / "speculator"
+    save_state_dict_parallel(draft_weights, draft_dir)
+    if get_world().is_master:
+        config = deepcopy(model.speculator.config)
+        config.speculators_config.verifier.name_or_path = str(output_dir.resolve())
+        config.save_pretrained(draft_dir)
+
+
 def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     logger = get_logger()
     model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
     output_dir = output_dir if output_dir is not None else step_dir / "weights"
+    save_speculator(model, state_dict, output_dir)
 
     logger.info(f"Writing HF weights to {output_dir}")
     save_state_dict_parallel(state_dict, output_dir)

@@ -91,6 +91,18 @@ def save_state_dict(
         save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
 
 
+def weight_state_dict(model: nn.Module, *, include_draft_projections: bool = False) -> dict[str, Tensor]:
+    """Inference weights, excluding the draft's reconstructed verifier projections."""
+    state_dict = model.state_dict()
+    speculator = getattr(model, "speculator", None)
+    if speculator is not None:
+        for key in getattr(speculator, "_keys_to_ignore_on_save", ()):
+            if include_draft_projections and key in ("embed_tokens.weight", "lm_head.weight"):
+                continue
+            state_dict.pop(f"speculator.{key}", None)
+    return state_dict
+
+
 def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     """Convert a (possibly rank-partial) training-format state dict to HF hub format.
 
@@ -99,17 +111,21 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
     """
     from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
-    full_keys = dict.fromkeys(resolve_fqn(model, key) for key in model.state_dict().keys())
+    speculator_weights = {key: state_dict.pop(key) for key in list(state_dict) if key.startswith("speculator.")}
+    full_keys = dict.fromkeys(
+        resolve_fqn(model, key) for key in model.state_dict().keys() if not key.startswith("speculator.")
+    )
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(full_keys):
         # PrimeRL custom model holding weights in prime format: apply the model's
         # declarative prime->HF conversion chain (renames, expert stack/unstack).
-        return model.convert_to_hf(state_dict)
+        converted = model.convert_to_hf(state_dict)
     else:
         # Plain transformers model: undo the key renames transformers applied when
         # it loaded the HF checkpoint.
         from transformers.core_model_loading import revert_weight_conversion
 
-        return revert_weight_conversion(model, state_dict)
+        converted = revert_weight_conversion(model, state_dict)
+    return converted | speculator_weights
 
 
 def resolve_fqn(model: nn.Module, key: str) -> str:
@@ -159,7 +175,9 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+def gather_weights_parallel(
+    model: nn.Module, dtype: torch.dtype = torch.bfloat16, *, include_draft_projections: bool = False
+) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
@@ -177,13 +195,14 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     """
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    state_dict = weight_state_dict(model, include_draft_projections=include_draft_projections)
+    owners = partition_weights(state_dict, world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        for key, value in model.state_dict().items():
+        for key, value in state_dict.items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)

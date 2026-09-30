@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
-from convert_dcp_to_bf16 import load_and_convert, save_model_assets
+from convert_dcp_to_bf16 import load_and_convert, save_model_assets, save_speculator
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -38,6 +38,7 @@ def main() -> None:
     output_dir = args.output_dir if args.output_dir is not None else step_dir / "weights-FP8"
     logger = get_logger()
     world = get_world()
+    save_speculator(model, state_dict, output_dir)
 
     logger.info("Quantizing weights to blockwise fp8")
     device = "cuda" if torch.cuda.is_available() else "cpu"
