@@ -35,6 +35,8 @@ First prepare tokenized target responses with upstream `uv run speculators prepa
 
 For a target without a compatible draft, omit `train.draft.from_pretrained` and configure `num_layers`, `draft_arch`, and `target_layer_ids` to initialize a new draft through upstream Speculators. Generate responses with the intended target, preserve its actual token IDs and assistant loss masks, and keep validation questions separate from training questions. Match the intended domain and context lengths; exclude downstream evaluation questions from draft training. Check held-out loss and actual serving acceptance before using the checkpoint for RL.
 
+For custom DSpark data with `sample_from_anchor = true`, `loss_mask[i]` selects the prediction of token `i + 1`. Shift an assistant-token mask left by one and clear its final position before saving the training dataset. Exclude each record's last `block_size` anchor positions so a sampled block cannot cross a packed-document boundary. Keep the original token IDs and raw masks for provenance. The joint RL adapter performs this alignment on rollout batches.
+
 Online training requests missing target features from a running extraction server:
 
 ```bash
