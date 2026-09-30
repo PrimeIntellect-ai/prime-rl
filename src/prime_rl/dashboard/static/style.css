@@ -333,7 +333,7 @@ details.section > summary {
 details.section > summary:hover { color: var(--grey-6); border-color: var(--grey-3); }
 details.section .sec-chev { margin-left: auto; transition: transform 0.12s; font-size: 10px; color: var(--grey-4); }
 details.section[open] .sec-chev { transform: rotate(90deg); }
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pane-min, 260px), 1fr)); gap: 12px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pane-min, 300px), 1fr)); gap: 12px; }
 /* eval runs: running-average stat cards instead of x/y chart panes */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .stat-card { background: var(--grey-2); border: 1px solid var(--hairline); padding: 12px 14px; min-width: 0; }
@@ -369,7 +369,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 /* distributions: a beeswarm per metric, a faint boxplot behind it, stats on hover */
 #tab-overview { position: relative; }
 .swarm-card .chart-head { cursor: default; }
-.swarm-host { height: var(--pane-h, 150px); margin-top: 6px; }
+.swarm-host { height: var(--pane-h, 170px); margin-top: 6px; }
 .swarm { display: block; }
 .swarm .sw-bg { fill: transparent; }
 .swarm circle { fill: var(--accent); fill-opacity: 0.7; cursor: pointer; }

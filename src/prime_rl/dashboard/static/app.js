@@ -33,7 +33,7 @@ const state = {
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     searches: { overview: prefs.overviewSearch ?? "", metrics: prefs.metricsSearch ?? "" },
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 300, paneH: prefs.paneH ?? 170,
     allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
@@ -1494,8 +1494,8 @@ const PANEL_INFO = [
   ["val/perplexity", "val perplexity", "perplexity over the validation set"],
   ["loss/nan_count", "NaN count", "non-finite losses in the step"],
   ["progress/epoch", "epoch", "passes over the dataset so far"],
-  ["progress/num_samples", "samples", "samples trained on so far"],
-  ["progress/num_tokens", "tokens", "tokens trained on so far"],
+  ["progress/num_samples", "total samples", "samples trained on so far"],
+  ["progress/num_tokens", "total tokens", "tokens trained on so far"],
   ["perf/mfu", "MFU", "model FLOPs utilization of the trainer"],
   ["perf/throughput", "throughput", "trainer tokens per second"],
   ["perf/peak_memory", "peak memory", "peak GPU memory of the trainer"],
@@ -2252,8 +2252,8 @@ function trainTilesHtml() {
     trendTiles(`${scope}/all/[^/]+/is_timeout/mean`, () => "timeout rate", fmtPct, { cls: (rate) => (rate > 0 ? " rate-timeout" : ""), lowerIsBetter: true });
   }
   if (meta.type === "sft") {
-    trendTiles("progress/num_samples", () => "samples", fmtCompact, { delta: false });
-    trendTiles("progress/num_tokens", () => "tokens", fmtCompact, { delta: false });
+    trendTiles("progress/num_samples", () => "total samples", fmtCompact, { delta: false });
+    trendTiles("progress/num_tokens", () => "total tokens", fmtCompact, { delta: false });
     trendTiles("perf/throughput", () => "throughput", (v) => (v == null ? "n/a" : `${fmtCompact(Math.round(v))} tok/s`), { delta: false });
     trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
   } else trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
