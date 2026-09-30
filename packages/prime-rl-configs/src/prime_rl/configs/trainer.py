@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     ZMQTransportConfig,
 )
+from prime_rl.configs.specdecode import SpeculatorConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
@@ -709,6 +710,9 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class TrainerConfig(BaseConfig):
+    speculator: SpeculatorConfig | None = None
+    """Optional draft model trained from detached policy hidden states."""
+
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
@@ -771,6 +775,17 @@ class TrainerConfig(BaseConfig):
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
+
+    @model_validator(mode="after")
+    def validate_speculator_training(self):
+        if self.speculator is not None:
+            if self.weight_broadcast.type == "nixl":
+                raise ValueError("Joint speculator training requires filesystem or NCCL draft weight routing")
+            if self.model.lora is not None:
+                raise ValueError("Joint speculator training requires full policy weights for verifier projections")
+            if self.model.vlm is not None:
+                raise ValueError("Joint speculator training currently consumes text token batches")
+        return self
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

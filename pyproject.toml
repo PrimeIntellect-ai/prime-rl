@@ -40,6 +40,7 @@ dependencies = [
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+specdecode = "prime_rl.specdecode.train:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
@@ -51,6 +52,7 @@ dashboard = "prime_rl.entrypoints.dashboard:main"
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
+specdecode = ["speculators", "hs-connectors", "datasets>=4.7.0"]
 gpu = [
     "torch>=2.13.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
@@ -126,6 +128,7 @@ dev = [
 ]
 
 [tool.uv]
+package = true
 # Enforce a uv version that supports the friendly-duration form
 # (`"7 days"`) in the static pyproject parser. Older uvs silently parse
 # the value as an RFC 3339 date, emit a TOML parse warning, and proceed
@@ -152,6 +155,8 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.13.0",
     "openenv-core",
+    # The upstream source build emits a build-machine file URL for this sibling package.
+    "hs-connectors",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new
@@ -253,6 +258,8 @@ torchao = false
 prime-kernels = false
 
 [tool.uv.sources]
+speculators = { git = "https://github.com/vllm-project/speculators.git", rev = "ffcccb8" }
+hs-connectors = { git = "https://github.com/vllm-project/speculators.git", rev = "ffcccb8", subdirectory = "hs_connectors" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.

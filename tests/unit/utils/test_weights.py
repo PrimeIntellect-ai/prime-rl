@@ -6,7 +6,21 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
-from prime_rl.utils.weights import resolve_wire_dtype
+from prime_rl.utils.weights import resolve_wire_dtype, weight_state_dict
+
+
+def test_draft_broadcast_refreshes_owned_projections_but_export_reconstructs_them():
+    model = torch.nn.Module()
+    model.speculator = torch.nn.ModuleDict(
+        {name: torch.nn.Linear(2, 2, bias=False) for name in ("embed_tokens", "lm_head", "verifier_lm_head", "draft")}
+    )
+    model.speculator._keys_to_ignore_on_save = ["embed_tokens.weight", "lm_head.weight", "verifier_lm_head.weight"]
+    assert set(weight_state_dict(model)) == {"speculator.draft.weight"}
+    assert set(weight_state_dict(model, include_draft_projections=True)) == {
+        "speculator.embed_tokens.weight",
+        "speculator.lm_head.weight",
+        "speculator.draft.weight",
+    }
 
 
 def test_resolve_wire_dtype():

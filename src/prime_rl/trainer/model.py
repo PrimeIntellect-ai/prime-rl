@@ -970,6 +970,8 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    *,
+    freeze: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1047,6 +1049,8 @@ def setup_model(
     if config.compile is not None:
         apply_compile(model, config.compile)
 
+    if freeze:
+        model.requires_grad_(False)
     setup_fsdp(model, config, parallel_dims)
 
     if not possible_to_load_to_meta:

@@ -1,0 +1,67 @@
+max_steps = 3
+seq_len = 4096
+dashboard = false
+
+[model]
+name = "Qwen/Qwen3-4B"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 2
+num_infer_gpus = 4
+
+[trainer.model]
+cp = 2
+cp_style = "ulysses"
+ep = 1
+optim_cpu_offload = false
+
+[trainer.speculator]
+name = "RedHatAI/Qwen3-4B-speculator.dspark"
+lr = 0.00001
+
+[trainer.speculator.training]
+max_anchors = 16
+loss_fn = '{"ce": 0.1, "tv": 0.9}'
+
+[trainer.optim]
+lr = 0.000001
+
+[orchestrator]
+batch_size = 8
+group_size = 2
+max_off_policy_steps = 1
+
+[orchestrator.concurrency]
+initial_inflight = 8
+max_inflight = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 3072
+
+[orchestrator.train.sampling.extra_body.chat_template_kwargs]
+enable_thinking = false
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+tensor_parallel_size = 2
+data_parallel_size = 2
+max_model_len = 4096
+max_num_seqs = 16
+gpu_memory_utilization = 0.5
+
+[inference.vllm.speculative_config]
+method = "dspark"
+num_speculative_tokens = 7
+
+[ckpt]
+interval = 2
+keep_last = 2

@@ -1,0 +1,15 @@
+backend_port = 18201
+
+[server]
+port = 18200
+
+[vllm]
+model = "Qwen/Qwen3-4B"
+revision = "1cfa9a7208912126459214e8b04321603b3df60c"
+dtype = "bfloat16"
+max_model_len = 32768
+max_num_seqs = 32
+gpu_memory_utilization = 0.85
+enable_prefix_caching = false
+seed = 42
+

@@ -237,6 +237,21 @@ class RLConfig(BaseConfig):
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
 
+    @model_validator(mode="after")
+    def configure_speculator_inference(self):
+        speculator = self.trainer.speculator
+        if speculator is not None and self.inference is not None:
+            settings = dict(getattr(self.inference.vllm, "speculative_config", None) or {})
+            if settings.get("model", speculator.name) != speculator.name:
+                raise ValueError("Trainer and inference must use the same speculator checkpoint")
+            settings["model"] = speculator.name
+            if speculator.revision is not None:
+                if settings.get("revision", speculator.revision) != speculator.revision:
+                    raise ValueError("Trainer and inference speculator revisions must match")
+                settings["revision"] = speculator.revision
+            self.inference.vllm.speculative_config = settings
+        return self
+
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
 
