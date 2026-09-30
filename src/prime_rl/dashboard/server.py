@@ -351,7 +351,6 @@ def run_meta(run_dir: Path) -> dict:
         "platform": platform,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
-        "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": eval_env(config),
         "total_episodes": eval_total_episodes(config),
         "eval_totals": eval_totals(config),
