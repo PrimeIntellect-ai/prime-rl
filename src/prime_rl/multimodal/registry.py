@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from prime_rl.multimodal.base import MultimodalAdapter
 from prime_rl.multimodal.kimi_k25 import KimiK25Adapter
+from prime_rl.multimodal.nemotron_h_omni import NemotronHOmniAdapter
 from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 
-_ADAPTERS = (QwenVLAdapter(), KimiK25Adapter())
+_ADAPTERS = (QwenVLAdapter(), KimiK25Adapter(), NemotronHOmniAdapter())
 _BY_MODEL_TYPE: dict[str, MultimodalAdapter] = {
     model_type: adapter for adapter in _ADAPTERS for model_type in adapter.model_types
 }
