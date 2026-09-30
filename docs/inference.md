@@ -260,7 +260,7 @@ chunk_size = 256
 num_bytes = 137438953472 # 128 GiB per inference node
 ```
 
-The SLURM `inference` and `rl` entrypoints start the daemon before the engines, wait for its health endpoint, and stop the job if the daemon exits. Logs are written under `logs/attempt_<n>/lmcache/node_<rank>.log`. The pool is node-local, not distributed across inference nodes. Each job starts with an empty pool; occupied ports are rejected rather than attaching to a prior run's cache. See the [LMCache MP example](../examples/extra/lmcache/README.md) for local startup, SLURM dry runs, and a check for external reuse and policy-salt isolation.
+The SLURM `inference` and `rl` entrypoints start the daemon before the engines, wait for its health endpoint, and stop the job if the daemon exits. Logs are written under `logs/attempt_<n>/lmcache/node_<rank>.log`. The pool is node-local, not distributed across inference nodes. Each job starts with an empty pool; occupied ports are rejected rather than attaching to a prior run's cache. See the [LMCache MP example](../examples/extra/lmcache/README.md) for local startup and SLURM usage.
 
 
 ### Optimized P/D disaggregation deployment

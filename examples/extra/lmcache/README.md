@@ -23,47 +23,9 @@ The server reserves 2 GiB of host memory. Match the LMCache native wheel to your
 PyTorch/CUDA installation; see the [compatibility guide](https://docs.lmcache.ai/getting_started/compatibility.html).
 Package installation alone does not validate a runtime combination.
 
-## Check external cache reuse and policy salts
-
-In another terminal, start a dedicated inference engine on one GPU:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 VLLM_SERVER_DEV_MODE=1 \
-  uv run --extra lmcache inference @ examples/extra/lmcache/inference.toml \
-  --router None --server.host 127.0.0.1 \
-  --vllm.model Qwen/Qwen3-0.6B --vllm.max-model-len 8192 \
-  --vllm.gpu-memory-utilization 0.1 --vllm.enforce-eager
-```
-
-Once the engine is ready:
-
-```bash
-uv run --no-project python examples/extra/lmcache/check_cache.py \
-  http://127.0.0.1:8000 Qwen/Qwen3-0.6B
-```
-
-The check tokenizes a prompt and sends it through `/inference/v1/generate`, the
-route used for training rollouts, twice under each of two fresh salts. It requires
-zero cached tokens on each salt's first request and a cache hit on its second request.
-Before every request it resets **only vLLM's local cache**, waits for a successful
-reset, and leaves LMCache intact. This distinguishes external reuse from local GPU
-prefix hits. Missing usage details or an unsuccessful reset fails the check.
-
-Run this only against an idle, single-engine development server: the check resets
-that engine's prefix cache. Request timings are diagnostic, not a throughput benchmark.
-The check verifies salt isolation with fixed weights; it does not validate weight
-updates, overlapping policy versions, or training quality.
-
-The smoke check passed with vLLM 0.29.0, LMCache 0.5.5, PyTorch 2.13.0+cu130,
-Python 3.12, and one NVIDIA RTX PRO 6000 Blackwell Server Edition GPU, using the
-command's eager mode and Qwen3-0.6B in BF16. Both cold requests reported 0/2561
-cached tokens; both warm requests reported 2560/2561. The Wordle command below
-has been config-validated; a full RL run and throughput comparison remain unvalidated.
-
 ## Multi-turn RL
 
-Stop the smoke-test inference engine and restart the LMCache server with an empty
-cache before training. Then run:
+Start a fresh LMCache daemon before a local training run:
 
 ```bash
 uv run --extra lmcache rl @ configs/basic/wordle/rl.toml \
