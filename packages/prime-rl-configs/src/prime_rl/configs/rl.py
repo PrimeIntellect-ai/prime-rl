@@ -633,9 +633,7 @@ class RLConfig(BaseConfig):
         on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
         so eval sampling against the same server must set both."""
         policy_samplings = [
-            env.sampling
-            for env in self.orchestrator.train.source
-            if env.algo is not None and env.algo.sampling.source == "policy"
+            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
         if not any(sampling.truncates_distribution() for sampling in policy_samplings):
             return self

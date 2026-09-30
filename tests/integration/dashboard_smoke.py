@@ -81,6 +81,14 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert charts >= 5, f"expected >=5 metric panels, got {charts}"
                 with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
                 assert with_data >= 5, f"expected >=5 mounted charts, got {with_data}"
+                # the step bar and the summary tiles lead the curated view
+                assert page.locator("#overview-body .ep-cell.done").count() >= 1, "overview step bar rendered no steps"
+                tiles = page.locator("#overview-body .sum-tile").count()
+                assert tiles >= 3, f"expected >=3 summary tiles, got {tiles}"
+                assert page.locator("#overview-body .chart-info").count() >= 5, "overview panels carry no info marks"
+            # the shared filter menu is mounted on the overview and the traces tab
+            assert page.locator("#overview-filter-wrap .flt-btn").count() == 1
+            assert page.locator("#trace-filter-wrap .flt-env").count() == 1
 
             # metrics: every key in metrics.jsonl, one pane each, for every run type
             page.click("#tabs [data-tab=metrics]")

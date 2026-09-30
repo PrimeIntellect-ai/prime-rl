@@ -10,6 +10,8 @@ name = "reverse-text"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
 [orchestrator.train.sampling]
@@ -29,7 +31,7 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.source]]
 name = "reverse-text-eval"
-num_examples = 256
+select.limit = 256
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"

@@ -1,53 +1,61 @@
 import threading
+import time
 
 import requests
 
+from prime_rl.configs.shared import HeartbeatConfig
 from prime_rl.utils.logger import get_logger
 
 
 class Heartbeat:
     """Heartbeat monitor that sends heartbeats to Better Stack.
 
-    The beat() method sends a heartbeat every time it's called. Heartbeats are
-    sent in a background thread to avoid blocking the training loop.
+    The beat() method is called on every progress event (train batch, landed eval
+    episode, ...), but a ping is only sent when the last one is at least
+    ``min_interval`` seconds old and none is in flight. Better Stack rate-limits
+    frequent pings (HTTP 429), and a monitor only needs pings well within its
+    period + grace, so surplus beats are dropped without an HTTP request.
 
     Args:
-        heartbeat_url: The unique URL provided by Better Stack for the heartbeat.
+        config: The heartbeat config: the Better Stack URL to ping and the
+            minimum seconds between pings.
     """
 
-    def __init__(self, heartbeat_url: str):
-        self.heartbeat_url = heartbeat_url
+    def __init__(self, config: HeartbeatConfig):
+        self.heartbeat_url = config.url
+        self.min_interval = config.min_interval
         self._lock = threading.Lock()
         self._pending = False
+        self._last_beat_at: float | None = None
 
     def _send_heartbeat(self):
         """Send heartbeat in background thread."""
         try:
             response = requests.get(self.heartbeat_url, timeout=1)
-            if response.status_code == 200:
-                with self._lock:
-                    self._pending = False
-            else:
+            if response.status_code != 200:
                 get_logger().warning(f"BetterStack heartbeat failed with status code: {response.status_code}")
-                with self._lock:
-                    self._pending = False
         except requests.RequestException as e:
             get_logger().warning(f"BetterStack heartbeat error: {e}")
+        finally:
             with self._lock:
                 self._pending = False
 
     def beat(self):
         """Send a heartbeat.
 
-        Returns immediately without blocking. Heartbeat is sent in background thread.
+        Returns immediately without blocking. The HTTP request runs in a daemon
+        thread, so even if the server is slow/unresponsive (up to the 1s timeout),
+        training continues uninterrupted. The lock is held only briefly
+        (microseconds) to check/set flags atomically.
 
-        Non-blocking guarantee: This method never blocks the training loop. The HTTP
-        request runs in a daemon thread, so even if the server is slow/unresponsive
-        (up to the 1s timeout), training continues uninterrupted. The lock is held only
-        briefly (microseconds) to check/set flags atomically.
+        Beats that arrive while a ping is in flight or within ``min_interval`` of
+        the last one are dropped; the first beat after the interval sends the
+        next ping.
         """
         with self._lock:
-            if not self._pending:
-                self._pending = True
-                thread = threading.Thread(target=self._send_heartbeat, daemon=True)
-                thread.start()
+            now = time.monotonic()
+            if self._pending or (self._last_beat_at is not None and now - self._last_beat_at < self.min_interval):
+                return
+            self._pending = True
+            self._last_beat_at = now
+            threading.Thread(target=self._send_heartbeat, daemon=True).start()

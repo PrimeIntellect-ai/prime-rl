@@ -20,9 +20,11 @@ name = "debug-mixed-grpo-opd"
 
 [orchestrator]
 batch_size = 128
+
+[orchestrator.train]
 group_size = 16
 
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
 [orchestrator.renderer]
@@ -48,7 +50,9 @@ algo.teacher.base_url = "http://localhost:8001/v1"
 
 [orchestrator.eval]
 interval = 5
-num_examples = 128
+
+[orchestrator.eval.select]
+limit = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

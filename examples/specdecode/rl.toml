@@ -32,12 +32,14 @@ lr = 0.000001
 
 [orchestrator]
 batch_size = 8
-group_size = 2
 max_off_policy_steps = 1
 
 [orchestrator.concurrency]
 initial_inflight = 8
 max_inflight = 8
+
+[orchestrator.train]
+group_size = 2
 
 [orchestrator.train.sampling]
 max_completion_tokens = 3072

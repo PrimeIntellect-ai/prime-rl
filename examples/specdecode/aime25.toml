@@ -1,7 +1,9 @@
 model = "Qwen/Qwen3-4B"
 group_size = 8
-num_examples = 30
 dashboard = false
+
+[select]
+limit = 30
 
 [client]
 base_url = "http://localhost:18200/v1"

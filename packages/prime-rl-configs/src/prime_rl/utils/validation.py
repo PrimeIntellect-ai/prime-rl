@@ -107,7 +107,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
     propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
-    # [monitors.prime] leaf → orchestrator only (the trainer has no platform integration).
+    # [monitors.prime] leaf → orchestrator only (the RL trainer has no platform
+    # integration; the SFT trainer does, but it parses SFTConfig directly).
     propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's

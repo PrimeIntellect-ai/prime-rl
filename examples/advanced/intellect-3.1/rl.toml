@@ -45,6 +45,8 @@ weight_decay = 0.01
 
 [orchestrator]
 batch_size = 2048
+
+[orchestrator.train]
 group_size = 8
 
 [orchestrator.concurrency]

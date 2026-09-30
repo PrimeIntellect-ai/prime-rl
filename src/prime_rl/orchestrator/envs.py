@@ -20,10 +20,8 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from collections.abc import Callable, Iterator, Sequence
-from itertools import islice
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -40,11 +38,6 @@ from prime_rl.utils.pathing import env_address_file
 # servers concurrently with the orchestrator, and a server imports its env package
 # before serving.
 ENV_SERVER_STARTUP_TIMEOUT = 600.0
-
-# Fixed seed for shuffle=True sources: the finite taskset is shuffled once at
-# startup and the shuffled order is fixed for the whole run (train curricula and
-# eval selection both consume it).
-TASKSET_SHUFFLE_SEED = 42
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:
@@ -74,11 +67,11 @@ class Env:
         is None."""
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
-        """Task count; ``None`` means the taskset is infinite."""
+        """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
-        """The env's tasks, client-side, set at ``start()``. A finite taskset is
-        materialized (``num_tasks`` is its count) and iterated from there; an infinite
-        one streams off its generator. Consumed once — by ``TrainSource`` (train) or
+        """The env's selected tasks (``select``), client-side, set at
+        ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
+        and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
         ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
 
@@ -102,19 +95,15 @@ class Env:
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
-        taskset = vf.load_taskset(self.config.env.taskset)
-        if type(taskset).INFINITE:
-            if self.config.shuffle:
-                raise ValueError(f"Env {self.name} has an infinite taskset — cannot shuffle it")
-            self.tasks = iter(taskset)
-            self.num_tasks = None
-        else:
+        taskset = vf.load_taskset(self.config.env.taskset).select(self.config.select)
+        if taskset.bounded:
             # Materialize off the event loop — iterating may pull a dataset.
             materialized = await asyncio.to_thread(lambda: list(taskset))
-            if self.config.shuffle:
-                random.Random(TASKSET_SHUFFLE_SEED).shuffle(materialized)
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
+        else:
+            self.tasks = iter(taskset)
+            self.num_tasks = None
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
@@ -170,9 +159,7 @@ class TrainEnv(Env):
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = (
-            config.sampling.truncates_distribution()
-            and config.algo is not None
-            and config.algo.sampling.source == "policy"
+            config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"
         )
 
 
@@ -186,12 +173,10 @@ class EvalEnv(Env):
 
     async def start(self) -> None:
         await super().start()
-        n = self.config.num_examples
-        if self.num_tasks is None and n < 0:
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+        if self.num_tasks is None:
+            raise ValueError(f"Eval env {self.name} has an infinite taskset — set select.limit to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
-        tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = tasks
+        self.examples = list(self.tasks)
 
 
 EnvT = TypeVar("EnvT", bound=Env)
@@ -248,7 +233,6 @@ class TrainEnvs(Envs[TrainEnv]):
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,

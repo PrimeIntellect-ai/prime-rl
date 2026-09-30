@@ -58,7 +58,7 @@ if [ -n "$PRIME_RL_REF" ]; then
     # submodules' git metadata so the fallback is what gets used. The
     # shallow clones carry no tags, so hatch-vcs would otherwise stamp
     # them 0.0.1.dev1 and every `verifiers>=…` floor in the tree would be
-    # unmet, letting the CLI install below swap the editable for a wheel.
+    # unmet.
     if [ -f "$DEST/scripts/docker-editable-pretend-versions.sh" ]; then
         eval "$(bash "$DEST/scripts/docker-editable-pretend-versions.sh" --shell "$DEST")"
         rm -f "$DEST/deps/verifiers/.git" "$DEST/deps/renderers/.git"
@@ -115,21 +115,6 @@ HEAVY_PINS_PY
         --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 \
         --extra flash-attn-cute --extra disagg --extra quack --extra kernels \
         --group mamba-ssm )
-    # Replay the image's post-sync step (Dockerfile.cuda; keep the two in
-    # sync): the prime CLI pulls prime-traces / prime-sandboxes / openai
-    # past the lock's pins, and the --locked sync above just rolled them
-    # back, which leaves `prime env install` unable to import.
-    #
-    # FIXME(prime#940): workaround, remove once the prime CLI drops
-    # verifiers as a dependency
-    # (https://github.com/PrimeIntellect-ai/prime/pull/940). The CLI pins
-    # verifiers==0.2.0, which would swap the editable for the PyPI wheel
-    # and break prime-rl's imports; the --overrides file ignores that one
-    # requirement. When removing it, drop the overrides file and the
-    # --overrides flag here and in Dockerfile.cuda.
-    echo "[prime-rl] installing the prime CLI"
-    printf 'verifiers\n' > /tmp/prime-cli-overrides.txt
-    uv pip install --overrides /tmp/prime-cli-overrides.txt 'prime>=0.7'
     # The chart's `uv run --no-sync <entrypoint>` commands resolve the
     # project from the cwd; the venv itself stays /app/.venv via
     # UV_PROJECT_ENVIRONMENT above.

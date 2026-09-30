@@ -5,8 +5,10 @@
 #   uv run eval @ examples/basic/wiki-search/eval.toml
 
 model = "Qwen/Qwen3-4B-Instruct-2507"
-num_examples = 20
 group_size = 3
+
+[select]
+limit = 20
 
 [client]
 base_url = "http://localhost:8000/v1"
