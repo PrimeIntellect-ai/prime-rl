@@ -1430,11 +1430,11 @@ function buildSections(meta) {
     kind: "eval",
     env,
     configured,
+    // avg@k is the mean reward over the same traces reward/mean averages, so it
+    // stands alone as the score
     panels: [
-      { regex: `eval/${envPattern}/all/[^/]+/avg@.*` },
-      { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
-      { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
-      { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/all/[^/]+/avg@.*`, split: true },
+      { regex: `eval/${envPattern}/effective/[^/]+/avg@.*`, split: true },
       { regex: `eval/${envPattern}/all/cancelled/mean` },
       ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
