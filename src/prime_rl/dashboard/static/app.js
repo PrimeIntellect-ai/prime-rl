@@ -533,7 +533,10 @@ async function fetchMetricRows(m) {
     }
     if ((data.rows.length || compared) && rowsChartHere()) {
       if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
-      else updateCharts(compared ? null : touched); // compares may touch any panel
+      else {
+        updateCharts(compared ? null : touched); // compares may touch any panel
+        updateTrainHead();
+      }
     }
     // A writer can leave one incomplete JSONL record at EOF. Wait for the
     // next poll instead of repeatedly requesting the same partial record.
@@ -2115,7 +2118,7 @@ function renderMetricsBody() {
   if (view.mode === "overview") {
     $(view.status).textContent = "";
     const f = state.filter;
-    if (!activeFilter) body.insertAdjacentHTML("beforeend", trainProgressHtml() + trainTilesHtml());
+    if (!activeFilter) body.insertAdjacentHTML("beforeend", `<div class="ov-head">${trainProgressHtml() + trainTilesHtml()}</div>`);
     for (const section of buildSections(state.meta)) {
       // the filter narrows the rollout sections; the run-level ones always show
       if (section.kind && !f.kinds[section.kind]) continue;
@@ -2257,6 +2260,13 @@ function trainTilesHtml() {
     trendTiles("perf/mfu", () => "MFU", (v) => (v == null ? "n/a" : `${fmtNum(v)}%`), { delta: false }); // logged in percent
   } else trendTiles("time/step", () => "step time", fmtDuration, { delta: false });
   return tiles.length ? `<div class="eval-sec"><div class="eval-sec-title">summary</div><div class="stat-grid sum-grid">${tiles.join("")}</div></div>` : "";
+}
+
+/* new rows for known keys only redraw the charts; the step bar and tiles read the
+   latest values, so they are rebuilt on their own (their hover cards join paneTips) */
+function updateTrainHead() {
+  const head = document.querySelector("#overview-body .ov-head");
+  if (head) head.innerHTML = trainProgressHtml() + trainTilesHtml();
 }
 
 /* a step cell on the overview opens the batch shipped at that step */
