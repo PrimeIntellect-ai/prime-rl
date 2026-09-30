@@ -923,6 +923,8 @@ mark.hit {
 }
 .tl-edge-key i.subagent-call { border-color: var(--infra); }
 .tl-edge-key i.subagent-return { border-color: var(--risk); }
+.tl-edge-key i.subagent-cancel { border-color: var(--negative); border-top-style: dashed; }
+.tl-edge-key i.subagent-failed { border-color: var(--negative); }
 .tl-edge-key i.compaction-attempt { border-color: var(--chart-2); border-top-style: dotted; }
 .tl-edge-key i.compaction { border-color: var(--chart-2); border-top-style: dashed; }
 .tl-edge-key i.custom { border-color: var(--accent); border-top-style: dotted; }
@@ -973,6 +975,7 @@ mark.hit {
 .tl-state { border: 1px solid var(--grey-3); padding: 1px 5px; white-space: nowrap; }
 .tl-state.completed { color: var(--positive); }
 .tl-state.failed { color: var(--negative); }
+.tl-state.cancelled { color: var(--negative); }
 .tl-state.timeout { color: var(--timeout); }
 .tl-state.running { color: var(--infra); }
 .tl-tooltip {
@@ -1044,6 +1047,8 @@ mark.hit {
 .sg-edge.continuation { opacity: 0.34; }
 .sg-edge.subagent-call { stroke: var(--infra); stroke-width: 2.2; opacity: 0.9; }
 .sg-edge.subagent-return { stroke: var(--risk); stroke-width: 2.2; opacity: 0.9; }
+.sg-edge.subagent-cancel { stroke: var(--negative); stroke-width: 2.2; opacity: 0.9; stroke-dasharray: 5 3; }
+.sg-edge.subagent-failed { stroke: var(--negative); stroke-width: 2.2; opacity: 0.9; }
 .sg-edge.compaction-attempt { stroke: var(--chart-2); stroke-dasharray: 2 4; opacity: 0.66; }
 .sg-edge.compaction { stroke: var(--chart-2); stroke-dasharray: 5 4; opacity: 0.9; }
 .sg-edge.custom { stroke: var(--accent); stroke-dasharray: 2 4; opacity: 0.9; }
