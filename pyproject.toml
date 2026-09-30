@@ -257,6 +257,9 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.
 verifiers = { path = "deps/verifiers", editable = true }
+# Sandbox filesystem checkpoints ship in prime-cli PR #971 (unreleased): pin the SDK to
+# that branch until it is on PyPI (verifiers pins the same rev).
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-sandboxes", rev = "c10a621" }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
