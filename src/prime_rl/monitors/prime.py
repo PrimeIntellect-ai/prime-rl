@@ -297,11 +297,11 @@ class PrimeEvalMonitor(Monitor):
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # Periodic metrics keep upload failures visible even while no episodes finish.
-        for (env_name, run_step), run in self.runs.items():
+        for (env_name, run_step), run in list(self.runs.items()):
             if run is not None and not run.finished:
-                self.report_upload_health(env_name, run_step, run)
+                await self.report_upload_health(env_name, run_step, run)
 
-    def report_upload_health(self, env_name: str, step: int, run: pr.Run) -> None:
+    async def report_upload_health(self, env_name: str, step: int, run: pr.Run) -> None:
         parts = list(run.errors)
         parts.extend(
             f"{count} record(s) not stored by the {sink} sink"
@@ -312,17 +312,22 @@ class PrimeEvalMonitor(Monitor):
             parts.append(f"{dropped} record(s) never queued (uploader overrun)")
         incomplete = "; ".join(parts) or None
         key = (env_name, step)
-        if incomplete == self._upload_health.get(key):
+        if incomplete is None and key not in self._upload_health:
             return
-        self._upload_health[key] = incomplete
-        if incomplete:
+        if incomplete and incomplete != self._upload_health.get(key):
             self.logger.warning(f"{env_name} (Step {step}) evaluation upload incomplete: {incomplete} - {run.url}")
-        if self.output_dir is not None and (record := read_platform_record(self.output_dir)):
-            evaluation = record["evaluations"].get(env_name)
-            # The dashboard links to the latest epoch of each environment.
-            if evaluation is not None and evaluation["id"] == run.id:
-                evaluation["incomplete"] = incomplete
-                write_platform_record(self.output_dir, record)
+        self._upload_health[key] = incomplete
+        # Deduplicate log warnings, but retry best-effort persistence on every report.
+        if self.output_dir is not None:
+
+            def _upload_health_update(record: dict[str, Any]) -> dict[str, Any]:
+                evaluation = record.get("evaluations", {}).get(env_name)
+                # The dashboard links to the latest epoch of each environment.
+                if evaluation is not None and evaluation["id"] == run.id:
+                    evaluation["incomplete"] = incomplete
+                return record
+
+            await asyncio.to_thread(_merge_platform_record, self.output_dir, _upload_health_update)
 
     def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
@@ -406,7 +411,7 @@ class PrimeEvalMonitor(Monitor):
             run = await self.run_for(env_name, step)
             if run is not None:
                 await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
-                self.report_upload_health(env_name, step, run)
+                await self.report_upload_health(env_name, step, run)
 
     async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
         run = await self.run_for(env_name, step)
@@ -418,7 +423,7 @@ class PrimeEvalMonitor(Monitor):
             self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             return
         finally:
-            self.report_upload_health(env_name, step, run)
+            await self.report_upload_health(env_name, step, run)
         self.logger.info(f"Finished {env_name} (Step {step}) evaluation - {run.url}")
 
     async def finalize(self) -> None:
@@ -431,4 +436,4 @@ class PrimeEvalMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             finally:
-                self.report_upload_health(env_name, step, run)
+                await self.report_upload_health(env_name, step, run)

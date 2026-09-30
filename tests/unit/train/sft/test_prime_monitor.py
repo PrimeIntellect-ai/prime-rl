@@ -286,14 +286,14 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     assert seen_threads, "the record merge never ran"
     assert threading.get_ident() not in seen_threads, "record merge ran on the caller thread"
 
-    # All three async write sites (train init, eval init, eval epoch) go
+    # All four async write sites (train init, eval init, eval epoch, upload health) go
     # through to_thread; only the sync helper stays callable directly.
     import re
 
     import prime_rl
 
     src = Path(prime_rl.__path__[0], "monitors", "prime.py").read_text()
-    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 2
+    assert len(re.findall(r"asyncio\.to_thread\(\s*_merge_platform_record", src)) == 3
     assert re.search(r"asyncio\.to_thread\(\s*update_platform_record", src)
 
     from prime_rl.monitors.prime import read_platform_record
@@ -301,6 +301,64 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
     record = read_platform_record(tmp_path)
     assert record["kind"] == "train"
     assert record["id"] == "run-123"
+
+
+def test_upload_health_retries_and_preserves_concurrent_records(tmp_path, monkeypatch):
+    import prime_rl.monitors.prime as prime_module
+
+    monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
+    monitor = prime_module.PrimeEvalMonitor(PrimeEvalMonitorConfig())
+    run = SimpleNamespace(
+        id="ev-1", url="https://x/ev-1", errors=["upload failed"], failed_records={}, dropped_records=0
+    )
+    record = {"evaluations": {"rev": {"id": run.id, "step": 1, "url": run.url}}}
+
+    def storage_failure(*args):
+        raise OSError("storage unavailable")
+
+    async def exercise():
+        await monitor.init(output_dir=tmp_path)
+        prime_module.write_platform_record(tmp_path, record)
+        with monkeypatch.context() as patch:
+            patch.setattr(prime_module, "write_platform_record", storage_failure)
+            await monitor.report_upload_health("rev", 1, run)
+        assert "incomplete" not in prime_module.read_platform_record(tmp_path)["evaluations"]["rev"]
+
+        # Unchanged health must be persisted again after a best-effort write fails.
+        await monitor.report_upload_health("rev", 1, run)
+        assert prime_module.read_platform_record(tmp_path)["evaluations"]["rev"]["incomplete"] == "upload failed"
+
+        # Clearing a warning also retries if storage is temporarily unavailable.
+        run.errors = []
+        with monkeypatch.context() as patch:
+            patch.setattr(prime_module, "write_platform_record", storage_failure)
+            await monitor.report_upload_health("rev", 1, run)
+        await monitor.report_upload_health("rev", 1, run)
+        assert prime_module.read_platform_record(tmp_path)["evaluations"]["rev"]["incomplete"] is None
+
+        run.errors = ["upload failed"]
+        with prime_module._platform_record_lock(tmp_path):
+            pending = asyncio.create_task(monitor.report_upload_health("rev", 1, run))
+            await asyncio.sleep(0.1)
+            # The merge waits for the lock without blocking this event loop.
+            assert not pending.done()
+            record.update(kind="train", id="run-1", url="https://x/run-1")
+            prime_module.write_platform_record(tmp_path, record)
+        await pending
+        merged = prime_module.read_platform_record(tmp_path)
+        assert merged["id"] == "run-1"
+        assert merged["evaluations"]["rev"]["incomplete"] == "upload failed"
+
+        with prime_module._platform_record_lock(tmp_path):
+            pending = asyncio.create_task(monitor.report_upload_health("rev", 1, run))
+            await asyncio.sleep(0.1)
+            assert not pending.done()
+            record["evaluations"]["rev"] = {"id": "ev-2", "step": 2, "url": "https://x/ev-2"}
+            prime_module.write_platform_record(tmp_path, record)
+        await pending
+        assert prime_module.read_platform_record(tmp_path) == record
+
+    asyncio.run(exercise())
 
 
 def test_platform_record_lock_acquisition_is_bounded(tmp_path, monkeypatch):
