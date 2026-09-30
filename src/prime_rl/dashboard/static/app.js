@@ -626,11 +626,14 @@ function blockBarHtml(done, live, total) {
   );
 }
 
-function progressHtml(name, cells, pct) {
+/* without a horizon the cells keep their size and wrap, so the bar grows instead
+   of reading as full */
+function progressHtml(name, cells, pct, { open = false } = {}) {
   return (
     `<div class="eval-progress"><div class="ep-head"><span class="name">${name}</span></div>` +
-    `<div class="ep-row"><div class="ep-blocks">${cells}</div>` +
-    `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span></div></div>`
+    `<div class="ep-row"><div class="ep-blocks${open ? " open" : ""}">${cells}</div>` +
+    (open ? "" : `<span class="ep-pct">${pct != null ? `${Math.round(pct)}%` : "–"}</span>`) +
+    `</div></div>`
   );
 }
 
@@ -1169,11 +1172,11 @@ function rateClass(rate) {
 
 const rowTip = (k, v) => `<div class="tip-row"><span>${esc(k)}</span><span>${v}</span></div>`;
 
-/* a summary tile: a label, its headline, a hover card, and an optional corner mark */
+/* a summary tile: a label, its headline with an optional change mark beside it, a hover card */
 function tileHtml(label, value, tipHtml, { cls = "", corner = "" } = {}) {
   return (
     `<div class="stat-card sum-tile${cls}" data-tip="${paneTips.push(tipHtml) - 1}">` +
-    `<div class="stat-head"><div class="stat-label">${esc(label)}</div>${corner}</div><div class="stat-value">${value}</div></div>`
+    `<div class="stat-label">${esc(label)}</div><div class="stat-value">${value}${corner}</div></div>`
   );
 }
 
@@ -1451,11 +1454,9 @@ function buildSections(meta) {
     return sections;
   }
   const trainEnvs = meta.train_envs || [];
-  if (trainEnvs.length === 1) sections.push(trainSection(`train/${trainEnvs[0]}`, `train/${trainEnvs[0]}`, trainEnvs[0]));
-  else if (trainEnvs.length > 1) {
-    sections.push(trainSection("train/agg", "train/agg"));
-    sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`, e)));
-  } else sections.push(trainSection("train", "train/agg"));
+  // one section per env; the cross-env aggregate stays on the metrics tab
+  if (trainEnvs.length) sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`, e)));
+  else sections.push(trainSection("train", "train/agg"));
   if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
   else sections.push(evalSection("eval", ".*"));
   sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
@@ -1475,9 +1476,9 @@ const PANEL_INFO = [
   [/\/all\/([^/]+)\/avg@(\d+)$/, "avg@$k", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts counted as zero"],
   [/\/effective\/([^/]+)\/avg@(\d+)$/, "avg@$k (effective)", "mean reward over the $k rollouts of each task, averaged over the tasks, errored rollouts left out"],
   [/\/effective\/([^/]+)\/pass@(\d+)$/, "pass@$k", "share of tasks with at least one correct rollout among $k, the unbiased estimate"],
-  [/\/effective\/num_turns\/mean$/, "turns", "mean turns per episode"],
-  [/\/effective\/num_total_tokens\/mean$/, "tokens", "mean tokens per episode, prompt and completion together"],
-  [/\/effective\/num_branches\/mean$/, "branches", "mean prefix branches per episode"],
+  [/\/effective\/num_turns\/mean$/, "#turns", "mean turns per episode"],
+  [/\/effective\/num_total_tokens\/mean$/, "#tokens", "mean tokens per episode, prompt and completion together"],
+  [/\/effective\/num_branches\/mean$/, "#branches", "mean prefix branches per episode"],
   [/\/effective\/([^/]+)\/is_truncated\/mean$/, "truncation rate", "share of the effective traces cut off by a length or turn limit"],
   [/\/all\/([^/]+)\/is_timeout\/mean$/, "timeout rate", "share of the batch's traces that hit a stage timeout"],
   [/\/all\/([^/]+)\/has_error\/mean$/, "error rate", "share of the batch's traces that errored"],
@@ -2184,7 +2185,7 @@ function keysMatching(regex) {
   return [...state.metrics.byKey.keys()].filter((k) => re.test(k)).sort();
 }
 
-/* a tile's corner: the change from the base value, green when it moved the right way */
+/* the change from the base value beside a tile's headline, green when it moved the right way */
 function deltaCorner(trend, fmt, { lowerIsBetter = false } = {}) {
   if (!trend || trend.baseX === trend.x || trend.base == null || trend.v == null) return "";
   const d = trend.v - trend.base;
@@ -2196,15 +2197,15 @@ function deltaCorner(trend, fmt, { lowerIsBetter = false } = {}) {
 const fmtPct = (v) => (v == null || Number.isNaN(v) ? "n/a" : `${Math.round(v * 100)}%`);
 
 /* the step bar: one cell per step shipped so far (click opens its batch), the rest
-   to the configured horizon */
+   to the configured horizon; an open-ended run has no rest, its bar just grows */
 function trainProgressHtml() {
   const meta = state.meta;
   const step = currentStep();
   const total = meta.max_steps;
   const shown = step != null && total ? Math.min(step, total) : step;
   const done = Array.from({ length: shown ?? 0 }, (_, i) => ({ attrs: `data-step="${i + 1}" title="step ${i + 1} · click for its batch"` }));
-  const name = `step ${shown != null ? shown.toLocaleString() : "–"}${total ? ` / ${total.toLocaleString()}` : ""}`;
-  return progressHtml(name, blockBarHtml(done, [], total), total ? Math.min(100, ((shown ?? 0) / total) * 100) : null);
+  const name = `step ${shown != null ? shown.toLocaleString() : "–"} / ${total ? total.toLocaleString() : "∞"}`;
+  return progressHtml(name, blockBarHtml(done, [], total), total ? Math.min(100, ((shown ?? 0) / total) * 100) : null, { open: !total });
 }
 
 /* the headline tiles of a training run: the scores the filter keeps (reward per train
@@ -2959,8 +2960,20 @@ function showTraceEmpty(title, detail) {
   $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
 }
 
+/* the live rows arrive by their own poll, so the filter the server applied to the
+   table is applied to them here: kind and env, and an outcome that is still open */
+function liveMatches(r) {
+  const f = state.filter;
+  const kind = activeKind();
+  return (!kind || r.kind === kind) && (!f.env || r.env === f.env) && activeOutcome() == null;
+}
+
+function liveRows() {
+  return (state.traces.live || []).filter(liveMatches);
+}
+
 function traceStatusText(total) {
-  const live = state.traces.live?.length || 0;
+  const live = liveRows().length;
   const parts = [];
   if (live && state.filter.status.live) parts.push(`${live} live`);
   if (state.filter.status.done) {
@@ -3293,7 +3306,7 @@ function traceRows() {
   const streaming = state.filter.status.live && t.mode === "stream";
   // an episode already in the table hides its live row (the done event may trail it)
   const loaded = new Set((t.episodes || []).flatMap((ep) => ep.trace_ids || []));
-  const live = streaming ? [...(t.live || []), ...landingRows()].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const live = streaming ? [...liveRows(), ...landingRows().filter(liveMatches)].filter((r) => !loaded.has(r.trace)).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
   const episodes = state.filter.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes.map((ep) => ({ ep }))];
 }
@@ -3528,7 +3541,7 @@ function copyText(text, el) {
    mode), then the finished episodes */
 function filteredRollouts() {
   const t = state.traces;
-  const live = t.mode === "stream" && state.filter.status.live ? [...(t.live || [])].filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
+  const live = t.mode === "stream" && state.filter.status.live ? liveRows().filter((r) => r.trace).sort((a, b) => (b.started ?? 0) - (a.started ?? 0)) : [];
   const episodes = state.filter.status.done ? t.episodes || [] : [];
   return [...live.map((r) => ({ live: r })), ...episodes];
 }

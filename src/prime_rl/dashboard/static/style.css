@@ -356,6 +356,9 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .ep-pct { font-size: 13px; color: var(--grey-6); min-width: 4ch; text-align: right; }
 .ep-head .name { font-size: 14px; color: var(--grey-6); }
 .ep-blocks { display: flex; gap: 2px; height: 28px; }
+/* no horizon: fixed cells that wrap, so the bar grows rather than fills */
+.ep-row .ep-blocks.open { flex: 0 1 auto; flex-wrap: wrap; height: auto; }
+.ep-blocks.open .ep-cell { flex: 0 0 14px; height: 14px; }
 .ep-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); }
 .ep-cell.done { background: var(--accent); border-color: var(--accent); cursor: pointer; }
 .ep-cell.done.err { background: var(--negative); border-color: var(--negative); }
@@ -399,20 +402,21 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .comp-pane [data-part].dim { opacity: 0.2; }
 .comp-pane .tm-node.dim { opacity: 0.35; }
 /* the summary tiles share the width equally and wrap only once they would squeeze */
-.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.sum-grid { margin-bottom: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .sum-tile { cursor: default; padding: 14px 16px; min-height: 96px; display: flex; flex-direction: column; justify-content: center; }
-.sum-tile .stat-label, .sum-tile .stat-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sum-tile .stat-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the headline may break before its change mark when the tile is narrow */
+.sum-tile .stat-value { overflow-wrap: anywhere; }
 .sum-tile .stat-value { font-size: clamp(16px, 1.7vw, 24px); margin-top: 8px; }
 .sum-tile.rate-warn .stat-value { color: #ffd166; }
 .sum-tile.rate-bad .stat-value { color: var(--negative); }
 .sum-tile.rate-timeout .stat-value { color: var(--timeout); }
-/* a tile's corner reads the change from its base value */
-.sum-tile .stat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
-.sum-tile .stat-head .stat-label { min-width: 0; }
-.tile-delta { flex-shrink: 0; font-size: 11px; color: var(--grey-4); white-space: nowrap; }
+/* the change from the base value sits beside the headline */
+.tile-delta { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--grey-4); white-space: nowrap; }
 .tile-delta.good { color: var(--positive); }
 .tile-delta.bad { color: var(--negative); }
-/* the overview's panels wear readable names; the mark opens how each is computed */
+/* the overview's panels wear readable names, set like the tile labels; the mark opens how each is computed */
+#overview-body .chart-card .chart-title { text-transform: uppercase; letter-spacing: var(--track-caps); }
 .chart-info {
   flex-shrink: 0;
   width: 13px;
