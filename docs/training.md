@@ -162,7 +162,12 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-A `reasoning_effort` column in the dataset sets the renderer's `reasoning_effort` field per row, on top of the `[renderer]` config. The column requires a typed renderer that has that field (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`); rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one.
+Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one. A mapping you set yourself must name a column that exists in the dataset; the default mapping skips datasets without the column:
+
+```toml
+[data.columns.renderer]
+depth = "task_depth"
+```
 
 If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
 

@@ -516,7 +516,7 @@ class EffortRenderer:
 
 
 @pytest.fixture
-def custom_renderer_config_fixture(tmp_path):
+def custom_renderer_config(tmp_path):
     from renderers import CustomRendererConfig
 
     path = tmp_path / "effort_renderer.py"
@@ -524,23 +524,37 @@ def custom_renderer_config_fixture(tmp_path):
     return CustomRendererConfig(import_path=f"{path}:EffortRenderer")
 
 
-def test_renderer_resolver_sets_reasoning_effort_on_custom_renderer(custom_renderer_config_fixture):
-    resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config_fixture)
+def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
+    resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config)
 
-    default = resolver({"messages": []})
-    high = resolver({"messages": [], "reasoning_effort": "high"})
+    default = resolver({"messages": [], "__renderer.reasoning_effort": None})
+    high = resolver({"messages": [], "__renderer.reasoning_effort": "high"})
 
     assert default.config.reasoning_effort == "low"
     assert high.config.reasoning_effort == "high"
-    assert resolver({"messages": [], "reasoning_effort": "high"}) is high
+    assert resolver({"messages": [], "__renderer.reasoning_effort": "high"}) is high
     with pytest.raises(ValueError):
-        resolver({"messages": [], "reasoning_effort": "medium"})
+        resolver({"messages": [], "__renderer.reasoning_effort": "medium"})
 
 
-def test_renderer_resolver_rejects_reasoning_effort_without_the_field():
+def test_renderer_resolver_rejects_renderer_columns_without_the_field():
     from renderers import PrimeQwen3RendererConfig
 
     resolver = sft_data.RendererResolver(tokenizer=None, config=PrimeQwen3RendererConfig())
 
     with pytest.raises(ValueError, match="reasoning_effort"):
-        resolver({"messages": [], "reasoning_effort": "high"})
+        resolver({"messages": [], "__renderer.reasoning_effort": "high"})
+
+
+def test_rename_renderer_columns_prefixes_mapped_columns():
+    dataset = Dataset.from_list([{"messages": [], "depth": 3, "reasoning_effort": "high"}])
+
+    renamed = sft_data.rename_renderer_columns(dataset, {"depth": "depth"})
+    assert set(renamed.column_names) == {"messages", "__renderer.depth", "reasoning_effort"}
+
+    default = sft_data.rename_renderer_columns(dataset, None)
+    assert set(default.column_names) == {"messages", "depth", "__renderer.reasoning_effort"}
+    without = sft_data.rename_renderer_columns(dataset.remove_columns("reasoning_effort"), None)
+    assert set(without.column_names) == {"messages", "depth"}
+    with pytest.raises(ValueError, match="missing"):
+        sft_data.rename_renderer_columns(dataset, {"effort": "missing"})
