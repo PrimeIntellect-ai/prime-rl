@@ -2,14 +2,18 @@ import json
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
+import numpy.typing as npt
+import pyarrow as pa
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
-from jaxtyping import Bool, Int
+from jaxtyping import Bool, Float, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
@@ -18,7 +22,14 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import (
+    DataConfig,
+    LossMaskConfig,
+    PackedChoiceDataConfig,
+    SFTChoiceEvalConfig,
+    SFTColumnsConfig,
+    SFTDataConfig,
+)
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -43,6 +54,45 @@ class Batch(TypedDict):
     seq_lens: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+
+
+class PackedChoiceSample(TypedDict):
+    input_ids: Int[np.ndarray, "seq"]
+    position_ids: Int[np.ndarray, "seq"]
+    loss_mask: Bool[np.ndarray, "seq"]
+    target_ids: Int[np.ndarray, "seq"]
+    seq_lens: Int[np.ndarray, "packed"]
+    choice_ids: Int[np.ndarray, "seq choices"]
+    choice_targets: Float[np.ndarray, "seq choices"]
+    choice_weights: Float[np.ndarray, "seq"]
+    choice_mix_weights: Float[np.ndarray, "seq components"]
+
+
+class PackedChoiceBatch(Batch):
+    choice_ids: Int[Tensor, "batch seq choices"]
+    choice_targets: Float[Tensor, "batch seq choices"]
+    choice_weights: Float[Tensor, "batch seq"]
+    choice_mix_weights: Float[Tensor, "batch seq components"]
+
+
+def data_rank_and_world_size(non_dp_size: int, worker_id: int = 0, num_workers: int = 1) -> tuple[int, int]:
+    """This process's data rank and the data world size, counting each dataloader worker as a rank.
+
+    Ranks in one group of ``non_dp_size`` consecutive ranks (e.g. context-parallel peers) share a data rank."""
+    world = get_world()
+    assert world.world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
+    return (
+        world.rank // non_dp_size * num_workers + worker_id,
+        world.world_size // non_dp_size * num_workers,
+    )
+
+
+class PackedChoiceEvalBatch(TypedDict):
+    input_ids: Int[Tensor, "batch seq"]
+    position_ids: Int[Tensor, "batch seq"]
+    seq_lens: Int[Tensor, "packed"]
+    choice_ids: Int[Tensor, "batch seq choices"]
+    row_ids: Int[Tensor, "batch seq"]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -72,10 +122,7 @@ class StatefulIterableDataset(Stateful, IterableDataset):
             num_workers = worker_info.num_workers
         else:
             worker_id, num_workers = 0, 1
-        world = get_world()
-        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
-        self.data_world_size = world.world_size // self.non_dp_size * num_workers
+        self.data_rank, self.data_world_size = data_rank_and_world_size(self.non_dp_size, worker_id, num_workers)
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -598,6 +645,420 @@ class CatDataset(StatefulIterableDataset):
         return result
 
 
+PACKED_CHOICE_SCHEMA_VERSION = "simile-packed-choice/v2"
+
+
+@dataclass(frozen=True)
+class PackedChoiceManifest:
+    """The ``manifest.json`` of one split of a packed-choice export."""
+
+    split: str
+    seq_len: int
+    num_bins: int
+    max_choices: int
+    mix_components: tuple[str, ...]
+    """Names of the loss components, in the column order of each row's ``mix_weights``."""
+    files: tuple[tuple[str, int], ...]
+    """Arrow IPC file names and their bin counts, in read order."""
+
+    @classmethod
+    def load(cls, path: Path) -> "PackedChoiceManifest":
+        manifest = json.loads((path / "manifest.json").read_text())
+        if manifest["schema_version"] != PACKED_CHOICE_SCHEMA_VERSION:
+            raise ValueError(
+                f"{path} has schema {manifest['schema_version']!r}, expected {PACKED_CHOICE_SCHEMA_VERSION!r}"
+            )
+        if manifest["split"] not in ("train", "val"):
+            raise ValueError(f"{path} has unknown split {manifest['split']!r}")
+        files = tuple((entry["name"], entry["num_bins"]) for entry in manifest["files"])
+        if sum(num_bins for _, num_bins in files) != manifest["num_bins"]:
+            raise ValueError(f"{path}: per-file bin counts do not add up to num_bins = {manifest['num_bins']}")
+        if not manifest["mix_components"]:
+            raise ValueError(f"{path} names no loss components in mix_components")
+        return cls(
+            split=manifest["split"],
+            seq_len=manifest["seq_len"],
+            num_bins=manifest["num_bins"],
+            max_choices=manifest["max_choices"],
+            mix_components=tuple(manifest["mix_components"]),
+            files=files,
+        )
+
+
+def read_packed_bins(path: Path, files: tuple[tuple[str, int], ...]) -> pa.Table:
+    """The bins of an export's Arrow IPC files, memory-mapped and concatenated in read order."""
+    tables = []
+    for name, num_bins in files:
+        table = pa.ipc.open_file(pa.memory_map(str(path / name))).read_all()
+        if table.num_rows != num_bins:
+            raise ValueError(f"{path / name} has {table.num_rows} bins, manifest says {num_bins}")
+        tables.append(table)
+    return pa.concat_tables(tables)
+
+
+def pad_packed_bin(
+    input_ids: np.ndarray, seq_lens: np.ndarray, seq_len: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``input_ids`` right-padded to ``seq_len``, their position ids (restarting per segment and for the
+    padding) and ``seq_lens`` with the padding counted into the last segment."""
+    pad_len = seq_len - len(input_ids)
+    position_ids = np.concatenate([np.arange(length) for length in (*seq_lens, pad_len)])
+    padded_seq_lens = seq_lens.copy()
+    padded_seq_lens[-1] += pad_len
+    return np.pad(input_ids, (0, pad_len)), position_ids, padded_seq_lens
+
+
+def scatter_choice_rows(
+    positions: np.ndarray,
+    counts: np.ndarray,
+    values: np.ndarray,
+    *,
+    seq_len: int,
+    max_choices: int,
+    fill: float,
+    dtype: npt.DTypeLike,
+) -> np.ndarray:
+    """Dense ``[seq_len, max_choices]`` array holding row ``r``'s ``counts[r]`` consecutive ``values`` at
+    ``positions[r]``, right-padded with ``fill``; every other position is ``fill``."""
+    rows, slots = np.nonzero(np.arange(max_choices) < counts[:, None])
+    dense = np.full((seq_len, max_choices), fill, dtype=dtype)
+    dense[positions[rows], slots] = values
+    return dense
+
+
+class PackedChoiceDataset(StatefulIterableDataset):
+    """Bins of a packed-choice export, one per micro batch, padded to ``seq_len``.
+
+    Bin ``i`` in stored order goes to data rank ``i % data_world_size``. Without ``max_epochs`` the
+    stored order repeats forever.
+    """
+
+    def __init__(self, path: Path, seq_len: int, non_dp_size: int = 1, max_epochs: int | None = None):
+        super().__init__(non_dp_size)
+        self.path = path
+        self.manifest = PackedChoiceManifest.load(path)
+        if self.manifest.seq_len > seq_len:
+            raise ValueError(f"{path} was packed to {self.manifest.seq_len} tokens, above data.seq_len = {seq_len}")
+        self.seq_len = seq_len
+        self.max_epochs = max_epochs
+
+    def state_dict(self) -> dict:
+        return {
+            "dataset": super().state_dict(),
+            "progress": {"num_samples": dict(self.num_samples), "num_tokens": dict(self.num_tokens)},
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        super().load_state_dict(state_dict["dataset"])
+        self.num_samples.update(state_dict["progress"]["num_samples"])
+        self.num_tokens.update(state_dict["progress"]["num_tokens"])
+
+    def __iter__(self):
+        self._setup_world_info()
+        # Mapped per iterator: memory maps cannot be pickled into dataloader workers
+        bins = read_packed_bins(self.path, self.manifest.files)
+        while True:
+            self.step += 1
+            epoch = (self.step - 1) // self.manifest.num_bins
+            if self.max_epochs is not None and epoch >= self.max_epochs:
+                break
+            self.epoch = epoch
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            index = (self.step - 1) % self.manifest.num_bins
+            row = bins.slice(index, 1)
+            self.num_samples[self.manifest.split] += len(row.column("seq_lens")[0])
+            self.num_tokens[self.manifest.split] += len(row.column("input_ids")[0])
+            yield self._build_sample(row, index)
+
+    def _build_sample(self, row: pa.Table, index: int) -> PackedChoiceSample:
+        def column(name: str) -> pa.Array:
+            return row.column(name).combine_chunks().flatten()
+
+        input_ids = column("input_ids").to_numpy().astype(np.int64)
+        seq_lens = column("seq_lens").to_numpy().astype(np.int64)
+        positions = column("positions").to_numpy().astype(np.int64)
+        choice_lists = column("choice_ids")
+        target_lists = column("target_probs")
+        weights = column("weights").to_numpy()
+        mix_lists = column("mix_weights")
+        counts = choice_lists.value_lengths().to_numpy()
+        num_tokens, num_rows, num_choices = len(input_ids), len(positions), self.manifest.max_choices
+        num_components = len(self.manifest.mix_components)
+
+        def check(ok: bool, message: str) -> None:
+            if not ok:
+                raise ValueError(f"{self.path}: bin {index} {message}")
+
+        check(0 < num_tokens <= self.manifest.seq_len, f"has {num_tokens} tokens, not in 1..{self.manifest.seq_len}")
+        check(int(seq_lens.sum()) == num_tokens, "has seq_lens that do not sum to its token count")
+        check(bool(np.all(np.diff(positions) > 0)), "has positions that are not strictly increasing")
+        check(num_rows == 0 or (positions[0] >= 0 and positions[-1] + 1 < num_tokens), "has out-of-range positions")
+        check(len(weights) == len(counts) == len(mix_lists) == num_rows, "has per-row columns of different lengths")
+        check(bool(np.array_equal(counts, target_lists.value_lengths().to_numpy())), "has choices without targets")
+        check(bool(np.all((counts >= 1) & (counts <= num_choices))), f"has a row outside 1..{num_choices} choices")
+        check(
+            bool(np.all(mix_lists.value_lengths().to_numpy() == num_components)),
+            f"has a mix_weights row without {num_components} components",
+        )
+
+        choice_ids = scatter_choice_rows(
+            positions,
+            counts,
+            choice_lists.flatten().to_numpy(),
+            seq_len=self.seq_len,
+            max_choices=num_choices,
+            fill=-1,
+            dtype=np.int64,
+        )
+        choice_targets = scatter_choice_rows(
+            positions,
+            counts,
+            target_lists.flatten().to_numpy(),
+            seq_len=self.seq_len,
+            max_choices=num_choices,
+            fill=0.0,
+            dtype=np.float32,
+        )
+        choice_weights = np.zeros(self.seq_len, dtype=np.float32)
+        choice_weights[positions] = weights
+        choice_mix_weights = np.zeros((self.seq_len, num_components), dtype=np.float32)
+        choice_mix_weights[positions] = mix_lists.flatten().to_numpy().reshape(num_rows, num_components)
+        loss_mask = np.zeros(self.seq_len, dtype=bool)
+        loss_mask[positions] = True
+
+        padded_input_ids, position_ids, padded_seq_lens = pad_packed_bin(input_ids, seq_lens, self.seq_len)
+        return {
+            "input_ids": padded_input_ids,
+            "position_ids": position_ids,
+            "loss_mask": loss_mask,
+            "target_ids": np.pad(input_ids[1:], (0, self.seq_len - num_tokens + 1)),
+            "seq_lens": padded_seq_lens,
+            "choice_ids": choice_ids,
+            "choice_targets": choice_targets,
+            "choice_weights": choice_weights,
+            "choice_mix_weights": choice_mix_weights,
+        }
+
+
+def packed_choice_collate(samples: list[PackedChoiceSample]) -> PackedChoiceBatch:
+    (sample,) = samples
+    return {
+        "input_ids": torch.from_numpy(sample["input_ids"]).unsqueeze(0),
+        "position_ids": torch.from_numpy(sample["position_ids"]).unsqueeze(0),
+        "loss_mask": torch.from_numpy(sample["loss_mask"]).unsqueeze(0),
+        "target_ids": torch.from_numpy(sample["target_ids"]).unsqueeze(0),
+        "seq_lens": torch.from_numpy(sample["seq_lens"]),
+        "choice_ids": torch.from_numpy(sample["choice_ids"]).unsqueeze(0),
+        "choice_targets": torch.from_numpy(sample["choice_targets"]).unsqueeze(0),
+        "choice_weights": torch.from_numpy(sample["choice_weights"]).unsqueeze(0),
+        "choice_mix_weights": torch.from_numpy(sample["choice_mix_weights"]).unsqueeze(0),
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
+    }
+
+
+def packed_choice_max_steps(config: PackedChoiceDataConfig, max_steps: int | None) -> int:
+    """``max_steps`` for packed-choice data: one pass over the full batches unless set.
+
+    Trailing bins short of a full batch are dropped; a set ``max_steps`` past one pass repeats bins.
+    """
+    num_bins = PackedChoiceManifest.load(config.name).num_bins
+    logger = get_logger()
+    if max_steps is not None:
+        if max_steps * config.batch_size > num_bins:
+            logger.warning(
+                f"max_steps = {max_steps} trains {max_steps * config.batch_size} bins, more than the "
+                f"{num_bins} of {config.name}: bins repeat"
+            )
+        return max_steps
+    one_pass, num_dropped = divmod(num_bins, config.batch_size)
+    if one_pass == 0:
+        raise ValueError(f"{config.name} has {num_bins} bins, fewer than one batch of {config.batch_size}")
+    logger.info(f"Training one pass over {num_bins} bins of {config.name}: max_steps = {one_pass}")
+    if num_dropped > 0:
+        logger.warning(f"Dropping the last {num_dropped} bins of {config.name} (short of a full batch)")
+    return one_pass
+
+
+def packed_choice_mix_components(
+    config: PackedChoiceDataConfig, val_config: SFTDataConfig | PackedChoiceDataConfig | None
+) -> tuple[str, ...]:
+    """The loss component names of the train export's ``mix_weights`` columns, which a packed-choice
+    validation export must share (one loss function scores both)."""
+    mix_components = PackedChoiceManifest.load(config.name).mix_components
+    if isinstance(val_config, PackedChoiceDataConfig):
+        val_components = PackedChoiceManifest.load(val_config.name).mix_components
+        if val_components != mix_components:
+            raise ValueError(
+                f"{val_config.name} has mix_components {list(val_components)}, but {config.name} has "
+                f"{list(mix_components)}"
+            )
+    return mix_components
+
+
+PACKED_CHOICE_EVAL_SCHEMA_VERSION = "simile-packed-choice-eval/v1"
+
+
+@dataclass(frozen=True)
+class PackedChoiceEvalManifest:
+    """The ``manifest.json`` of one choice-eval set export."""
+
+    name: str
+    seq_len: int
+    num_bins: int
+    num_rows: int
+    max_choices: int
+    files: tuple[tuple[str, int], ...]
+    """Arrow IPC file names and their bin counts, in read order."""
+
+    @classmethod
+    def load(cls, path: Path) -> "PackedChoiceEvalManifest":
+        manifest = json.loads((path / "manifest.json").read_text())
+        if manifest["schema_version"] != PACKED_CHOICE_EVAL_SCHEMA_VERSION:
+            raise ValueError(
+                f"{path} has schema {manifest['schema_version']!r}, expected {PACKED_CHOICE_EVAL_SCHEMA_VERSION!r}"
+            )
+        if manifest["num_bins"] < 1:
+            raise ValueError(f"{path} has no bins")
+        files = tuple((entry["name"], entry["num_bins"]) for entry in manifest["files"])
+        if sum(num_bins for _, num_bins in files) != manifest["num_bins"]:
+            raise ValueError(f"{path}: per-file bin counts do not add up to num_bins = {manifest['num_bins']}")
+        return cls(
+            name=manifest["name"],
+            seq_len=manifest["seq_len"],
+            num_bins=manifest["num_bins"],
+            num_rows=manifest["num_rows"],
+            max_choices=manifest["max_choices"],
+            files=files,
+        )
+
+
+@dataclass(frozen=True)
+class _EvalBin:
+    input_ids: np.ndarray
+    seq_lens: np.ndarray
+    positions: np.ndarray
+    choice_ids: np.ndarray
+    """Every row's choice ids, concatenated in row order."""
+    choice_counts: np.ndarray
+    row_ids: np.ndarray
+
+
+class PackedChoiceEvalSet:
+    """Every bin of a choice-eval export, split over data ranks so that each rank runs ``num_forwards`` forwards.
+
+    Slot ``i`` goes to data rank ``i % data_world_size``. Slots past the last bin replay bin ``i % num_bins`` so
+    every rank sends real tokens through the collectives (an all-padding bin could route every token to the same
+    experts); callers discard the rows of replayed bins. Context-parallel peers get the same bins.
+    ``choice_counts`` holds each row's number of choices, by row id.
+    """
+
+    def __init__(self, path: Path, seq_len: int, non_dp_size: int = 1):
+        self.path = path
+        self.manifest = PackedChoiceEvalManifest.load(path)
+        if self.manifest.seq_len > seq_len:
+            raise ValueError(f"{path} was packed to {self.manifest.seq_len} tokens, above data.seq_len = {seq_len}")
+        self.seq_len = seq_len
+        self.data_rank, self.data_world_size = data_rank_and_world_size(non_dp_size)
+        self.num_forwards = -(-self.manifest.num_bins // self.data_world_size)
+        self._bins = read_packed_bins(path, self.manifest.files)
+        self.choice_counts = self._validate()
+
+    def batches(self) -> Iterator[tuple[PackedChoiceEvalBatch, bool]]:
+        """This data rank's padded bins, each with whether it replays a bin that another slot scores."""
+        for forward in range(self.num_forwards):
+            slot = self.data_rank + forward * self.data_world_size
+            yield self._build_batch(slot % self.manifest.num_bins), slot >= self.manifest.num_bins
+
+    def _read_bin(self, index: int) -> _EvalBin:
+        row = self._bins.slice(index, 1)
+
+        def column(name: str) -> pa.Array:
+            return row.column(name).combine_chunks().flatten()
+
+        choice_lists = column("choice_ids")
+        return _EvalBin(
+            input_ids=column("input_ids").to_numpy().astype(np.int64),
+            seq_lens=column("seq_lens").to_numpy().astype(np.int64),
+            positions=column("positions").to_numpy().astype(np.int64),
+            choice_ids=choice_lists.flatten().to_numpy().astype(np.int64),
+            choice_counts=choice_lists.value_lengths().to_numpy().astype(np.int64),
+            row_ids=column("row_ids").to_numpy().astype(np.int64),
+        )
+
+    def _validate(self) -> np.ndarray:
+        """Check every bin, and that the bins hold each row id in ``0..num_rows-1`` exactly once; returns
+        each row's number of choices by row id."""
+        row_ids, choice_counts = [], []
+        for index in range(self.manifest.num_bins):
+            eval_bin = self._read_bin(index)
+            self._check_bin(index, eval_bin)
+            row_ids.append(eval_bin.row_ids)
+            choice_counts.append(eval_bin.choice_counts)
+        all_row_ids = np.concatenate(row_ids)
+        order = np.argsort(all_row_ids, kind="stable")
+        if not np.array_equal(all_row_ids[order], np.arange(self.manifest.num_rows)):
+            raise ValueError(f"{self.path}: row_ids do not cover 0..{self.manifest.num_rows - 1} exactly once")
+        return np.concatenate(choice_counts)[order]
+
+    def _check_bin(self, index: int, eval_bin: _EvalBin) -> None:
+        manifest = self.manifest
+        num_tokens, positions, counts = len(eval_bin.input_ids), eval_bin.positions, eval_bin.choice_counts
+
+        def check(ok: bool, message: str) -> None:
+            if not ok:
+                raise ValueError(f"{self.path}: bin {index} {message}")
+
+        check(0 < num_tokens <= manifest.seq_len, f"has {num_tokens} tokens, not in 1..{manifest.seq_len}")
+        check(int(eval_bin.seq_lens.sum()) == num_tokens, "has seq_lens that do not sum to its token count")
+        check(len(positions) > 0, "has no rows")
+        check(len(counts) == len(eval_bin.row_ids) == len(positions), "has per-row columns of different lengths")
+        check(bool(np.all(np.diff(positions) > 0)), "has positions that are not strictly increasing")
+        # A prompt ends at the position its prediction is read from, so the last one may end the bin
+        check(positions[0] >= 0 and positions[-1] < num_tokens, "has out-of-range positions")
+        check(bool(np.all((counts >= 1) & (counts <= manifest.max_choices))), "has a row outside 1..max_choices")
+        check(bool(np.all(eval_bin.choice_ids >= 0)), "has a negative choice id")
+
+    def _build_batch(self, index: int) -> PackedChoiceEvalBatch:
+        eval_bin = self._read_bin(index)
+        input_ids, position_ids, seq_lens = pad_packed_bin(eval_bin.input_ids, eval_bin.seq_lens, self.seq_len)
+        choice_ids = scatter_choice_rows(
+            eval_bin.positions,
+            eval_bin.choice_counts,
+            eval_bin.choice_ids,
+            seq_len=self.seq_len,
+            max_choices=self.manifest.max_choices,
+            fill=-1,
+            dtype=np.int64,
+        )
+        row_ids = np.full(self.seq_len, -1, dtype=np.int64)
+        row_ids[eval_bin.positions] = eval_bin.row_ids
+        return {
+            "input_ids": torch.from_numpy(input_ids).unsqueeze(0),
+            "position_ids": torch.from_numpy(position_ids).unsqueeze(0),
+            "seq_lens": torch.from_numpy(seq_lens),
+            "choice_ids": torch.from_numpy(choice_ids).unsqueeze(0),
+            "row_ids": torch.from_numpy(row_ids).unsqueeze(0),
+        }
+
+
+def setup_choice_eval_sets(
+    config: SFTChoiceEvalConfig, seq_len: int, non_dp_size: int
+) -> dict[str, PackedChoiceEvalSet]:
+    """The configured eval sets by name, each loaded and checked against its export's name."""
+    eval_sets = {}
+    for name, set_config in config.sets.items():
+        eval_set = PackedChoiceEvalSet(set_config.path, seq_len=seq_len, non_dp_size=non_dp_size)
+        if eval_set.manifest.name != name:
+            raise ValueError(
+                f"choice_eval.sets.{name} points at {set_config.path}, the export of {eval_set.manifest.name!r}"
+            )
+        eval_sets[name] = eval_set
+    return eval_sets
+
+
 def cat_collate(samples: list[Sample]) -> Batch:
     # CPU tensors only: this runs in dataloader workers then the trainer moves batches to the GPU with async copies from pinned memory
     (sample,) = samples
@@ -749,11 +1210,21 @@ def setup_dataset(
             multimodal=multimodal,
             columns=config.columns,
         )
+    elif config.type == "packed_choice":
+        return PackedChoiceDataset(config.name, seq_len=config.seq_len, non_dp_size=non_dp_size, max_epochs=max_epochs)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+    if isinstance(dataset, PackedChoiceDataset):
+        return StatefulDataLoader(
+            dataset,
+            batch_size=1,
+            collate_fn=packed_choice_collate,
+            num_workers=config.num_workers,
+            pin_memory=True,
+        )
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
     return StatefulDataLoader(
         packing_dataset,

@@ -5,17 +5,19 @@ import time
 import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
+from functools import partial
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
+import numpy as np
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
-from prime_rl.configs.sft import SFTConfig
-from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.configs.sft import PackedChoiceDataConfig, SFTConfig, SFTDataConfig
+from prime_rl.configs.trainer import CheckpointConfig, validate_scheduler
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
@@ -38,10 +40,23 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.sft.choice import choice_loss_inputs
+from prime_rl.trainer.sft.choice_eval import (
+    ChoiceEvalSite,
+    choice_eval_step_dir,
+    choice_row_ids,
+    due_choice_evals,
+    score_choice_predictions,
+    unscored_choice_evals,
+)
 from prime_rl.trainer.sft.data import (
+    PackedChoiceEvalBatch,
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
+    packed_choice_max_steps,
+    packed_choice_mix_components,
+    setup_choice_eval_sets,
     setup_dataloader,
     setup_dataset,
 )
@@ -63,7 +78,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit
+from prime_rl.utils.utils import clean_exit, import_object
 import torch.distributed as dist
 
 
@@ -76,6 +91,18 @@ def train(config: SFTConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
+
+    # Packed-choice data trains the [loss] function over choice logits; the step normalizer is its weight sum
+    choice_loss_fn = None
+    if isinstance(config.data, PackedChoiceDataConfig):
+        assert config.loss is not None
+        mix_components = packed_choice_mix_components(config.data, config.val.data if config.val else None)
+        choice_loss_fn = partial(
+            import_object(config.loss.import_path), mix_components=mix_components, **config.loss.kwargs
+        )
+        config.max_steps = packed_choice_max_steps(config.data, config.max_steps)
+        validate_scheduler(config.scheduler, config.max_steps)
+    normalizer_dtype = torch.int64 if choice_loss_fn is None else torch.float64
 
     # Setup the monitors
     asyncio.run(
@@ -169,6 +196,7 @@ def train(config: SFTConfig):
             get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
         ),
     )
+    assert choice_loss_fn is None or gradient_manager is None, "Packed choice data requires model.full_offload = None"
 
     # Set up the learning rate scheduler
     # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
@@ -195,9 +223,20 @@ def train(config: SFTConfig):
     dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
-    if config.val is not None:
+    if config.val is not None and isinstance(config.val.data, SFTDataConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+
+    # Every rank imports the scoring function and checks every eval bin, so a bad config fails all ranks at startup
+    choice_eval_fn = None
+    choice_eval_sets = {}
+    if config.choice_eval is not None:
+        logger.info(f"Loading choice-eval sets ({config.choice_eval})")
+        if config.choice_eval.import_path is not None:
+            choice_eval_fn = partial(import_object(config.choice_eval.import_path), **config.choice_eval.kwargs)
+        choice_eval_sets = setup_choice_eval_sets(
+            config.choice_eval, seq_len=config.data.seq_len, non_dp_size=config.model.cp
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -227,6 +266,11 @@ def train(config: SFTConfig):
     else:
         logger.info("Starting from scratch")
 
+    # A checkpoint at max_steps finished training: only the final choice evals can still be missing
+    resumed_past_end = config.max_steps is not None and progress.step > config.max_steps
+    if resumed_past_end:
+        logger.info(f"Checkpoint step {checkpoint_step} reached max_steps = {config.max_steps}: skipping training")
+
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches
     # an already-running worker (the run silently restarts the data from the beginning
@@ -240,29 +284,20 @@ def train(config: SFTConfig):
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
-        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
-        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
-        target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
-        loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
-        mm_kwargs = micro_batch.get("mm_kwargs")
-        if mm_kwargs is not None:
-            mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
-        mm_type_ids = micro_batch.get("mm_token_type_ids")
-        if mm_type_ids is not None:
-            mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
-
+    def shard_micro_batch(
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        seq_lens: torch.Tensor,
+        per_position: list[torch.Tensor],
+        defer_cp_to_model: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], bool]:
+        """This rank's context-parallel shard of a micro batch's inputs and ``[1, seq, ...]`` per-position
+        tensors, and whether ``seq_lens`` still describes the unsharded sequence. Sizes LoRA to the local tokens."""
         seq_lens_are_pre_shard = False
-
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to seq_len; shard_for_cp raises on violations.
-            defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
-            )
-            if not defer_vlm_cp_to_model:
+            if not defer_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
                     input_ids,
                     position_ids,
@@ -273,11 +308,55 @@ def train(config: SFTConfig):
                     cp_style=config.model.cp_style,
                 )
             seq_lens_are_pre_shard = True
-            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            per_position = [shard_for_cp(tensor, cp_rank=cp_rank, cp_world_size=cp_size) for tensor in per_position]
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), per_position[0].shape[1], dtype=torch.int32, device="cuda"))
+        return input_ids, position_ids, per_position, seq_lens_are_pre_shard
+
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or (loss_sum, weight_sum)
+        from the choice loss."""
+        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
+        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        if mm_kwargs is not None:
+            mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        if mm_type_ids is not None:
+            mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
+
+        per_position_keys = ["target_ids", "loss_mask"]
+        if choice_loss_fn is not None:
+            per_position_keys += ["choice_ids", "choice_targets", "choice_weights", "choice_mix_weights"]
+        input_ids, position_ids, per_position, seq_lens_are_pre_shard = shard_micro_batch(
+            input_ids,
+            position_ids,
+            seq_lens,
+            [micro_batch[key].to("cuda", non_blocking=True) for key in per_position_keys],
+            defer_cp_to_model=(
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
+            ),
+        )
+        target_ids, loss_mask, *choice_tensors = per_position
+
+        if choice_loss_fn is not None:
+            choice_ids, choice_targets, choice_weights, choice_mix_weights = choice_tensors
+            with maybe_activation_offloading(config.model.ac_offloading):
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    choice_ids=choice_ids,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
+            loss_sum, weight_sum = choice_loss_fn(
+                **choice_loss_inputs(out["logits"], choice_ids, choice_targets, choice_weights, choice_mix_weights)
+            )
+            del out
+            return loss_sum, weight_sum
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -303,9 +382,10 @@ def train(config: SFTConfig):
     maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns the global mean loss, weighted by the step normalizer (tokens,
+        or the choice loss's weight sum), and the count of NaN batches."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_token_count = torch.tensor(0, dtype=normalizer_dtype, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
@@ -365,6 +445,85 @@ def train(config: SFTConfig):
             )
         )
 
+    def predict_choices(batch: PackedChoiceEvalBatch) -> tuple[torch.Tensor, torch.Tensor]:
+        """Row ids ``[M]`` and fp32 choice logits ``[M, K]`` of the rows in this rank's shard of an eval bin."""
+        seq_lens = batch["seq_lens"].to("cuda", non_blocking=True)
+        input_ids, position_ids, (row_ids, choice_ids), seq_lens_are_pre_shard = shard_micro_batch(
+            batch["input_ids"].to("cuda", non_blocking=True),
+            batch["position_ids"].to("cuda", non_blocking=True),
+            seq_lens,
+            [batch["row_ids"].to("cuda", non_blocking=True), batch["choice_ids"].to("cuda", non_blocking=True)],
+        )
+        out = forward(
+            model,
+            input_ids,
+            position_ids,
+            seq_lens=seq_lens,
+            choice_ids=choice_ids,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+        )
+        return choice_row_ids(choice_ids, row_ids), out["logits"]
+
+    def log_metrics(metrics: dict[str, float], step: int) -> None:
+        asyncio.run(monitors.log(metrics, step=step))
+
+    def run_choice_evals(step: int, site: ChoiceEvalSite) -> None:
+        """Score the choice-eval sets due at ``site`` for weights with ``step`` optimizer updates, skipping sets
+        already scored at ``step``. Collective: every rank runs the same forwards, then waits while rank 0 scores."""
+        assert config.choice_eval is not None
+        names: list[list[str]] = [[]]
+        if world.is_master:
+            due = due_choice_evals(config.choice_eval, step, site, config.max_steps)
+            names = [unscored_choice_evals(config.run_dir, due, step)]
+        dist.broadcast_object_list(names, src=0)
+        for name in names[0]:
+            eval_set = choice_eval_sets[name]
+            logger.info(f"Running choice eval {name} at step {step} ({eval_set.num_forwards} forwards per rank)")
+            # The start site runs inside the first step, whose own peak memory is logged after it
+            if site != "start":
+                torch.cuda.reset_peak_memory_stats()
+            start_time = time.perf_counter()
+            row_ids, logits = [], []
+            # No train/eval switch (see run_validation), and no_grad because FSDP would keep inference_mode
+            # tensors that break the next training step
+            with torch.no_grad():
+                for batch, replay in eval_set.batches():
+                    batch_row_ids, batch_logits = predict_choices(batch)
+                    if not replay:
+                        row_ids.append(batch_row_ids)
+                        logits.append(batch_logits)
+            # Same reason as the reshard after run_validation: the start site runs before clipping
+            reshard_module(model)
+            if is_tt_moe_model(model):
+                # Keep eval routing out of the next training step's statistics.
+                get_load_balance_stats(model)
+            peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
+            dist.all_reduce(peak_memory, op=dist.ReduceOp.MAX)
+            num_choices = eval_set.manifest.max_choices
+            part = (
+                torch.cat(row_ids).cpu().numpy() if row_ids else np.empty(0, dtype=np.int64),
+                torch.cat(logits).cpu().numpy() if logits else np.empty((0, num_choices), dtype=np.float32),
+            )
+            parts = [None] * world.world_size if world.is_master else None
+            dist.gather_object(part, parts, dst=0)
+            eval_time = time.perf_counter() - start_time
+            if parts is not None:
+                score_choice_predictions(
+                    choice_eval_fn,
+                    log_metrics,
+                    name=name,
+                    path=eval_set.path,
+                    step=step,
+                    output_dir=choice_eval_step_dir(config.run_dir, name, step),
+                    parts=parts,
+                    choice_counts=eval_set.choice_counts,
+                    metrics={
+                        f"time/choice_eval/{name}": eval_time,
+                        f"perf/choice_eval_peak_memory/{name}": peak_memory.item(),
+                    },
+                )
+            dist.barrier()
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     # A broadcast must land at every step an online eval env is due. The schedule is
@@ -401,7 +560,7 @@ def train(config: SFTConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
-    while True:
+    while not resumed_past_end:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
@@ -433,7 +592,7 @@ def train(config: SFTConfig):
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+            step_local_token_count = torch.tensor(0, dtype=normalizer_dtype, device="cuda")
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
@@ -504,6 +663,8 @@ def train(config: SFTConfig):
             # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
             # unsharded parameters. Reshard so clipping sees every gradient.
             reshard_module(model)
+        if is_first_step and config.choice_eval is not None:
+            run_choice_evals(progress.step - 1, "start")
 
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
@@ -661,6 +822,9 @@ def train(config: SFTConfig):
         if heart is not None:
             heart.beat()
 
+        if config.choice_eval is not None:
+            run_choice_evals(progress.step, "step")
+
         if is_last_step:
             break
         progress.step += 1
@@ -674,13 +838,17 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    if config.ckpt is not None and not resumed_past_end:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
-    # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_sender is not None:
+    if config.choice_eval is not None:
+        run_choice_evals(progress.step - 1 if resumed_past_end else progress.step, "final")
+
+    # Broadcast the final weights so the evals process can run its forced final epoch; after a resume past
+    # the end, the startup broadcast already carried them
+    if weight_sender is not None and not resumed_past_end:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 

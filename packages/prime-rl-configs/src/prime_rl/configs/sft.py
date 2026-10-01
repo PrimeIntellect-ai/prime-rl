@@ -1,10 +1,10 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, StringConstraints, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -160,6 +160,88 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class PackedChoiceDataConfig(BaseDataConfig):
+    """Pre-packed bins that supervise choice logits at marked positions (``simile-packed-choice/v2`` export).
+
+    Each bin is one micro batch; the loss comes from ``[loss]`` instead of next-token cross-entropy."""
+
+    type: Literal["packed_choice"] = "packed_choice"
+
+    name: Path
+    """Directory with the split's ``manifest.json`` and Arrow bin files (a local path, like ``SFTDataConfig.name``)."""
+
+    @model_validator(mode="after")
+    def validate_one_bin_per_micro_batch(self):
+        if self.micro_batch_size != 1:
+            raise ValueError("Packed choice data requires micro_batch_size = 1 (each bin is one micro batch)")
+        return self
+
+
+class SFTChoiceLossConfig(BaseConfig):
+    """Loss over the choice logits of ``packed_choice`` data.
+
+    Called once per micro batch as
+    ``fn(*, choice_logits, choice_counts, target_probs, weights, mix_weights, mix_components, **kwargs)`` with
+    ``[M, K]`` right-padded choice tensors, ``[M]`` weights and the ``[M, C]`` per-row loss mix for the ``M``
+    supervised rows; ``mix_components`` is the export's tuple of ``C`` names for the ``mix_weights`` columns, bound
+    once at startup so the function can reject an order it does not expect. Returns ``(loss_sum, weight_sum)``.
+    Gradients are normalized by the step's global ``weight_sum``."""
+
+    import_path: str
+    """Import path to the loss function (e.g. ``my_module.my_loss``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the loss function."""
+
+
+class ChoiceEvalSetConfig(BaseConfig):
+    path: Path
+    """Directory with the set's ``manifest.json`` and Arrow bin files (``simile-packed-choice-eval/v1`` export)."""
+
+    interval: int | None = Field(None, ge=1)
+    """Score the set every N optimizer steps. If None, only at the start (with ``eval_on_start``) and the end."""
+
+
+ChoiceEvalSetName: TypeAlias = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
+
+
+class SFTChoiceEvalConfig(BaseConfig):
+    """Forward-only scoring of choice-eval exports: the choice logits at every marked position of a set.
+
+    A set is due at step 0 (``eval_on_start``), at multiples of its ``interval`` and always at the end, where a
+    step is the number of optimizer updates the scored weights have received; a resumed run first scores its
+    checkpoint step if that is a multiple of the interval. Rank 0 writes the
+    ``[row_id, choice_logits]`` of every row to ``<run_dir>/choice_evals/<name>/step_<step>/predictions.arrow``
+    and, with ``import_path`` set, calls ``fn(*, name, path, step, predictions, output_dir, **kwargs) ->
+    dict[str, float]`` with that step directory as ``output_dir`` while the other ranks wait. It then logs the
+    result with the eval's time and peak memory at ``step`` and writes ``metrics.json`` there. A step directory
+    with ``metrics.json`` is never scored again. A raising ``fn`` is logged as an error, leaves no
+    ``metrics.json`` and does not stop training; ``fn`` must return well within ``dist_timeout_seconds``, which
+    bounds the other ranks' wait."""
+
+    import_path: str | None = None
+    """Import path to the scoring function (e.g. ``my_module.score``). If None, the run only writes the
+    predictions, for scoring outside the trainer, and logs the eval's time and peak memory."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the scoring function."""
+
+    eval_on_start: bool = False
+    """Score every set at step 0, before the first optimizer update."""
+
+    sets: dict[ChoiceEvalSetName, ChoiceEvalSetConfig] = Field(min_length=1)
+    """Eval sets by name. The name labels the output directory and is passed to the scoring function."""
+
+    @model_validator(mode="after")
+    def validate_kwargs_need_a_function(self):
+        if self.kwargs and self.import_path is None:
+            raise ValueError("choice_eval.kwargs needs choice_eval.import_path")
+        return self
+
+
+ValDataConfig: TypeAlias = Annotated[SFTDataConfig | PackedChoiceDataConfig, Field(discriminator="type")]
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -167,10 +249,18 @@ class SFTValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    data: SFTDataConfig
+    data: ValDataConfig
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_data_type(cls, data):
+        """Untagged validation data is HF SFT data."""
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data["data"].setdefault("type", "sft")
+        return data
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | PackedChoiceDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -226,8 +316,14 @@ class SFTConfig(BaseConfig):
 
     data: DataConfig = SFTDataConfig()
 
+    loss: SFTChoiceLossConfig | None = None
+    """Choice loss for ``packed_choice`` data. Required with it and invalid otherwise."""
+
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
+
+    choice_eval: SFTChoiceEvalConfig | None = None
+    """Forward-only choice-eval scoring. If None, no choice evals run."""
 
     eval: SFTOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -305,7 +401,8 @@ class SFTConfig(BaseConfig):
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
     max_steps: int | None = None
-    """Maximum training steps. If None, runs indefinitely."""
+    """Maximum training steps. If None, runs indefinitely (``packed_choice`` data: one pass over its bins). A run
+    resumed from a checkpoint at ``max_steps`` trains no further step."""
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
@@ -533,9 +630,28 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_packed_choice(self):
+        packed_choice = self.data.type == "packed_choice"
+        if packed_choice != (self.loss is not None):
+            raise ValueError("data.type = 'packed_choice' and a [loss] section must be set together")
+        if self.val is not None and (self.val.data.type == "packed_choice") != packed_choice:
+            raise ValueError("val.data.type must be 'packed_choice' exactly when data.type is 'packed_choice'")
+        if packed_choice and self.model.full_offload is not None:
+            raise ValueError("Packed choice data does not support model.full_offload")
+        if packed_choice and self.eval is not None:
+            raise ValueError("Packed choice data does not support online evals ([eval])")
+        return self
+
+    @model_validator(mode="after")
+    def validate_choice_eval(self):
+        if self.choice_eval is not None and self.model.full_offload is not None:
+            raise ValueError("[choice_eval] does not support model.full_offload")
+        return self
+
+    @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type == "packed_choice" or (self.data.type == "fake" and self.val is None):
             return self
 
         model_id = self.tokenizer.name or self.model.name
@@ -608,6 +724,9 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
+        # The trainer derives max_steps from the packed-choice manifest and validates the schedule then
+        if self.data.type == "packed_choice" and self.max_steps is None:
+            return self
         validate_scheduler(self.scheduler, self.max_steps)
         return self
 

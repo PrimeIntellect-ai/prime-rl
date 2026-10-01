@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from prime_rl.trainer.sft.choice import choice_logits
 from prime_rl.utils.logger import get_logger
 
 # Same as torch's cross entropy loss
@@ -43,6 +44,7 @@ class FusedOutputLinear(torch.nn.Linear):
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
     as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
     With ``temperature`` it returns per-token ``logprobs`` and ``entropy``.
+    With ``choice_ids`` it returns only the logits of the supervised positions' choice tokens (see ``choice_logits``).
     """
 
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
@@ -55,7 +57,10 @@ class FusedOutputLinear(torch.nn.Linear):
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
+        choice_ids: Tensor | None = None,
     ) -> PrimeLmOutput:
+        if choice_ids is not None:
+            return PrimeLmOutput(logits=choice_logits(hidden_states, self.weight, choice_ids))
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
 
         b, s, h = hidden_states.shape
@@ -82,7 +87,8 @@ class FusedOutputLinear(torch.nn.Linear):
 
 class VanillaOutputLinear(torch.nn.Linear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
-    cross-entropy over labels != IGNORE_INDEX as ``loss``."""
+    cross-entropy over labels != IGNORE_INDEX as ``loss``, or with ``choice_ids`` only the supervised
+    positions' choice logits (see ``choice_logits``)."""
 
     def __init__(self, in_features: int, out_features: int):
         super().__init__(in_features, out_features, bias=False)
@@ -93,7 +99,10 @@ class VanillaOutputLinear(torch.nn.Linear):
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
+        choice_ids: Tensor | None = None,
     ) -> PrimeLmOutput:
+        if choice_ids is not None:
+            return PrimeLmOutput(logits=choice_logits(hidden_states, self.weight, choice_ids))
         logits = super().forward(hidden_states)
         if labels is not None and temperature is None:
             return PrimeLmOutput(loss=cross_entropy_sum(logits, labels))
@@ -411,6 +420,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
+        choice_ids: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -430,6 +440,8 @@ def _patch_model_forward(model: nn.Module) -> None:
         )
 
         # Pass through the wrapped lm_head
+        if choice_ids is not None:
+            return self.lm_head(hidden_states[:, slice_indices, :], choice_ids=choice_ids[:, slice_indices])
         return self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
