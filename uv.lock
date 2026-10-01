@@ -5187,7 +5187,7 @@ train = [
 [[package]]
 name = "prime-sandboxes"
 version = "0.3.2"
-source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=13c8688#13c86889a6c277ae18e3dcaaaccfc2051b293db1" }
+source = { git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=d5f57be#d5f57be7ffb1f9c1cf0afb082622746357bae5fd" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -7689,7 +7689,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.3" },
-    { name = "prime-sandboxes", git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=13c8688" },
+    { name = "prime-sandboxes", git = "https://github.com/PrimeIntellect-ai/prime.git?subdirectory=packages%2Fprime-sandboxes&rev=d5f57be" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
