@@ -485,3 +485,62 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+PLUGIN_RENDERER_SOURCE = """
+from typing import Literal
+
+from renderers.base import RenderedTokens
+from renderers.configs import BaseRendererConfig
+
+
+class EffortRendererConfig(BaseRendererConfig):
+    name: Literal["effort"] = "effort"
+    _template_fields = frozenset({"reasoning_effort"})
+
+    reasoning_effort: Literal["low", "high"] = "low"
+
+
+class EffortRenderer:
+    config_class = EffortRendererConfig
+
+    def __init__(self, tokenizer, config):
+        self.config = config
+
+    def render(self, messages, **kwargs):
+        return RenderedTokens(token_ids=[0, 1], message_indices=[-1, 0], sampled_mask=[False, True])
+
+    def get_stop_token_ids(self):
+        return [1]
+"""
+
+
+@pytest.fixture
+def plugin_renderer_config(tmp_path):
+    from renderers import PluginRendererConfig
+
+    path = tmp_path / "effort_renderer.py"
+    path.write_text(PLUGIN_RENDERER_SOURCE)
+    return PluginRendererConfig(target=f"{path}:EffortRenderer")
+
+
+def test_renderer_resolver_sets_reasoning_effort_on_plugin_renderer(plugin_renderer_config):
+    resolver = sft_data.RendererResolver(tokenizer=None, config=plugin_renderer_config)
+
+    default = resolver({"messages": []})
+    high = resolver({"messages": [], "reasoning_effort": "high"})
+
+    assert default.config.reasoning_effort == "low"
+    assert high.config.reasoning_effort == "high"
+    assert resolver({"messages": [], "reasoning_effort": "high"}) is high
+    with pytest.raises(ValueError):
+        resolver({"messages": [], "reasoning_effort": "medium"})
+
+
+def test_renderer_resolver_rejects_reasoning_effort_without_the_field():
+    from renderers import PrimeQwen3RendererConfig
+
+    resolver = sft_data.RendererResolver(tokenizer=None, config=PrimeQwen3RendererConfig())
+
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        resolver({"messages": [], "reasoning_effort": "high"})
