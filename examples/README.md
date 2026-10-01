@@ -31,7 +31,6 @@ Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 - [`dynamo/`](extra/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
 - [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
-- [`custom-renderer/`](extra/custom-renderer/README.md) — reverse-text SFT + RL through a custom renderer loaded from a local file
 
 ## Related config folders
 

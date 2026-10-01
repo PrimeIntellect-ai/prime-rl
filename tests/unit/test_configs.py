@@ -6,6 +6,7 @@ import pytest
 import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
+from renderers import custom_renderer_config
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
@@ -1039,7 +1040,7 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
-CUSTOM_RENDERER_IMPORT_PATH = "examples/extra/custom-renderer/renderer.py:InstructedQwen3Renderer"
+CUSTOM_RENDERER_IMPORT_PATH = "tests/unit/fixtures/instructed_qwen3_renderer.py:InstructedQwen3Renderer"
 
 
 def test_sft_config_accepts_custom_renderer(tmp_path):
@@ -1057,8 +1058,8 @@ def test_sft_config_accepts_custom_renderer(tmp_path):
     config = cli(SFTConfig, args=["@", str(config_file)])
 
     assert config.renderer.name == "custom"
-    assert config.renderer.renderer_config.name == "instructed-qwen3"
-    assert config.renderer.renderer_config.instruction == "Be brief."
+    assert custom_renderer_config(config.renderer).name == "instructed-qwen3"
+    assert custom_renderer_config(config.renderer).instruction == "Be brief."
 
 
 def test_orchestrator_config_accepts_custom_renderer(tmp_path):
@@ -1075,7 +1076,7 @@ def test_orchestrator_config_accepts_custom_renderer(tmp_path):
     config = cli(OrchestratorConfig, args=["@", str(config_file)])
 
     assert config.renderer.name == "custom"
-    assert config.renderer.renderer_config.instruction == "Think step by step."
+    assert custom_renderer_config(config.renderer).instruction == "Think step by step."
 
 
 def test_custom_renderer_rejects_unknown_fields(tmp_path):

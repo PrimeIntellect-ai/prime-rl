@@ -1,9 +1,6 @@
-"""A renderer that lives outside the ``renderers`` package.
+"""A custom renderer for tests: PrimeIntellect Qwen3 with an ``instruction`` template control.
 
-``[renderer] name = "custom"`` loads it from ``import_path = "<this file>:InstructedQwen3Renderer"``
-for SFT, and ``[orchestrator.renderer]`` does the same for RL. The renderer class points
-``config_class`` at its own config, which validates the remaining ``[renderer]`` fields and
-declares which of them are template controls.
+``[renderer] name = "custom"`` loads it from ``import_path = "<this file>:InstructedQwen3Renderer"``.
 """
 
 from dataclasses import replace

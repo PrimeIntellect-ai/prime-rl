@@ -162,12 +162,7 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one. A mapping you set yourself must name a column that exists in the dataset; the default mapping skips datasets without the column:
-
-```toml
-[data.columns.renderer]
-depth = "task_depth"
-```
+A `reasoning_effort` column in the dataset sets the renderer's `reasoning_effort` field per row, on top of the `[renderer]` config. The column requires a typed renderer that has that field (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`); rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one.
 
 If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
 
@@ -176,11 +171,11 @@ If a model needs another template control, add it to that model's renderer confi
 ```toml
 [renderer]
 name = "custom"
-import_path = "examples/extra/custom-renderer/renderer.py:InstructedQwen3Renderer"
-instruction = "Reverse every character, including spaces and punctuation."
+import_path = "my_renderers.glm53_no_thinking.NoThinkingGLM53Renderer"
+clear_thinking = true
 ```
 
-The same config selects the renderer for RL under `[orchestrator.renderer]`. [`examples/extra/custom-renderer/`](../examples/extra/custom-renderer/README.md) trains reverse-text through one.
+The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
 **Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
 

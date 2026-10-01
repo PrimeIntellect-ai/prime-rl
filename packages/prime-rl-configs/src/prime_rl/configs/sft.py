@@ -85,13 +85,6 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
-class SFTColumnsConfig(BaseConfig):
-    """Dataset columns that feed the renderer."""
-
-    renderer: dict[str, str] | None = None
-    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``depth = "task_depth"``. A non-null value overrides the ``[renderer]`` setting. A mapping set here requires the column in every dataset. Unset, a ``reasoning_effort`` column sets ``reasoning_effort`` on datasets that have it."""
-
-
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -118,9 +111,6 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
-
-    columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Columns that carry per-sample renderer arguments."""
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()

@@ -209,37 +209,22 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-RENDERER_COLUMN_PREFIX = "__renderer."
-"""Prefix of the columns that carry per-sample renderer arguments, e.g. ``__renderer.depth``."""
-
-DEFAULT_RENDERER_COLUMNS = {"reasoning_effort": "reasoning_effort"}
-"""Mapping used when ``data.columns.renderer`` is unset; it skips datasets without the column."""
-
-
-def rename_renderer_columns(dataset: Dataset, columns: dict[str, str] | None) -> Dataset:
-    """Rename the mapped ``renderer field = column`` columns to ``__renderer.<field>``.
-
-    A configured mapping must find its column; the default mapping skips
-    datasets without it.
-    """
-    renames = {}
-    for field, column in (columns or DEFAULT_RENDERER_COLUMNS).items():
-        if column in dataset.column_names:
-            renames[column] = RENDERER_COLUMN_PREFIX + field
-        elif columns is not None:
-            raise ValueError(
-                f"data.columns.renderer maps {field!r} to column {column!r}, but the dataset has only {dataset.column_names}"
-            )
-    return dataset.rename_columns(renames) if renames else dataset
+def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> RendererConfig:
+    """Copy ``config`` with its ``reasoning_effort`` field set, validated by the config class."""
+    if isinstance(config, AutoRendererConfig):
+        raise ValueError(
+            "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
+            "not renderer.name = 'auto'"
+        )
+    return merge_chat_template_kwargs(config, {"reasoning_effort": reasoning_effort})
 
 
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A row's non-null ``__renderer.<field>`` columns override the configured
-    renderer's fields of the same name, validated as chat-template kwargs.
-    Renderer configs are frozen, so renderers are cached per config and rows
-    that resolve to the same config share one instance.
+    A ``reasoning_effort`` column overrides the configured renderer's field of
+    the same name per row. Renderer configs are frozen, so renderers are cached
+    per config and rows that resolve to the same config share one instance.
     """
 
     def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
@@ -248,23 +233,11 @@ class RendererResolver:
         self.processor = processor
         self.renderers: dict[RendererConfig, Renderer] = {}
 
-    def resolve_config(self, example: dict) -> RendererConfig:
-        kwargs = {
-            key.removeprefix(RENDERER_COLUMN_PREFIX): value
-            for key, value in example.items()
-            if key.startswith(RENDERER_COLUMN_PREFIX) and value is not None
-        }
-        if not kwargs:
-            return self.config
-        if isinstance(self.config, AutoRendererConfig):
-            raise ValueError(
-                f"Per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
-                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
-            )
-        return merge_chat_template_kwargs(self.config, kwargs)
-
     def __call__(self, example: dict) -> Renderer:
-        config = self.resolve_config(example)
+        config = self.config
+        reasoning_effort = example.get("reasoning_effort")
+        if reasoning_effort is not None:
+            config = with_reasoning_effort(config, reasoning_effort)
         renderer = self.renderers.get(config)
         if renderer is None:
             renderer = create_renderer(self.tokenizer, config)
@@ -675,14 +648,12 @@ def setup_and_interleave_datasets(
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
     revision: str | None = None,
-    renderer_columns: dict[str, str] | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
         dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        dataset = rename_renderer_columns(dataset, renderer_columns)
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -712,7 +683,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -722,7 +692,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -732,7 +701,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -743,7 +711,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
         )
 
 
