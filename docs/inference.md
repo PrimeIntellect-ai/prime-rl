@@ -219,6 +219,7 @@ Maximizing KV-Cache space is crucial to support high-concurrency workloads. You 
 The `type` field selects the backend:
 
 - `native` — vLLM's built-in offloading. CPU-only uses `OffloadingConnector`; CPU+disk uses `TieringOffloadingSpec` (a CPU primary tier with a filesystem secondary tier). Fully self-contained — no extra processes.
+- `lmcache` — [LMCache MP](https://docs.lmcache.ai/getting_started/quickstart.html) CPU offload via `LMCacheMPConnector`. SLURM starts one loopback-only daemon per inference node, shared by that node's engines. Local runs start the daemon separately. Requires the `lmcache` extra; disk offload is not supported by this configuration.
 - `mooncake` — a [Mooncake](https://github.com/kvcache-ai/Mooncake) **shared distributed store** (SLURM only). One `mooncake_master` + metadata server runs on the head inference node; every inference node runs a `mooncake_client` that contributes its DRAM (and, with `disk`, SSD) segment to that *single* pool. Because blocks are keyed by model + parallel rank + content hash (no instance id), a prefix cached by one node/replica is reusable by all of them over RDMA — pooling every node's CPU RAM into one KV cache. Use `native` for local/single-process runs.
 
 ```toml
@@ -246,6 +247,20 @@ path = "/scratch/kv"
 ```
 
 For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+
+For LMCache, `cpu.num_bytes` is the total CPU pool on each inference node, shared across its ranks. The connector is composed with NIXL through `MultiConnector` for disaggregated P/D, just like the other offload backends:
+
+```toml
+[inference.kv_cache_offload]
+type = "lmcache"
+port = 5555
+http_port = 8080
+chunk_size = 256
+[inference.kv_cache_offload.cpu]
+num_bytes = 137438953472 # 128 GiB per inference node
+```
+
+The SLURM `inference` and `rl` entrypoints start the daemon before the engines, wait for its health endpoint, and stop the job if the daemon exits. Logs are written under `logs/attempt_<n>/lmcache/node_<rank>.log`. The pool is node-local, not distributed across inference nodes. Each job starts with an empty pool; occupied ports are rejected rather than attaching to a prior run's cache. See the [LMCache MP example](../examples/extra/lmcache/README.md) for local startup and SLURM usage.
 
 
 ### Optimized P/D disaggregation deployment

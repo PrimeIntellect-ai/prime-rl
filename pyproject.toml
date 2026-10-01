@@ -73,6 +73,7 @@ dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+lmcache = ["lmcache==0.5.5 ; sys_platform == 'linux'"]
 dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.13 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on

@@ -223,7 +223,7 @@ class WeightBroadcastConfig(BaseConfig):
 
 class CPUOffloadTier(BaseConfig):
     num_bytes: int = Field(..., gt=0)
-    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
+    """CPU/DRAM offload capacity. For ``native`` this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For ``mooncake`` this is each node's DRAM contribution to the distributed pool. For ``lmcache`` this is the node-local pool shared by all inference ranks."""
 
 
 class DiskOffloadTier(BaseConfig):
@@ -240,9 +240,7 @@ class BaseKVCacheOffloadConfig(BaseConfig):
 
     @model_validator(mode="after")
     def valid_tiers(self):
-        # Both backends support only two shapes: cpu-only or cpu+disk. Native disk
-        # tiering needs a CPU primary tier; Mooncake standalone-store needs a DRAM
-        # staging tier. Disk-only is rejected for both.
+        # Every backend requires a CPU tier, including staging for disk offload.
         if self.cpu is None:
             raise ValueError("inference.kv_cache_offload requires a cpu tier (disk-only offload is not supported).")
         return self
@@ -283,8 +281,39 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
         }
 
 
+class LMCacheKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
+    type: Literal["lmcache"] = "lmcache"
+    """Node-local LMCache MP CPU offload. SLURM launches one shared daemon per inference node; local runs start the daemon separately."""
+
+    disk: None = None
+    """Disk offload is not supported by this backend configuration."""
+
+    port: int = Field(5555, ge=1, le=65535)
+    """Loopback port for the LMCache connector and daemon on each inference node."""
+
+    http_port: int = Field(8080, ge=1, le=65535)
+    """Loopback port for the daemon's health and metrics HTTP endpoints."""
+
+    chunk_size: int = Field(256, gt=0)
+    """Tokens per LMCache chunk. Must be compatible with the model's vLLM block size."""
+
+    @model_validator(mode="after")
+    def distinct_ports(self):
+        if self.port == self.http_port:
+            raise ValueError("LMCache port and http_port must be different.")
+        return self
+
+    def to_connector_dict(self) -> dict[str, Any]:
+        return {
+            "kv_connector": "LMCacheMPConnector",
+            "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"lmcache.mp.host": "127.0.0.1", "lmcache.mp.port": self.port},
+        }
+
+
 KVCacheOffloadConfig: TypeAlias = Annotated[
-    NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig, Field(discriminator="type")
+    NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig | LMCacheKVCacheOffloadConfig, Field(discriminator="type")
 ]
 
 
@@ -464,7 +493,7 @@ class InferenceConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
-    """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
+    """KV cache offload for inference workers. Backends: ``native`` (vLLM CPU/disk offload), ``mooncake`` (distributed CPU/disk store), or ``lmcache`` (node-local MP CPU store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
 
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
