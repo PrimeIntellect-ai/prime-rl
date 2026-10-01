@@ -114,4 +114,6 @@ This will start a SFT run with the following configuration:
 - The model is `zai-org/GLM-5.3-BF16`
 - The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split)
 
-For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead. You can use the same dashboard to monitor the SFT run.
+The parallelism is sized for 131,072-token sequences: with `cp = 8` and `batch_size = 8`, every CP rank processes 16,384 tokens in a single micro-batch. At much shorter sequences the same `cp = 8` leaves only a small shard per rank (for example 2,048 tokens at `seq_len = 16384`), and communication dominates the step, so throughput drops well below what the model can deliver. When training shorter sequences, lower `cp` and re-check peak memory rather than only raising `batch_size`.
+
+For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead (it also sets `force_balanced_routing`, which is debug-only). You can use the same dashboard to monitor the SFT run.
