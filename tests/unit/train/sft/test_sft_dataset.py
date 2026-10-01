@@ -546,15 +546,35 @@ def test_renderer_resolver_rejects_renderer_columns_without_the_field():
         resolver({"messages": [], "__renderer.reasoning_effort": "high"})
 
 
-def test_rename_renderer_columns_prefixes_mapped_columns():
+def test_rename_columns_prefixes_renderer_columns():
+    from prime_rl.configs.sft import SFTColumnsConfig
+
     dataset = Dataset.from_list([{"messages": [], "depth": 3, "reasoning_effort": "high"}])
 
-    renamed = sft_data.rename_renderer_columns(dataset, {"depth": "depth"})
+    renamed = sft_data.rename_columns(dataset, SFTColumnsConfig(renderer={"depth": "depth"}))
     assert set(renamed.column_names) == {"messages", "__renderer.depth", "reasoning_effort"}
 
-    default = sft_data.rename_renderer_columns(dataset, None)
+    default = sft_data.rename_columns(dataset, SFTColumnsConfig())
     assert set(default.column_names) == {"messages", "depth", "__renderer.reasoning_effort"}
-    without = sft_data.rename_renderer_columns(dataset.remove_columns("reasoning_effort"), None)
+    without = sft_data.rename_columns(dataset.remove_columns("reasoning_effort"), SFTColumnsConfig())
     assert set(without.column_names) == {"messages", "depth"}
     with pytest.raises(ValueError, match="missing"):
-        sft_data.rename_renderer_columns(dataset, {"effort": "missing"})
+        sft_data.rename_columns(dataset, SFTColumnsConfig(renderer={"effort": "missing"}))
+
+
+def test_rename_columns_moves_message_columns_to_their_field_names():
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    dataset = Dataset.from_list([{"conversation": [], "schemas": [], "answer": "x"}])
+
+    renamed = sft_data.rename_columns(dataset, SFTColumnsConfig(messages="conversation", tools="schemas"))
+    assert set(renamed.column_names) == {"messages", "tools", "answer"}
+
+    # Default names are optional: a messages-only dataset has no prompt or completion column.
+    assert sft_data.rename_columns(dataset, SFTColumnsConfig()).column_names == dataset.column_names
+    with pytest.raises(ValueError, match="data.columns.prompt"):
+        sft_data.rename_columns(dataset, SFTColumnsConfig(prompt="question"))
+    with pytest.raises(ValueError, match="also has"):
+        sft_data.rename_columns(
+            Dataset.from_list([{"conversation": [], "messages": []}]), SFTColumnsConfig(messages="conversation")
+        )

@@ -150,7 +150,13 @@ Two accepted layouts:
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence.
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
+
+```toml
+[data.columns]
+messages = "conversation"
+tools = "schemas"
+```
 
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
 

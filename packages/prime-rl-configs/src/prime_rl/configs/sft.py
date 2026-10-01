@@ -86,7 +86,19 @@ class LossMaskConfig(BaseConfig):
 
 
 class SFTColumnsConfig(BaseConfig):
-    """Dataset columns that feed the renderer."""
+    """Dataset columns the trainer reads. Set a field to read a column under another name."""
+
+    messages: str = "messages"
+    """Column with whole-chat messages."""
+
+    prompt: str = "prompt"
+    """Column with prompt messages, read with ``completion`` when a row has no messages."""
+
+    completion: str = "completion"
+    """Column with completion messages."""
+
+    tools: str = "tools"
+    """Column with tool schemas. Without it, a ``tool_defs`` column is read instead."""
 
     renderer: dict[str, str] | None = None
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``depth = "task_depth"``. A non-null value overrides the ``[renderer]`` setting. A mapping set here requires the column in every dataset. Unset, a ``reasoning_effort`` column sets ``reasoning_effort`` on datasets that have it."""

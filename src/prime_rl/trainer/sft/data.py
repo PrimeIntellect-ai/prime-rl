@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -216,17 +216,34 @@ DEFAULT_RENDERER_COLUMNS = {"reasoning_effort": "reasoning_effort"}
 """Mapping used when ``data.columns.renderer`` is unset; it skips datasets without the column."""
 
 
-def rename_renderer_columns(dataset: Dataset, columns: dict[str, str] | None) -> Dataset:
-    """Rename the mapped ``renderer field = column`` columns to ``__renderer.<field>``.
+MESSAGE_COLUMNS = ("messages", "prompt", "completion", "tools")
+"""``SFTColumnsConfig`` fields whose columns ``SFTDataset`` reads under the field's own name."""
 
-    A configured mapping must find its column; the default mapping skips
-    datasets without it.
+
+def rename_columns(dataset: Dataset, columns: SFTColumnsConfig) -> Dataset:
+    """Rename a dataset's columns to the names ``SFTDataset`` reads.
+
+    Message columns move to their field name; a column named in the config
+    must exist unless it keeps the default name, since a dataset may carry
+    either ``messages`` or ``prompt``/``completion``. Renderer columns move to
+    ``__renderer.<field>``; a configured mapping must find its column, and
+    the default mapping skips datasets without it.
     """
     renames = {}
-    for field, column in (columns or DEFAULT_RENDERER_COLUMNS).items():
+    for field in MESSAGE_COLUMNS:
+        column = getattr(columns, field)
+        if column == field:
+            continue
+        if column not in dataset.column_names:
+            raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
+        if field in dataset.column_names:
+            raise ValueError(f"data.columns.{field} is {column!r}, but the dataset also has a {field!r} column")
+        renames[column] = field
+    renderer_columns = columns.renderer
+    for field, column in (renderer_columns or DEFAULT_RENDERER_COLUMNS).items():
         if column in dataset.column_names:
             renames[column] = RENDERER_COLUMN_PREFIX + field
-        elif columns is not None:
+        elif renderer_columns is not None:
             raise ValueError(
                 f"data.columns.renderer maps {field!r} to column {column!r}, but the dataset has only {dataset.column_names}"
             )
@@ -675,14 +692,15 @@ def setup_and_interleave_datasets(
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
     revision: str | None = None,
-    renderer_columns: dict[str, str] | None = None,
+    columns: SFTColumnsConfig | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
         dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        dataset = rename_renderer_columns(dataset, renderer_columns)
+        if columns is not None:
+            dataset = rename_columns(dataset, columns)
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -712,7 +730,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
+            columns=config.columns,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -722,7 +740,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
+            columns=config.columns,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -732,7 +750,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
+            columns=config.columns,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -743,7 +761,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            renderer_columns=config.columns.renderer,
+            columns=config.columns,
         )
 
 
