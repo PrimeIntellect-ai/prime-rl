@@ -907,10 +907,6 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
         frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
-    elif config.vlm is None:
-        frozen_vision_encoder = get_vision_encoder(model)
-        if frozen_vision_encoder is not None:
-            get_logger().info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
 
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)

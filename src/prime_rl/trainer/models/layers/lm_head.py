@@ -395,6 +395,7 @@ def inject_prime_lm_head(
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
+    has_native_lm_head = isinstance(old_lm_head, (VanillaOutputLinear, FusedOutputLinear))
     if isinstance(chunk_size, int):
         logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
         model.lm_head = FusedOutputLinear(
@@ -406,7 +407,8 @@ def inject_prime_lm_head(
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
-    _patch_model_forward(model)
+    if not has_native_lm_head:
+        _patch_model_forward(model)
 
 
 def _patch_model_forward(model: nn.Module) -> None:
