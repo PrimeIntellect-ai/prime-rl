@@ -1,5 +1,6 @@
 import torch
 from torch import Tensor, nn
+from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -39,13 +40,15 @@ class NemotronHOmniModel(nn.Module):
     def forward(
         self,
         input_ids: torch.LongTensor,
+        position_ids: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
         routed_experts: torch.Tensor | None = None,
-    ) -> Tensor:
+    ) -> BaseModelOutput:
         return self.language_model(
             input_ids=input_ids,
+            position_ids=position_ids,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             routed_experts=routed_experts,
@@ -90,7 +93,7 @@ class NemotronHOmniForCausalLM(NemotronHPreTrainedModel):
         hidden_states = self.model(
             input_ids, seq_lens=seq_lens, seq_lens_are_pre_shard=seq_lens_are_pre_shard, routed_experts=routed_experts
         )
-        return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
+        return self.lm_head(hidden_states.last_hidden_state, labels, temperature=temperature, sampling_mask=sampling_mask)
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:

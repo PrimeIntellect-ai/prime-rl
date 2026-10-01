@@ -1,10 +1,12 @@
 import torch
 from torch import nn
+from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.nemotron_h.base import NemotronHPreTrainedModel
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -120,10 +122,9 @@ class NemotronHDecoderLayer(nn.Module):
         return residual + hidden_states
 
 
-class NemotronHModel(nn.Module):
+class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
             NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
@@ -138,7 +139,7 @@ class NemotronHModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> torch.Tensor:
+    ) -> BaseModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
@@ -155,4 +156,4 @@ class NemotronHModel(nn.Module):
                 max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return self.norm(hidden_states)
+        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))

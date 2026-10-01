@@ -31,7 +31,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
         return self.lm_head(
-            outputs,
+            outputs.last_hidden_state,
             labels,
             temperature=temperature,
             sampling_mask=sampling_mask,
