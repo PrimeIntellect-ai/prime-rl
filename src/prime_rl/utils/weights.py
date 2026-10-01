@@ -152,10 +152,7 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
 
 
 def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
-    """The dtype a tensor must travel to the inference engine in.
-
-    TODO: NIXL keeps its own inline copy of this rule; unify the handling.
-    """
+    """The dtype a tensor must travel to the inference engine in."""
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
