@@ -5,7 +5,6 @@ import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
-from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.pathing import wait_for_path
@@ -65,11 +64,11 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
+    async def receive(self, step: int) -> str | None:
         weights_dir = self.step_dir(step)
         self._ack(step)
         await wait_for_path(weights_dir / FINISHED_MARKER)
         if (weights_dir / "adapter_config.json").exists():
-            await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
-        else:
-            await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+            return await self.admin_plane.load_lora_adapter(self.model_name, weights_dir, step=step)
+        await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+        return None

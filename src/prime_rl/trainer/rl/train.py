@@ -158,7 +158,6 @@ def train(config: TrainerConfig):
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-        mm_adapter = get_multimodal_adapter(model.config.model_type)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -377,8 +376,10 @@ def train(config: TrainerConfig):
             mm_forward_policy = None
             mm_refs = micro_batch.get("mm_refs")
             if mm_refs is not None:
-                if processor is None or mm_adapter is None:
+                if processor is None:
                     raise ValueError("Received multimodal samples but [model.vlm] is not set")
+                if mm_adapter is None:
+                    mm_adapter = get_multimodal_adapter(model.config.model_type)
                 materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
                 mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
                 mm_forward_policy = materialized.forward_policy

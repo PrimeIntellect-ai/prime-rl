@@ -8,6 +8,7 @@ from verifiers.v1.configs.client import EvalClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
+    InferenceClient,
     _is_retryable_lora_error,
     check_health,
     load_lora_adapter,
@@ -54,6 +55,16 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_admin_plane_lora_load_preserves_native_model():
+    admin_plane = AdminPlane(ClientConfig())
+    with patch("prime_rl.orchestrator.clients.load_lora_adapter", new=AsyncMock()) as load:
+        model_name = asyncio.run(admin_plane.load_lora_adapter("test-lora", Path("/test/path"), step=1))
+
+    assert model_name == "test-lora"
+    load.assert_awaited_once_with(admin_plane, "test-lora", Path("/test/path"))
+    asyncio.run(admin_plane.aclose())
 
 
 def test_admin_plane_initializes_nccl():
@@ -139,6 +150,24 @@ def test_setup_client_assigns_renderer_model_name():
     )
 
     assert client.renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
+
+
+def test_inference_client_configures_renderer_eval_like_training():
+    from renderers import Qwen3VLRendererConfig
+
+    renderer_settings = Qwen3VLRendererConfig()
+    clients = InferenceClient(
+        ClientConfig(base_url="http://worker-a:8000/v1"),
+        model_name="Qwen/Qwen3-VL-4B-Instruct",
+        train_client_type="renderer",
+        eval_client_type="renderer",
+        renderer_config=renderer_settings,
+    )
+
+    assert clients.train_client.type == "train"
+    assert clients.eval_client.type == "train"
+    assert clients.eval_client.renderer == renderer_settings
+    assert clients.eval_client.renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
 
 
 def test_setup_client_preserves_chat_client_defaults():

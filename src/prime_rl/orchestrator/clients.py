@@ -82,14 +82,19 @@ class InferenceClient:
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
     ):
-        renderer_model_name = model_name if train_client_type == "renderer" else None
+        renderer_model_name = model_name if train_client_type == "renderer" or eval_client_type == "renderer" else None
         self.train_client = setup_client(
             client_config,
             client_type=train_client_type,
             renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
         )
-        self.eval_client = setup_client(client_config, client_type=eval_client_type)
+        self.eval_client = setup_client(
+            client_config,
+            client_type=eval_client_type,
+            renderer_config=renderer_config,
+            renderer_model_name=renderer_model_name,
+        )
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
@@ -230,6 +235,15 @@ class AdminPlane:
             )
         finally:
             await _resume_engines(self.clients)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path, *, step: int) -> str:
+        """Load a filesystem adapter and return the model name used for inference.
+
+        Native Prime-RL vLLM workers replace the adapter in place, so their
+        request model remains unchanged.
+        """
+        await load_lora_adapter(self, lora_name, lora_path)
+        return lora_name
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
