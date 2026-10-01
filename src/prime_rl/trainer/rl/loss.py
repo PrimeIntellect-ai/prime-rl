@@ -155,7 +155,7 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
-    a capped importance ratio, and a squared-log-ratio KL regularizer."""
+    the importance ratio, and a squared-log-ratio KL regularizer."""
 
     def __init__(self, config: IPOLossConfig):
         self.config = config
@@ -178,13 +178,21 @@ class IPOLoss:
         is_masked = abs_probs_diff > loss_config.eps
         keep_mask = ~is_masked
 
-        importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], loss_config.max_importance_ratio)
+        kept_log_ratio = log_importance_ratio[keep_mask]
+        importance_ratio = (
+            kept_log_ratio.exp()
+            if loss_config.max_importance_ratio is None
+            else _capped_importance_ratio(kept_log_ratio, loss_config.max_importance_ratio)
+        )
         pg_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
         if loss_config.kl_tau:
-            kl_loss = loss_config.kl_tau * log_importance_ratio.clamp(-1e4, 1e4).square()
+            kl_log_ratio = log_importance_ratio
+            if loss_config.max_kl_log_ratio is not None:
+                kl_log_ratio = kl_log_ratio.clamp(-loss_config.max_kl_log_ratio, loss_config.max_kl_log_ratio)
+            kl_loss = loss_config.kl_tau * kl_log_ratio.square()
             if weights is not None:
                 kl_loss = kl_loss * weights
             loss = loss + kl_loss.sum()
@@ -201,7 +209,7 @@ class IPOLoss:
 
 
 class IPOV2Loss:
-    """IPO gate with a tangent-capped importance coefficient and entropy floor."""
+    """IPO gate with an optional tangent cap and entropy floor."""
 
     def __init__(self, config: IPOV2LossConfig):
         self.config = config
@@ -234,18 +242,26 @@ class IPOV2Loss:
         keep_mask = ~is_masked
 
         kept_log_ratio = log_ratio[keep_mask]
-        log_cap = kept_log_ratio.new_tensor(config.ratio_cap).log()
-        surrogate = torch.where(
-            kept_log_ratio <= log_cap,
-            kept_log_ratio.clamp(max=log_cap).exp(),
-            config.ratio_cap * (1 + kept_log_ratio - log_cap),
-        )
+        if config.ratio_cap is None:
+            surrogate = kept_log_ratio.exp()
+            ratio_saturated = kept_log_ratio.new_zeros(())
+        else:
+            log_cap = kept_log_ratio.new_tensor(config.ratio_cap).log()
+            surrogate = torch.where(
+                kept_log_ratio <= log_cap,
+                kept_log_ratio.clamp(max=log_cap).exp(),
+                config.ratio_cap * (1 + kept_log_ratio - log_cap),
+            )
+            ratio_saturated = (kept_log_ratio.detach() > log_cap).sum() / max(kept_log_ratio.numel(), 1)
         pg_loss = -config.adv_tau * advantages[keep_mask] * surrogate
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum() - self.entropy_lambda * entropy.sum()
         if config.kl_tau:
-            kl_loss = config.kl_tau * log_ratio.clamp(-1e4, 1e4).square()
+            kl_log_ratio = log_ratio
+            if config.max_kl_log_ratio is not None:
+                kl_log_ratio = kl_log_ratio.clamp(-config.max_kl_log_ratio, config.max_kl_log_ratio)
+            kl_loss = config.kl_tau * kl_log_ratio.square()
             if weights is not None:
                 kl_loss = kl_loss * weights
             loss = loss + kl_loss.sum()
@@ -255,7 +271,7 @@ class IPOV2Loss:
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
-            "ratio_saturated": (kept_log_ratio.detach() > log_cap).sum() / max(kept_log_ratio.numel(), 1),
+            "ratio_saturated": ratio_saturated,
         }
         return LossOutputs(loss=loss, metrics=metrics)
 
@@ -379,9 +395,9 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     ref_kl = ref_logprobs - trainer_logprobs
 
-    importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], 1e4)
+    importance_ratio = log_importance_ratio[keep_mask].exp()
     pg_loss = -ref_kl[keep_mask].detach() * importance_ratio
-    kl_loss = 1e-3 * log_importance_ratio.clamp(-1e4, 1e4).square()
+    kl_loss = 1e-3 * log_importance_ratio.square()
     if weights is not None:
         pg_loss = pg_loss * weights[keep_mask]
         kl_loss = kl_loss * weights

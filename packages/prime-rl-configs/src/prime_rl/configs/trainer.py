@@ -574,8 +574,11 @@ class IPOLossConfig(BaseConfig):
     eps: float = Field(0.3, ge=0)
     """Maximum absolute probability change before a token is masked."""
 
-    max_importance_ratio: float = Field(1e4, ge=1, allow_inf_nan=False)
-    """Cap the importance weight of accepted tokens while preserving its policy gradient."""
+    max_importance_ratio: float | None = Field(None, ge=1, allow_inf_nan=False)
+    """Optional cap on the importance weight of accepted tokens."""
+
+    max_kl_log_ratio: float | None = Field(None, gt=0, allow_inf_nan=False)
+    """Optional absolute log-ratio bound for the squared KL term."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
@@ -590,11 +593,14 @@ class IPOV2LossConfig(BaseConfig):
     eps: float = Field(0.3, ge=0, allow_inf_nan=False)
     """Maximum absolute probability change before a token is masked."""
 
-    ratio_cap: float = Field(5.0, gt=1, allow_inf_nan=False)
-    """Importance coefficient saturates at this value without dropping its gradient."""
+    ratio_cap: float | None = Field(5.0, gt=1, allow_inf_nan=False)
+    """Optional tangent cap on the importance coefficient."""
 
     adv_tau: float = Field(1.0, ge=0, allow_inf_nan=False)
     kl_tau: float = Field(0.0, ge=0, allow_inf_nan=False)
+
+    max_kl_log_ratio: float | None = Field(1e4, gt=0, allow_inf_nan=False)
+    """Optional absolute log-ratio bound for the squared KL term."""
 
     entropy_floor: float = Field(0.15, ge=0, allow_inf_nan=False)
     """Target minimum mean full-vocabulary entropy over eligible RL tokens."""

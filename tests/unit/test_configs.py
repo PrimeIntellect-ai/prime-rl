@@ -184,6 +184,14 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_optional_loss_configs_and_bounds():
     default_config = TrainerConfig()
     assert default_config.loss.type == "ipo"
+    assert default_config.loss.max_importance_ratio is None
+    assert default_config.loss.max_kl_log_ratio is None
+
+    capped_ipo = TrainerConfig.model_validate(
+        {"loss": {"type": "ipo", "max_importance_ratio": 1e4, "max_kl_log_ratio": 1e4}}
+    ).loss
+    assert capped_ipo.max_importance_ratio == 1e4
+    assert capped_ipo.max_kl_log_ratio == 1e4
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
@@ -200,6 +208,11 @@ def test_optional_loss_configs_and_bounds():
     assert ipo_v2.entropy_floor == 0.15
     assert ipo_v2.entropy_lambda_init == 0.0
     assert ipo_v2.entropy_lambda_lr == 0.0
+    uncapped_ipo_v2 = TrainerConfig.model_validate(
+        {"loss": {"type": "ipo_v2", "ratio_cap": None, "max_kl_log_ratio": None}}
+    ).loss
+    assert uncapped_ipo_v2.ratio_cap is None
+    assert uncapped_ipo_v2.max_kl_log_ratio is None
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
