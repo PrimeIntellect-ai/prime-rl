@@ -27,7 +27,6 @@ target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj"
 mode = "selective"
 
 [data]
-type = "sft"
 name = "your-org/your-multimodal-dataset"
 batch_size = 8
 micro_batch_size = 1       # required for VLM SFT
