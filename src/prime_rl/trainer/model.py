@@ -1,6 +1,8 @@
 import logging
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -854,6 +856,19 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
+@contextmanager
+def no_grad_forwards(model: nn.Module) -> Iterator[None]:
+    """Forwards without gradients outside the training forward, then reshard every FSDP module.
+
+    The lm_head and norm group stays gathered after a forward (reshard_after_forward=False). Left
+    gathered past a training backward, its unsharded weights hide the group's gradients from
+    clipping and serve its pre-update weights after the next optimizer step.
+    """
+    with torch.no_grad():
+        yield
+    reshard_module(model)
+
+
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
@@ -1097,6 +1112,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    choice_ids: Int[Tensor, "batch seq choices"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1110,10 +1126,12 @@ def forward(
         "temperature": temperature,
     }
 
-    # Sampling masks are consumed by the injected prime lm_head; HF
-    # forwards don't know the kwarg, so only pass it when present.
+    # Sampling masks and choice ids are consumed by the injected prime lm_head;
+    # HF forwards don't know the kwargs, so only pass them when present.
     if sampling_mask is not None:
         kwargs["sampling_mask"] = sampling_mask
+    if choice_ids is not None:
+        kwargs["choice_ids"] = choice_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)
