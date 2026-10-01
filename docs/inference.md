@@ -283,16 +283,6 @@ max_num_seqs = 256
 
 On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (or `--vllm.max-num-seqs 256` for the standalone inference entrypoint); dict-valued arguments take a JSON string, e.g. `--vllm.compilation-config '{"cudagraph_mode": "NONE"}'`.
 
-### Local vLLM plugins
-`inference.vllm_plugins` lists callables that run in every vLLM process (API server and spawned workers) before the model and tokenizer load, as `my_module.function` or `path/to/file.py:function`. Relative file paths resolve against the launch directory. Use it to register a tokenizer mode, tool parser, or reasoning parser that matches a [custom renderer](training.md#dataset-format), so chat-completions traffic such as online evals sees the same prompt format as training:
-
-```toml
-[inference]
-vllm_plugins = ["my_renderers/vllm.py:register"]
-```
-
-The callables run after prime-rl's own vLLM patches.
-
 ### Router Replay
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.

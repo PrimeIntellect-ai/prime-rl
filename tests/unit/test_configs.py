@@ -1092,20 +1092,3 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path):
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
-
-
-def test_inference_vllm_plugins_resolve_file_paths():
-    config = InferenceConfig(vllm_plugins=["my_renderers/vllm.py:register", "my_pkg.vllm.register"])
-
-    assert config.vllm_plugins == [f"{Path('my_renderers/vllm.py').resolve()}:register", "my_pkg.vllm.register"]
-
-
-def test_setup_vllm_env_exports_vllm_plugins(monkeypatch):
-    from prime_rl.inference.server import setup_vllm_env
-
-    monkeypatch.delenv("PRIME_VLLM_PLUGINS", raising=False)
-    config = InferenceConfig(vllm_plugins=["my_pkg.vllm.register"])
-
-    setup_vllm_env(config)
-
-    assert os.environ["PRIME_VLLM_PLUGINS"] == '["my_pkg.vllm.register"]'
