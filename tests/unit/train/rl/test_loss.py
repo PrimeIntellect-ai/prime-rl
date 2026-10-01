@@ -172,25 +172,56 @@ def test_ipo_icepop_match_original_on_finite_ratios(config):
     torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-5, atol=1e-5)
 
 
-def test_ipo_excludes_masked_tokens_and_caps_accepted_extreme_ratio():
+@pytest.mark.parametrize(
+    ("inference_logprob", "max_importance_ratio", "expected_ratio"),
+    [(-30.0, None, math.exp(20)), (-100.0, 1e4, 1e4)],
+)
+def test_ipo_excludes_masked_tokens_with_optional_ratio_cap(inference_logprob, max_importance_ratio, expected_ratio):
     trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
     inputs = LossInputs(
         trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.tensor([-100.0, -100.0, float("nan")], device="cuda"),
+        inference_logprobs=torch.tensor([inference_logprob, -100.0, float("nan")], device="cuda"),
         ref_logprobs=None,
         advantages=torch.ones(3, device="cuda"),
         loss_mask=torch.tensor([True, True, False], device="cuda"),
     )
 
-    result = setup_rl_loss_fn(IPOLossConfig()).loss(inputs)
+    result = setup_rl_loss_fn(IPOLossConfig(max_importance_ratio=max_importance_ratio)).loss(inputs)
 
-    torch.testing.assert_close(result.loss, torch.tensor(-1e4, device="cuda"))
+    torch.testing.assert_close(result.loss, torch.tensor(-expected_ratio, device="cuda"))
     assert all(torch.isfinite(value) for value in result.metrics.values())
     result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-1e4, 0.0, 0.0], device="cuda"))
+    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-expected_ratio, 0.0, 0.0], device="cuda"))
 
 
-def test_ipo_v2_tangent_cap_gate_and_entropy_gradient():
+@pytest.mark.parametrize("loss_type", ["ipo", "ipo_v2"])
+@pytest.mark.parametrize(
+    ("max_kl_log_ratio", "expected_loss", "expected_gradient"), [(None, 9.0, 6.0), (2.0, 4.0, 0.0)]
+)
+def test_optional_kl_log_ratio_bound(loss_type, max_kl_log_ratio, expected_loss, expected_gradient):
+    trainer_logprobs = torch.tensor([-10.0], device="cuda", requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.tensor([-13.0], device="cuda"),
+        ref_logprobs=None,
+        advantages=torch.zeros(1, device="cuda"),
+        loss_mask=torch.ones(1, dtype=torch.bool, device="cuda"),
+        entropy=torch.zeros(1, device="cuda"),
+    )
+    config = (
+        IPOLossConfig(kl_tau=1.0, max_kl_log_ratio=max_kl_log_ratio)
+        if loss_type == "ipo"
+        else IPOV2LossConfig(kl_tau=1.0, max_kl_log_ratio=max_kl_log_ratio)
+    )
+
+    result = setup_rl_loss_fn(config).loss(inputs)
+    torch.testing.assert_close(result.loss, torch.tensor(expected_loss, device="cuda"))
+    result.loss.backward()
+    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([expected_gradient], device="cuda"))
+
+
+@pytest.mark.parametrize("ratio_cap", [5.0, None])
+def test_ipo_v2_optional_cap_gate_and_entropy_gradient(ratio_cap):
     ratios = torch.tensor([1.0, 4.0, 5.0, 20.0, 100.0], device="cuda")
     trainer_logprobs = torch.cat(
         [-12 + ratios.log(), torch.tensor([math.log(0.6), float("nan")], device="cuda")]
@@ -207,18 +238,23 @@ def test_ipo_v2_tangent_cap_gate_and_entropy_gradient():
         entropy=entropy,
     )
 
-    loss_fn = setup_rl_loss_fn(IPOV2LossConfig(entropy_lambda_init=0.2))
+    loss_fn = setup_rl_loss_fn(IPOV2LossConfig(ratio_cap=ratio_cap, entropy_lambda_init=0.2))
     result = loss_fn.loss(inputs)
-    surrogate = torch.tensor([1.0, 4.0, 5.0, 5 * (1 + math.log(4)), 5 * (1 + math.log(20))], device="cuda")
+    if ratio_cap is None:
+        surrogate = ratios
+        expected_gradient = torch.tensor([-1.0, 4.0, -5.0, 20.0, -100.0, 0.0, 0.0], device="cuda")
+        expected_saturated = 0.0
+    else:
+        surrogate = torch.tensor([1.0, 4.0, 5.0, 5 * (1 + math.log(4)), 5 * (1 + math.log(20))], device="cuda")
+        expected_gradient = torch.tensor([-1.0, 4.0, -5.0, 5.0, -5.0, 0.0, 0.0], device="cuda")
+        expected_saturated = 2 / 5
     expected_loss = -(advantages[:5] * surrogate).sum() - 0.2 * entropy[:6].sum()
     torch.testing.assert_close(result.loss, expected_loss)
     torch.testing.assert_close(result.metrics["is_masked"], torch.tensor(1 / 6, device="cuda"))
-    torch.testing.assert_close(result.metrics["ratio_saturated"], torch.tensor(2 / 5, device="cuda"))
+    torch.testing.assert_close(result.metrics["ratio_saturated"], torch.tensor(expected_saturated, device="cuda"))
 
     result.loss.backward()
-    torch.testing.assert_close(
-        trainer_logprobs.grad, torch.tensor([-1.0, 4.0, -5.0, 5.0, -5.0, 0.0, 0.0], device="cuda")
-    )
+    torch.testing.assert_close(trainer_logprobs.grad, expected_gradient)
     torch.testing.assert_close(entropy.grad, torch.tensor([-0.2] * 6 + [0.0], device="cuda"))
 
 
@@ -235,10 +271,10 @@ def test_ipo_v2_entropy_multiplier_update():
 
 
 def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():
-    trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
+    trainer_logprobs = torch.tensor([-10.0, -10.0, float("nan")], device="cuda", requires_grad=True)
     inputs = LossInputs(
         trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.tensor([-100.0, -100.0, float("nan")], device="cuda"),
+        inference_logprobs=torch.tensor([-30.0, 0.0, float("nan")], device="cuda"),
         ref_logprobs=torch.tensor([-1.0, -1.0, float("nan")], device="cuda"),
         advantages=torch.zeros(3, device="cuda"),
         loss_mask=torch.tensor([True, True, False], device="cuda"),
@@ -247,9 +283,12 @@ def test_ref_kl_loss_stays_finite_with_extreme_ratios_and_masked_nan():
     result = ref_kl_loss_fn(inputs)
 
     assert torch.isfinite(result.loss)
+    torch.testing.assert_close(result.loss, torch.tensor(-9 * math.exp(20) + 0.5, device="cuda"))
     assert all(torch.isfinite(value) for value in result.metrics.values())
     result.loss.backward()
-    assert torch.isfinite(trainer_logprobs.grad).all()
+    torch.testing.assert_close(
+        trainer_logprobs.grad, torch.tensor([-9 * math.exp(20) + 0.04, -0.02, 0.0], device="cuda")
+    )
 
 
 def test_mismatch_kl_retains_small_positive_values():
