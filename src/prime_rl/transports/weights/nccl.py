@@ -16,7 +16,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
+from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
 
@@ -53,15 +53,13 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
     communicator.broadcast(state_tensor, src=0)
 
     # Concatenate and broadcast tensors grouped by dtype
-    for dtype, items in dtype_groups.items():
-        # Flatten all tensors and concatenate
-        flat_tensors = [value.flatten() for _, value in items]
-        concatenated = torch.cat(flat_tensors)
-        communicator.broadcast(concatenated, src=0)
-        del concatenated
-        # Clean up individual tensors
-        for _, value in items:
-            del value
+    for dtype, tensor_info in metadata.items():
+        for bucket in iter_tensor_buckets(tensor_info, dtype):
+            flat_tensors = [state_dict[key].flatten() for key, _, _ in bucket]
+            concatenated = flat_tensors[0].contiguous() if len(flat_tensors) == 1 else torch.cat(flat_tensors)
+            if concatenated.numel():
+                communicator.broadcast(concatenated, src=0)
+            del concatenated, flat_tensors
 
 
 def filter_state_dict_by_layers(

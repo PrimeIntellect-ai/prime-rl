@@ -33,6 +33,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
         "prime_rl::fp8_indexer",
+        "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
     }
 )
@@ -72,6 +73,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "quack::gemm_act_out",
         "quack::gemm_gated_out",
         "quack::gemm_out",
+        "prime_kernels::indexed_attention_forward",
     }
 )
 # An operation target matches one qualified operator name, while a namespace

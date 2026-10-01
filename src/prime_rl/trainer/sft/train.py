@@ -507,7 +507,7 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()

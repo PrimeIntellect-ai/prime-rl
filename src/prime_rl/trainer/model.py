@@ -20,6 +20,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor import Shard
+from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -34,6 +35,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -55,6 +57,8 @@ from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_bl
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
+from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
@@ -207,7 +211,7 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -544,6 +548,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     transformer_layers = language_model.layers
 
     for transformer_block in transformer_layers:
+        for module in transformer_block.modules():
+            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
+                embedding = module.ngram_embedding
+                dp_mod_head_mesh = (
+                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
+                    if parallel_dims.dp_replicate_enabled
+                    else parallel_dims.get_mesh("dp_shard_mod_head")
+                )
+                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
+                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
+                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
         block_mlp = getattr(transformer_block, "mlp", None)
         if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, MoE):
             fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
@@ -571,6 +587,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         )
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+    final_module = (
+        getattr(language_model, "norm", None)
+        or getattr(language_model, "norm_f", None)
+        or getattr(language_model, "hyper_connection_mixer", None)
+    )
 
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
@@ -580,9 +601,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mesh=hsdp_mesh,
             **fsdp_config,
         )
-        norm_module = getattr(language_model, "norm", None) or language_model.norm_f
         fully_shard(
-            [model.lm_head, norm_module],
+            [model.lm_head, final_module],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
@@ -626,15 +646,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
-        elif language_model.norm is not None and model.lm_head is not None:
+        elif final_module is not None and model.lm_head is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([language_model.norm, model.lm_head])
+                transformer_block.set_modules_to_forward_prefetch([final_module, model.lm_head])
 
     # backward
     reversed_transformer_blocks = list(reversed(language_model.layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
-    if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
+    if final_module is not None and model.lm_head is not None and len(language_model.layers) > 0:
         last_transformer_block = reversed_transformer_blocks[0]
         prefetch_modules = [last_transformer_block]
         last_mlp = getattr(last_transformer_block, "mlp", None)
