@@ -93,7 +93,9 @@ class NemotronHOmniForCausalLM(NemotronHPreTrainedModel):
         hidden_states = self.model(
             input_ids, seq_lens=seq_lens, seq_lens_are_pre_shard=seq_lens_are_pre_shard, routed_experts=routed_experts
         )
-        return self.lm_head(hidden_states.last_hidden_state, labels, temperature=temperature, sampling_mask=sampling_mask)
+        return self.lm_head(
+            hidden_states.last_hidden_state, labels, temperature=temperature, sampling_mask=sampling_mask
+        )
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
