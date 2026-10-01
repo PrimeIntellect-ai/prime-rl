@@ -6,6 +6,7 @@ import pytest
 import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
+from renderers import custom_renderer_config
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
@@ -1089,3 +1090,79 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+CUSTOM_RENDERER_SOURCE = """
+from typing import Literal
+
+from renderers.configs import BaseRendererConfig
+
+
+class InstructedRendererConfig(BaseRendererConfig):
+    name: Literal["instructed"] = "instructed"
+    _template_fields = frozenset({"instruction"})
+
+    instruction: str = "Think step by step."
+
+
+class InstructedRenderer:
+    config_class = InstructedRendererConfig
+"""
+
+
+@pytest.fixture
+def custom_renderer_import_path(tmp_path):
+    path = tmp_path / "instructed_renderer.py"
+    path.write_text(CUSTOM_RENDERER_SOURCE)
+    return f"{path}:InstructedRenderer"
+
+
+def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "sft.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
+                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
+            }
+        )
+    )
+
+    config = cli(SFTConfig, args=["@", str(config_file)])
+
+    assert config.renderer.name == "custom"
+    assert custom_renderer_config(config.renderer).name == "instructed"
+    assert custom_renderer_config(config.renderer).instruction == "Be brief."
+
+
+def test_orchestrator_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "orch.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path},
+            }
+        )
+    )
+
+    config = cli(OrchestratorConfig, args=["@", str(config_file)])
+
+    assert config.renderer.name == "custom"
+    assert custom_renderer_config(config.renderer).instruction == "Think step by step."
+
+
+def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "sft.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "depth": 3},
+            }
+        )
+    )
+
+    with pytest.raises(ConfigFileError, match="depth"):
+        cli(SFTConfig, args=["@", str(config_file)])
