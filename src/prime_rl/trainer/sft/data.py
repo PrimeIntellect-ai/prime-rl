@@ -209,68 +209,34 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-RENDERER_COLUMN_PREFIX = "__renderer."
-"""Prefix of the columns that carry per-sample renderer arguments, e.g. ``__renderer.depth``."""
-
 DEFAULT_RENDERER_COLUMNS = {"reasoning_effort": "reasoning_effort"}
-"""Mapping used when ``data.columns.renderer`` is unset; it skips datasets without the column."""
-
-
-MESSAGE_COLUMNS = ("messages", "prompt", "completion", "tools")
-"""``SFTColumnsConfig`` fields whose columns ``SFTDataset`` reads under the field's own name."""
-
-
-def rename_columns(dataset: Dataset, columns: SFTColumnsConfig) -> Dataset:
-    """Rename a dataset's columns to the names ``SFTDataset`` reads.
-
-    Message columns move to their field name; a column named in the config
-    must exist unless it keeps the default name, since a dataset may carry
-    either ``messages`` or ``prompt``/``completion``. Renderer columns move to
-    ``__renderer.<field>``; a configured mapping must find its column, and
-    the default mapping skips datasets without it.
-    """
-    renames = {}
-    for field in MESSAGE_COLUMNS:
-        column = getattr(columns, field)
-        if column == field:
-            continue
-        if column not in dataset.column_names:
-            raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
-        if field in dataset.column_names:
-            raise ValueError(f"data.columns.{field} is {column!r}, but the dataset also has a {field!r} column")
-        renames[column] = field
-    renderer_columns = columns.renderer
-    for field, column in (renderer_columns or DEFAULT_RENDERER_COLUMNS).items():
-        if column in dataset.column_names:
-            renames[column] = RENDERER_COLUMN_PREFIX + field
-        elif renderer_columns is not None:
-            raise ValueError(
-                f"data.columns.renderer maps {field!r} to column {column!r}, but the dataset has only {dataset.column_names}"
-            )
-    return dataset.rename_columns(renames) if renames else dataset
+"""Mapping used when ``data.columns.renderer`` is unset; it reads the column when the dataset has it."""
 
 
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A row's non-null ``__renderer.<field>`` columns override the configured
-    renderer's fields of the same name, validated as chat-template kwargs.
-    Renderer configs are frozen, so renderers are cached per config and rows
-    that resolve to the same config share one instance.
+    ``columns`` maps renderer fields to dataset columns; a row's non-null
+    values override the configured renderer's fields, validated as
+    chat-template kwargs. Renderer configs are frozen, so renderers are cached
+    per config and rows that resolve to the same config share one instance.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        config: RendererConfig,
+        processor: Any | None = None,
+        columns: dict[str, str] | None = None,
+    ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
+        self.columns = columns or DEFAULT_RENDERER_COLUMNS
         self.renderers: dict[RendererConfig, Renderer] = {}
 
     def resolve_config(self, example: dict) -> RendererConfig:
-        kwargs = {
-            key.removeprefix(RENDERER_COLUMN_PREFIX): value
-            for key, value in example.items()
-            if key.startswith(RENDERER_COLUMN_PREFIX) and value is not None
-        }
+        kwargs = {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
         if not kwargs:
             return self.config
         if isinstance(self.config, AutoRendererConfig):
@@ -306,12 +272,21 @@ class SFTDataset(StatefulIterableDataset):
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
+        columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
         super().__init__(non_dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
         self.renderers = renderers
+        self.columns = columns
+        # Default names are optional: a dataset carries either messages or
+        # prompt/completion, and tools only for tool use. A name set in the
+        # config must exist.
+        for field in ("messages", "prompt", "completion", "tools"):
+            column = getattr(columns, field)
+            if column != field and column not in dataset.column_names:
+                raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
@@ -331,16 +306,17 @@ class SFTDataset(StatefulIterableDataset):
             # as a whole-chat training sample with an empty prompt. Null-check rather
             # than key-check: Arrow schema union adds `messages: null` to
             # prompt/completion rows whenever other rows have a `messages` column.
-            if example.get("messages") is not None:
-                messages = normalize_messages(example["messages"], default_role="assistant")
-            elif example.get("prompt") is not None and example.get("completion") is not None:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                    example["completion"], default_role="assistant"
+            columns = self.columns
+            if example.get(columns.messages) is not None:
+                messages = normalize_messages(example[columns.messages], default_role="assistant")
+            elif example.get(columns.prompt) is not None and example.get(columns.completion) is not None:
+                messages = normalize_messages(example[columns.prompt], default_role="user") + normalize_messages(
+                    example[columns.completion], default_role="assistant"
                 )
             else:
                 raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
+                    f"All examples in the dataset must have either a {columns.messages!r} column "
+                    f"or both {columns.prompt!r} and {columns.completion!r} columns for SFT"
                 )
 
             # Strip nulls before deserializing so genuine nulls inside tool-call
@@ -350,11 +326,10 @@ class SFTDataset(StatefulIterableDataset):
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present - assumes OAI format. Accepts either
-        # `tools` or `tool_defs` (the verifiers rollout format), as either a
-        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
-        # tools are converted to OAI form for the chat template.
-        raw_tools = example.get("tools", example.get("tool_defs"))
+        # Parse available tools, if present, as either a JSON-encoded string of
+        # a list or a list of dicts; verifiers-shaped tools (the `tool_defs`
+        # rollout format) are converted to OAI form for the chat template.
+        raw_tools = example.get(self.columns.tools)
         if not raw_tools:
             tools = []
         else:
@@ -692,15 +667,12 @@ def setup_and_interleave_datasets(
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
     revision: str | None = None,
-    columns: SFTColumnsConfig | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
         dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        if columns is not None:
-            dataset = rename_columns(dataset, columns)
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -730,7 +702,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            columns=config.columns,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -740,7 +711,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            columns=config.columns,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -750,7 +720,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            columns=config.columns,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -761,7 +730,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
-            columns=config.columns,
         )
 
 
@@ -790,7 +758,13 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
+        for field, column in (config.columns.renderer or {}).items():
+            if column not in raw_dataset.column_names:
+                raise ValueError(
+                    f"data.columns.renderer maps {field!r} to column {column!r}, "
+                    f"but the dataset has only {raw_dataset.column_names}"
+                )
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
         return SFTDataset(
             raw_dataset,
             renderers,
@@ -801,6 +775,7 @@ def setup_dataset(
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
+            columns=config.columns,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

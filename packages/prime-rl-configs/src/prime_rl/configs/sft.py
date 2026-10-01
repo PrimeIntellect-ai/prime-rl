@@ -89,19 +89,19 @@ class SFTColumnsConfig(BaseConfig):
     """Dataset columns the trainer reads. Set a field to read a column under another name."""
 
     messages: str = "messages"
-    """Column with whole-chat messages."""
+    """Column with the whole chat as a list of OpenAI chat messages."""
 
     prompt: str = "prompt"
-    """Column with prompt messages, read with ``completion`` when a row has no messages."""
+    """Column with the prompt as a list of OpenAI chat messages, read with ``completion`` when a row has no messages."""
 
     completion: str = "completion"
-    """Column with completion messages."""
+    """Column with the completion as a list of OpenAI chat messages."""
 
     tools: str = "tools"
-    """Column with tool schemas. Without it, a ``tool_defs`` column is read instead."""
+    """Column with the tool schemas in OpenAI function-calling format. Point it at ``tool_defs`` for datasets in the verifiers rollout format, which is converted on read."""
 
     renderer: dict[str, str] | None = None
-    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``depth = "task_depth"``. A non-null value overrides the ``[renderer]`` setting. A mapping set here requires the column in every dataset. Unset, a ``reasoning_effort`` column sets ``reasoning_effort`` on datasets that have it."""
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A non-null value overrides the ``[renderer]`` setting. A mapping set here requires the column in the dataset. Unset, a ``reasoning_effort`` column sets ``reasoning_effort`` on datasets that have it."""
 
 
 class SFTDataConfig(BaseDataConfig):

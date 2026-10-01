@@ -527,14 +527,23 @@ def custom_renderer_config(tmp_path):
 def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
     resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config)
 
-    default = resolver({"messages": [], "__renderer.reasoning_effort": None})
-    high = resolver({"messages": [], "__renderer.reasoning_effort": "high"})
+    default = resolver({"messages": [], "reasoning_effort": None})
+    high = resolver({"messages": [], "reasoning_effort": "high"})
 
     assert default.config.reasoning_effort == "low"
     assert high.config.reasoning_effort == "high"
-    assert resolver({"messages": [], "__renderer.reasoning_effort": "high"}) is high
+    assert resolver({"messages": [], "reasoning_effort": "high"}) is high
     with pytest.raises(ValueError):
-        resolver({"messages": [], "__renderer.reasoning_effort": "medium"})
+        resolver({"messages": [], "reasoning_effort": "medium"})
+
+
+def test_renderer_resolver_reads_mapped_columns(custom_renderer_config):
+    resolver = sft_data.RendererResolver(
+        tokenizer=None, config=custom_renderer_config, columns={"reasoning_effort": "effort"}
+    )
+
+    assert resolver({"effort": "high", "reasoning_effort": "low"}).config.reasoning_effort == "high"
+    assert resolver({"reasoning_effort": "high"}).config.reasoning_effort == "low"
 
 
 def test_renderer_resolver_rejects_renderer_columns_without_the_field():
@@ -543,38 +552,45 @@ def test_renderer_resolver_rejects_renderer_columns_without_the_field():
     resolver = sft_data.RendererResolver(tokenizer=None, config=PrimeQwen3RendererConfig())
 
     with pytest.raises(ValueError, match="reasoning_effort"):
-        resolver({"messages": [], "__renderer.reasoning_effort": "high"})
+        resolver({"messages": [], "reasoning_effort": "high"})
 
 
-def test_rename_columns_prefixes_renderer_columns():
+def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
     from prime_rl.configs.sft import SFTColumnsConfig
 
-    dataset = Dataset.from_list([{"messages": [], "depth": 3, "reasoning_effort": "high"}])
+    dataset = Dataset.from_list([{"conversation": [{"role": "assistant", "content": "a0"}]}])
 
-    renamed = sft_data.rename_columns(dataset, SFTColumnsConfig(renderer={"depth": "depth"}))
-    assert set(renamed.column_names) == {"messages", "__renderer.depth", "reasoning_effort"}
+    sample = next(
+        iter(SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(messages="conversation")))
+    )
+    assert sample["input_ids"] == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
+    assert sample["target_ids"] == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
 
-    default = sft_data.rename_columns(dataset, SFTColumnsConfig())
-    assert set(default.column_names) == {"messages", "depth", "__renderer.reasoning_effort"}
-    without = sft_data.rename_columns(dataset.remove_columns("reasoning_effort"), SFTColumnsConfig())
-    assert set(without.column_names) == {"messages", "depth"}
-    with pytest.raises(ValueError, match="missing"):
-        sft_data.rename_columns(dataset, SFTColumnsConfig(renderer={"effort": "missing"}))
-
-
-def test_rename_columns_moves_message_columns_to_their_field_names():
-    from prime_rl.configs.sft import SFTColumnsConfig
-
-    dataset = Dataset.from_list([{"conversation": [], "schemas": [], "answer": "x"}])
-
-    renamed = sft_data.rename_columns(dataset, SFTColumnsConfig(messages="conversation", tools="schemas"))
-    assert set(renamed.column_names) == {"messages", "tools", "answer"}
-
-    # Default names are optional: a messages-only dataset has no prompt or completion column.
-    assert sft_data.rename_columns(dataset, SFTColumnsConfig()).column_names == dataset.column_names
+    with pytest.raises(ValueError, match="'messages' column"):
+        next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
     with pytest.raises(ValueError, match="data.columns.prompt"):
-        sft_data.rename_columns(dataset, SFTColumnsConfig(prompt="question"))
-    with pytest.raises(ValueError, match="also has"):
-        sft_data.rename_columns(
-            Dataset.from_list([{"conversation": [], "messages": []}]), SFTColumnsConfig(messages="conversation")
-        )
+        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
+
+
+def test_sft_dataset_reads_tool_defs_only_when_mapped(dummy_renderer):
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    tool_defs = [{"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}]
+    dataset = Dataset.from_list([{"messages": [{"role": "assistant", "content": "a0"}], "tool_defs": tool_defs}])
+    seen: list = []
+
+    class RecordingRenderer:
+        def render(self, messages, tools=None, **kwargs):
+            seen.append(tools)
+            return dummy_renderer.render(messages)
+
+        def get_stop_token_ids(self):
+            return dummy_renderer.get_stop_token_ids()
+
+    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer())))
+    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="tool_defs"))))
+
+    assert seen[0] == []
+    assert seen[1] == [
+        {"type": "function", "function": {"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}}
+    ]
