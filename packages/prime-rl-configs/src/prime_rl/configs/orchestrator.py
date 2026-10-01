@@ -323,14 +323,6 @@ class EvalSourceConfig(EnvConfig):
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
-    @model_validator(mode="after")
-    def restrict_network(self):
-        """An eval's boxes reach nothing beyond the framework unless the config says otherwise
-        (``env.taskset.network_allow = ["*"]`` keeps the internet); training sources leave each
-        task's own policy in place."""
-        vf.restrict_network_by_default(self.env)
-        return self
-
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
     """An eval source of a training run: evaluated on a step interval."""

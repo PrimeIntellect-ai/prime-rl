@@ -211,6 +211,7 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
 
     assert config.quantization is not None and config.quantization.type == "mxfp8"
     assert config.moe.compute.type == "bf16"
+    assert config.moe.compute.backend == "torch"
     assert config.moe.dispatch.type == "torch"
     assert config.moe.dispatch.transport == "bf16"
 
@@ -218,6 +219,11 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
 @pytest.mark.parametrize(
     "model",
     [
+        {"ep": 2, "moe": {"compute": {"type": "bf16", "backend": "sonicmoe"}}},
+        {
+            "ep": 2,
+            "moe": {"compute": {"type": "bf16", "backend": "sonicmoe"}, "dispatch": {"type": "deepep"}},
+        },
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
         {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
@@ -461,34 +467,6 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
         }
     )
     assert online.intervals == {"gsm8k": 5, "b": 2}
-
-
-def test_eval_sources_block_network_by_default():
-    config = EvalConfig.model_validate(
-        {
-            "source": [
-                {"env": {"taskset": {"id": "gsm8k"}}},
-                {"name": "open", "env": {"taskset": {"id": "gsm8k", "network_allow": ["*"]}}},
-                {"name": "host", "env": {"taskset": {"id": "gsm8k"}, "agent": {"runtime": {"type": "subprocess"}}}},
-            ],
-        }
-    )
-    blocked, opened, host = config.source
-    assert blocked.env.taskset.network_allow == []
-    assert opened.env.taskset.network_allow == ["*"]
-    assert host.env.taskset.network_allow is None
-    # A group-level policy reaches every source, and the resolved config round-trips it.
-    grouped = EvalConfig.model_validate(
-        {"env": {"taskset": {"network_allow": ["*"]}}, "source": [{"env": {"taskset": {"id": "gsm8k"}}}]}
-    )
-    assert grouped.source[0].env.taskset.network_allow == ["*"]
-    reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
-    assert [s.env.taskset.network_allow for s in reloaded.source] == [[], ["*"], None]
-
-    train = OrchestratorConfig.model_validate(
-        {"train": {"source": [{"env": {"taskset": {"id": "gsm8k"}}}]}, "batch_size": 8}
-    )
-    assert train.train.source[0].env.taskset.network_allow is None
 
 
 def test_train_sources_can_use_their_own_group_sizes():
