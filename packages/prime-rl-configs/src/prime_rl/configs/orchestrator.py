@@ -569,9 +569,12 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    train_protocol: Literal["tito", "mito"] = "tito"
+    """Use renderer token-in training or message-in training with exact engine response metadata."""
+
     renderer: RendererConfig = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
-    training is renderer-only. Defaults to ``"auto"``, which resolves from
+    used for TITO training. Defaults to ``"auto"``, which resolves from
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
@@ -732,6 +735,8 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
+        if self.train_protocol == "mito" and all(env.algo.sampling.source == "policy" for env in self.train.source):
+            return self
         if self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP

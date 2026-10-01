@@ -934,6 +934,27 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     assert config.renderer.name == "auto"
 
 
+def test_mito_policy_training_does_not_require_a_renderer():
+    config = OrchestratorConfig.model_validate(
+        {"model": {"name": "not-a-real-org/not-a-real-model"}, "train_protocol": "mito"}
+    )
+    assert config.train_protocol == "mito"
+
+
+def test_mito_frozen_generation_still_requires_a_renderer():
+    from prime_rl.configs.algorithm import SFTAlgoConfig
+    from prime_rl.configs.orchestrator import TrainSourceConfig
+
+    config = OrchestratorConfig.model_validate(
+        {"model": {"name": "not-a-real-org/not-a-real-model"}, "train_protocol": "mito"}
+    )
+    algo = SFTAlgoConfig.model_validate({"sampling": {"source": {"name": "teacher", "base_url": "http://teacher/v1"}}})
+    source = TrainSourceConfig.model_construct(algo=algo)
+    config = config.model_copy(update={"train": config.train.model_copy(update={"source": [source]})})
+    with pytest.raises(ValueError, match="silently fall back to DefaultRenderer"):
+        config.validate_renderer_auto_resolves()
+
+
 def test_sft_renderer_auto_accepts_prime_qwen_model():
     config = SFTConfig.model_validate({"model": {"name": "PrimeIntellect/Qwen3-0.6B"}})
     assert config.renderer.name == "auto"

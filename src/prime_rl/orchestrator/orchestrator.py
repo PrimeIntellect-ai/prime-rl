@@ -199,7 +199,7 @@ class Orchestrator:
         self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
-            train_client_type="renderer",
+            train_client_type="mito" if config.train_protocol == "mito" else "renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
