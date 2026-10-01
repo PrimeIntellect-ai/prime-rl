@@ -462,7 +462,7 @@ class InferenceConfig(BaseConfig):
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
     vllm_plugins: list[str] = []
-    """Callables that run in every vLLM process before the model and tokenizer load, as ``package.module:function`` or ``path/to/file.py:function``. Relative file paths resolve against the launch directory. Use them to register local tokenizer modes or parsers without a vLLM package. Sets ``PRIME_VLLM_PLUGINS`` for the vLLM processes."""
+    """Callables that run in every vLLM process before the model and tokenizer load, as ``my_module.function`` or ``path/to/file.py:function``. Relative file paths resolve against the launch directory. Use them to register local tokenizer modes or parsers without a vLLM package. Sets ``PRIME_VLLM_PLUGINS`` for the vLLM processes."""
 
     @field_validator("vllm_plugins")
     @classmethod

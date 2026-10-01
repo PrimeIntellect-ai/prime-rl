@@ -1,5 +1,5 @@
-# Reverse-text RL with a renderer loaded from a local plugin file.
-# Same run as examples/basic/reverse-text/rl.toml, with [orchestrator.renderer] pointing at the plugin.
+# Reverse-text RL with a custom renderer loaded from a local file.
+# Same run as examples/basic/reverse-text/rl.toml, with [orchestrator.renderer] pointing at it.
 
 max_steps = 20
 seq_len = 2048
@@ -11,8 +11,8 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 batch_size = 128
 
 [orchestrator.renderer]
-name = "plugin"
-target = "examples/extra/renderer-plugin/renderer.py:InstructedQwen3Renderer"
+name = "custom"
+import_path = "examples/extra/custom-renderer/renderer.py:InstructedQwen3Renderer"
 instruction = "Reverse every character, including spaces and punctuation."
 
 [orchestrator.train]

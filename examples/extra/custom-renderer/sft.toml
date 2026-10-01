@@ -1,5 +1,5 @@
-# Reverse-text SFT with a renderer loaded from a local plugin file.
-# Same run as examples/basic/reverse-text/sft.toml, with [renderer] pointing at the plugin.
+# Reverse-text SFT with a custom renderer loaded from a local file.
+# Same run as examples/basic/reverse-text/sft.toml, with [renderer] pointing at it.
 
 max_steps = 100
 
@@ -9,8 +9,8 @@ max_steps = 100
 name = "PrimeIntellect/Qwen3-0.6B"
 
 [renderer]
-name = "plugin"
-target = "examples/extra/renderer-plugin/renderer.py:InstructedQwen3Renderer"
+name = "custom"
+import_path = "examples/extra/custom-renderer/renderer.py:InstructedQwen3Renderer"
 instruction = "Reverse every character, including spaces and punctuation."
 
 [data]

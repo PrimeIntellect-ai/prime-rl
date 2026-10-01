@@ -24,13 +24,13 @@ def plugin_file(tmp_path):
 
 
 def test_load_vllm_plugins_runs_each_target(monkeypatch, plugin_file):
-    from renderers.plugins import load_plugin_module
+    from renderers.custom import load_module
 
     monkeypatch.setenv("PRIME_VLLM_PLUGINS", json.dumps([f"{plugin_file}:register"]))
 
     load_vllm_plugins()
 
-    assert load_plugin_module(str(plugin_file)).calls == ["registered"]
+    assert load_module(str(plugin_file)).calls == ["registered"]
 
 
 def test_load_vllm_plugins_is_a_noop_without_targets(monkeypatch):

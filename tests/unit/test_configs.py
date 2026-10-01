@@ -1039,52 +1039,52 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
-PLUGIN_RENDERER_TARGET = "examples/extra/renderer-plugin/renderer.py:InstructedQwen3Renderer"
+CUSTOM_RENDERER_IMPORT_PATH = "examples/extra/custom-renderer/renderer.py:InstructedQwen3Renderer"
 
 
-def test_sft_config_accepts_plugin_renderer(tmp_path):
+def test_sft_config_accepts_custom_renderer(tmp_path):
     config_file = tmp_path / "sft.toml"
     config_file.write_text(
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
                 "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
-                "renderer": {"name": "plugin", "target": PLUGIN_RENDERER_TARGET, "instruction": "Be brief."},
+                "renderer": {"name": "custom", "import_path": CUSTOM_RENDERER_IMPORT_PATH, "instruction": "Be brief."},
             }
         )
     )
 
     config = cli(SFTConfig, args=["@", str(config_file)])
 
-    assert config.renderer.name == "plugin"
-    assert config.renderer.plugin_config.name == "instructed-qwen3"
-    assert config.renderer.plugin_config.instruction == "Be brief."
+    assert config.renderer.name == "custom"
+    assert config.renderer.renderer_config.name == "instructed-qwen3"
+    assert config.renderer.renderer_config.instruction == "Be brief."
 
 
-def test_orchestrator_config_accepts_plugin_renderer(tmp_path):
+def test_orchestrator_config_accepts_custom_renderer(tmp_path):
     config_file = tmp_path / "orch.toml"
     config_file.write_text(
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
-                "renderer": {"name": "plugin", "target": PLUGIN_RENDERER_TARGET},
+                "renderer": {"name": "custom", "import_path": CUSTOM_RENDERER_IMPORT_PATH},
             }
         )
     )
 
     config = cli(OrchestratorConfig, args=["@", str(config_file)])
 
-    assert config.renderer.name == "plugin"
-    assert config.renderer.plugin_config.instruction == "Think step by step."
+    assert config.renderer.name == "custom"
+    assert config.renderer.renderer_config.instruction == "Think step by step."
 
 
-def test_plugin_renderer_rejects_unknown_fields(tmp_path):
+def test_custom_renderer_rejects_unknown_fields(tmp_path):
     config_file = tmp_path / "sft.toml"
     config_file.write_text(
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "renderer": {"name": "plugin", "target": PLUGIN_RENDERER_TARGET, "depth": 3},
+                "renderer": {"name": "custom", "import_path": CUSTOM_RENDERER_IMPORT_PATH, "depth": 3},
             }
         )
     )
@@ -1094,17 +1094,17 @@ def test_plugin_renderer_rejects_unknown_fields(tmp_path):
 
 
 def test_inference_vllm_plugins_resolve_file_paths():
-    config = InferenceConfig(vllm_plugins=["plugins/vllm.py:register", "my_pkg.vllm:register"])
+    config = InferenceConfig(vllm_plugins=["my_renderers/vllm.py:register", "my_pkg.vllm.register"])
 
-    assert config.vllm_plugins == [f"{Path('plugins/vllm.py').resolve()}:register", "my_pkg.vllm:register"]
+    assert config.vllm_plugins == [f"{Path('my_renderers/vllm.py').resolve()}:register", "my_pkg.vllm.register"]
 
 
 def test_setup_vllm_env_exports_vllm_plugins(monkeypatch):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("PRIME_VLLM_PLUGINS", raising=False)
-    config = InferenceConfig(vllm_plugins=["my_pkg.vllm:register"])
+    config = InferenceConfig(vllm_plugins=["my_pkg.vllm.register"])
 
     setup_vllm_env(config)
 
-    assert os.environ["PRIME_VLLM_PLUGINS"] == '["my_pkg.vllm:register"]'
+    assert os.environ["PRIME_VLLM_PLUGINS"] == '["my_pkg.vllm.register"]'
