@@ -7,10 +7,10 @@ from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs, template_field_names
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, ResolvedSFTSource, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -209,37 +209,63 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> RendererConfig:
-    """Copy ``config`` with its ``reasoning_effort`` field set, validated by the config class."""
-    if isinstance(config, AutoRendererConfig):
-        raise ValueError(
-            "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
-            "not renderer.name = 'auto'"
-        )
-    if "reasoning_effort" not in type(config).model_fields:
-        raise ValueError(f"Renderer {config.name!r} has no reasoning_effort field, but a row sets {reasoning_effort!r}")
-    return type(config).model_validate({**config.model_dump(), "reasoning_effort": reasoning_effort})
+RENDERER_COLUMN_PREFIX = "__renderer."
+"""Prefix of the columns that carry per-sample renderer arguments, e.g. ``__renderer.depth``."""
+
+JSON_COLUMN_PREFIX = "__json."
+"""Prefix of columns stored as JSON strings because sources disagree on their type."""
+
+
+def decode_json_columns(example: dict) -> dict:
+    """Restore the columns that ``load_sft_dataset`` stored as JSON strings."""
+    decoded = {}
+    for key, value in example.items():
+        if key.startswith(JSON_COLUMN_PREFIX):
+            decoded[key.removeprefix(JSON_COLUMN_PREFIX)] = None if value is None else json.loads(value)
+        else:
+            decoded[key] = value
+    return decoded
 
 
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A ``reasoning_effort`` column overrides the configured renderer's field of
-    the same name per row. Renderer configs are frozen, so renderers are cached
-    per config and rows that resolve to the same config share one instance.
+    Chat-template kwargs apply in order: the ``[renderer]`` config, then the
+    row's source (``data.source[].renderer``), then the row's non-null
+    ``__renderer.<field>`` columns. Renderer configs are frozen, so renderers
+    are cached per config and rows that resolve to the same config share one
+    instance.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        config: RendererConfig,
+        processor: Any | None = None,
+        source_kwargs: dict[str, dict[str, Any]] | None = None,
+    ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
+        self.source_kwargs = source_kwargs or {}
         self.renderers: dict[RendererConfig, Renderer] = {}
 
+    def resolve_config(self, example: dict) -> RendererConfig:
+        kwargs = dict(self.source_kwargs.get(example.get("__source"), {}))
+        for key, value in example.items():
+            if key.startswith(RENDERER_COLUMN_PREFIX) and value is not None:
+                kwargs[key.removeprefix(RENDERER_COLUMN_PREFIX)] = value
+        if not kwargs:
+            return self.config
+        if isinstance(self.config, AutoRendererConfig):
+            raise ValueError(
+                f"Per-source or per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
+                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+            )
+        return merge_chat_template_kwargs(self.config, kwargs)
+
     def __call__(self, example: dict) -> Renderer:
-        config = self.config
-        reasoning_effort = example.get("reasoning_effort")
-        if reasoning_effort is not None:
-            config = with_reasoning_effort(config, reasoning_effort)
+        config = self.resolve_config(example)
         renderer = self.renderers.get(config)
         if renderer is None:
             renderer = create_renderer(self.tokenizer, config)
@@ -284,6 +310,8 @@ class SFTDataset(StatefulIterableDataset):
             self.dataset = self.dataset.take(self.max_examples)
 
     def _process(self, example: dict) -> dict | None:
+        example = decode_json_columns(example)
+
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -467,7 +495,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            subset_or_split = example.get("__subset") or example.get("__split")
+            subset_or_split = example.get("__source") or example.get("__subset") or example.get("__split")
             self.logger.debug(
                 f"Yield example {example.get('__index', '')}"
                 + (f" from {subset_or_split} " if subset_or_split else " ")
@@ -590,7 +618,16 @@ class CatDataset(StatefulIterableDataset):
             remaining -= kept
         pad_len = seq_len - len(result["input_ids"])
         if pad_len > 0:
-            result["input_ids"].extend([0] * pad_len)
+            # Identical pad tokens get identical hidden states, so an MoE router sends all of them to
+            # the same experts, and the expert-parallel rank hosting those experts can run out of
+            # memory on a heavily padded pack. Repeating the pack's own tokens routes padding like
+            # real text. Pads stay loss-masked and follow every real token, so they cannot change the
+            # loss. Multimodal packs keep token 0 so no placeholder id lands outside its item.
+            if packed["mm_kwargs"] is None and result["input_ids"]:
+                content = result["input_ids"]
+                result["input_ids"].extend((content * (pad_len // len(content) + 1))[:pad_len])
+            else:
+                result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
@@ -624,96 +661,183 @@ def cat_collate(samples: list[Sample]) -> Batch:
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
     if not isinstance(data, SFTDataConfig):
         return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
-        return
+    snapshots: dict[tuple[str, str | None], str] = {}
+    resolved = data.resolved_sources()
+    for source in resolved:
+        key = (source.dataset, source.revision)
+        if key in snapshots or Path(source.dataset).exists():
+            continue
+        t0 = time.perf_counter()
+        get_logger().info(f"Pre-downloading data {source.dataset} at revision {source.revision or 'main'}")
+        snapshots[key] = snapshot_download(
+            repo_id=source.dataset,
+            repo_type="dataset",
+            revision=source.revision,
+            cache_dir=env_vars.get("HF_HUB_CACHE"),
+        )
+        get_logger().debug(
+            f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
+            f"{format_time(time.perf_counter() - t0)}"
+        )
+    for source, resolved_source in zip(data.source or [], resolved, strict=False):
+        key = (resolved_source.dataset, resolved_source.revision)
+        if key in snapshots:
+            # Pin the name first, so metrics keep the repo id rather than the snapshot path.
+            source.name = resolved_source.name
+            source.dataset = snapshots[key]
+    if (data.name, data.revision) in snapshots:
+        data.name = snapshots[(data.name, data.revision)]
 
-    dataset_name = data.name
-    t0 = time.perf_counter()
-    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
-    snapshot = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        revision=data.revision,
-        cache_dir=env_vars.get("HF_HUB_CACHE"),
-    )
-    data.name = snapshot
-    get_logger().debug(
-        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
-    )
+
+def load_sft_source(source: ResolvedSFTSource) -> Dataset:
+    """Load one source with its columns renamed to the names ``SFTDataset`` reads."""
+    logger = get_logger()
+    logger.debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
+    dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision))
+    columns = source.columns
+    renames = [
+        (getattr(columns, field), field)
+        for field in ("messages", "prompt", "completion", "tools")
+        if getattr(columns, field) in dataset.column_names
+    ]
+    if "tools" not in dict(renames).values() and "tool_defs" in dataset.column_names:
+        renames.append(("tool_defs", "tool_defs"))
+    for field, column in columns.renderer.items():
+        if column in dataset.column_names:
+            renames.append((column, RENDERER_COLUMN_PREFIX + field))
+        elif source.explicit_renderer_columns:
+            raise ValueError(
+                f"Source {source.name} maps renderer field {field!r} to column {column!r}, "
+                f"but the dataset has only {dataset.column_names}"
+            )
+    read = [column for column, _ in renames]
+    shared = sorted({column for column in read if read.count(column) > 1})
+    if shared:
+        raise ValueError(f"Source {source.name} maps several fields to the columns {shared}; map each column once")
+    # Dropping unmapped columns lets sources with different extra columns interleave.
+    dataset = dataset.select_columns(read)
+    dataset = dataset.rename_columns({old: new for old, new in renames if old != new})
+    num_examples = len(dataset)
+    for name, values in (
+        ("__source", [source.name] * num_examples),
+        ("__subset", [source.subset] * num_examples),
+        ("__split", [source.split] * num_examples),
+        ("__index", list(range(num_examples))),
+    ):
+        dataset = dataset.add_column(name, values, new_fingerprint=str(uuid.uuid4()))
+    return dataset
 
 
-def setup_and_interleave_datasets(
-    dataset_name: str,
-    subsets_and_splits: list[tuple[str | None, str]],
-    probabilities: list[float] | None,
+def _encode_conflicting_columns(datasets: list[Dataset]) -> list[Dataset]:
+    """Store columns whose type differs between sources as JSON strings, so the sources interleave."""
+    features: dict[str, set[str]] = defaultdict(set)
+    for dataset in datasets:
+        for name, feature in dataset.features.items():
+            features[name].add(repr(feature))
+    conflicting = sorted(name for name, reprs in features.items() if len(reprs) > 1)
+    if not conflicting:
+        return datasets
+    get_logger().info(f"Storing columns {conflicting} as JSON because their types differ between sources")
+
+    def encode(batch: dict) -> dict:
+        return {
+            JSON_COLUMN_PREFIX + name: [None if value is None else json.dumps(value) for value in batch[name]]
+            for name in conflicting
+            if name in batch
+        }
+
+    return [
+        dataset.map(encode, batched=True, remove_columns=[name for name in conflicting if name in dataset.column_names])
+        for dataset in datasets
+    ]
+
+
+def interleave_indices(
+    lengths: list[int],
+    probabilities: list[float],
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
-    revision: str | None = None,
-) -> Dataset:
-    logger = get_logger()
-    datasets = []
-    for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        num_examples = len(dataset)
-        dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-        datasets.append(dataset)
-    if len(datasets) > 1:
-        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
-        dataset = interleave_datasets(
-            datasets,
-            probabilities=probabilities,
-            stopping_strategy=stopping_strategy,
-            seed=seed,
-        )
-    else:
-        dataset = datasets[0]
+    block_size: int = 1 << 20,
+) -> np.ndarray:
+    """Indices into the concatenated datasets, identical to ``interleave_datasets`` with ``probabilities``.
 
-    return dataset
+    ``datasets`` builds them in a Python loop, one source draw at a time, which takes
+    minutes for tens of millions of rows. The draws match because ``Generator.choice``
+    with ``p`` is ``cdf.searchsorted(rng.random(n), side="right")``, and one long
+    ``rng.random`` call yields the same values as its batches of 1000.
+    """
+    lengths_arr = np.asarray(lengths, dtype=np.int64)
+    offsets = np.cumsum(np.concatenate([[0], lengths_arr[:-1]]))
+    cdf = np.cumsum(np.asarray(probabilities, dtype=np.float64))
+    cdf /= cdf[-1]
+    rng = np.random.default_rng(seed)
+    num_sources = len(lengths_arr)
+    counts = np.zeros(num_sources, dtype=np.int64)
+    exhausted_at = np.full(num_sources, -1, dtype=np.int64)
+    blocks = []
+    drawn = 0
+    while True:
+        sources = cdf.searchsorted(rng.random(block_size), side="right")
+        # Each draw's occurrence number within its source, counting earlier blocks.
+        order = np.argsort(sources, kind="stable")
+        first = np.searchsorted(sources[order], np.arange(num_sources))
+        occurrence = np.empty(block_size, dtype=np.int64)
+        occurrence[order] = np.arange(block_size) - first[sources[order]]
+        occurrence += counts[sources]
+        counts += np.bincount(sources, minlength=num_sources)
+        blocks.append(offsets[sources] + occurrence % lengths_arr[sources])
+        # A source is exhausted by the draw that takes its last row the first time.
+        last = np.flatnonzero(occurrence == lengths_arr[sources] - 1)
+        exhausted_at[sources[last]] = drawn + last
+        drawn += block_size
+        done = exhausted_at >= 0
+        if stopping_strategy == "first_exhausted" and done.any():
+            stop = exhausted_at[done].min()
+            break
+        if stopping_strategy == "all_exhausted" and done.all():
+            stop = exhausted_at.max()
+            break
+    # The draw that meets the stopping condition is kept, as in ``datasets``.
+    return np.concatenate(blocks)[: stop + 1]
 
 
 def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    logger = get_logger()
-    if config.subsets is None and config.splits is None:
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, "train")],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    elif config.subsets is not None and config.splits is None:
-        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(subset, "train") for subset in config.subsets],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    elif config.subsets is None and config.splits is not None:
-        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, split) for split in config.splits],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    else:
-        assert config.subsets is not None and config.splits is not None
-        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=list(zip(config.subsets, config.splits)),
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
+    sources = config.resolved_sources()
+    datasets = _encode_conflicting_columns([load_sft_source(source) for source in sources])
+    if len(datasets) == 1:
+        return datasets[0]
+    # Weights are set on every source or on none.
+    weights = [source.weight for source in sources if source.weight is not None]
+    probabilities = [weight / sum(weights) for weight in weights] if weights else None
+    if config.source is None:
+        # Legacy probabilities already sum to 1; renormalizing could shift the sampled order on resume.
+        probabilities = config.probabilities
+    get_logger().debug(f"Interleaving sources with {probabilities=} and {config.stopping_strategy=}")
+    # Seed 0 rather than data.seed keeps the interleaved order of existing runs, which resume by position.
+    if probabilities is None:
+        return interleave_datasets(datasets, stopping_strategy=config.stopping_strategy, seed=0)
+    indices = interleave_indices([len(dataset) for dataset in datasets], probabilities, config.stopping_strategy)
+    return concatenate_datasets(datasets).select(indices)
+
+
+def validate_source_renderer_args(config: RendererConfig, sources: list[ResolvedSFTSource]) -> None:
+    """Fail before training when a source sets or maps a field the renderer doesn't have."""
+    for source in sources:
+        if source.renderer or source.explicit_renderer_columns:
+            if isinstance(config, AutoRendererConfig):
+                raise ValueError(
+                    f"Source {source.name} sets renderer arguments, which require a typed renderer config "
+                    "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+                )
+        merge_chat_template_kwargs(config, source.renderer)
+        if source.explicit_renderer_columns:
+            unknown = sorted(set(source.columns.renderer) - template_field_names(config))
+            if unknown:
+                raise ValueError(
+                    f"Source {source.name} maps columns to renderer fields {unknown}, "
+                    f"but renderer {config.name!r} accepts only {sorted(template_field_names(config))}"
+                )
 
 
 def setup_dataset(
@@ -741,7 +865,14 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
+        sources = config.resolved_sources()
+        validate_source_renderer_args(renderer_config, sources)
+        renderers = RendererResolver(
+            tokenizer,
+            renderer_config,
+            processor=processor,
+            source_kwargs={source.name: source.renderer for source in sources},
+        )
         return SFTDataset(
             raw_dataset,
             renderers,

@@ -21,6 +21,30 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_request_tools_placement()
+    monkey_patch_fp8_ue8m0_weight_scales()
+    monkey_patch_triton_moe_swiglu_clamp()
+    monkey_patch_fp8_stochastic_weight_rounding()
+    monkey_patch_deepseek_v4_attn_sink_loading()
+    # Last, so a failing local plugin cannot skip the patches above.
+    load_vllm_plugins()
+
+
+def load_vllm_plugins():
+    """Run the ``inference.vllm_plugins`` callables exported in ``$PRIME_VLLM_PLUGINS``."""
+    import json
+    import os
+
+    targets = json.loads(os.environ.get("PRIME_VLLM_PLUGINS") or "[]")
+    if not targets:
+        return
+
+    from renderers.plugins import load_plugin_object
+    from vllm.logger import init_logger
+
+    logger = init_logger("vllm.prime_rl.plugins")
+    for target in targets:
+        load_plugin_object(target)()
+        logger.info(f"Loaded vLLM plugin {target}")
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -181,6 +205,229 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_triton_moe_swiglu_clamp():
+    """Make vLLM's ``TritonExperts`` honour the swiglu clamp on its fused fp8 block-quant fast path.
+
+    ``TritonExperts.apply`` fuses SiLU-and-mul with the per-block fp8 quantization of the
+    second expert GEMM's input through ``ops.silu_and_mul_per_block_quant`` whenever the
+    activation is SiLU, the weights are fp8 w8a8 with 128x128 blocks, no LoRA is active and
+    DeepGEMM E8M0 is off. That op has no clamp argument, so a model's ``swiglu_limit``
+    (DeepSeek V4 Flash: 10.0) is dropped on that path while every other path applies it,
+    and tokens whose gate or up pre-activation exceeds the limit get a wrong expert output.
+    With ``VLLM_USE_DEEP_GEMM_E8M0=0`` this is the path taken for every batch below 128
+    tokens, i.e. every decode step.
+
+    The fast-path condition's only reference to ``is_deep_gemm_e8m0_used`` is the
+    module-level name in ``triton_moe``, so while an ``apply`` call runs with a clamp
+    configured that name is bound to return True, which routes the call to the clamped
+    branch (``self.activation`` followed by ``moe_kernel_quantize_input``). Calls without a
+    clamp keep the fused fast path. Redundant once upstream gates the fast path on the
+    clamp itself.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe.experts import triton_moe
+
+    logger = init_logger("vllm.prime_rl.fused_moe")
+    original_apply = triton_moe.TritonExperts.apply
+    if getattr(original_apply, "_prime_honours_swiglu_clamp", False):
+        return
+
+    def apply(self, *args, **kwargs):
+        if self.activation_config.clamp_limit is None:
+            return original_apply(self, *args, **kwargs)
+        saved = triton_moe.is_deep_gemm_e8m0_used
+        triton_moe.is_deep_gemm_e8m0_used = lambda: True
+        try:
+            return original_apply(self, *args, **kwargs)
+        finally:
+            triton_moe.is_deep_gemm_e8m0_used = saved
+
+    apply._prime_honours_swiglu_clamp = True
+    triton_moe.TritonExperts.apply = apply
+    logger.info("TritonExperts.apply takes the clamped activation path when a swiglu clamp is configured.")
+
+
+def monkey_patch_fp8_ue8m0_weight_scales():
+    """Off unless ``PRIME_FP8_UE8M0_WEIGHT_SCALES=1`` (``inference.fp8_ue8m0_weight_scales``): power-of-two block scales.
+
+    ``Fp8PerBlockOnlineLinearMethod`` and its MoE counterpart both call
+    ``per_block_cast_to_fp8(..., use_ue8m0=False)``, which picks the scale
+    ``amax / 448``. The published DeepSeek V4 bf16 checkpoint is a dequantized
+    FP8 release whose weights already lie exactly on the e4m3 grid with
+    power-of-two block scales, so that scale choice rotates the grid and injects
+    the full e4m3 rounding error on weights that would otherwise round-trip
+    exactly. Forcing ``use_ue8m0=True`` restores the original grid.
+
+    The scales stay fp32, so no kernel change is implied: a power of two is an
+    ordinary fp32 scale. This is distinct from ``VLLM_USE_DEEP_GEMM_E8M0=1``,
+    which re-quantizes an already-rounded weight and therefore double-rounds;
+    with both on, the re-quantization finds the weights already on power-of-two
+    scales and leaves them alone, so the pair gives UE8M0 activation scales and
+    exact weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_UE8M0_WEIGHT_SCALES") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    logger = init_logger(__name__)
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_forces_ue8m0", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        kwargs["use_ue8m0"] = True
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_forces_ue8m0 = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_UE8M0_WEIGHT_SCALES=1: quantizing online FP8 weights with power-of-two block scales.")
+
+
+_STOCHASTIC_ROUNDING_ROW_CHUNK = 2048
+_E4M3_SIGN_BIT = 0x80
+_E4M3_MAGNITUDE_MASK = 0x7F
+_E4M3_MAX_FINITE_MAGNITUDE = 0x7E
+
+
+def _expand_block_scales(scales: torch.Tensor, block_size: list[int], rows: int, cols: int) -> torch.Tensor:
+    block_m, block_n = block_size
+    return scales.repeat_interleave(block_m, dim=0)[:rows].repeat_interleave(block_n, dim=1)[:, :cols]
+
+
+def stochastic_round_fp8(x_scaled: torch.Tensor, q_near: torch.Tensor) -> torch.Tensor:
+    """Move each round-to-nearest e4m3 value ``q_near`` to its neighbour on the far side of ``x_scaled`` with probability equal to the fractional distance, so the result equals ``x_scaled`` in expectation."""
+    q_near_float = q_near.float()
+    bits = q_near.contiguous().view(torch.uint8).to(torch.int16)
+    sign = bits & _E4M3_SIGN_BIT
+    magnitude = bits & _E4M3_MAGNITUDE_MASK
+    farther_from_zero = x_scaled.abs() > q_near_float.abs()
+    neighbour_magnitude = torch.where(farther_from_zero, magnitude + 1, magnitude - 1).clamp(
+        0, _E4M3_MAX_FINITE_MAGNITUDE
+    )
+    neighbour = (sign | neighbour_magnitude).to(torch.uint8).view(torch.float8_e4m3fn).float()
+    gap = neighbour - q_near_float
+    probability = torch.where(gap != 0, (x_scaled - q_near_float) / gap, torch.zeros_like(gap)).clamp(0, 1)
+    pick_neighbour = torch.rand_like(probability) < probability
+    return torch.where(pick_neighbour, neighbour, q_near_float).to(torch.float8_e4m3fn)
+
+
+def monkey_patch_fp8_stochastic_weight_rounding():
+    """Off unless ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` (``inference.fp8_stochastic_weight_rounding``): unbiased weight rounding.
+
+    ``per_block_cast_to_fp8`` rounds to nearest, so a weight that starts on the e4m3
+    grid keeps its served value until the trainer has moved it half a bin, about
+    1000 steps at lr 1e-6. Until then the served policy is pinned at step 0 while
+    the trainer drifts and the trainer-vs-inference mismatch grows. Rounding each
+    weight to the far neighbour with probability equal to its fractional distance
+    makes the served weight unbiased, so it tracks sub-bin updates in expectation.
+    On-grid input has zero fractional distance and rounds to nearest, so the
+    checkpoint itself quantizes to identical bytes.
+
+    Wraps whatever ``per_block_cast_to_fp8`` is installed when this runs, so it
+    composes with the UE8M0 wrapper registered just before it. The block scales
+    come back unchanged; only the e4m3 payload is re-rounded, in row chunks so
+    the fp32 temporaries stay bounded on large expert weights.
+    """
+    import os
+
+    if os.environ.get("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+    from vllm.utils.deep_gemm import DEFAULT_BLOCK_SIZE
+
+    logger = init_logger("vllm.prime_rl.fp8")
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_rounds_stochastically", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        quantized, scales = original_cast(x, *args, **kwargs)
+        block_size = kwargs.get("block_size", args[0] if args else DEFAULT_BLOCK_SIZE)
+        block_m = block_size[0]
+        rows, cols = quantized.shape
+        row_chunk = max(block_m, _STOCHASTIC_ROUNDING_ROW_CHUNK // block_m * block_m)
+        out = torch.empty_like(quantized)
+        for row_start in range(0, rows, row_chunk):
+            row_end = min(row_start + row_chunk, rows)
+            scale_rows = scales[row_start // block_m : -(-row_end // block_m)]
+            scale_per_element = _expand_block_scales(scale_rows, block_size, row_end - row_start, cols)
+            x_scaled = x[row_start:row_end].float() * (1.0 / scale_per_element)
+            out[row_start:row_end] = stochastic_round_fp8(x_scaled, quantized[row_start:row_end])
+        return out, scales
+
+    _per_block_cast_to_fp8._prime_rounds_stochastically = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    logger.info("PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1: rounding online FP8 weights stochastically.")
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Route DeepSeek V4's attention sinks through vLLM's weight loaders.
+
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare
+    ``params_dict[name][:n].copy_(narrow_weight)`` instead of going through
+    ``param.weight_loader``. Layerwise reload works by moving a layer's tensors to meta
+    and wrapping each loader to buffer the incoming tensor, so that copy lands in a meta
+    tensor and is discarded: ``meta[:n].copy_(real)`` succeeds silently. The module's
+    ``load_numel`` stays 0, finalize restores the boot value with only a warning, and the
+    loader still does ``loaded_params.add(name)``, so a ``named_parameters() -
+    loaded_params`` diff cannot see the loss either. Attention sinks are trainable, so
+    every reload keeps serving the sinks the server booted with. This is live on the
+    existing fp8 broadcast path too, not only on a bf16 one.
+
+    The parameter is padded to the platform's Q head count (``torch.full((padded_heads,),
+    -inf)`` in ``vllm/models/deepseek_v4/attention.py``), which is why upstream writes a
+    prefix rather than the whole tensor. Padding this rank's heads back up with ``-inf``,
+    the parameter's own init value meaning no sink, makes it an ordinary full-parameter
+    load, so ``load_numel`` reaches ``load_numel_total`` and no new loader contract is
+    needed. The loader must be reached through ``param.weight_loader`` rather than
+    attached to the parameter later, because ``initialize_layerwise_reload`` captures the
+    original loader at the moment it wraps.
+
+    Remove this patch when the pinned vLLM version loads ``attn_sink`` through a weight
+    loader. 0.29.0 and vLLM main both still write the bare slice copy; the same fix
+    appears only in vllm-project/vllm#54955, an open draft marked do-not-merge, so no
+    release carries it. This covers the NVIDIA path only, and the ``amd`` and ``xpu``
+    model files carry the same bare copy.
+    """
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
 
 
 def monkey_patch_nano_v3_reasoning_parser():
