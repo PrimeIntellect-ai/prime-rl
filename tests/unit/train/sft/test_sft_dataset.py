@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 
 import pytest
@@ -572,11 +573,13 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
         SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
 
 
-def test_sft_dataset_reads_tool_defs_only_when_mapped(dummy_renderer):
+def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer):
     from prime_rl.configs.sft import SFTColumnsConfig
 
-    tool_defs = [{"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}]
-    dataset = Dataset.from_list([{"messages": [{"role": "assistant", "content": "a0"}], "tool_defs": tool_defs}])
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+    dataset = Dataset.from_list(
+        [{"messages": [{"role": "assistant", "content": "a0"}], "schemas": json.dumps(tools), "tools": []}]
+    )
     seen: list = []
 
     class RecordingRenderer:
@@ -588,9 +591,6 @@ def test_sft_dataset_reads_tool_defs_only_when_mapped(dummy_renderer):
             return dummy_renderer.get_stop_token_ids()
 
     next(iter(SFTDataset(dataset, lambda _: RecordingRenderer())))
-    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="tool_defs"))))
+    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
 
-    assert seen[0] == []
-    assert seen[1] == [
-        {"type": "function", "function": {"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}}
-    ]
+    assert seen == [[], tools]

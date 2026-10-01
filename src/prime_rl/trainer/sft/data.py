@@ -209,10 +209,6 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-DEFAULT_RENDERER_COLUMNS = {"reasoning_effort": "reasoning_effort"}
-"""Mapping used when ``data.columns.renderer`` is unset; it reads the column when the dataset has it."""
-
-
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
@@ -232,7 +228,7 @@ class RendererResolver:
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
-        self.columns = columns or DEFAULT_RENDERER_COLUMNS
+        self.columns = SFTColumnsConfig().renderer if columns is None else columns
         self.renderers: dict[RendererConfig, Renderer] = {}
 
     def resolve_config(self, example: dict) -> RendererConfig:
@@ -326,29 +322,11 @@ class SFTDataset(StatefulIterableDataset):
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present, as either a JSON-encoded string of
-        # a list or a list of dicts; verifiers-shaped tools (the `tool_defs`
-        # rollout format) are converted to OAI form for the chat template.
-        raw_tools = example.get(self.columns.tools)
-        if not raw_tools:
-            tools = []
-        else:
-            if isinstance(raw_tools, str):
-                raw_tools = json.loads(raw_tools)
-            tools = [
-                t
-                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
-                else {
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name"),
-                        "description": t.get("description"),
-                        "parameters": t.get("parameters"),
-                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
-                    },
-                }
-                for t in raw_tools
-            ]
+        # Tool schemas in OpenAI function-calling format, as a list of dicts or a
+        # JSON-encoded string of one.
+        tools = example.get(self.columns.tools) or []
+        if isinstance(tools, str):
+            tools = json.loads(tools)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
@@ -758,12 +736,6 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        for field, column in (config.columns.renderer or {}).items():
-            if column not in raw_dataset.column_names:
-                raise ValueError(
-                    f"data.columns.renderer maps {field!r} to column {column!r}, "
-                    f"but the dataset has only {raw_dataset.column_names}"
-                )
         renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
         return SFTDataset(
             raw_dataset,

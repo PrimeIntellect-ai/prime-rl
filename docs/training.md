@@ -158,7 +158,7 @@ messages = "conversation"
 tools = "schemas"
 ```
 
-**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list. A dataset in the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format keeps its tool schemas in a `tool_defs` column; point the trainer at it with `[data.columns] tools = "tool_defs"`, and the rows are converted to OpenAI shape before they reach the renderer.
+**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
@@ -168,7 +168,7 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one. A mapping you set yourself must name a column that exists in the dataset:
+Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one:
 
 ```toml
 # The renderer field is reasoning_effort; this dataset stores it in an effort column.

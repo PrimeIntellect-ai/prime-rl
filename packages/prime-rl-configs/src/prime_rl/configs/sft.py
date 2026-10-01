@@ -98,10 +98,10 @@ class SFTColumnsConfig(BaseConfig):
     """Column with the completion as a list of OpenAI chat messages."""
 
     tools: str = "tools"
-    """Column with the tool schemas in OpenAI function-calling format. Point it at ``tool_defs`` for datasets in the verifiers rollout format, which is converted on read."""
+    """Column with the tool schemas in OpenAI function-calling format."""
 
-    renderer: dict[str, str] | None = None
-    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A non-null value overrides the ``[renderer]`` setting. A mapping set here requires the column in the dataset. Unset, a ``reasoning_effort`` column sets ``reasoning_effort`` on datasets that have it."""
+    renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
 class SFTDataConfig(BaseDataConfig):
