@@ -151,7 +151,7 @@ Two accepted layouts:
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`:
 
 ```toml
 [data.columns]
@@ -162,6 +162,20 @@ tools = "schemas"
 **Per-message loss selection.** An optional `message_loss_mask` column contains one boolean or integer 0/1 per message. For example, `[0, 0, 0, 1]` on a user/assistant/user/assistant conversation trains only the final assistant turn while retaining the full context. For prompt-completion rows, the mask covers the concatenated prompt and completion messages. Zero excludes a message; one preserves the normal role and renderer loss settings. A missing or null mask leaves those settings unchanged. The renderer applies selection without changing token IDs, including ownership of assistant closing tokens. Invalid mask lengths or entries raise an error.
 
 To read a differently named column, set `data.columns.message_loss_mask = "selection"`.
+
+**Several sources.** `[[data.source]]` tables train on more than one source, each a `(dataset, subset, split)` of a HF dataset; without them the run trains on the `train` split of `data.name`. Each source inherits `data.name` and `data.revision`, overrides single `columns`, carries a relative `weight` (set on every source or on none), and can set renderer chat-template kwargs that apply to its rows under `[renderer]` and above a row's mapped columns. Sources with different extra columns or column types still interleave; progress metrics are keyed by the source `name`, which defaults to `dataset/subset/split`. A single `[[data.source]]` with `type = "fake"` trains on synthetic token sequences instead, for throughput and plumbing tests:
+
+```toml
+[[data.source]]
+dataset = "org/chat"
+weight = 3
+columns.messages = "conversation"
+
+[[data.source]]
+dataset = "org/reasoning"
+weight = 1
+renderer.reasoning_effort = "high"
+```
 
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
@@ -278,7 +292,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<source>/ratio_{samples,tokens}` — when training on multiple sources, subsets, or splits, the realized mixing ratio.
 
 **Stability and optimization:**
 

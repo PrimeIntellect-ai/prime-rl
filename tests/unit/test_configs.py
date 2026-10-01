@@ -999,7 +999,7 @@ def test_sft_rejects_default_renderer_for_real_data():
 def test_sft_allows_unused_default_renderer_for_fake_data():
     config = SFTConfig.model_validate(
         {
-            "data": {"type": "fake"},
+            "data": {"source": [{"type": "fake"}]},
             "renderer": {"name": "default"},
         }
     )

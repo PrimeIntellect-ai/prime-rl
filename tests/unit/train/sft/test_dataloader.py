@@ -5,17 +5,23 @@ import pytest
 import torch
 from datasets import Dataset
 
-from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
+from prime_rl.configs.sft import FakeSourceConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.world import reset_world
 
 
-def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
+def fake_config(length="fixed", input_ids="increasing", **data) -> SFTDataConfig:
+    return SFTDataConfig(source=[FakeSourceConfig(length=length, input_ids=input_ids)], **data)
+
+
+def setup_fake_dataloader(config: SFTDataConfig, non_dp_size: int = 1):
+    fake = config.fake_source
+    assert fake is not None
     dataset = FakeDataset(
         vocab_size=32,
         seq_len=config.seq_len,
-        length=config.length,
-        input_ids=config.input_ids,
+        length=fake.length,
+        input_ids=fake.input_ids,
         seed=config.seed,
         non_dp_size=non_dp_size,
     )
@@ -24,7 +30,7 @@ def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
 
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = fake_config(length="fixed", input_ids="increasing", batch_size=1)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -58,7 +64,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
     os.environ["LOCAL_WORLD_SIZE"] = str(2)
 
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = fake_config(length="fixed", input_ids="increasing", batch_size=1)
     _, dataloader = setup_fake_dataloader(config, non_dp_size)
     dataiter = iter(dataloader)
 
@@ -75,7 +81,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
 
 
 def test_fake_dataset_single_rank_resume():
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = fake_config(length="fixed", input_ids="increasing", batch_size=1)
     dataset, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -101,7 +107,7 @@ def test_fake_dataset_single_rank_resume():
 
 
 def test_fake_dataset_single_rank_state_with_packing():
-    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1)
+    config = fake_config(length="variable", input_ids="increasing", batch_size=1)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -238,7 +244,7 @@ def test_dataloader_shards_across_ranks_and_workers(
 
 
 def test_dataloader_progress_is_monotonic_with_uneven_workers():
-    config = FakeDataConfig(
+    config = fake_config(
         batch_size=1,
         micro_batch_size=1,
         seq_len=32,

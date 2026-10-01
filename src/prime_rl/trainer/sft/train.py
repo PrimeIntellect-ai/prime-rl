@@ -591,7 +591,7 @@ def train(config: SFTConfig):
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
-        # At least two subsets/splits
+        # At least two sources
         if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{

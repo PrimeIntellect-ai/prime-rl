@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, Features, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, ResolvedHFDatasetSource, SFTColumnsConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -89,8 +89,10 @@ class FakeDataset(StatefulIterableDataset):
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
         non_dp_size: int = 1,
+        name: str = "fake",
     ):
         super().__init__(non_dp_size)
+        self.name = name
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -143,8 +145,8 @@ class FakeDataset(StatefulIterableDataset):
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
-            self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
+            self.num_samples[self.name] += 1
+            self.num_tokens[self.name] += len(input_ids)
             yield fake_sample
 
 
@@ -209,13 +211,29 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
+JSON_COLUMN_PREFIX = "__json."
+"""Prefix of columns stored as JSON strings because sources disagree on their type."""
+
+
+def decode_json_columns(example: dict) -> dict:
+    """Restore the columns that ``load_sft_dataset`` stored as JSON strings."""
+    decoded = {}
+    for key, value in example.items():
+        if key.startswith(JSON_COLUMN_PREFIX):
+            decoded[key.removeprefix(JSON_COLUMN_PREFIX)] = None if value is None else json.loads(value)
+        else:
+            decoded[key] = value
+    return decoded
+
+
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    ``columns`` maps renderer fields to dataset columns; a row's non-null
-    values override the configured renderer's fields, validated as
-    chat-template kwargs. Renderer configs are frozen, so renderers are cached
-    per config and rows that resolve to the same config share one instance.
+    Chat-template kwargs apply in order: the ``[renderer]`` config, then the
+    row's source (``data.source[].renderer``, looked up by ``__source``), then
+    the row's non-null mapped columns. Renderer configs are frozen, so
+    renderers are cached per config and rows that resolve to the same config
+    share one instance.
     """
 
     def __init__(
@@ -224,20 +242,25 @@ class RendererResolver:
         config: RendererConfig,
         processor: Any | None = None,
         columns: dict[str, str] | None = None,
+        source_kwargs: dict[str, dict[str, Any]] | None = None,
     ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
         self.columns = SFTColumnsConfig().renderer if columns is None else columns
+        self.source_kwargs = source_kwargs or {}
         self.renderers: dict[RendererConfig, Renderer] = {}
 
     def resolve_config(self, example: dict) -> RendererConfig:
-        kwargs = {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
+        kwargs = dict(self.source_kwargs.get(example.get("__source"), {}))
+        kwargs.update(
+            {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
+        )
         if not kwargs:
             return self.config
         if isinstance(self.config, AutoRendererConfig):
             raise ValueError(
-                f"Per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
+                f"Per-source or per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
                 "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
             )
         return merge_chat_template_kwargs(self.config, kwargs)
@@ -304,6 +327,8 @@ class SFTDataset(StatefulIterableDataset):
             self.dataset = self.dataset.take(self.max_examples)
 
     def _process(self, example: dict) -> dict | None:
+        example = decode_json_columns(example)
+
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -468,7 +493,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            subset_or_split = example.get("__subset") or example.get("__split")
+            subset_or_split = example.get("__source") or example.get("__subset") or example.get("__split")
             self.logger.debug(
                 f"Yield example {example.get('__index', '')}"
                 + (f" from {subset_or_split} " if subset_or_split else " ")
@@ -624,98 +649,136 @@ def cat_collate(samples: list[Sample]) -> Batch:
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig):
-        return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
-        return
-
-    dataset_name = data.name
-    t0 = time.perf_counter()
-    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
-    snapshot = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        revision=data.revision,
-        cache_dir=env_vars.get("HF_HUB_CACHE"),
-    )
-    data.name = snapshot
-    get_logger().debug(
-        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
-    )
-
-
-def setup_and_interleave_datasets(
-    dataset_name: str,
-    subsets_and_splits: list[tuple[str | None, str]],
-    probabilities: list[float] | None,
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"],
-    seed: int = 0,
-    revision: str | None = None,
-) -> Dataset:
-    logger = get_logger()
-    datasets = []
-    for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        num_examples = len(dataset)
-        dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-        datasets.append(dataset)
-    if len(datasets) > 1:
-        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
-        dataset = interleave_datasets(
-            datasets,
-            probabilities=probabilities,
-            stopping_strategy=stopping_strategy,
-            seed=seed,
+    snapshots: dict[tuple[str, str | None], str] = {}
+    resolved = data.resolved_sources()
+    for source in resolved:
+        key = (source.dataset, source.revision)
+        if key in snapshots or Path(source.dataset).exists():
+            continue
+        t0 = time.perf_counter()
+        get_logger().info(f"Pre-downloading data {source.dataset} at revision {source.revision or 'main'}")
+        snapshots[key] = snapshot_download(
+            repo_id=source.dataset,
+            repo_type="dataset",
+            revision=source.revision,
+            cache_dir=env_vars.get("HF_HUB_CACHE"),
         )
-    else:
-        dataset = datasets[0]
+        get_logger().debug(
+            f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
+            f"{format_time(time.perf_counter() - t0)}"
+        )
+    for source, resolved_source in zip(data.source or [], resolved, strict=False):
+        key = (resolved_source.dataset, resolved_source.revision)
+        if key in snapshots:
+            # Pin the name first, so metrics keep the repo id rather than the snapshot path.
+            source.name = resolved_source.name
+            source.dataset = snapshots[key]
+    if (data.name, data.revision) in snapshots:
+        data.name = snapshots[(data.name, data.revision)]
 
+
+def load_sft_source(source: ResolvedHFDatasetSource, columns: SFTColumnsConfig) -> Dataset:
+    """Load one source and rename its columns to the names every source shares.
+
+    ``columns`` is the run-wide ``data.columns``: a source whose column names
+    differ moves them to the run-wide names, so ``SFTDataset`` reads one name
+    per field. Unmapped columns are dropped so sources with different extra
+    columns interleave.
+    """
+    logger = get_logger()
+    logger.debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
+    dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision))
+    renames: dict[str, str] = {}
+    for field in ("messages", "prompt", "completion", "tools"):
+        column = getattr(source.columns, field)
+        if column in dataset.column_names:
+            renames[column] = getattr(columns, field)
+        elif column != field:
+            raise ValueError(
+                f"Source {source.name} reads {field} from {column!r}, but it has only {dataset.column_names}"
+            )
+    for field, column in source.columns.renderer.items():
+        if column in dataset.column_names:
+            renames[column] = columns.renderer.get(field, column)
+    shared = sorted({name for name in renames.values() if list(renames.values()).count(name) > 1})
+    if shared:
+        raise ValueError(f"Source {source.name} maps several columns to {shared}; map each field once")
+    dataset = dataset.select_columns(list(renames))
+    dataset = dataset.rename_columns({old: new for old, new in renames.items() if old != new})
+    num_examples = len(dataset)
+    for name, values in (
+        ("__source", [source.name] * num_examples),
+        ("__subset", [source.subset] * num_examples),
+        ("__split", [source.split] * num_examples),
+        ("__index", list(range(num_examples))),
+    ):
+        dataset = dataset.add_column(name, values, new_fingerprint=str(uuid.uuid4()))
     return dataset
+
+
+def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
+    """Give every source the same columns, so they interleave.
+
+    A column only some sources have is added to the others as nulls with the
+    same feature. A column whose type differs between sources is stored as a
+    JSON string under ``__json.<name>`` and decoded again per row.
+    """
+    features: dict[str, dict[str, Any]] = defaultdict(dict)
+    for dataset in datasets:
+        for name, feature in dataset.features.items():
+            features[name][repr(feature)] = feature
+    conflicting = sorted(name for name, by_repr in features.items() if len(by_repr) > 1)
+    if conflicting:
+        get_logger().info(f"Storing columns {conflicting} as JSON because their types differ between sources")
+
+    def encode(batch: dict) -> dict:
+        return {
+            JSON_COLUMN_PREFIX + name: [None if value is None else json.dumps(value) for value in batch[name]]
+            for name in conflicting
+            if name in batch
+        }
+
+    aligned = []
+    for dataset in datasets:
+        present = [name for name in conflicting if name in dataset.column_names]
+        if present:
+            dataset = dataset.map(encode, batched=True, remove_columns=present)
+        for name, by_repr in features.items():
+            target = JSON_COLUMN_PREFIX + name if name in conflicting else name
+            if target in dataset.column_names:
+                continue
+            dataset = dataset.add_column(target, [None] * len(dataset), new_fingerprint=str(uuid.uuid4()))
+            if name not in conflicting:
+                dataset = dataset.cast(Features({**dataset.features, name: next(iter(by_repr.values()))}))
+        aligned.append(dataset)
+    return aligned
 
 
 def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    logger = get_logger()
-    if config.subsets is None and config.splits is None:
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, "train")],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    elif config.subsets is not None and config.splits is None:
-        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(subset, "train") for subset in config.subsets],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    elif config.subsets is None and config.splits is not None:
-        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, split) for split in config.splits],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    else:
-        assert config.subsets is not None and config.splits is not None
-        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=list(zip(config.subsets, config.splits)),
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
+    sources = config.resolved_sources()
+    datasets = _align_columns([load_sft_source(source, config.columns) for source in sources])
+    if len(datasets) == 1:
+        return datasets[0]
+    weights = [source.weight for source in sources if source.weight is not None]
+    probabilities = [weight / sum(weights) for weight in weights] if weights else None
+    get_logger().debug(f"Interleaving sources with {probabilities=} and {config.stopping_strategy=}")
+    return interleave_datasets(
+        datasets, probabilities=probabilities, stopping_strategy=config.stopping_strategy, seed=0
+    )
+
+
+def validate_source_renderer_args(config: RendererConfig, sources: list[ResolvedHFDatasetSource]) -> None:
+    """Fail before training when a source sets a kwarg the renderer doesn't have."""
+    for source in sources:
+        if not source.renderer:
+            continue
+        if isinstance(config, AutoRendererConfig):
+            raise ValueError(
+                f"Source {source.name} sets renderer arguments, which require a typed renderer config "
+                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+            )
+        merge_chat_template_kwargs(config, source.renderer)
 
 
 def setup_dataset(
@@ -729,35 +792,42 @@ def setup_dataset(
     processor: Any | None = None,
     multimodal: bool = False,
 ) -> StatefulIterableDataset:
-    if config.type == "fake":
+    fake = config.fake_source
+    if fake is not None:
         return FakeDataset(
             vocab_size=tokenizer.vocab_size,
             seq_len=config.seq_len,
-            length=config.length,
-            input_ids=config.input_ids,
+            length=fake.length,
+            input_ids=fake.input_ids,
             seed=config.seed,
             non_dp_size=non_dp_size,
+            name=fake.name or "fake",
         )
-    elif config.type == "sft":
-        if renderer_config is None:
-            raise ValueError("SFT data requires a renderer config.")
-        if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        return SFTDataset(
-            raw_dataset,
-            renderers,
-            shuffle=config.shuffle,
-            seed=config.seed,
-            seq_len=config.seq_len,
-            loss_mask_config=config.loss_mask,
-            non_dp_size=non_dp_size,
-            max_epochs=max_epochs,
-            multimodal=multimodal,
-            columns=config.columns,
-        )
-    else:
-        raise ValueError(f"Invalid dataset type: {config.type}")
+    if renderer_config is None:
+        raise ValueError("SFT data requires a renderer config.")
+    if raw_dataset is None:
+        raw_dataset = load_sft_dataset(config)
+    sources = config.resolved_sources()
+    validate_source_renderer_args(renderer_config, sources)
+    renderers = RendererResolver(
+        tokenizer,
+        renderer_config,
+        processor=processor,
+        columns=config.columns.renderer,
+        source_kwargs={source.name: source.renderer for source in sources},
+    )
+    return SFTDataset(
+        raw_dataset,
+        renderers,
+        shuffle=config.shuffle,
+        seed=config.seed,
+        seq_len=config.seq_len,
+        loss_mask_config=config.loss_mask,
+        non_dp_size=non_dp_size,
+        max_epochs=max_epochs,
+        multimodal=multimodal,
+        columns=config.columns,
+    )
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
