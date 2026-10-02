@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
+# ruff: noqa: I001 — `prime_rl._compat` must run before the deferred `ring_flash_attn` imports.
 import prime_rl._compat  # noqa: F401
 
 from dataclasses import dataclass
@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.logger import get_logger
@@ -42,8 +41,11 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
     if config.cp_style == "ring":
-        # Delayed imports: both modules live under trainer.models, which imports back into
-        # prime_rl.utils — a top-level import would deadlock at startup.
+        # Delayed imports: ring_flash_attn imports flash_attn at module scope, which only the ring
+        # path needs; attn lives under trainer.models, which imports back into prime_rl.utils — a
+        # top-level import would deadlock at startup.
+        from ring_flash_attn import substitute_hf_flash_attn
+
         from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 
         substitute_hf_flash_attn(cp_group, heads_k_stride=1)
@@ -153,6 +155,10 @@ def setup_cp_attention_params(
     )
 
     if cp_style == "ring":
+        # Delayed import: ring_flash_attn imports flash_attn at module scope, which only the ring
+        # path needs.
+        from ring_flash_attn import update_ring_flash_attn_params
+
         update_ring_flash_attn_params(cu_seqlens, cp_group)
     elif cp_style == "ulysses":
         # Delayed import: ulysses_attn lives under trainer.models, which imports
