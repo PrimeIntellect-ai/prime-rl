@@ -44,7 +44,7 @@ class EvalSource:
         self.queue: deque[TaskRequest] = deque()
         self.owed: dict[str, dict[str, int]] | None = None
         self.groups: dict[str, dict[str, str]] = {}
-        self.partial: dict[str, dict[str, list[list[dict]]]] = {}
+        self.partial: dict[str, list[list[dict]]] = {}
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -54,12 +54,13 @@ class EvalSource:
         self,
         owed: dict[str, dict[str, int]],
         groups: dict[str, dict[str, str]],
-        partial: dict[str, dict[str, list[list[dict]]]] | None = None,
+        partial: dict[str, list[list[dict]]] | None = None,
     ) -> None:
         """Rollouts the next trigger still owes per env and task key, the rest having
         landed before a resume; a task without an entry is complete. ``groups`` is the
         group id the landed rollouts of a task carry, which the owed ones join;
-        ``partial`` holds the cut-off episodes whose traces owed rollouts replay."""
+        ``partial`` holds each env's cut-off episodes; an owed rollout replays one with a
+        trace on its task."""
         self.owed = owed
         self.groups = groups
         self.partial = partial or {}
@@ -94,8 +95,9 @@ class EvalSource:
                     owed[env_name][task.key] = owed[env_name].get(task.key, 0) - rollouts
                 if rollouts > 0:
                     group_id = self.groups.get(env_name, {}).get(task.key)
-                    cut = self.partial.get(env_name, {}).get(task.key, [])
-                    replays = [cut.pop() for _ in range(min(rollouts, len(cut)))]
+                    cut = self.partial.get(env_name, [])
+                    replays = [e for e in cut if any(t["task"]["key"] == task.key for t in e)][:rollouts]
+                    self.partial[env_name] = [e for e in cut if all(e is not r for r in replays)]
                     self.queue.append(
                         TaskRequest(
                             env_name=env_name,

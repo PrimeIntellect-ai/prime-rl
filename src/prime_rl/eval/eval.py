@@ -25,7 +25,7 @@ class Eval:
     async def run(self) -> None:
         config = self.config
         landed: list[dict] = []
-        partial: dict[str, dict[str, list[list[dict]]]] = {}
+        partial: dict[str, list[list[dict]]] = {}
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             landed = resume.take_landed(config.run_dir)
@@ -50,7 +50,7 @@ class Eval:
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
                 f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed, "
-                f"{sum(len(episodes) for keys in partial.values() for episodes in keys.values())} "
+                f"{sum(len(episodes) for episodes in partial.values())} "
                 "cut-off episodes to replay"
             )
 
