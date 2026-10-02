@@ -333,6 +333,16 @@ def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     assert config.model.full_offload is None
 
 
+def test_moe_router_dtype_auto_resolves_per_trainer():
+    """``moe_router_dtype='auto'`` (the default) resolves to fp32 for RL and bf16 for SFT; explicit values are kept."""
+    assert TrainerConfig.model_validate({}).model.moe_router_dtype == "float32"
+    assert SFTConfig.model_validate({}).model.moe_router_dtype == "bfloat16"
+
+    for config_cls in (TrainerConfig, SFTConfig):
+        for dtype in ("bfloat16", "float32"):
+            assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
+
+
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
