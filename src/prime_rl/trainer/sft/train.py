@@ -481,6 +481,8 @@ def train(config: SFTConfig):
                     if name == "max_vio":
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         if gradient_manager is None:
