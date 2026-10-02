@@ -32,9 +32,13 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             buffer.copy_(src, non_blocking=True)
         return buffer
 
-    def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
-        for param in self.optimizer.state:
+    def _move_states(self, device: str, params=None):
+        """Move optimizer states for the selected parameters to CPU or GPU."""
+        if params is None:
+            params = self.optimizer.state
+        for param in params:
+            if param not in self.optimizer.state:
+                continue
             state = self.optimizer.state[param]
             for key, value in state.items():
                 if isinstance(value, DTensor):
@@ -120,3 +124,66 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
     def finish_checkpoint_load(self) -> None:
         self._initialized = True
+
+
+class StreamingMuonCPUOffloadOptimizer(CPUOffloadOptimizer):
+    """Keep Muon state and completed gradients on CPU between update batches."""
+
+    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+        super().__init__(optimizer, pin_memory=pin_memory)
+        self._cpu_gradients: dict[torch.Tensor, torch.Tensor] = {}
+
+    def _offload_gradients(self) -> None:
+        gpu_gradients = []
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                grad = param.grad
+                if grad is None:
+                    continue
+                if isinstance(grad, DTensor):
+                    cpu_grad = copy.copy(grad)
+                    cpu_grad._local_tensor = self._offload_to_cpu(param, "_gradient", grad._local_tensor)
+                else:
+                    cpu_grad = self._offload_to_cpu(param, "_gradient", grad)
+                self._cpu_gradients[param] = cpu_grad
+                param.grad = None
+                gpu_gradients.append(grad)
+        if gpu_gradients and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+
+    def has_gradient(self, param: torch.Tensor) -> bool:
+        return param in self._cpu_gradients
+
+    def load_gradients(self, params) -> None:
+        for param in params:
+            grad = self._cpu_gradients[param]
+            if isinstance(grad, DTensor):
+                gpu_grad = copy.copy(grad)
+                gpu_grad._local_tensor = grad._local_tensor.to(param.device, non_blocking=True)
+            else:
+                gpu_grad = grad.to(param.device, non_blocking=True)
+            param.grad = gpu_grad
+
+    def release_gradients(self, params) -> None:
+        for param in params:
+            param.grad = None
+            del self._cpu_gradients[param]
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        self._offload_gradients()
+        result = self.optimizer.step(state_offloader=self)
+        self._initialized = True
+        return loss if closure is not None else result
+
+    def state_dict(self):
+        return self.optimizer.state_dict()
+
+    def prepare_checkpoint_save(self) -> None:
+        pass
+
+    def finish_checkpoint_save(self) -> None:
+        pass

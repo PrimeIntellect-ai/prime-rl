@@ -529,6 +529,12 @@ class MuonConfig(BaseOptimizerConfig):
     mu: float = Field(0.95, ge=0)
     """Momentum factor for the Muon algorithm."""
 
+    max_concurrent_tasks: int = Field(3, ge=1)
+    """Maximum number of concurrent Muon update tasks. Lower values reduce optimizer-step peak memory."""
+
+    stream_cpu_offload: bool = False
+    """Stream gradients and optimizer state through CPU one update batch at a time."""
+
     betas1: float = Field(0.9, ge=0)
     """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 

@@ -1,6 +1,5 @@
 import torch
 import torch.distributed as dist
-from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
@@ -9,12 +8,13 @@ from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffload
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
-from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
+from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer, StreamingMuonCPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
@@ -98,7 +98,13 @@ def setup_optimizer(
         )
         return optimizer, optimizer._gradient_manager
 
+    if config.type == "muon" and config.stream_cpu_offload and not cpu_offload:
+        raise ValueError("Muon state streaming requires optim_cpu_offload=true")
+
     if cpu_offload:
+        if config.type == "muon" and config.stream_cpu_offload:
+            get_logger().info("Streaming Muon gradients and optimizer state from CPU one update batch at a time")
+            return StreamingMuonCPUOffloadOptimizer(optimizer), None
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
         return CPUOffloadOptimizer(optimizer), None
 
@@ -240,6 +246,7 @@ def _create_muon_optimizer(
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        max_concurrent_tasks=config.max_concurrent_tasks,
     )
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.

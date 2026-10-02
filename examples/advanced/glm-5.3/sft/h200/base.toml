@@ -19,9 +19,11 @@ freq = 1
 max_inflight_activations = 5
 
 [optim]
-type = "sign_sgd"
+type = "muon"
 lr = 5e-5
 weight_decay = 0.01
+max_concurrent_tasks = 1
+stream_cpu_offload = true
 
 [scheduler]
 type = "linear"
