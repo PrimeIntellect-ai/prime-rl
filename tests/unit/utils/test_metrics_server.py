@@ -45,12 +45,14 @@ def test_server_start_stop():
 
     server.start()
     assert server._started
-    time.sleep(0.1)
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2)
-    assert response.status == 200
-
-    server.stop()
+    try:
+        with socket.create_connection(("localhost", port), timeout=2):
+            time.sleep(0.1)
+            with urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=2) as response:
+                assert response.status == 200
+            server.stop()
+    finally:
+        server.stop()
     assert not server._started
 
 
@@ -169,13 +171,15 @@ def test_health_server_start_stop():
 
     server.start()
     assert server._started
-    time.sleep(0.1)
-
-    response = urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2)
-    assert response.status == 200
-    assert response.read() == b"ok\n"
-
-    server.stop()
+    try:
+        with socket.create_connection(("localhost", port), timeout=2):
+            time.sleep(0.1)
+            with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as response:
+                assert response.status == 200
+                assert response.read() == b"ok\n"
+            server.stop()
+    finally:
+        server.stop()
     assert not server._started
 
 

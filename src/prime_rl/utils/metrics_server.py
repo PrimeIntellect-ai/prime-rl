@@ -7,7 +7,7 @@ Runs in a background thread to avoid blocking the training loop.
 
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -26,7 +26,7 @@ class HealthServer:
     def __init__(self, port: int, host: str = "0.0.0.0"):
         self.port = port
         self.host = host
-        self._server: HTTPServer | None = None
+        self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._started = False
 
@@ -55,7 +55,7 @@ class HealthServer:
             logger.warning(f"{self.__class__.__name__} already started")
             return
 
-        self._server = HTTPServer((self.host, self.port), self._make_handler())
+        self._server = ThreadingHTTPServer((self.host, self.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self._started = True
@@ -141,7 +141,7 @@ class MetricsServer(HealthServer):
             logger.warning("Metrics server already started")
             return
 
-        self._server = HTTPServer((self.host, self.port), self._make_handler())
+        self._server = ThreadingHTTPServer((self.host, self.port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self._started = True
