@@ -1281,7 +1281,7 @@ mark.hit {
 
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
-details.entry.pending { opacity: 0.55; border-style: dashed; }
+details.entry.pending, .tool-result.pending { opacity: 0.55; border-style: dashed; }
 details.entry.semantic-origin {
   border-color: var(--accent);
   outline: 1px solid rgba(182, 255, 60, 0.55);
@@ -1318,7 +1318,7 @@ details.entry[open] > summary { border-bottom: 1px solid var(--hairline); }
 }
 details.entry[open] > summary > .entry-preview { visibility: hidden; }
 .entry-chev { color: var(--grey-4); font-size: 10px; transition: transform 0.12s; }
-details.entry[open] .entry-chev { transform: rotate(90deg); }
+details.entry[open] > summary .entry-chev { transform: rotate(90deg); }
 .entry-body { padding: 10px 14px; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--grey-5); }
 .chip {
   font-size: 10px;
@@ -1496,6 +1496,11 @@ details.meta-fold > pre { margin: 0; border: none; border-top: 1px solid var(--h
   white-space: pre-wrap;
   word-break: break-word;
 }
+.tool-result { margin-top: 8px; border-top: 1px solid var(--hairline); }
+.tool-result-meta { display: flex; align-items: center; gap: 10px; padding-top: 7px; color: var(--grey-4); font-size: 10px; }
+.tool-result-meta .icon-btn { margin-left: auto; }
+.tool-result[open] > summary .entry-chev { transform: rotate(90deg); }
+.tool-result > .entry-body { padding: 7px 0 0; }
 
 /* terminal replay follows the trace's wall clock; message text is revealed
    across its recorded model-call span because providers do not persist per-token timestamps */
@@ -1677,7 +1682,7 @@ mark.hl-quote {
 }
 mark.hl-quote[data-tip] { cursor: help; }
 .tok-tip.note { max-width: 420px; white-space: normal; }
-details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pulse 1.6s ease-out 2; }
+details.entry.hl-entry, .tool-result.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pulse 1.6s ease-out 2; }
 @keyframes hl-pulse {
   0% { box-shadow: 0 0 0 0 rgba(182, 255, 60, 0.45); }
   70% { box-shadow: 0 0 0 6px rgba(182, 255, 60, 0); }

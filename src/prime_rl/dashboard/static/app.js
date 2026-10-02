@@ -3486,9 +3486,9 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
   const messages = $("#tm-messages");
   const pinned = !refresh || messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 40;
   const scrollTop = messages.scrollTop;
-  const folded = new Map([...messages.querySelectorAll("details.entry[data-node]")].map((d) => [d.dataset.node, d.open]));
+  const folded = new Map([...messages.querySelectorAll("details[data-node]")].map((d) => [d.dataset.node, d.open]));
   renderEpisode();
-  for (const entry of messages.querySelectorAll("details.entry[data-node]"))
+  for (const entry of messages.querySelectorAll("details[data-node]"))
     if (folded.has(entry.dataset.node)) entry.open = folded.get(entry.dataset.node);
   messages.scrollTop = pinned ? messages.scrollHeight : scrollTop;
 }
@@ -4040,8 +4040,8 @@ function pyLiteral(value) {
   return JSON.stringify(value);
 }
 
-function toolCallHtml(toolCall) {
-  return `<div class="tool-call">${esc(toolCallText(toolCall))}</div>`;
+function toolCallHtml(toolCall, results = "") {
+  return `<div class="tool-call">${esc(toolCallText(toolCall))}${results}</div>`;
 }
 
 function toolCallText(toolCall) {
@@ -4345,6 +4345,28 @@ function renderMessages(ep, trace, branches) {
   }
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
+  const pending = currentLive ? trace.pending || [] : [];
+  const nodes = [...trace.nodes, ...pending.map((message, i) => ({
+    message, parent: i ? trace.nodes.length + i - 1 : path.at(-1),
+  }))];
+  const messagePath = [...path, ...pending.map((_, i) => trace.nodes.length + i)];
+  const positions = new Map(messagePath.map((idx, i) => [idx, i]));
+  const toolResults = new Map();
+  const resultOwners = new Map();
+  for (const idx of messagePath) {
+    const node = nodes[idx];
+    if (node.message?.role !== "tool" || !node.message.tool_call_id) continue;
+    // Follow parents so repeated call IDs in sibling branches cannot share results.
+    for (let parent = node.parent; parent != null; parent = nodes[parent].parent) {
+      const call = nodes[parent].message?.tool_calls?.find((call) => call.id === node.message.tool_call_id);
+      if (!call) continue;
+      if (!toolResults.has(call)) toolResults.set(call, []);
+      toolResults.get(call).push(idx);
+      resultOwners.set(idx, parent);
+      break;
+    }
+  }
+  const entryPath = messagePath.filter((idx) => !resultOwners.has(idx));
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   const scales = episodeSignalScales(trace);
@@ -4381,11 +4403,14 @@ function renderMessages(ep, trace, branches) {
     if (!hlByNode.has(h.node)) hlByNode.set(h.node, []);
     hlByNode.get(h.node).push(h);
   }
-  const entryHtml = (idx, i) => {
-    const node = trace.nodes[idx];
+  const entryHtml = (idx) => {
+    const node = nodes[idx];
+    const i = positions.get(idx);
+    const isPending = idx >= trace.nodes.length;
     const role = node.message?.role ?? "?";
     const marks = hlByNode.get(idx) || [];
     const chips = [];
+    if (isPending) chips.push("awaiting model");
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
     const nodeCalls = callsByNode.get(idx) || [];
@@ -4417,15 +4442,24 @@ function renderMessages(ep, trace, branches) {
     // Reasoning is parsed into its own box only in the text view; under a signal the
     // recorded sequence is what is being read, so it stays inline with the message.
     if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
-    const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
+    const toolCalls = (node.message?.tool_calls || []).map((call) =>
+      toolCallHtml(call, (toolResults.get(call) || []).map(entryHtml).join(""))
+    );
+    const copyButton = isPending ? "" : `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>`;
+    if (resultOwners.has(idx)) {
+      return `<details class="tool-result${isPending ? " pending" : ""}${marked ? " hl-entry" : ""}" data-node="${idx}"${marked || pendingTimelineNode === idx ? " open" : ""}>` +
+        `<summary class="tool-result-meta"><span class="entry-num">${String(i + 1).padStart(2, "0")}</span><span>result</span>` +
+        chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") + nodeCalls.map(callChipHtml).join("") + copyButton + `<span class="entry-chev">›</span></summary>` +
+        subs.join("") + `<div class="entry-body">${body}</div></details>`;
+    }
     const messageHtml =
-      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
+      `<details class="entry ${esc(role)}${isPending ? " pending" : ""}${marked ? " hl-entry" : ""}" data-node="${idx}"${(role === "system" || role === "tool") && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
       nodeCalls.map(callChipHtml).join("") +
-      `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
+      copyButton +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
@@ -4437,11 +4471,11 @@ function renderMessages(ep, trace, branches) {
   // hundreds of turns paints the first screen immediately; a highlight past the
   // first chunk forces enough entries into the DOM to scroll to
   const CHUNK = 30;
-  const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
-  const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
+  const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => entryPath.indexOf(resultOwners.get(n) ?? n)));
+  const targetPosition = pendingTimelineNode == null ? -1 : entryPath.indexOf(resultOwners.get(pendingTimelineNode) ?? pendingTimelineNode);
   // a live trace re-renders as it grows, so it renders whole: chunks loaded by scrolling
   // would be dropped by the next refresh
-  let rendered = currentLive ? path.length : Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  let rendered = currentLive ? entryPath.length : Math.min(entryPath.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
   const unlinkedCallsHtml = indexedCalls
     .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
     .map(
@@ -4452,29 +4486,12 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
-  // a live trace's pending messages: the request in flight that no node holds yet
-  // (tool results, user turns), shown dimmed until the model's reply commits them
-  const pendingHtml = (currentLive ? trace.pending || [] : [])
-    .map((message, k) => {
-      const role = message?.role ?? "?";
-      const text = messageText(message);
-      return (
-        `<details class="entry pending ${esc(role)}" open><summary><span class="entry-num">${String(path.length + k + 1).padStart(2, "0")}</span>` +
-        `<span class="entry-role">${esc(role)}</span><span class="entry-preview">${preview(text, 180)}</span>` +
-        `<span class="chip">awaiting model</span><span class="entry-chev">›</span></summary>` +
-        (text ? `<div class="entry-body">${esc(text)}</div>` : "") +
-        (message?.tool_calls || []).map(toolCallHtml).join("") +
-        `</details>`
-      );
-    })
-    .join("");
   container.innerHTML =
     errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
-    path.slice(0, rendered).map(entryHtml).join("") +
-    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml +
-    pendingHtml;
+    entryPath.slice(0, rendered).map(entryHtml).join("") +
+    (rendered < entryPath.length ? `<div id="tm-more" class="chart-empty">scroll for ${entryPath.length - rendered} more entries</div>` : "") +
+    unlinkedCallsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
@@ -4487,18 +4504,18 @@ function renderMessages(ep, trace, branches) {
         first.scrollIntoView({ block: "start", behavior: "smooth" });
       });
   }
-  if (rendered < path.length) {
+  if (rendered < entryPath.length) {
     const sentinel = container.querySelector("#tm-more");
     entriesObserver = new IntersectionObserver((hits) => {
       if (!hits.some((h) => h.isIntersecting)) return;
-      const next = path.slice(rendered, rendered + CHUNK).map((idx, j) => entryHtml(idx, rendered + j)).join("");
+      const next = entryPath.slice(rendered, rendered + CHUNK).map(entryHtml).join("");
       rendered += CHUNK;
       sentinel.insertAdjacentHTML("beforebegin", next);
-      if (rendered >= path.length) {
+      if (rendered >= entryPath.length) {
         entriesObserver.disconnect();
         sentinel.remove();
       } else {
-        sentinel.textContent = `scroll for ${path.length - rendered} more entries`;
+        sentinel.textContent = `scroll for ${entryPath.length - rendered} more entries`;
       }
     });
     entriesObserver.observe(sentinel);
