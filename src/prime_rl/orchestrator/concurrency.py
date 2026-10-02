@@ -18,7 +18,8 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
   cuts until the pool drains below the new cap.
 
 The cap starts at ``initial_inflight`` (else the pessimistic bound
-``KV capacity / max_model_len``) and is clamped to
+``KV capacity / max_model_len``, with ``max_model_len`` capped at the run's
+episode budget when one is given) and is clamped to
 ``[min_inflight, max_inflight]`` throughout.
 
 The controller is a pure state machine — it owns no tasks or clients. The
@@ -114,11 +115,16 @@ class EngineLoadSample:
 
 
 class ConcurrencyController:
-    def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
+    def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int, episode_budget: int | None = None) -> None:
         self.config = config
         self.floor = config.min_inflight
         self.fallback_cost = fallback_cost
         """Pessimistic per-unit cost for the starting cap when the engine reports no max context."""
+        self.episode_budget = episode_budget
+        """Per-unit token budget the run is configured around (training ``seq_len``). When set, the
+        starting cap costs a unit at the smaller of this and the engine's max context: a model served
+        at a 262k context would otherwise start a 14k-token run at a handful of units and take many
+        pipeline turnovers to grow out of it."""
 
         self.cap = float(config.initial_inflight or self.floor)
         self.max_inflight = self.clamp(self.cap)
@@ -257,6 +263,8 @@ class ConcurrencyController:
         if not self.bootstrapped and self.capacity is not None:
             self.bootstrapped = True
             cost = float(self.engine_max_len or self.fallback_cost)
+            if self.episode_budget:
+                cost = min(cost, float(self.episode_budget))
             self.cap = self.clamp(self.capacity / cost)
             get_logger().info(
                 f"Derived initial max inflight {int(self.cap)} - {format_num(self.capacity, precision=1)} "
