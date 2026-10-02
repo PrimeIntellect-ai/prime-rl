@@ -828,6 +828,7 @@ mark.hit {
   border-bottom: 1px solid var(--hairline);
   min-height: 48px;
 }
+#tm-main > .tm-head:first-child { flex-wrap: wrap; flex-shrink: 0; }
 .tm-tabs-row {
   min-width: 0;
   overflow-x: auto;
