@@ -49,7 +49,7 @@ def tokenizer(request: Request):
     with chat.training_renderer_lock:
         if chat.training_tokenizer is None:
             chat.training_tokenizer = load_tokenizer(chat.model_config.tokenizer)
-        return chat.training_tokenizer.get_vocab()
+        return JSONResponse(chat.training_tokenizer.get_vocab())
 
 
 @router.post("/pause")
