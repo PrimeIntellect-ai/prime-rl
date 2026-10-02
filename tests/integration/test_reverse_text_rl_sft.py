@@ -59,6 +59,8 @@ def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
         "inference",
         "--vllm.model",
         "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
+        "--renderer.name",
+        "prime-qwen3",
         "--server.port",
         str(REF_PORT),
         "--vllm.gpu-memory-utilization",

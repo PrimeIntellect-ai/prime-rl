@@ -5,6 +5,7 @@ from threading import Lock
 import uvloop
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from renderers.base import load_tokenizer
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
@@ -36,6 +37,16 @@ WORKER_EXTENSION_CLS = {
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
+
+
+@router.get("/v1/tokenizer")
+def tokenizer(request: Request):
+    """Expose the token-to-ID mapping used for training Chat Completions."""
+    chat = request.app.state.openai_serving_chat
+    with chat.training_renderer_lock:
+        if chat.training_tokenizer is None:
+            chat.training_tokenizer = load_tokenizer(chat.model_config.tokenizer)
+        return chat.training_tokenizer.get_vocab()
 
 
 @router.post("/pause")

@@ -278,7 +278,7 @@ class Orchestrator:
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
-        await asyncio.gather(*(env.setup() for env in self.train_envs))
+        await asyncio.gather(*(env.setup(self.tokenizer) for env in self.train_envs))
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()

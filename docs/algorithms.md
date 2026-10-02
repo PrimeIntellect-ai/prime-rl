@@ -542,6 +542,11 @@ A renderer outside the `renderers` package loads as a custom renderer: `name = "
 
 RL and distillation losses require sampling logprobs. CE-only frozen generation can omit
 logprobs, but its endpoint must still return exact tokens and training metadata.
+Before frozen generation starts, its endpoint's `/v1/tokenizer` vocabulary must match
+the policy tokenizer's token-to-ID mapping. Different vocabularies are rejected; frozen
+tokens are not retokenized for the policy.
+If a frozen endpoint's router does not forward `/v1/tokenizer`, set its `admin_base_url`
+to the inference servers so their vocabularies can be checked directly.
 
 ### Discontinuous Trajectories
 
