@@ -1010,18 +1010,18 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
     assert custom_renderer_config(config.renderer).instruction == "Be brief."
 
 
-def test_orchestrator_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
-    config_file = tmp_path / "orch.toml"
+def test_inference_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "inference.toml"
     config_file.write_text(
         tomli_w.dumps(
             {
-                "model": {"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
+                "vllm": {"model": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path},
             }
         )
     )
 
-    config = cli(OrchestratorConfig, args=["@", str(config_file)])
+    config = cli(InferenceConfig, args=["@", str(config_file)])
 
     assert config.renderer.name == "custom"
     assert custom_renderer_config(config.renderer).instruction == "Think step by step."

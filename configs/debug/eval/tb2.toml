@@ -9,7 +9,5 @@ group_size = 4
 env.taskset.id = "terminal-bench-2"
 env.agent.harness.id = "bash"
 env.agent.timeout.rollout = 3600
-env.agent.retries.rules = [
-  {type = "ProviderError", max_retries = 2},
-  {type = "SandboxError", max_retries = 2},
-]
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["ProviderError", "SandboxError"]
