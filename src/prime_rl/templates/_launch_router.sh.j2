@@ -75,7 +75,10 @@ LLMD_EOF
         --request-id-headers x-session-id
         --request-timeout-secs {{ router.request_timeout_secs }}
         --prometheus-port "$((port + 21000))"
-        --worker-startup-timeout-secs 4200 --log-level debug)
+        --worker-startup-timeout-secs 4200 --log-level debug
+        # Busy engines (large MoE, long prefills) miss the default 5 s health probe; with sticky
+        # sessions the flapping skews new sessions onto whichever engine is still marked healthy.
+        --health-check-timeout-secs 30 --health-failure-threshold 6)
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else
