@@ -85,8 +85,10 @@ class PrimeRlServingChat(OpenAIServingChat):
             renderer = self.training_renderer
             messages = [dict(message) for message in request.messages]
             for message in messages:
-                if "reasoning" in message:
-                    message["reasoning_content"] = message.pop("reasoning")
+                if (reasoning := message.pop("reasoning", None)) is not None:
+                    message["reasoning_content"] = reasoning
+                if message.get("reasoning_content") is None:
+                    message.pop("reasoning_content", None)
             tools = [tool.model_dump(exclude_none=True) for tool in request.tools] if request.tools else None
             rendered = renderer.render(messages, tools=tools, add_generation_prompt=request.add_generation_prompt)
             if len(rendered.token_ids) >= self.model_config.max_model_len:
@@ -131,26 +133,29 @@ class PrimeRlServingChat(OpenAIServingChat):
             return messages, [engine_input]
 
     async def chat_completion_full_generator(self, request, result_generator, *args, **kwargs):
+        training = getattr(request, "return_training_metadata", False)
         experts = {}
         masks = {}
 
         async def capture():
             async for result in result_generator:
                 for output in result.outputs:
-                    routing = serialize_routed_experts(output.routed_experts, request.routed_experts_prompt_start)
-                    if routing is not None:
-                        experts[output.index] = routing
-                    # Native vLLM emits .npy here; the PD router consumes compact arrays.
+                    if training:
+                        routing = serialize_routed_experts(output.routed_experts, request.routed_experts_prompt_start)
+                        if routing is not None:
+                            experts[output.index] = routing
+                        if output.sampling_mask is not None:
+                            masks[output.index] = output.sampling_mask.token_ids
+                    # Replay arrays belong only in explicitly requested training records.
                     output.routed_experts = None
-                    if output.sampling_mask is not None:
-                        masks[output.index] = output.sampling_mask.token_ids
+                    output.sampling_mask = None
                 yield result
 
         response_renderer = getattr(request, "_prime_response_renderer", None)
         if response_renderer is not None:
             kwargs["parser"] = None
         response = await super().chat_completion_full_generator(request, capture(), *args, **kwargs)
-        if not isinstance(response, ChatCompletionResponse):
+        if not training or not isinstance(response, ChatCompletionResponse):
             return response
         if response_renderer is not None:
             renderer, tools = response_renderer
