@@ -5,9 +5,7 @@ name = "PrimeIntellect/Qwen3-0.6B"
 compile = "None"
 
 [data]
+type = "fake"
 batch_size = 2
 seq_len = 1024
-
-[[data.source]]
-type = "fake"
 

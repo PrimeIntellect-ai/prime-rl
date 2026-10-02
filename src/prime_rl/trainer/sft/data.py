@@ -1,7 +1,7 @@
 import json
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, ResolvedHFDatasetSource, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, HFDatasetConfig, LossMaskConfig, ResolvedHFDatasetSource, SFTColumnsConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -89,10 +89,8 @@ class FakeDataset(StatefulIterableDataset):
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
         non_dp_size: int = 1,
-        name: str = "fake",
     ):
         super().__init__(non_dp_size)
-        self.name = name
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -145,8 +143,8 @@ class FakeDataset(StatefulIterableDataset):
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
-            self.num_samples[self.name] += 1
-            self.num_tokens[self.name] += len(input_ids)
+            self.num_samples["fake"] += 1
+            self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
 
 
@@ -306,6 +304,7 @@ class SFTDataset(StatefulIterableDataset):
         self.num_examples = len(self.dataset)
         self.renderers = renderers
         self.columns = columns
+        self.source_sizes = dict(Counter(dataset["__source"])) if "__source" in dataset.column_names else {}
         # Default names are optional: a dataset carries either messages or
         # prompt/completion, and tools only for tool use. A name set in the
         # config must exist.
@@ -520,6 +519,7 @@ class CatDataset(StatefulIterableDataset):
             "progress": {
                 "num_samples": dict(self.dataset.num_samples),
                 "num_tokens": dict(self.dataset.num_tokens),
+                "source_sizes": getattr(self.dataset, "source_sizes", {}),
             },
         }
         if self.pending_sample is not None:
@@ -649,6 +649,8 @@ def cat_collate(samples: list[Sample]) -> Batch:
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if not isinstance(data, HFDatasetConfig):
+        return
     snapshots: dict[tuple[str, str | None], str] = {}
     resolved = data.resolved_sources()
     for source in resolved:
@@ -667,7 +669,7 @@ def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
             f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
             f"{format_time(time.perf_counter() - t0)}"
         )
-    for source, resolved_source in zip(data.source or [], resolved, strict=False):
+    for source, resolved_source in zip(data.source, resolved, strict=True):
         key = (resolved_source.dataset, resolved_source.revision)
         if key in snapshots:
             # Pin the name first, so metrics keep the repo id rather than the snapshot path.
@@ -689,7 +691,7 @@ def load_sft_source(source: ResolvedHFDatasetSource, columns: SFTColumnsConfig) 
     logger.debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
     dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision))
     renames: dict[str, str] = {}
-    for field in ("messages", "prompt", "completion", "tools"):
+    for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
         column = getattr(source.columns, field)
         if column in dataset.column_names:
             renames[column] = getattr(columns, field)
@@ -754,7 +756,7 @@ def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
     return aligned
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+def load_sft_dataset(config: HFDatasetConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     sources = config.resolved_sources()
     datasets = _align_columns([load_sft_source(source, config.columns) for source in sources])
@@ -792,16 +794,14 @@ def setup_dataset(
     processor: Any | None = None,
     multimodal: bool = False,
 ) -> StatefulIterableDataset:
-    fake = config.fake_source
-    if fake is not None:
+    if config.type == "fake":
         return FakeDataset(
             vocab_size=tokenizer.vocab_size,
             seq_len=config.seq_len,
-            length=fake.length,
-            input_ids=fake.input_ids,
+            length=config.length,
+            input_ids=config.input_ids,
             seed=config.seed,
             non_dp_size=non_dp_size,
-            name=fake.name or "fake",
         )
     if renderer_config is None:
         raise ValueError("SFT data requires a renderer config.")
@@ -861,14 +861,17 @@ def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
     furthest = max(positions, key=lambda position: position["step"])
     num_samples = defaultdict(int)
     num_tokens = defaultdict(int)
+    source_sizes: dict[str, int] = {}
     for worker_snapshot in worker_snapshots.values():
         progress = worker_snapshot["dataset_state"].get("progress", {})
         for name, count in progress.get("num_samples", {}).items():
             num_samples[name] += count
         for name, count in progress.get("num_tokens", {}).items():
             num_tokens[name] += count
+        source_sizes.update(progress.get("source_sizes", {}))
     return {
         **furthest,
         "num_samples": dict(num_samples),
         "num_tokens": dict(num_tokens),
+        "source_sizes": source_sizes,
     }

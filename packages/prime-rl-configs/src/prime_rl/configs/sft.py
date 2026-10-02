@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -59,6 +59,19 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class FakeDataConfig(BaseDataConfig):
+    type: Literal["fake"] = "fake"
+
+    length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
+    input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
+
+
 class LossMaskConfig(BaseConfig):
     system: bool = False
     """System messages contribute to the loss."""
@@ -96,7 +109,7 @@ class SFTColumnsConfig(BaseConfig):
 
 
 class SourceConfig(BaseConfig):
-    """Fields every SFT data source shares."""
+    """Fields every data source shares."""
 
     name: str | None = None
     """Label in logs and progress metrics. Each source type has its own default."""
@@ -106,9 +119,7 @@ class SourceConfig(BaseConfig):
 
 
 class HFDatasetSourceConfig(SourceConfig):
-    """One ``(dataset, subset, split)`` of a Hugging Face dataset. Unset fields inherit from ``[data]``; ``name`` defaults to ``dataset/subset/split``."""
-
-    type: Literal["hf"] = "hf"
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset. ``name`` defaults to ``dataset/subset/split``."""
 
     dataset: str | None = None
     """HF dataset name or path. Defaults to ``data.name``."""
@@ -129,21 +140,6 @@ class HFDatasetSourceConfig(SourceConfig):
     """Chat-template kwargs for this source, applied over ``[renderer]`` and under a row's mapped columns, e.g. ``{ reasoning_effort = "high" }``."""
 
 
-class FakeSourceConfig(SourceConfig):
-    """Synthetic token sequences for throughput and plumbing tests; the only source of its run. ``name`` defaults to ``fake``."""
-
-    type: Literal["fake"] = "fake"
-
-    length: Literal["fixed", "variable"] = "fixed"
-    """Use fixed-length samples or variable-length samples."""
-
-    input_ids: Literal["increasing", "random"] = "increasing"
-    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
-
-
-DataSourceConfig: TypeAlias = Annotated[HFDatasetSourceConfig | FakeSourceConfig, Field(discriminator="type")]
-
-
 class ResolvedHFDatasetSource(BaseConfig):
     """An ``HFDatasetSourceConfig`` with every field resolved against ``[data]``."""
 
@@ -157,12 +153,16 @@ class ResolvedHFDatasetSource(BaseConfig):
     renderer: dict[str, Any]
 
 
-class SFTDataConfig(BaseDataConfig):
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
-    """HF dataset name or path."""
+class HFDatasetConfig(BaseDataConfig):
+    """Train on one or more ``[[data.source]]`` tables, each a ``(dataset, subset, split)`` of a HF dataset."""
+
+    type: Literal["hf"] = "hf"
+
+    name: str | None = None
+    """HF dataset name or path that sources without their own ``dataset`` read."""
 
     revision: str | None = None
-    """HF dataset revision to load. Ignored for a local path."""
+    """HF dataset revision for sources that read ``name``. Ignored for a local path."""
 
     stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
     """Stopping strategy when interleaving several sources."""
@@ -176,69 +176,33 @@ class SFTDataConfig(BaseDataConfig):
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Columns for every source. A source's ``columns`` override single fields."""
 
-    source: list[DataSourceConfig] | None = None
-    """Sources to train on as ``[[data.source]]`` tables: ``type = "hf"`` for a ``(dataset, subset, split)`` of a HF dataset, reading ``name`` and ``revision`` unless it sets its own, or ``type = "fake"`` for synthetic tokens. Unset, the run trains on the ``train`` split of ``name``."""
+    source: list[HFDatasetSourceConfig] = Field(min_length=1)
+    """Sources to train on, one ``[[data.source]]`` table each. A source without ``dataset`` reads ``name`` and ``revision``."""
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
-    @field_validator("source", mode="before")
-    @classmethod
-    def _default_source_type(cls, sources):
-        # A source table without a type is a HF dataset, the common case.
-        if isinstance(sources, list):
-            return [{"type": "hf", **source} if isinstance(source, dict) else source for source in sources]
-        return sources
-
     @model_validator(mode="after")
     def validate_sources(self):
-        if self.source is None:
-            return self
-        if not self.source:
-            raise ValueError("data.source must list at least one source.")
-        types = {source.type for source in self.source}
-        if len(types) > 1:
-            raise ValueError(f"data.source entries must share one type; got {sorted(types)}.")
-        if self.fake_source is not None and len(self.source) > 1:
-            raise ValueError("A fake data.source must be the only source.")
         weighted = [source.weight is not None for source in self.source]
         if any(weighted) and not all(weighted):
             raise ValueError("Set weight on every data.source or on none.")
+        unnamed = [index for index, source in enumerate(self.source) if source.dataset is None]
+        if unnamed and self.name is None:
+            raise ValueError(f"data.source[{unnamed[0]}] sets no dataset and data.name is unset.")
         names = [source.name for source in self.resolved_sources()]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             raise ValueError(f"data.source names must be unique; repeated: {duplicates}. Set name to tell them apart.")
         return self
 
-    @property
-    def fake_source(self) -> FakeSourceConfig | None:
-        """The fake source when the run trains on synthetic tokens."""
-        if self.source and isinstance(self.source[0], FakeSourceConfig):
-            return self.source[0]
-        return None
-
     def resolved_sources(self) -> list[ResolvedHFDatasetSource]:
-        """Every HF source with its dataset, revision, columns, and renderer settings resolved. Empty for a fake source."""
-        if self.fake_source is not None:
-            return []
-        if self.source is None:
-            return [
-                ResolvedHFDatasetSource(
-                    name="train",
-                    dataset=self.name,
-                    revision=self.revision,
-                    subset=None,
-                    split="train",
-                    weight=None,
-                    columns=self.columns,
-                    renderer={},
-                )
-            ]
+        """Every source with its dataset, revision, columns, and renderer settings resolved."""
         resolved = []
         for source in self.source:
-            assert isinstance(source, HFDatasetSourceConfig)
             dataset = source.dataset or self.name
+            assert dataset is not None
             overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
             resolved.append(
                 ResolvedHFDatasetSource(
@@ -267,10 +231,10 @@ class SFTValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    data: SFTDataConfig
+    data: HFDatasetConfig
 
 
-DataConfig: TypeAlias = SFTDataConfig
+DataConfig: TypeAlias = Annotated[FakeDataConfig | HFDatasetConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -324,7 +288,7 @@ class SFTConfig(BaseConfig):
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
-    data: DataConfig = SFTDataConfig()
+    data: DataConfig = HFDatasetConfig(source=[HFDatasetSourceConfig(dataset="PrimeIntellect/Reverse-Text-SFT")])
 
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
@@ -642,7 +606,7 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.fake_source is not None and self.val is None:
+        if self.data.type == "fake" and self.val is None:
             return self
 
         model_id = self.tokenizer.name or self.model.name
