@@ -288,7 +288,7 @@ class Orchestrator:
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
         await asyncio.gather(
-            *(env.generation_source.setup() for env in self.train_envs),
+            *(env.generation_source.setup(self.tokenizer) for env in self.train_envs),
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
