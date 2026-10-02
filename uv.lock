@@ -167,11 +167,6 @@ version = "1.4.2"
 requires-dist = ["pydantic>=2.10.6,<=2.13.5", "uvloop>=0.21.0"]
 
 [[manifest.dependency-metadata]]
-name = "modelexpress"
-version = "0.3.0"
-requires-dist = ["grpcio>=1.66.2", "huggingface-hub>=0.20.0", "nixl", "numpy>=1.24.0", "protobuf>=5.27.0,<7.0.0", "pydantic>=2.0.0", "torch>=2.6.0"]
-
-[[manifest.dependency-metadata]]
 name = "nixl"
 version = "0.10.1"
 requires-dist = ["nixl-cu13==0.10.1"]
@@ -3600,23 +3595,6 @@ wheels = [
 ]
 
 [[package]]
-name = "modelexpress"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "grpcio" },
-    { name = "huggingface-hub", version = "1.32.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "nixl" },
-    { name = "numpy" },
-    { name = "protobuf" },
-    { name = "pydantic" },
-    { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/b5/12f940a41940fd83b9e50ce46124695b68a80feab02612779f8fb584db09/modelexpress-0.3.0-py3-none-any.whl", hash = "sha256:6f93d8de74903f6c11ebf9b4621fa02e3c493a5e05207c38fb2c98395a774618", size = 44333, upload-time = "2026-04-17T20:17:29.478Z" },
-]
-
-[[package]]
 name = "mooncake-transfer-engine"
 version = "0.3.11.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -4978,7 +4956,6 @@ all = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
-    { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
@@ -5031,7 +5008,6 @@ gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
-    { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
@@ -5095,7 +5071,6 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
-    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "sys_platform == 'linux' and extra == 'disagg'" },

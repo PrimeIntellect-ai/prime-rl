@@ -1,8 +1,11 @@
 import asyncio
+import json
 from pathlib import Path
+from runpy import run_path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -84,6 +87,94 @@ def test_admin_plane_initializes_nccl():
         },
     )
     asyncio.run(admin_plane.aclose())
+
+
+@pytest.mark.parametrize("failure_path", [None, "/pause", "/update_weights", "/resume"])
+@pytest.mark.parametrize("timed", [False, True])
+def test_mx_update_resumes_only_after_every_engine_succeeds(failure_path, timed):
+    calls = []
+    phase_timer = run_path(Path(__file__).parents[3] / "src/prime_rl/transports/weights/mx_phases.py")["PhaseTimer"]
+    timer = phase_timer("orchestrator", 1, "test:1")
+
+    async def handle(request):
+        calls.append((request.url.host, request.url.path))
+        if request.url.path == "/update_weights":
+            assert json.loads(request.content) == {"weight_dir": None, "version_uid": "test:1"}
+        status = (500 if failure_path == "/update_weights" else 400) if request.url.path == failure_path else 200
+        return httpx.Response(status, json={"status": "ok"})
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [
+            httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url=f"http://worker-{rank}")
+            for rank in range(2)
+        ]
+        try:
+            with timer.phase("update_rpc", timeline=True):
+                await admin.update_weights(
+                    None, transport="mx_refit", step=1, version_uid="test:1", phase_timer=timer if timed else None
+                )
+        finally:
+            await admin.aclose()
+
+    if failure_path:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    paths = ["/pause", "/update_weights", "/resume"]
+    reached = paths[: paths.index(failure_path) + 1] if failure_path else paths
+    assert calls == [(f"worker-{rank}", path) for path in reached for rank in range(2)]
+    if timed:
+        spans = timer.payload()["spans"]
+        assert [span["name"] for span in spans] == [
+            {"/pause": "admin_pause", "/update_weights": "admin_update", "/resume": "admin_resume"}[path]
+            for path in reached
+        ] + ["update_rpc"]
+        assert spans[-1]["status"] == ("failed" if failure_path else "complete")
+        assert spans[-2]["status"] == ("failed" if failure_path else "complete")
+        assert all(span["status"] == "complete" for span in spans[:-2])
+        assert all(left["end_offset_s"] <= right["start_offset_s"] for left, right in zip(spans[:-2], spans[1:-1]))
+        assert set(timer.phases) == {"update_rpc"}
+
+
+def test_mx_update_waits_for_every_replica_before_propagating():
+    """A failing replica must not release the caller while siblings still read.
+
+    asyncio.gather raises the first exception without cancelling its siblings.
+    Those siblings are still pulling the trainer's registered buffers over RDMA,
+    so returning early lets the caller retire the version, satisfy the release
+    wait and publish the next step over memory that is still being read.
+    """
+    events = []
+
+    async def handle(request):
+        if request.url.path != "/update_weights":
+            return httpx.Response(200, json={"status": "ok"})
+        worker = request.url.host
+        events.append((worker, "start"))
+        if worker == "worker-0":
+            return httpx.Response(500, json={"status": "error"})
+        await asyncio.sleep(0.05)
+        events.append((worker, "finish"))
+        return httpx.Response(200, json={"status": "ok"})
+
+    async def run():
+        admin = AdminPlane(ClientConfig())
+        await admin.aclose()
+        admin.clients = [
+            httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url=f"http://worker-{rank}")
+            for rank in range(2)
+        ]
+        try:
+            await admin.update_weights(None, transport="mx_refit", step=1, version_uid="test:1")
+        finally:
+            await admin.aclose()
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(run())
+    assert ("worker-1", "finish") in events, "returned while a replica was still updating"
 
 
 def test_setup_client_creates_renderer_client():

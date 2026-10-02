@@ -34,6 +34,12 @@ the current attempt.
 
 ## Validators
 
+For expert-parallel inference with Ray TP spanning multiple nodes, set
+`inference.vllm.distributed_executor_backend = "ray"`, DP1, and TP equal to all
+GPUs in one inference replica. Set `slurm.template_path` to a custom template
+that starts the Ray cluster and one API driver per replica. The standard local
+DP launcher does not launch this topology. Local DP and the default API count resolve to one.
+
 Incompatible combinations (e.g. CP requires flash attention) must raise in a `model_validator` at resolve time, not at runtime. When renaming a field, remove the old spelling: no `validation_alias`, no auto-translating `mode="before"` validator. The old key then fails as an unknown key, which is the signal. An alias that stays forever is worse than a break — it never gets retired, and a key whose *meaning* changed silently misconfigures the run.
 
 ## Special syntax

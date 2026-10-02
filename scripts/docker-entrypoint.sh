@@ -17,6 +17,10 @@ ulimit -n 32000 2>/dev/null || echo "Warning: Could not set ulimit (may need --u
 # The pods of the prime-rl-fft chart run this with a sha pinned by the
 # dispatcher; the exported PRIME_RL_SOURCE_COMMIT records what ran.
 if [ -n "$PRIME_RL_REF" ]; then
+    if [[ "${UV_NO_SYNC:-}" == "1" || "${UV_NO_SYNC:-}" == "true" ]]; then
+        echo "[prime-rl] PRIME_RL_REF requires dependency sync and cannot be used with UV_NO_SYNC. Build an image for the requested source revision." >&2
+        exit 1
+    fi
     PRIME_RL_REPO="${PRIME_RL_REPO:-https://github.com/PrimeIntellect-ai/prime-rl.git}"
     # Slug + content hash for the checkout dir name. Slug keeps the path
     # human-readable; the hash (over repo + ref) prevents collisions
