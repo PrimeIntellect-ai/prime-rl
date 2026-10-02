@@ -27,6 +27,7 @@ try:
     from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd
 except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
+    _flash_attn_bwd = _flash_attn_fwd = None  # type: ignore
 
 
 # FA4's flash_attn_varlen_func is a Python autograd.Function that Dynamo cannot trace. Inside a
@@ -159,7 +160,7 @@ class FlashAttention(nn.Module):
     _funcs = {
         2: flash_attn_varlen_func,
         3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_op if flash_attn_4_varlen_func is not None else None,
+        4: flash_attn_4_varlen_op,
     }
 
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
