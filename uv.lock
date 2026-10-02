@@ -109,6 +109,7 @@ members = [
     "pi-deepswe",
     "pi-officeqa-pro-v2",
     "pi-programbench",
+    "pi-swe-sweep",
     "pi-terminal-bench-2",
     "pinchbench",
     "prime-rl",
@@ -130,6 +131,7 @@ members = [
     "swe-atlas-qna",
     "swe-atlas-rf",
     "swe-atlas-tw",
+    "swe-sweep",
     "swebench-multilingual",
     "swebench-pro",
     "swebench-verified",
@@ -4672,24 +4674,30 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2
 
 [[package]]
 name = "pi-officeqa-pro-v2"
-version = "0.1.1"
+version = "0.1.4"
 source = { editable = "deps/prime-envs/environments/search/pi_officeqa_pro_v2" }
 dependencies = [
-    { name = "huggingface-hub", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "huggingface-hub", version = "1.32.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", specifier = ">=0.3.1" },
-]
+requires-dist = [{ name = "verifiers", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "pi-programbench"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/code/pi_programbench" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev169" }]
+
+[[package]]
+name = "pi-swe-sweep"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/swe/pi_swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
@@ -5213,7 +5221,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.3.2"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5225,9 +5233,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f8/fe/69195c7c9e3d0f938e84ae54a8ffd386529019fb7635cad65d318e96271d/prime_sandboxes-0.3.2.tar.gz", hash = "sha256:6ded2497cbff8b5760e3f7897e1f00f2b789463daa397481620361bb148bfc45", size = 135266, upload-time = "2026-09-25T21:35:16.33Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/31/5ad18141756a8cdbff89061426cbb8816aafb513de935caa8e8f875c8819/prime_sandboxes-0.4.1.tar.gz", hash = "sha256:53f7577dc9070e3b8e30db360f9e3cce3bcc35f8765b26f24f64dbc3c7763b06", size = 134242, upload-time = "2026-10-01T01:58:55.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/fc/6eefb673bbcbdd33105b5d14e8d7329a0b10a30c893ac8c74a8f2373a477/prime_sandboxes-0.3.2-py3-none-any.whl", hash = "sha256:d47f07fe90e662464ddd33468fa538f37c962e7bec5c2cbbbd170eb57d0ef89e", size = 72421, upload-time = "2026-09-25T21:35:14.99Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c9/72067996420188928a6d5e05af46d60530edf24d78ca2d5bbf9fcef247cf/prime_sandboxes-0.4.1-py3-none-any.whl", hash = "sha256:1a1bb96afacc66d690815be82c0b7af180ea141421b7d180b4a0adbada4f38f0", size = 72136, upload-time = "2026-10-01T01:58:53.63Z" },
 ]
 
 [[package]]
@@ -6718,6 +6726,17 @@ wheels = [
 ]
 
 [[package]]
+name = "swe-sweep"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/swe/swe_sweep" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev164" }]
+
+[[package]]
 name = "swebench"
 version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7688,6 +7707,7 @@ ta = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=1.0.0" },
+    { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.35.0,<3" },
     { name = "gepa", specifier = ">=0.0.6" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
@@ -7704,7 +7724,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.3" },
-    { name = "prime-sandboxes", specifier = ">=0.3.0" },
+    { name = "prime-sandboxes", specifier = ">=0.4.1" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
@@ -7716,7 +7736,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.2" },
     { name = "uvicorn", specifier = ">=0.52.0" },
 ]
-provides-extras = ["harbor", "modal", "openenv", "ta"]
+provides-extras = ["e2b", "harbor", "modal", "openenv", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
