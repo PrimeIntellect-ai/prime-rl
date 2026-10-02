@@ -158,18 +158,26 @@ messages = "conversation"
 tools = "schemas"
 ```
 
-**Several sources.** `[[data.source]]` tables train on more than one source, each a `(dataset, subset, split)` of a HF dataset; without them the run trains on the `train` split of `data.name`. Each source inherits `data.name` and `data.revision`, overrides single `columns`, carries a relative `weight` (set on every source or on none), and can set renderer chat-template kwargs that apply to its rows under `[renderer]` and above a row's mapped columns. Sources with different extra columns or column types still interleave; progress metrics are keyed by the source `name`, which defaults to `dataset/subset/split`. A single `[[data.source]]` with `type = "fake"` trains on synthetic token sequences instead, for throughput and plumbing tests:
+**Sources.** `[[data.source]]` tables name what a run trains on; at least one is required, and each is a `(dataset, subset, split)` of a HF dataset. `data.name` and `data.revision` are shared defaults for sources that set no `dataset` of their own. A source carries a relative `weight` (set on every source or on none), overrides single `columns`, and can set renderer chat-template kwargs that apply to its rows under `[renderer]` and above a row's mapped columns. Sources with different extra columns or column types still interleave. Progress metrics are keyed by the source `name`, which defaults to `dataset/subset/split`. `[data] type = "fake"` trains on synthetic token sequences instead, for throughput and plumbing tests:
 
 ```toml
+[data]
+name = "org/sft-release"
+revision = "abc123"
+
 [[data.source]]
-dataset = "org/chat"
+subset = "chat"
 weight = 3
 columns.messages = "conversation"
 
 [[data.source]]
-dataset = "org/reasoning"
+subset = "reasoning"
 weight = 1
 renderer.reasoning_effort = "high"
+
+[[data.source]]
+dataset = "org/other-dataset"
+weight = 1
 ```
 
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
@@ -287,7 +295,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<source>/ratio_{samples,tokens}` — when training on multiple sources, subsets, or splits, the realized mixing ratio.
+- `progress/<source>/{num_samples,num_tokens,ratio_samples,ratio_tokens,epoch}` — per-source progress: counts, the realized mixing ratio, and passes over that source.
 
 **Stability and optimization:**
 

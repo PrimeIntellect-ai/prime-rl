@@ -948,7 +948,7 @@ def test_sft_rejects_default_renderer_for_real_data():
 def test_sft_allows_unused_default_renderer_for_fake_data():
     config = SFTConfig.model_validate(
         {
-            "data": {"source": [{"type": "fake"}]},
+            "data": {"type": "fake"},
             "renderer": {"name": "default"},
         }
     )
@@ -1071,7 +1071,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"source": [{"dataset": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"}]},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )
