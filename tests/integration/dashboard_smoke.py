@@ -145,9 +145,11 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert reward not in ("", "n/a"), f"episode reward did not render: {reward!r}"
                 trace_id = page.evaluate("currentEpisode.traces[currentTraceIdx].id")
                 assert page.evaluate("new URLSearchParams(location.hash.slice(1)).get('trace')") == trace_id
+                history_length = page.evaluate("history.length")
                 page.reload()
                 page.wait_for_function("currentEpisode !== null && !document.querySelector('#trace-modal').hidden")
                 assert page.evaluate("currentEpisode.traces[currentTraceIdx].id") == trace_id
+                assert page.evaluate("history.length") == history_length
                 page.click("#tm-view [data-view=replay]")
                 page.wait_for_timeout(250)
                 assert page.locator(".replay-shell").count() == 1, "terminal replay did not render"

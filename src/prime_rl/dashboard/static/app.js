@@ -368,6 +368,7 @@ function renderOverview() {
 }
 
 let renderedHash = location.hash;
+let initializing = true;
 
 function updateHash() {
   const parts = [`run=${encodeURIComponent(state.run || "")}`, `tab=${state.tab}`];
@@ -375,7 +376,9 @@ function updateHash() {
   const trace = currentLive || currentEpisode?.traces?.[currentTraceIdx]?.id;
   if (trace) parts.push(`trace=${encodeURIComponent(trace)}`);
   renderedHash = `#${parts.join("&")}`;
-  location.hash = renderedHash;
+  // Restoring the view on page load must not add navigation history.
+  if (initializing) history.replaceState(null, "", renderedHash);
+  else location.hash = renderedHash;
 }
 
 async function activateTab(tab, force = false) {
@@ -3439,7 +3442,7 @@ function renderLiveRows() {
     if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
     else {
       const landed = (state.traces.episodes || []).find((ep) => (ep.trace_ids || []).includes(currentLive));
-      if (landed) openEpisode(landed.line, { trace: landed.trace_ids.indexOf(currentLive) });
+      if (landed) openEpisode(landed.line, { traceId: currentLive });
       else $("#tm-live-label").textContent = "finished · now in the stream";
     }
   }
@@ -3776,7 +3779,7 @@ async function openEpisode(line, target = {}) {
   episode._hasTokens = withTokens;
   episode._hasRendered = withRendered;
   currentEpisode = episode;
-  currentTraceIdx = target.trace ?? 0;
+  currentTraceIdx = target.traceId ? episode.traces.findIndex((trace) => trace.id === target.traceId) : target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
   currentEvidenceView = target.evidence ?? null;
   traceView = currentEvidenceView == null ? preferredTraceView : "transcript";
@@ -7490,12 +7493,13 @@ window.addEventListener("hashchange", () => {
       else {
         const data = await api(`/api/runs/${encodeURIComponent(run)}/episodes?trace=${encodeURIComponent(trace)}&limit=1`);
         const episode = data.episodes[0];
-        if (episode) await openEpisode(episode.line, { trace: episode.trace_ids.indexOf(trace) });
+        if (episode) await openEpisode(episode.line, { traceId: trace });
         else toastMsg(`trace ${esc(trace)} not found in this run`);
       }
     } catch (err) {
       toastMsg(`could not open trace ${esc(trace)}: ${esc(err.message)}`);
     }
   }
+  initializing = false;
   connectViewEvents();
 })();
