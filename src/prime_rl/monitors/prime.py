@@ -324,7 +324,8 @@ class PrimeEvalMonitor(Monitor):
                 evaluation = record.get("evaluations", {}).get(env_name)
                 # The dashboard links to the latest epoch of each environment.
                 if evaluation is not None and evaluation["id"] == run.id:
-                    evaluation["incomplete"] = incomplete
+                    # Read the latest health under the file lock so delayed reports cannot restore stale values.
+                    evaluation["incomplete"] = self._upload_health[key]
                 return record
 
             await asyncio.to_thread(_merge_platform_record, self.output_dir, _upload_health_update)

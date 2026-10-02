@@ -304,6 +304,8 @@ def test_record_persistence_runs_off_the_event_loop(prime_init, tmp_path, monkey
 
 
 def test_upload_health_retries_and_preserves_concurrent_records(tmp_path, monkeypatch):
+    import threading
+
     import prime_rl.monitors.prime as prime_module
 
     monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
@@ -348,6 +350,34 @@ def test_upload_health_retries_and_preserves_concurrent_records(tmp_path, monkey
         merged = prime_module.read_platform_record(tmp_path)
         assert merged["id"] == "run-1"
         assert merged["evaluations"]["rev"]["incomplete"] == "upload failed"
+
+        # Let a periodic report persist after the final report from a drained run.
+        started, release = threading.Event(), threading.Event()
+        real_merge = prime_module._merge_platform_record
+
+        def delayed_merge(output_dir, merge):
+            if not started.is_set():
+                started.set()
+                assert release.wait(5)
+            return real_merge(output_dir, merge)
+
+        monitor.runs["rev", 1] = run
+        run.finished = False
+        with monkeypatch.context() as patch:
+            patch.setattr(prime_module, "_merge_platform_record", delayed_merge)
+            pending = asyncio.create_task(monitor.log_metrics({}, 1))
+            try:
+                assert await asyncio.to_thread(started.wait, 5)
+                run.failed_records = {"samples": 2}
+                run.finished = True
+                await monitor.report_upload_health("rev", 1, run)
+                final_record = prime_module.read_platform_record(tmp_path)
+                assert "2 record(s)" in final_record["evaluations"]["rev"]["incomplete"]
+            finally:
+                release.set()
+                await pending
+        await monitor.log_metrics({}, 1)
+        assert prime_module.read_platform_record(tmp_path) == final_record
 
         with prime_module._platform_record_lock(tmp_path):
             pending = asyncio.create_task(monitor.report_upload_health("rev", 1, run))
