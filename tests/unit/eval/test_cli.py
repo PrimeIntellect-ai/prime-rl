@@ -52,6 +52,22 @@ def test_expand_shorthands_refuses_shorthand_next_to_source_toml(tmp_path) -> No
     toml.write_text('[[source]]\nenv.taskset.id = "gsm8k"\n')
     with pytest.raises(SystemExit, match="cannot be combined"):
         expand_shorthands(["wordle", "@", toml.as_posix()])
+    with pytest.raises(SystemExit, match="cannot be combined"):
+        expand_shorthands(["wordle", "@", toml.as_posix(), "--env.retries.max-retries", "3"])
+
+
+def test_expand_shorthands_passes_env_flags_to_the_shared_block_next_to_source_toml(tmp_path) -> None:
+    toml = tmp_path / "eval.toml"
+    toml.write_text('[[source]]\nenv.taskset.id = "gsm8k"\n')
+    argv = ["@", toml.as_posix(), "--env.retries.max-retries", "3", "--env.timeout.episode=60"]
+    assert expand_shorthands(argv) == [
+        "@",
+        toml.as_posix(),
+        "--env.retries.max-retries",
+        "3",
+        "--env.timeout.episode",
+        "60",
+    ]
 
 
 def test_expand_shorthands_requires_a_value() -> None:

@@ -10,7 +10,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.monitors import MonitorsConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
     HeartbeatConfig,
@@ -85,6 +85,25 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
+class SFTColumnsConfig(BaseConfig):
+    """Dataset columns the trainer reads. Set a field to read a column under another name."""
+
+    messages: str = "messages"
+    """Column with the whole chat as a list of OpenAI chat messages."""
+
+    prompt: str = "prompt"
+    """Column with the prompt as a list of OpenAI chat messages, read with ``completion`` when a row has no messages."""
+
+    completion: str = "completion"
+    """Column with the completion as a list of OpenAI chat messages."""
+
+    tools: str = "tools"
+    """Column with the tool schemas in OpenAI function-calling format."""
+
+    renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -111,6 +130,9 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns that carry per-sample renderer arguments."""
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
@@ -229,8 +251,8 @@ class SFTConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
@@ -249,7 +271,8 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory and W&B run name to it when not set explicitly."""
+        default the run directory, W&B run name and platform run name to it when not
+        set explicitly."""
         if self.run.name is None:
             dataset = str(getattr(self.data, "name", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
@@ -259,6 +282,8 @@ class SFTConfig(BaseConfig):
             self.run.dir = self.run.name
         if self.monitors.wandb is not None and self.monitors.wandb.name is None:
             self.monitors.wandb.name = self.run.name
+        if self.monitors.prime is not None and self.monitors.prime.name is None:
+            self.monitors.prime.name = self.run.name
         return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"

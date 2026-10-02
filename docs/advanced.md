@@ -28,7 +28,7 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ❌ |
+| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
@@ -55,7 +55,7 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
-SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
+SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
 
 ```toml
 [trainer.model]

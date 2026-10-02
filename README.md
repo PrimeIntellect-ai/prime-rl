@@ -53,15 +53,13 @@ With `[model] impl = "auto"` (the default), the trainer selects that custom stac
 | GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | yes | ✅ | ✅ |
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ❌ |
+| Qwen3 / Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ✅ |
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
 | GLM-4 · GLM-4.5 MoE · INTELLECT-3 (`glm4_moe`) | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | yes | ✅ | ✅ |
 | GPT-OSS (`gpt_oss`) | `unsloth/gpt-oss-20b-BF16`, … | yes | ✅ | ✅ |
-| Other HF causal LMs | Qwen3 dense, Mistral, … (`impl = "hf"`) | varies | ❌ | ✅ |
-
 
 ## Setup
 
@@ -113,15 +111,6 @@ uv sync --all-extras
 
 > *NOTE*: Environments are opt-in uv workspace members — `uv sync --all-extras` does not install them. To train on them, install all with `uv sync --all-extras --all-packages`, or a subset with `uv sync --package prime-rl --package <env>`.
 
-3.1. Optional: Install Flash Attention 3 (on Hopper GPUs only, for flash_attention_3 attention backend)
-
-> *NOTE*: This step will take a while, as it builds the Flash Attention 3 extension from source, as it has no wheels prebuilt.
-> *NOTE*: After this step, you can't run `uv sync --all-extras` or `uv run` as it will uninstall the package, you can avoid it by running `uv sync --inexact` or `uv run --no-sync`
-
-```bash
-uv pip install "flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper" --no-build-isolation
-```
-
 </details>
 
 <details>
@@ -148,19 +137,13 @@ uv run python -c "import flash_attn"
 uv run sft @ configs/debug/fake/sft.toml
 ```
 
-4. Check that you can run the RL trainer (*this requires 1 GPU*)
-
-```bash
-uv run trainer @ configs/debug/fake/rl.toml
-```
-
-5. Check that you can run the inference server (*this requires 1 GPU*)
+4. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
-6. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
+5. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
 
 ```bash
 uv run rl @ configs/basic/reverse-text/rl.toml

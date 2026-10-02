@@ -30,7 +30,7 @@ This page covers the math and the configurable algorithmic components: the algor
 
 ## The Algorithm Abstraction
 
-A training algorithm in `prime-rl` is configured under `[orchestrator.algo]`, where **`type` names the algorithm** (`grpo`, `opd`, `sft`, …) and the class defaults are its vetted setting. It has two parts:
+A training algorithm in `prime-rl` is configured under `[orchestrator.train.algo]`, where **`type` names the algorithm** (`grpo`, `opd`, `sft`, …) and the class defaults are its vetted setting. It has two parts:
 
 1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
 2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
@@ -42,17 +42,17 @@ The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, r
 `prime-rl` hosts exactly one model: the trainable policy (`[orchestrator.model]`). Every other model an algorithm uses is an external OpenAI-compatible endpoint, declared *inline on the component that uses it*. A model reference is either the string `"policy"` (the live policy) or a frozen hosted model (`name` + `base_url`):
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "opd"
 
-[orchestrator.algo.teacher]   # opd's teacher: the frozen model it scores against
+[orchestrator.train.algo.teacher]   # opd's teacher: the frozen model it scores against
 name = "Qwen/Qwen3-32B"
 base_url = "http://localhost:8001/v1"
 ```
 
 Model *roles* are algorithm-local vocabulary — each algorithm names its reference on the field where the model is actually used, and there is no shared `teacher` slot. `opd` declares a `teacher` field (the frozen model whose reverse KL the policy distills toward); `sft`'s teacher *is* its `sampling.source` (the frozen model it imitates); `opsd` self-distills against the live policy and names no model at all. No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
 
-So for `opd` set `[orchestrator.algo.teacher]`; for `sft` set `[orchestrator.algo.sampling.source]`; `opsd` needs neither. `opd`'s teacher must be a frozen endpoint — it is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
+So for `opd` set `[orchestrator.train.algo.teacher]`; for `sft` set `[orchestrator.train.algo.sampling.source]`; `opsd` needs neither. `opd`'s teacher must be a frozen endpoint — it is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
 
 Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
@@ -61,7 +61,7 @@ Liveness is a property of the reference, not of any role: rollouts sampled from 
 The `algo.type` names the algorithm, and each type's class defaults are its vetted setting — picking a type with no other keys IS the algorithm:
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"  # the default
 ```
 
@@ -83,13 +83,13 @@ Every key beyond `type` is visibly your own assembly — there is no preset laye
 ```toml
 # echo on tool AND user feedback tokens, each at its own weight.
 # Setting any role replaces the whole table.
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "echo"
 
-[orchestrator.algo.roles.tool]
+[orchestrator.train.algo.roles.tool]
 alpha = 0.25
 
-[orchestrator.algo.roles.user]
+[orchestrator.train.algo.roles.user]
 alpha = 0.05
 ```
 
@@ -98,10 +98,10 @@ A new algorithm is a named class in code, not a config that points at an import 
 Echo also takes an optional user-supplied token filter that narrows the role selection per rollout — e.g. dropping warning lines from tool output, or tokens the sampler found unlikely:
 
 ```toml
-[orchestrator.algo.filter]
+[orchestrator.train.algo.filter]
 import_path = "my_module.drop_warnings"
 
-[orchestrator.algo.filter.kwargs]
+[orchestrator.train.algo.filter.kwargs]
 patterns = ["WARNING"]
 ```
 
@@ -116,14 +116,14 @@ Component compatibility is validated at config time: frozen-model sampling can o
 
 ### Per-Env Algorithms
 
-Both components resolve per environment. Each env inherits `[orchestrator.algo]` unless it sets its own, so a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
+Both components resolve per environment. Each env inherits `[orchestrator.train.algo]` like any other group default: an env that sets only some params keeps the group's algorithm with those params changed, and an env that sets a different `type` runs its own algorithm. So a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
 [[orchestrator.train.source]]
-name = "math"  # inherits the top-level grpo
+name = "math"  # inherits the group's grpo
 env.taskset.id = "math"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
@@ -139,7 +139,7 @@ algo.type = "echo"
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds two objects: a `GenerationSource` (`prime_rl.orchestrator.generation_source`) that resolves the `sampling.source` model into the inference pool used for train episodes, and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's resolved config builds two objects: a `GenerationSource` (`prime_rl.orchestrator.generation_source`) that resolves the `sampling.source` model into the inference pool used for train episodes, and one of the named algorithm classes in `prime_rl.orchestrator.train.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
@@ -159,7 +159,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 
 The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.train.algo.advantage`.
 
 ## Async / Off-Policy Training
 
@@ -323,10 +323,10 @@ This is intentionally simple — it does the right thing for most envs. Write a 
 A **length penalty** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling. The `linear` penalty subtracts a single `pass_rate`-scaled penalty from each reward before the GRPO baseline, combining output tokens (`num_output_tokens_weight`), input / context tokens (`num_input_tokens_weight`), and turns (`num_turns_weight`) — each normalized by the group's own max for that quantity, with `num_input_tokens_weight` and `num_turns_weight` defaulting to `0.1`.
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
+[orchestrator.train.algo.length_penalty]
 type = "linear"
 ```
 
@@ -362,7 +362,7 @@ For example, if three solvers receive rewards `[1, 1, 0]` on one proposed proble
 Configure which roles are compared within a single proposed problem with `episode_agents`. For `proposer-solver`, that role is `solver`:
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "hierarchical_grpo"
 episode_agents = ["solver"]
 
@@ -388,7 +388,7 @@ Group-relative baselines assume the group is exchangeable attempts by one agent.
 `rae` implements SPIRAL's role-conditioned advantage estimation ([arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): each agent keeps an exponential-moving-average baseline of its own rewards, and every trace's advantage is its reward minus its agent's baseline — measured against the *pre-update* baseline (the unbiased order), then folded in at `decay` (SPIRAL's α, default 0.95). The algorithm instance is per-env, so baselines are keyed per (env, agent) — the paper's per (game, role). Advantages are not normalized, and `group_size` is free (RAE needs no sibling rollouts; `group_size = 1` is fine). Baselines live in orchestrator memory and re-warm from 0 over ~`1/(1 − decay)` traces per agent after a restart.
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "rae"
 decay = 0.95
 
@@ -411,8 +411,8 @@ There is no config hook that points at user code — a new credit-assignment sch
 # src/prime_rl/orchestrator/algo/my_algo.py
 import torch
 
-from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.train.algo.base import Algorithm
+from prime_rl.orchestrator.train.algo.routing import assign_advantages
 
 
 class MyAlgorithm(Algorithm):
@@ -436,7 +436,7 @@ Curriculum admission and metrics can inspect the resulting graph-native streams 
 - `opsd` — SDFT: prepend an expert demonstration as a leading system message (`template`, with a `{demonstration}` placeholder) and score the sample under that demo-conditioned context. The sample is scored verbatim (`hint_block + token_ids`, slicing the hint's logprobs back off), so the join is BPE-clean and it's robust to tool/multimodal prompts and any number of turns. The scoring reference *is* the live policy — self-distillation names no teacher. opsd builds its own renderer to tokenize the hint block: the tokenizer is always the live policy's (not configurable — there is no separate model), and only the `renderer` family is settable (defaults to `"auto"`, resolved from the policy tokenizer; set it to match a non-auto policy renderer). The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`).
 
 ```toml
-[orchestrator.algo]
+[orchestrator.train.algo]
 type = "opsd"
 demo_key = "demonstration"
 ```
@@ -548,6 +548,8 @@ Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`
 [orchestrator.renderer]
 name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
 ```
+
+A renderer outside the `renderers` package loads as a custom renderer: `name = "custom"` with `import_path = "my_module.Class"` (or `path/to/file.py:Class`), see [Custom renderers](training.md#dataset-format).
 
 For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see [the renderers writeup on the Prime Intellect blog](https://www.primeintellect.ai/blog/renderers) — the canonical reference.
 

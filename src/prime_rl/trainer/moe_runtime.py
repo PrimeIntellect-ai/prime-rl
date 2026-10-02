@@ -115,7 +115,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         else:
             compute = selected_compute if moe in selected_moes else bf16_compute
-        moe.experts.compute = compute
+        moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,

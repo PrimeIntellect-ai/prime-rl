@@ -16,7 +16,7 @@ dependencies = [
     "transformers==5.6.2",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
-    "prime-sandboxes>=0.3.0",
+    "prime>=0.8.0",
     "prime-runs[train]>=0.1.3",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
@@ -29,7 +29,7 @@ dependencies = [
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
-    "verifiers[harbor]>=0.3.1",
+    "verifiers[harbor]>=0.3.2.dev158",
     "renderers[multimodal]>=0.1.12.dev2",
     "pybase64>=1.4.2",
     "orjson>=3.10",
@@ -56,7 +56,7 @@ gpu = [
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.29.0 ; sys_platform == 'linux'",
+    "vllm>=0.30.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
@@ -149,9 +149,9 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.29.0 requires quack-kernels 0.6.4. It requires this exact CUTLASS version.
+    # vLLM 0.30.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
-    "nvidia-cutlass-dsl==4.6.2",
+    "nvidia-cutlass-dsl==4.7.1",
     "transformers==5.6.2",
     "torch>=2.13.0",
     "openenv-core",
@@ -174,11 +174,14 @@ members = [
     "deps/verifiers/environments/wiki_search",
     "deps/verifiers/environments/wordle",
 ]
-# tau2-synth and tau3-bench pin `tau2` forks/revs that conflict with the
-# canonical tau2-bench; a workspace shares one lock, so these can't coexist.
+# Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
+# Apex pins a verifiers git revision instead of the editable workspace member.
+# A workspace shares one lock, so these packages need separate environments.
 exclude = [
+    "deps/prime-envs/environments/tool_use/tau2_bench",
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
+    "deps/prime-envs/environments/tool_use/apex_agents",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -217,10 +220,10 @@ requires-dist = ["nixl-cu13==0.10.1"]
 # so resolve that variant without installing both runtime packages.
 [[tool.uv.dependency-metadata]]
 name = "nvidia-cutlass-dsl"
-version = "4.6.2"
+version = "4.7.1"
 requires-dist = [
-    "nvidia-cutlass-dsl-libs-base==4.6.2",
-    "nvidia-cutlass-dsl-libs-cu13==4.6.2",
+    "nvidia-cutlass-dsl-libs-base==4.7.1",
+    "nvidia-cutlass-dsl-libs-cu13==4.7.1",
 ]
 
 [tool.uv.exclude-newer-package]
@@ -269,15 +272,15 @@ torchao = [
 ]
 dion = { git = "https://github.com/samsja/dion.git", rev = "6f9242d" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
-quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "dc5f1eb" }
+quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.1/vllm_router-0.2.1-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.1/vllm_router-0.2.1-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.2/vllm_router-0.2.2-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.2/vllm_router-0.2.2-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.29.0/vllm-0.29.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.29.0/vllm-0.29.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.30.0/vllm-0.30.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.30.0/vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },

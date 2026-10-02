@@ -1,16 +1,23 @@
 import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import pytest
 import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
+from renderers import custom_renderer_config
 
 from prime_rl.configs.env_server import EnvServerConfig
-from prime_rl.configs.eval import EvalConfig
+from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.orchestrator import (
+    EvalSourcesConfig,
+    OrchestratorConfig,
+    RLOnlineEvalConfig,
+    ScheduledEvalConfig,
+    TrainConfig,
+)
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -192,6 +199,12 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 5.0, "ratio_high": 0.2}})
+
+    assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
+    assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+
+    with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
 
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
@@ -392,44 +405,107 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded == config
 
 
-def test_env_algo_overrides_top_level():
+def test_env_algo_inherits_the_group_algo():
     config = OrchestratorConfig.model_validate(
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
-            "algo": {"type": "echo"},
             "train": {
+                "algo": {"type": "echo", "roles": {"user": {"alpha": 0.1}}},
                 "source": [
                     {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
                     {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
-                ]
+                    {"env": {"taskset": {"id": "reverse-text"}}, "name": "c", "algo": {"roles": {"tool": {}}}},
+                ],
             },
         }
     )
-    env_a, env_b = config.train.source
-    # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
-    assert env_a.algo is not None and env_a.algo.type == "grpo"
-    assert env_b.algo is not None and env_b.algo.type == "echo"
+    env_a, env_b, env_c = config.train.source
+    # A different type is the env's own algorithm; no type keeps the group's.
+    assert env_a.algo.type == "grpo"
+    assert env_b.algo.type == "echo" and env_b.algo.roles.user.alpha == 0.1
+    assert env_c.algo.type == "echo" and env_c.algo.roles.user.alpha == 0.1 and env_c.algo.roles.tool is not None
 
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+    assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
+
+def test_sources_inherit_the_group_fields_they_leave_unset():
+    config = EvalConfig.model_validate(
+        {
+            "r": 4,
+            "sampling": {"temperature": 0.5, "extra_body": {"a": 1}},
+            "select": {"limit": 8, "include": {"idx": [":100"]}},
+            "env": {"retries": {"max_retries": 3}},
+            "source": [
+                {"env": {"taskset": {"id": "gsm8k"}}},
+                {
+                    "name": "b",
+                    "env": {"taskset": {"id": "gsm8k"}},
+                    "group_size": 2,
+                    "sampling": {"extra_body": {"b": 2}},
+                    "select": {"include": {"names": ["x"]}},
+                },
+            ],
+        }
+    )
+    a, b = config.source
+    assert (a.group_size, b.group_size) == (4, 2)
+    assert b.sampling.temperature == 0.5 and b.sampling.extra_body == {"a": 1, "b": 2}
+    assert b.select.limit == 8 and b.select.include.idx == [":100"] and b.select.include.names == ["x"]
+    assert a.env.retries.max_retries == 3 and b.env.retries.max_retries == 3
+    reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
+    assert reloaded.source[1].model_dump() == b.model_dump()
+
+    online = RLOnlineEvalConfig.model_validate(
+        {
+            "interval": 5,
+            "source": [
+                {"env": {"taskset": {"id": "gsm8k"}}},
+                {"name": "b", "env": {"taskset": {"id": "gsm8k"}}, "interval": 2},
+            ],
+        }
+    )
+    assert online.intervals == {"gsm8k": 5, "b": 2}
+
+
+def test_train_sources_can_use_their_own_group_sizes():
+    def orchestrator(batch_size: int, **concurrency) -> OrchestratorConfig:
+        return OrchestratorConfig.model_validate(
             {
-                "renderer": {"name": "qwen3"},
-                "train": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "train": {
+                    "group_size": 16,
+                    "source": [
+                        {"env": {"taskset": {"id": "reverse-text"}}},
+                        {"env": {"taskset": {"id": "reverse-text"}}, "name": "b", "group_size": 8},
+                    ],
+                },
             }
         )
 
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
-            }
-        )
+    assert [source.group_size for source in orchestrator(64).train.source] == [16, 8]
+    with pytest.raises(ValidationError, match="divisible by every train source"):
+        orchestrator(40)
+    with pytest.raises(ValidationError, match="largest train group_size"):
+        orchestrator(64, max_inflight=8)
+
+
+@pytest.mark.parametrize(
+    "group", [TrainConfig, EvalSourcesConfig, ScheduledEvalConfig, EvalConfig, SFTOnlineEvalConfig]
+)
+def test_group_defaults_match_source_defaults(group):
+    # An unset group field is not layered, so its default must be the source's.
+    def default(field):
+        value = field.get_default(call_default_factory=True)
+        return value.model_dump() if isinstance(value, BaseModel) else value
+
+    (source,) = get_args(group.model_fields["source"].annotation)
+    for name, field in group.model_fields.items():
+        if name not in ("source", "env") and name in source.model_fields:
+            assert default(field) == default(source.model_fields[name]), f"{group.__name__}.{name}"
 
 
 def test_policy_sources_accept_different_top_p_values():
@@ -831,7 +907,7 @@ def test_run_dir_propagates_through_cli(tmp_path):
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "monitors": {"wandb": {}},
             "trainer": {},
-            "orchestrator": {"batch_size": 16, "group_size": 1},
+            "orchestrator": {"batch_size": 16, "train": {"group_size": 1}},
             "inference": {},
         },
     )
@@ -962,3 +1038,79 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+CUSTOM_RENDERER_SOURCE = """
+from typing import Literal
+
+from renderers.configs import BaseRendererConfig
+
+
+class InstructedRendererConfig(BaseRendererConfig):
+    name: Literal["instructed"] = "instructed"
+    _template_fields = frozenset({"instruction"})
+
+    instruction: str = "Think step by step."
+
+
+class InstructedRenderer:
+    config_class = InstructedRendererConfig
+"""
+
+
+@pytest.fixture
+def custom_renderer_import_path(tmp_path):
+    path = tmp_path / "instructed_renderer.py"
+    path.write_text(CUSTOM_RENDERER_SOURCE)
+    return f"{path}:InstructedRenderer"
+
+
+def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "sft.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
+                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
+            }
+        )
+    )
+
+    config = cli(SFTConfig, args=["@", str(config_file)])
+
+    assert config.renderer.name == "custom"
+    assert custom_renderer_config(config.renderer).name == "instructed"
+    assert custom_renderer_config(config.renderer).instruction == "Be brief."
+
+
+def test_orchestrator_config_accepts_custom_renderer(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "orch.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path},
+            }
+        )
+    )
+
+    config = cli(OrchestratorConfig, args=["@", str(config_file)])
+
+    assert config.renderer.name == "custom"
+    assert custom_renderer_config(config.renderer).instruction == "Think step by step."
+
+
+def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import_path):
+    config_file = tmp_path / "sft.toml"
+    config_file.write_text(
+        tomli_w.dumps(
+            {
+                "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
+                "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "depth": 3},
+            }
+        )
+    )
+
+    with pytest.raises(ConfigFileError, match="depth"):
+        cli(SFTConfig, args=["@", str(config_file)])

@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import is_tt_moe_model
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -68,6 +70,37 @@ def test_mega_moe_dispatch_requires_expert_parallelism():
 
     with pytest.raises(ValueError, match="expert-parallel group"):
         configure_moe_runtime(model, config, dims)
+
+
+@pytest.mark.parametrize(
+    ("expert_cls", "kwargs", "fused", "error"),
+    [
+        pytest.param(GroupedExperts, {}, True, None, id="swiglu"),
+        pytest.param(GroupedExperts, {}, False, "fused gate/up", id="unfused"),
+        pytest.param(GroupedExperts, {"expert_type": "non_gated"}, False, "gated experts", id="non-gated"),
+        pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
+        pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
+        pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
+        pytest.param(DeepseekV4Experts, {"swiglu_limit": 10.0}, True, "standard SwiGLU", id="deepseek-v4"),
+    ],
+)
+def test_set_compute_validates_sonic_expert_structure(expert_cls, kwargs, fused, error):
+    pytest.importorskip("sonicmoe")
+    from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
+
+    experts = expert_cls(dim=4, hidden_dim=8, num_experts=2, **kwargs)
+    if fused:
+        fuse_gate_up_projections(experts)
+    original_compute = experts.compute
+    compute = SonicMoEExpertCompute()
+
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            experts.set_compute(compute)
+        assert experts.compute is original_compute
+    else:
+        experts.set_compute(compute)
+        assert experts.compute is compute
 
 
 def _grouped_mm_reference(x: torch.Tensor, weights: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
@@ -155,8 +188,9 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         expert_type=expert_type,
         activation=activation,
         bias=True,
-        compute=GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1),
     )
+    experts.set_compute(GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1))
+    assert experts.token_group_alignment == 1
     experts.init_weights(0.02)
 
     has_gate = expert_type == "gated"

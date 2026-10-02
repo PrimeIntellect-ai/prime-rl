@@ -274,3 +274,34 @@ def test_semantic_timeline_labels_unrecoverable_components_as_unlinked() -> None
         "index": 0,
         "unlinked": True,
     }
+
+
+def test_semantic_timeline_marks_cancelled_and_failed_subagents() -> None:
+    # A parent spawns three subagents: A returns, B is cancelled (parent -> child subagent_cancel),
+    # C fails on return (child -> parent subagent_failed).
+    nodes = [
+        _node(None, 0.0),
+        _node(0, 1.0),  # parent's spawning turn
+        _node(0, 2.0, [{"node": 1, "type": "subagent_call"}]),  # A
+        _node(0, 2.1, [{"node": 1, "type": "subagent_call"}, {"node": 5, "type": "subagent_cancel"}]),  # B
+        _node(0, 2.2, [{"node": 1, "type": "subagent_call"}]),  # C
+        _node(
+            1,
+            6.0,
+            [
+                {"node": 1, "type": "continuation"},
+                {"node": 2, "type": "subagent_return"},  # A returned
+                {"node": 4, "type": "subagent_failed"},  # C failed on return
+            ],
+        ),
+    ]
+    calls = [_call(1, 0.5, 1.0), _call(2, 2.0, 3.0), _call(3, 2.1, 5.0), _call(4, 2.2, 3.2), _call(5, 5.6, 6.0)]
+    timeline = project_episode_timeline(_episode(nodes, calls))
+
+    status = {lane["label"]: lane["status"] for lane in timeline["semantic_lanes"]}
+    assert status["subagent 1 · context 0"] == "completed"
+    assert status["subagent 2 · context 0"] == "cancelled"
+    assert status["subagent 3 · context 0"] == "failed"
+    cancelled = next(l for l in timeline["semantic_lanes"] if l["label"] == "subagent 2 · context 0")
+    assert cancelled["context"]["outcome"] == "cancelled"
+    assert "subagent_cancel" in {e["type"] for e in timeline["semantic_edges"]}

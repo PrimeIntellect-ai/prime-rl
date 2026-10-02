@@ -269,17 +269,21 @@ class MegaMoEExpertCompute:
                 "(`uv sync --extra mega-moe`), whose `bf16_mega_moe` and `bf16_mega_moe_backward` "
                 "accept `l1_natural_layout`."
             )
-        if experts.gate_proj is None and experts.gate_up_proj is None:
-            raise ValueError("Mega MoE requires gated experts (SwiGLU gate+up), got non-gated experts.")
-        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
-            raise ValueError("Mega MoE does not support expert biases.")
+        self.validate(experts)
         hidden = experts.down_proj.shape[1]
-        check_mega_moe_dims(hidden, experts.hidden_dim)
         reserve_sms_for_comm(num_reserved_sms)
 
         self.activation_clamp = _activation_clamp(experts.activation)
         self.max_tokens_per_rank = max_tokens_per_rank
         self.buffer = build_mega_moe_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden, experts.hidden_dim)
+
+    def validate(self, experts: "GroupedExperts") -> None:
+        if experts.gate_proj is None and experts.gate_up_proj is None:
+            raise ValueError("Mega MoE requires gated experts (SwiGLU gate+up), got non-gated experts.")
+        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
+            raise ValueError("Mega MoE does not support expert biases.")
+        _activation_clamp(experts.activation)
+        check_mega_moe_dims(experts.down_proj.shape[1], experts.hidden_dim)
 
     def __call__(
         self,

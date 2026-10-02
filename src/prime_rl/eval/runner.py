@@ -45,6 +45,7 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     set_default_executor,
 )
+from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_config_dir
 
@@ -71,10 +72,19 @@ class EvalRunner:
         self.dispatcher: Dispatcher | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
+        self.heart: Heartbeat | None = None
 
     async def setup(self, *, skip_first_step: bool = False, is_resumed: bool = False) -> None:
         config = self.config
         set_default_executor()
+
+        # The heartbeat is beaten only by landed episodes — the first episode is its
+        # first beat. No startup ping on purpose: the run-start to first-episode gap
+        # (pool boot, env servers, the first episode's full duration) would otherwise
+        # sit inside the ping stream as an abnormally long silence and flip a healthy
+        # run stale. Until then the heartbeat has simply never been pinged.
+        if config.heartbeat is not None:
+            self.heart = Heartbeat(config.heartbeat)
 
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
@@ -224,6 +234,8 @@ class EvalRunner:
                 eval_batch = self.eval_sink.fail(item)
             else:
                 stamp_arrival([item], "eval", eval_work(item).step)
+                if self.heart is not None:
+                    self.heart.beat()
                 await self.land(item, pending)
                 continue
             if eval_batch is not None:
@@ -291,7 +303,8 @@ class EvalRunner:
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Timeout {full.is_timeout.mean():.1%}"
         )
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

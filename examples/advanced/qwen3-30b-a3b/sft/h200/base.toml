@@ -1,0 +1,35 @@
+clean = true
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+
+[slurm]
+job_name = "qwen30b-sft"
+partition = "all"

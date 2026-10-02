@@ -10,7 +10,7 @@ import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -209,37 +209,41 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-def with_reasoning_effort(config: RendererConfig, reasoning_effort: Any) -> RendererConfig:
-    """Copy ``config`` with its ``reasoning_effort`` field set, validated by the config class."""
-    if isinstance(config, AutoRendererConfig):
-        raise ValueError(
-            "A reasoning_effort column requires a typed renderer config (e.g. [renderer] name = 'qwen3.8'), "
-            "not renderer.name = 'auto'"
-        )
-    if "reasoning_effort" not in type(config).model_fields:
-        raise ValueError(f"Renderer {config.name!r} has no reasoning_effort field, but a row sets {reasoning_effort!r}")
-    return type(config).model_validate({**config.model_dump(), "reasoning_effort": reasoning_effort})
-
-
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    A ``reasoning_effort`` column overrides the configured renderer's field of
-    the same name per row. Renderer configs are frozen, so renderers are cached
+    ``columns`` maps renderer fields to dataset columns; a row's non-null
+    values override the configured renderer's fields, validated as
+    chat-template kwargs. Renderer configs are frozen, so renderers are cached
     per config and rows that resolve to the same config share one instance.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: RendererConfig, processor: Any | None = None):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        config: RendererConfig,
+        processor: Any | None = None,
+        columns: dict[str, str] | None = None,
+    ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
+        self.columns = SFTColumnsConfig().renderer if columns is None else columns
         self.renderers: dict[RendererConfig, Renderer] = {}
 
+    def resolve_config(self, example: dict) -> RendererConfig:
+        kwargs = {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
+        if not kwargs:
+            return self.config
+        if isinstance(self.config, AutoRendererConfig):
+            raise ValueError(
+                f"Per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
+                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+            )
+        return merge_chat_template_kwargs(self.config, kwargs)
+
     def __call__(self, example: dict) -> Renderer:
-        config = self.config
-        reasoning_effort = example.get("reasoning_effort")
-        if reasoning_effort is not None:
-            config = with_reasoning_effort(config, reasoning_effort)
+        config = self.resolve_config(example)
         renderer = self.renderers.get(config)
         if renderer is None:
             renderer = create_renderer(self.tokenizer, config)
@@ -264,12 +268,21 @@ class SFTDataset(StatefulIterableDataset):
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
+        columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
         super().__init__(non_dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
         self.renderers = renderers
+        self.columns = columns
+        # Default names are optional: a dataset carries either messages or
+        # prompt/completion, and tools only for tool use. A name set in the
+        # config must exist.
+        for field in ("messages", "prompt", "completion", "tools"):
+            column = getattr(columns, field)
+            if column != field and column not in dataset.column_names:
+                raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
@@ -289,16 +302,17 @@ class SFTDataset(StatefulIterableDataset):
             # as a whole-chat training sample with an empty prompt. Null-check rather
             # than key-check: Arrow schema union adds `messages: null` to
             # prompt/completion rows whenever other rows have a `messages` column.
-            if example.get("messages") is not None:
-                messages = normalize_messages(example["messages"], default_role="assistant")
-            elif example.get("prompt") is not None and example.get("completion") is not None:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                    example["completion"], default_role="assistant"
+            columns = self.columns
+            if example.get(columns.messages) is not None:
+                messages = normalize_messages(example[columns.messages], default_role="assistant")
+            elif example.get(columns.prompt) is not None and example.get(columns.completion) is not None:
+                messages = normalize_messages(example[columns.prompt], default_role="user") + normalize_messages(
+                    example[columns.completion], default_role="assistant"
                 )
             else:
                 raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
+                    f"All examples in the dataset must have either a {columns.messages!r} column "
+                    f"or both {columns.prompt!r} and {columns.completion!r} columns for SFT"
                 )
 
             # Strip nulls before deserializing so genuine nulls inside tool-call
@@ -308,30 +322,11 @@ class SFTDataset(StatefulIterableDataset):
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present - assumes OAI format. Accepts either
-        # `tools` or `tool_defs` (the verifiers rollout format), as either a
-        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
-        # tools are converted to OAI form for the chat template.
-        raw_tools = example.get("tools", example.get("tool_defs"))
-        if not raw_tools:
-            tools = []
-        else:
-            if isinstance(raw_tools, str):
-                raw_tools = json.loads(raw_tools)
-            tools = [
-                t
-                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
-                else {
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name"),
-                        "description": t.get("description"),
-                        "parameters": t.get("parameters"),
-                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
-                    },
-                }
-                for t in raw_tools
-            ]
+        # Tool schemas in OpenAI function-calling format, as a list of dicts or a
+        # JSON-encoded string of one.
+        tools = example.get(self.columns.tools) or []
+        if isinstance(tools, str):
+            tools = json.loads(tools)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
@@ -741,7 +736,7 @@ def setup_dataset(
             raise ValueError("SFT data requires a renderer config.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor)
+        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
         return SFTDataset(
             raw_dataset,
             renderers,
@@ -752,6 +747,7 @@ def setup_dataset(
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
+            columns=config.columns,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

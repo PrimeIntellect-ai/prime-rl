@@ -16,7 +16,7 @@ Minimal end-to-end configs for the algorithms against bundled verifiers envs, us
 
 The policy inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local frozen model (used by `opd*.toml`, `sft_distill.toml` / `sft_distill_lora.toml`, and `mixed_grpo_opd.toml`) is **not** auto-launched — start it manually on GPU 1.
 
-Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for `opd`, `[orchestrator.algo.sampling.source]` for `sft` — with `name` + `base_url`. `opsd` declares none (it self-distills against the live policy). prime-rl never hosts them; only the trainable policy's server is managed by the `rl` entrypoint.
+Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for `opd`, `[orchestrator.train.algo.sampling.source]` for `sft` — with `name` + `base_url`. `opsd` declares none (it self-distills against the live policy). prime-rl never hosts them; only the trainable policy's server is managed by the `rl` entrypoint.
 
 ## Start the local frozen model
 
