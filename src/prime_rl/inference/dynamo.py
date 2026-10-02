@@ -17,6 +17,7 @@ from prime_rl.orchestrator.clients import (
     AdminPlane,
     _admin_post,
     check_health,
+    env_timeout,
     maybe_check_has_model,
     setup_admin_clients,
 )
@@ -352,7 +353,12 @@ class DynamoAdminPlane(AdminPlane):
             self._nccl_initialization_state = "terminal"
 
             try:
-                await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
+                await _admin_post(
+                    self.clients[0],
+                    "/pause",
+                    params={"mode": "keep", "clear_cache": "false"},
+                    timeout_s=env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S),
+                )
             except BaseException as failure:
                 raise RuntimeError("Dynamo pause failed; worker state is unknown and restart is required") from failure
 
@@ -367,7 +373,7 @@ class DynamoAdminPlane(AdminPlane):
                 await self._collective_rpc(
                     self.clients[0],
                     method="update_weights_from_path",
-                    timeout=UPDATE_WEIGHTS_TIMEOUT_S,
+                    timeout=env_timeout("PRL_UPDATE_WEIGHTS_TIMEOUT_S", UPDATE_WEIGHTS_TIMEOUT_S),
                     args=[weight_dir.as_posix()],
                 )
             except BaseException as failure:
@@ -377,7 +383,9 @@ class DynamoAdminPlane(AdminPlane):
                 ) from failure
 
             try:
-                await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
+                await _admin_post(
+                    self.clients[0], "/resume", timeout_s=env_timeout("PRL_ADMIN_TIMEOUT_S", ADMIN_TIMEOUT_S)
+                )
             except BaseException as failure:
                 self._terminalize_nccl()
                 raise RuntimeError("Dynamo resume failed; worker state is unknown and restart is required") from failure

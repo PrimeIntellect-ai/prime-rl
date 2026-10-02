@@ -1070,8 +1070,12 @@ def main() -> None:
     set_proc_title("Orchestrator")
     import uvloop
 
+    config = cli(OrchestratorConfig)
+    # Apply the configured env vars in-process: a standalone `python -m
+    # prime_rl.orchestrator.orchestrator @ config.toml` has no launcher to do it.
+    os.environ.update(config.env_vars)
     uvloop.install()
-    asyncio.run(run_orchestrator(cli(OrchestratorConfig)))
+    asyncio.run(run_orchestrator(config))
 
 
 if __name__ == "__main__":
