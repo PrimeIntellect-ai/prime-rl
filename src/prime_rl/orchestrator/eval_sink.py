@@ -22,6 +22,15 @@ class EvalSink:
         self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
+        self.expected: dict[tuple[str, int], int] = {}
+        """Rollouts a ``(env, step)`` batch waits for when it is not the env's full
+        selection (``expect``); absent keys wait for every rollout of the env."""
+        self.closed: dict[str, int] = defaultdict(int)
+        """Rollouts of each env's already-finalized batches."""
+
+    def expect(self, env_name: str, step: int, rollouts: int) -> None:
+        """Size the ``(env, step)`` batch at ``rollouts`` instead of the env's full selection."""
+        self.expected[(env_name, step)] = rollouts
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
         key = (episode_env_name(episode), eval_work(episode).step)
@@ -46,7 +55,7 @@ class EvalSink:
         return self._complete(key)
 
     def _complete(self, key: tuple[str, int]) -> EvalBatch | None:
-        if self._batch_size(key) >= self.batch_size_for(key[0]):
+        if self._batch_size(key) >= self.expected_for(key):
             return self.process_batch(key)
         return None
 
@@ -65,16 +74,22 @@ class EvalSink:
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
+    def expected_for(self, key: tuple[str, int]) -> int:
+        """Rollouts the ``(env, step)`` batch is complete at."""
+        return self.expected[key] if key in self.expected else self.batch_size_for(key[0])
+
     def batch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env, step, arrived, expected)`` per epoch in progress."""
         keys = set(self.pending_batches) | set(self.pending_batch_failures) | set(self.pending_batch_cancellations)
         return [
-            (env_name, step, self._batch_size((env_name, step)), self.batch_size_for(env_name))
+            (env_name, step, self._batch_size((env_name, step)), self.expected_for((env_name, step)))
             for env_name, step in keys
         ]
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
+        self.closed[env_name] += self._batch_size(key)
+        self.expected.pop(key, None)
         return EvalBatch(
             env_name=env_name,
             step=step,
