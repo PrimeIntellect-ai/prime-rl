@@ -819,7 +819,14 @@ mark.hit {
 #trace-modal.semantic-view { grid-template-columns: minmax(0, 1fr); }
 #trace-modal.semantic-view #tm-left,
 #trace-modal.semantic-view #tm-right { display: none; }
-#trace-modal.semantic-view #tm-main { grid-column: 1; position: relative; }
+#trace-modal.semantic-view #tm-main {
+  grid-column: 1;
+  position: relative;
+  display: grid;
+  grid-template: auto auto minmax(0, 1fr) / minmax(0, 1fr);
+}
+/* The graph and its inspector share the row below the toolbar and episode errors. */
+#trace-modal.semantic-view #tm-timeline { grid-area: 3 / 1; }
 .tm-head {
   display: flex;
   align-items: center;
@@ -1193,7 +1200,8 @@ mark.hit {
 
 #sg-inspector {
   position: absolute;
-  top: 62px;
+  grid-area: 3 / 1;
+  top: 14px;
   right: 14px;
   bottom: 14px;
   z-index: 20;
