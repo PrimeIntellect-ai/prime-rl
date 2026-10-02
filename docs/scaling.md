@@ -108,6 +108,20 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the bf16 SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs; `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, shipped as the prebuilt `deep_gemm` wheel that `uv sync --extra mega-moe` installs. Mega MoE needs EP > 1, SM100 GPUs, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128:
+
+```toml
+[trainer.model.moe.dispatch]
+type = "mega_moe"
+max_tokens_per_rank = 2048  # >= micro_batch_size * seq_len on every rank
+num_reserved_sms = 16       # SMs left free for NCCL; pair with NCCL_MAX_CTAS <= this
+
+[trainer.env_vars]
+NCCL_MAX_CTAS = "16"
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+```
+
 ### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. Prefer `ulysses`: it gets the most throughput and is the only style that works for hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) and for VLMs. Each model class declares its supported styles in `cp_support`; an unsupported `cp_style`, or a model with no CP support at all, is rejected at setup.

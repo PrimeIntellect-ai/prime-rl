@@ -247,7 +247,8 @@ class _MegaMoeRoutedExperts(torch.autograd.Function):
 
 
 class MegaMoEExpertCompute:
-    """Fused Mega MoE dispatch + SwiGLU expert MLP + combine, forward and backward.
+    """Fused Mega MoE dispatch + SwiGLU expert MLP + combine, forward and backward, on the
+    prime-mega-moe kernels (installed as ``deep_gemm``).
 
     It runs inside the experts' forward, so FSDP has already unsharded their weights. Pair it with
     a ``FusedTokenDispatcher``. ``num_experts`` counts the experts across the whole expert-parallel group.
@@ -264,8 +265,9 @@ class MegaMoEExpertCompute:
     ) -> None:
         if not mega_moe_available():
             raise RuntimeError(
-                "Mega MoE requires DeepGEMM's Mega MoE kernels (SM100+/Blackwell and a deep_gemm build "
-                "whose `bf16_mega_moe` and `bf16_mega_moe_backward` accept `l1_natural_layout`)."
+                "Mega MoE requires an SM100+/Blackwell GPU and the prime-mega-moe `deep_gemm` build "
+                "(`uv sync --extra mega-moe`), whose `bf16_mega_moe` and `bf16_mega_moe_backward` "
+                "accept `l1_natural_layout`."
             )
         if experts.gate_proj is None and experts.gate_up_proj is None:
             raise ValueError("Mega MoE requires gated experts (SwiGLU gate+up), got non-gated experts.")
