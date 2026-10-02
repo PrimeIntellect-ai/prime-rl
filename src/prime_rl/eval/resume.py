@@ -108,7 +108,8 @@ def take_partial(run_dir: Path) -> dict[str, list[list[dict]]]:
             traces[trace["id"]] = trace
             owner[trace["id"]] = dispatch["id"]
     partial: dict[str, list[list[dict]]] = defaultdict(list)
-    for env_name, traces in episodes.values():
+    # newest attempts first: their episodes carry the most progress
+    for env_name, traces in reversed(episodes.values()):
         partial[env_name].append(list(traces.values()))
     return dict(partial)
 
