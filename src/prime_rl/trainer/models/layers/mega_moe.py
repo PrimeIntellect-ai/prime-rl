@@ -114,20 +114,39 @@ def mega_moe_forward(
     return y
 
 
-# The forward as a custom op, so selective activation checkpointing can save its output and skip the fused dispatch + expert compute + combine during recompute.
+def _bf16_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMoeExpertWeights:
+    return MegaMoeExpertWeights(
+        l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
+    )
+
+
+def _dw_dtype(weight: torch.Tensor) -> torch.dtype:
+    return weight.dtype if weight.dtype in (torch.bfloat16, torch.float32) else torch.float32
+
+
+# Forward and backward as custom ops with autograd registered on the forward: torch.compile treats
+# them as opaque (a Python autograd.Function inside the checkpointed block trips dynamo on saved
+# tensors that alias its inputs), and selective activation checkpointing can save the forward's
+# output and skip the fused dispatch + expert compute + combine during recompute.
 @torch.library.custom_op("prime_rl::mega_moe_forward", mutates_args=())
 def mega_moe_forward_op(
     x: torch.Tensor,
     topk_idx: torch.Tensor,
     topk_weights: torch.Tensor,
-    l1: torch.Tensor,
-    l2: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> torch.Tensor:
-    return mega_moe_forward(
-        x, topk_idx, topk_weights, MegaMoeExpertWeights(l1=l1, l2=l2), _BUFFER_REGISTRY[buffer_key], activation_clamp
+    y = mega_moe_forward(
+        x.to(torch.bfloat16).contiguous(),
+        topk_idx,
+        topk_weights,
+        _bf16_weights(gate_up_proj, down_proj),
+        _BUFFER_REGISTRY[buffer_key],
+        activation_clamp,
     )
+    return y.to(x.dtype)
 
 
 @mega_moe_forward_op.register_fake
@@ -135,12 +154,73 @@ def _mega_moe_forward_fake(
     x: torch.Tensor,
     topk_idx: torch.Tensor,
     topk_weights: torch.Tensor,
-    l1: torch.Tensor,
-    l2: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> torch.Tensor:
-    return torch.empty(x.shape, dtype=torch.bfloat16, device=x.device)
+    return torch.empty_like(x)
+
+
+@torch.library.custom_op("prime_rl::mega_moe_backward", mutates_args=())
+def mega_moe_backward_op(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    topk_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    buffer_key: int,
+    activation_clamp: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    dx, dw1, dw2, dtopk = mega_moe_backward(
+        dy.to(torch.bfloat16).contiguous(),
+        x.to(torch.bfloat16).contiguous(),
+        topk_idx,
+        topk_weights,
+        _bf16_weights(gate_up_proj, down_proj),
+        _BUFFER_REGISTRY[buffer_key],
+        _dw_dtype(gate_up_proj),
+        activation_clamp=activation_clamp,
+    )
+    return dx.to(x.dtype), dw1.to(gate_up_proj.dtype), dw2.to(down_proj.dtype), dtopk
+
+
+@mega_moe_backward_op.register_fake
+def _mega_moe_backward_fake(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    topk_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    buffer_key: int,
+    activation_clamp: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (
+        torch.empty_like(x),
+        torch.empty_like(gate_up_proj),
+        torch.empty_like(down_proj),
+        torch.empty_like(topk_weights, dtype=torch.float32),
+    )
+
+
+def _mega_moe_setup_context(ctx, inputs, output) -> None:
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer_key, activation_clamp = inputs
+    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    ctx.buffer_key = buffer_key
+    ctx.activation_clamp = activation_clamp
+
+
+def _mega_moe_backward(ctx, grad_y: torch.Tensor):
+    x, topk_idx, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+    dx, dw1, dw2, dtopk = torch.ops.prime_rl.mega_moe_backward(
+        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, ctx.buffer_key, ctx.activation_clamp
+    )
+    return dx, None, dtopk, dw1, dw2, None, None
+
+
+mega_moe_forward_op.register_autograd(_mega_moe_backward, setup_context=_mega_moe_setup_context)
 
 
 def mega_moe_backward(
@@ -194,58 +274,6 @@ def _activation_clamp(activation) -> float | None:
     raise ValueError("Mega MoE requires a SwiGLU (`silu` or DeepSeek V4 clamped) expert activation.")
 
 
-class _MegaMoeRoutedExperts(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        x: torch.Tensor,
-        top_scores: torch.Tensor,
-        selected_experts_indices: torch.Tensor,
-        gate_up_proj: torch.Tensor,
-        down_proj: torch.Tensor,
-        buffer,
-        activation_clamp: float | None,
-    ) -> torch.Tensor:
-        x_bf16 = x.to(torch.bfloat16).contiguous()
-        topk_idx = selected_experts_indices.to(torch.int64)
-        topk_weights = top_scores.to(torch.float32)
-        weights = MegaMoeExpertWeights(
-            l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
-        )
-        y = torch.ops.prime_rl.mega_moe_forward(
-            x_bf16, topk_idx, topk_weights, weights.l1, weights.l2, register_mega_moe_buffer(buffer), activation_clamp
-        )
-        ctx.save_for_backward(x_bf16, topk_idx, topk_weights, weights.l1, weights.l2)
-        ctx.buffer = buffer
-        ctx.activation_clamp = activation_clamp
-        ctx.dw_dtype = gate_up_proj.dtype if gate_up_proj.dtype in (torch.bfloat16, torch.float32) else torch.float32
-        ctx.x_dtype, ctx.scores_dtype, ctx.scores_shape = x.dtype, top_scores.dtype, top_scores.shape
-        return y.to(x.dtype)
-
-    @staticmethod
-    def backward(ctx, grad_y: torch.Tensor):
-        x_bf16, topk_idx, topk_weights, l1, l2 = ctx.saved_tensors
-        dx, dl1, dl2, dtopk = mega_moe_backward(
-            grad_y.to(torch.bfloat16).contiguous(),
-            x_bf16,
-            topk_idx,
-            topk_weights,
-            MegaMoeExpertWeights(l1=l1, l2=l2),
-            ctx.buffer,
-            ctx.dw_dtype,
-            activation_clamp=ctx.activation_clamp,
-        )
-        return (
-            dx.to(ctx.x_dtype),
-            dtopk.reshape(ctx.scores_shape).to(ctx.scores_dtype),
-            None,
-            dl1,
-            dl2,
-            None,
-            None,
-        )
-
-
 class MegaMoEExpertCompute:
     """Fused Mega MoE dispatch + SwiGLU expert MLP + combine, forward and backward, on the
     prime-mega-moe kernels (installed as ``deep_gemm``).
@@ -276,6 +304,8 @@ class MegaMoEExpertCompute:
         self.activation_clamp = _activation_clamp(experts.activation)
         self.max_tokens_per_rank = max_tokens_per_rank
         self.buffer = build_mega_moe_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden, experts.hidden_dim)
+        # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
+        self.buffer_key = register_mega_moe_buffer(self.buffer)
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -302,12 +332,12 @@ class MegaMoEExpertCompute:
             gate_up_proj = _to_local(experts.gate_up_proj)
         else:
             gate_up_proj = torch.cat([_to_local(experts.gate_proj), _to_local(experts.up_proj)], dim=1)
-        return _MegaMoeRoutedExperts.apply(
+        return torch.ops.prime_rl.mega_moe_forward(
             x,
-            top_scores,
-            selected_experts_indices,
+            selected_experts_indices.to(torch.int64),
+            top_scores.to(torch.float32),
             gate_up_proj,
             _to_local(experts.down_proj),
-            self.buffer,
+            self.buffer_key,
             self.activation_clamp,
         )
