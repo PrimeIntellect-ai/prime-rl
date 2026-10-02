@@ -201,6 +201,7 @@ function applyRunTypeControls() {
 
 async function selectRun(name, deferTab = false) {
   if (!name) return;
+  if (!$("#trace-modal").hidden) closeDrawer();
   state.run = name;
   state.compare = { runs: [], data: new Map() };
   $("#run-select").value = name;
@@ -366,10 +367,15 @@ function renderOverview() {
     `</div>`;
 }
 
+let renderedHash = location.hash;
+
 function updateHash() {
   const parts = [`run=${encodeURIComponent(state.run || "")}`, `tab=${state.tab}`];
   if (state.tab === "report" && state.report.file) parts.push(`report=${encodeURIComponent(state.report.file)}`);
-  location.hash = `#${parts.join("&")}`;
+  const trace = currentLive || currentEpisode?.traces?.[currentTraceIdx]?.id;
+  if (trace) parts.push(`trace=${encodeURIComponent(trace)}`);
+  renderedHash = `#${parts.join("&")}`;
+  location.hash = renderedHash;
 }
 
 async function activateTab(tab, force = false) {
@@ -3433,7 +3439,7 @@ function renderLiveRows() {
     if ((state.traces.live || []).some((r) => r.trace === currentLive)) openLiveTrace(currentLive, { refresh: true });
     else {
       const landed = (state.traces.episodes || []).find((ep) => (ep.trace_ids || []).includes(currentLive));
-      if (landed) openEpisode(landed.line);
+      if (landed) openEpisode(landed.line, { trace: landed.trace_ids.indexOf(currentLive) });
       else $("#tm-live-label").textContent = "finished · now in the stream";
     }
   }
@@ -3467,6 +3473,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     $("#tm-meta").innerHTML = "";
   }
   currentLive = traceId;
+  if (!refresh) updateHash();
   const requestVersion = ++episodeOpenVersion;
   let episode;
   try {
@@ -3678,6 +3685,7 @@ async function modalStep(delta) {
   } else {
     currentLine = null;
     currentEpisode = null;
+    updateHash();
     renderRolloutList();
     resetTranscript(emptyState("no episodes", "this step has no rollouts for the current filters"));
     $("#tm-meta").innerHTML = "";
@@ -3800,6 +3808,7 @@ function closeDrawer() {
   $("#sg-inspector").hidden = true;
   currentLine = null;
   pendingHighlight = null;
+  updateHash();
 }
 
 function traceBranches(trace) {
@@ -5779,6 +5788,7 @@ function renderEpisode() {
   const traces = ep.traces || [];
   if (currentTraceIdx >= traces.length) currentTraceIdx = 0;
   const trace = traces[currentTraceIdx];
+  updateHash();
   const branches = trace ? traceBranches(trace) : [];
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
   // the episode's own errors sit above the agent and branch selectors: they belong to
@@ -6886,9 +6896,11 @@ async function refreshModalList() {
 async function reopenFirstEpisode() {
   renderModalStep();
   const first = filteredRollouts()[0];
-  if (first) return openEpisode(first.line);
+  if (first) return first.live ? openLiveTrace(first.live.trace) : openEpisode(first.line);
+  currentLive = null;
   currentLine = null;
   currentEpisode = null;
+  updateHash();
   renderRolloutList();
   resetTranscript(emptyState("no episodes", "nothing here for the current filters"));
   $("#tm-meta").innerHTML = "";
@@ -7436,6 +7448,9 @@ setInterval(pollLive, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) pollDashboard();
 });
+window.addEventListener("hashchange", () => {
+  if (location.hash !== renderedHash) location.reload();
+});
 
 (async function init() {
   syncSmoothControls();
@@ -7467,5 +7482,20 @@ document.addEventListener("visibilitychange", () => {
   const run = state.runs.find((r) => r.name === wanted)?.name ?? state.runs[0]?.name;
   if (run) await selectRun(run);
   else $("#overview-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
+  const trace = params.get("trace");
+  if (run === wanted && trace) {
+    try {
+      if (!state.traces.loaded) await initTraces();
+      if (state.traces.live.some((row) => row.trace === trace)) await openLiveTrace(trace);
+      else {
+        const data = await api(`/api/runs/${encodeURIComponent(run)}/episodes?trace=${encodeURIComponent(trace)}&limit=1`);
+        const episode = data.episodes[0];
+        if (episode) await openEpisode(episode.line, { trace: episode.trace_ids.indexOf(trace) });
+        else toastMsg(`trace ${esc(trace)} not found in this run`);
+      }
+    } catch (err) {
+      toastMsg(`could not open trace ${esc(trace)}: ${esc(err.message)}`);
+    }
+  }
   connectViewEvents();
 })();
