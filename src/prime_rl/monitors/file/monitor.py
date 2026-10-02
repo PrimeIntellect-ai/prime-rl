@@ -105,7 +105,15 @@ class FileMonitor(Monitor):
                     appends.pop(path, None)
                     path.unlink(missing_ok=True)
                     continue
-                line = {**delta, "dispatch": event["dispatch"]} if "open" in delta else delta
+                # Training arrays stay on the wire; live records only need display data.
+                line = {key: value for key, value in delta.items() if key != "routing_repairs"}
+                if "nodes" in line:
+                    line["nodes"] = [
+                        {key: value for key, value in node.items() if key not in ("routed_experts", "sampling_mask")}
+                        for node in line["nodes"]
+                    ]
+                if "open" in delta:
+                    line["dispatch"] = event["dispatch"]
                 # deltas key semantic links by node index (int)
                 appends.setdefault(path, []).append(
                     orjson.dumps(line, default=str, option=OPTS | orjson.OPT_NON_STR_KEYS)
