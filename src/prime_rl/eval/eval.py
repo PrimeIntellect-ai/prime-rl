@@ -25,9 +25,11 @@ class Eval:
     async def run(self) -> None:
         config = self.config
         landed: list[dict] = []
+        partial: dict[str, dict[str, list[list[dict]]]] = {}
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             landed = resume.take_landed(config.run_dir)
+            partial = resume.take_partial(config.run_dir)
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
@@ -44,10 +46,12 @@ class Eval:
         restored: list = []
         if config.resume:
             restored, owed, groups = resume.plan(landed, self.runner.eval_envs)
-            self.runner.eval_source.restore(owed, groups)
+            self.runner.eval_source.restore(owed, groups, partial)
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
-                f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed"
+                f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed, "
+                f"{sum(len(episodes) for keys in partial.values() for episodes in keys.values())} "
+                "cut-off episodes to replay"
             )
 
         await self.runner.start()

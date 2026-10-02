@@ -531,6 +531,7 @@ class Dispatcher:
             target_episodes=rollouts,
             policy_version_at_start=self.policy.version,
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
+            replays=list(request.replays),
         )
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
@@ -565,6 +566,7 @@ class Dispatcher:
             cache_salt = None
 
         group.episodes_to_schedule -= 1
+        replay = group.replays.pop() if group.replays else None
         await self.acquire()
         self.admissions_in_window += 1
         meta = InflightEpisode(
@@ -598,6 +600,7 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    replay=replay,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode

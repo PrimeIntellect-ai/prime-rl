@@ -4,7 +4,8 @@ The stream records what landed, so it is what a resume continues from. The run's
 episodes are read back and rejoin the epoch as if they had just arrived - through the
 monitors, so the rebuilt stream, the epoch's metrics and the platform upload cover the
 whole epoch - and only the rollouts still owed run. Errored episodes and the in-flight
-ones the interruption cut off are owed again.
+ones the interruption cut off are owed again; a cut-off episode's live traces ride its
+owed rollout, which replays them before sampling live (``verifiers.v1.replay``).
 
 A landed episode counts toward the task with its ``task.key``, so a resumed run may
 select more or fewer examples or rollouts per example than the interrupted one: the
@@ -23,6 +24,7 @@ import verifiers.v1 as vf
 
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
+from prime_rl.monitors.file.traces.live import get_live_dir, read_live
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.utils.pathing import get_file_monitor_dir
 
@@ -72,6 +74,45 @@ def take_landed(run_dir: Path) -> list[dict]:
     if current.is_dir():
         current.rename(current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}"))
     return list(landed.values())
+
+
+def take_partial(run_dir: Path) -> dict[str, dict[str, list[list[dict]]]]:
+    """The eval episodes earlier attempts cut off, per env and task key, each as its newest
+    live traces. A resumed rollout keeps its trace ids, so a later attempt's copy of a trace
+    supersedes an earlier one and joins its episode; a trace that landed, ok or errored, is
+    never partial."""
+    current = get_file_monitor_dir(run_dir)
+    attempts = [*archives(run_dir), current]
+    stream = get_trace_stream(run_dir).relative_to(current)
+    done = {
+        trace["id"]
+        for directory in attempts
+        if (directory / stream).is_dir()
+        for record in read_records(directory / stream)
+        for trace in record.get("traces") or []
+    }
+    live = get_live_dir(run_dir).relative_to(current)
+    episodes: dict[str, tuple[str, dict[str, dict]]] = {}
+    owner: dict[str, str] = {}
+    for directory in attempts:
+        for path in sorted((directory / live).glob("*.jsonl")):
+            if (read := read_live(path)) is None:
+                continue
+            dispatch, trace = read
+            if dispatch.get("kind") != "eval" or trace["id"] in done:
+                continue
+            env_name, traces = episodes.setdefault(dispatch["id"], (dispatch["env"], {}))
+            previous = owner.get(trace["id"])
+            if previous is not None and previous != dispatch["id"]:
+                traces.update(episodes.pop(previous)[1])
+                owner.update(dict.fromkeys(traces, dispatch["id"]))
+            traces[trace["id"]] = trace
+            owner[trace["id"]] = dispatch["id"]
+    partial: dict[str, dict[str, list[list[dict]]]] = defaultdict(lambda: defaultdict(list))
+    for env_name, traces in episodes.values():
+        episode = list(traces.values())
+        partial[env_name][episode[0]["task"]["key"]].append(episode)
+    return partial
 
 
 def plan(

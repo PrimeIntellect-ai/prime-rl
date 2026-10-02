@@ -120,6 +120,7 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        replay: list[dict] | None = None,
     ) -> vf.WireEpisode:
         """Run and return one typed episode. A failed multi-trace episode marks
         its otherwise-clean traces failed so partial episodes never train.
@@ -131,6 +132,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
+            replay=replay,
         )
         for trace in episode.traces:
             if not episode.ok and trace.ok:

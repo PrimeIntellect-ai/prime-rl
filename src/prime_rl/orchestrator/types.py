@@ -85,6 +85,8 @@ class TaskRequest:
     """Rollouts of the task this request asks for; None is the env's group size."""
     group_id: str | None = None
     """The group these rollouts join (a resume completing a task's landed group); None mints one."""
+    replays: list[list[dict]] = field(default_factory=list)
+    """Cut-off episodes' traces, one per rollout that replays them before sampling live."""
 
 
 @dataclass
@@ -127,6 +129,7 @@ class GroupState:
     emitted: int = 0
     policy_version_at_start: int = 0
     group_id: uuid.UUID | None = None
+    replays: list[list[dict]] = field(default_factory=list)
 
 
 @dataclass

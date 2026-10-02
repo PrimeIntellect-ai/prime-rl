@@ -44,17 +44,25 @@ class EvalSource:
         self.queue: deque[TaskRequest] = deque()
         self.owed: dict[str, dict[str, int]] | None = None
         self.groups: dict[str, dict[str, str]] = {}
+        self.partial: dict[str, dict[str, list[list[dict]]]] = {}
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
         self.first_trigger = not is_resumed
 
-    def restore(self, owed: dict[str, dict[str, int]], groups: dict[str, dict[str, str]]) -> None:
+    def restore(
+        self,
+        owed: dict[str, dict[str, int]],
+        groups: dict[str, dict[str, str]],
+        partial: dict[str, dict[str, list[list[dict]]]] | None = None,
+    ) -> None:
         """Rollouts the next trigger still owes per env and task key, the rest having
         landed before a resume; a task without an entry is complete. ``groups`` is the
-        group id the landed rollouts of a task carry, which the owed ones join."""
+        group id the landed rollouts of a task carry, which the owed ones join;
+        ``partial`` holds the cut-off episodes whose traces owed rollouts replay."""
         self.owed = owed
         self.groups = groups
+        self.partial = partial or {}
 
     def trigger(self, step: int, *, force: bool = False) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
@@ -86,8 +94,17 @@ class EvalSource:
                     owed[env_name][task.key] = owed[env_name].get(task.key, 0) - rollouts
                 if rollouts > 0:
                     group_id = self.groups.get(env_name, {}).get(task.key)
+                    cut = self.partial.get(env_name, {}).get(task.key, [])
+                    replays = [cut.pop() for _ in range(min(rollouts, len(cut)))]
                     self.queue.append(
-                        TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+                        TaskRequest(
+                            env_name=env_name,
+                            task=task,
+                            step=step,
+                            rollouts=rollouts,
+                            group_id=group_id,
+                            replays=replays,
+                        )
                     )
         return fired
 
