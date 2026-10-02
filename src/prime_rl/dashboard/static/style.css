@@ -1282,13 +1282,13 @@ mark.hit {
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
 details.entry.pending, .tool-result.pending { opacity: 0.55; border-style: dashed; }
-details.entry.semantic-origin {
+details.entry.semantic-origin, .tool-result.semantic-origin {
   border-color: var(--accent);
   outline: 1px solid rgba(182, 255, 60, 0.55);
   outline-offset: 2px;
   scroll-margin-block: 80px;
 }
-details.entry.semantic-origin > summary { background: rgba(182, 255, 60, 0.08); }
+details.entry.semantic-origin > summary, .tool-result.semantic-origin > summary { background: rgba(182, 255, 60, 0.08); }
 details.entry > summary {
   display: flex;
   align-items: center;
