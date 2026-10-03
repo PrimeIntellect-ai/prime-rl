@@ -15,9 +15,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.logger import get_logger
 
-logger = get_logger()
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
 # Create our own router for custom endpoints

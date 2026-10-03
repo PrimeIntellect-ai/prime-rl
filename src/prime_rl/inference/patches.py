@@ -1,19 +1,14 @@
+import os
+
 import torch
 
 
 def apply_shared_vllm_patches():
-    """vLLM general plugin: the single place where prime-rl applies its vLLM patches.
+    """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process.
 
-    Registered as a ``vllm.general_plugins`` entry-point so vLLM runs it once in
-    every vLLM process: the API server(s) (while building the arg parser or engine
-    args), engine cores and workers (before the worker extension class is resolved).
-    Patches are applied in all processes; each one only affects the process types
-    that use the patched code. Note vLLM swallows plugin load failures
-    (``load_plugins_by_group`` logs and continues), so a broken entry-point target
-    silently skips ALL of these patches.
+    vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
+    entry-point target silently skips ALL of these patches.
     """
-    import os
-
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
 
     patch_gpt_oss_weight_loading()
