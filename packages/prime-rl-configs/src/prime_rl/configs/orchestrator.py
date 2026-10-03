@@ -379,13 +379,9 @@ class SourceGroupConfig(BaseConfig):
 
 
 class PrefixSourceConfig(BaseConfig):
-    """A train source whose groups continue recent rollouts of a train env from a
-    model call deep inside them, instead of from the task start (prefix replay). Each
-    group replays the first calls of one recent fresh-start episode of ``env``: the
-    env server answers those calls with the recorded completions, in order, while the
-    harness runs the recorded actions on a fresh sandbox; the following calls are
-    sampled. All ``group_size`` rollouts of a group continue the same episode from the
-    same call, and only the sampled calls train."""
+    """A train source whose groups continue recent fresh episodes of ``env`` from a model
+    call inside them: the calls before the cut replay the recorded completions, the rest
+    are sampled and trained."""
 
     name: str
     """Mixer source name, unique among train env and prefix names; metrics are keyed by it."""
@@ -394,9 +390,8 @@ class PrefixSourceConfig(BaseConfig):
     """Name of the train env whose episodes are continued, on that env's servers."""
 
     ratio: float = Field(1.0, gt=0)
-    """Target share of this source's prompts (groups) in each training batch, in the
-    same units as the train envs' ``ratio``. While no buffered episode is eligible, the
-    source is not dispatched and batches do not wait for its share."""
+    """Prompt share, in the same units as the train envs' ``ratio``. Best effort: with no
+    eligible episode the source is not dispatched and the other sources fill the batches."""
 
     rollouts: Literal["all", "failed", "passed", "mixed"] = "all"
     """Which fresh episodes may be continued: all, those with reward below
@@ -406,9 +401,8 @@ class PrefixSourceConfig(BaseConfig):
     """Reward at which an episode counts as passed for ``rollouts``."""
 
     depth: tuple[float, float] = (0.2, 0.9)
-    """Range of the cut as a fraction of the episode's model calls: calls before the cut
-    are replayed, the rest are sampled. The cut is drawn uniformly and is at least 1 and
-    at most the number of calls minus 1."""
+    """Cut range as a fraction of the episode's model calls, drawn uniformly and clamped
+    to [1, calls - 1]."""
 
     max_age: int = Field(4, ge=0)
     """Steps between an episode's dispatch and the dispatch of its continuations."""
