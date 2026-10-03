@@ -52,7 +52,6 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
-from prime_rl.orchestrator.payload_gc import PayloadGC
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -261,11 +260,6 @@ class Orchestrator:
 
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
-        self.payload_gc = (
-            PayloadGC(config.payload_root, config.max_off_policy_steps, resume=self.resume_step is not None)
-            if config.payload_root is not None
-            else None
-        )
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
@@ -1006,12 +1000,10 @@ class Orchestrator:
                     self.gate_closed_at = None
             gate.set()
 
-    async def on_policy_update(self, step: int) -> None:
+    async def on_policy_update(self, _step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""
         self.update_dispatch_gate()
         self.version_advanced.set()
-        if self.payload_gc is not None:
-            await asyncio.to_thread(self.payload_gc.collect, step)
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

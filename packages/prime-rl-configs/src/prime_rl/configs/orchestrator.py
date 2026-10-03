@@ -594,9 +594,6 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    payload_root: Path | None = None
-    """Shared directory the inference servers write by-handle payloads (router-replay ids, sampling masks) to. When set, the orchestrator wipes it at the start of a fresh (non-resumed) run and deletes each policy version's directory once no unread batch can reference it."""
-
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 

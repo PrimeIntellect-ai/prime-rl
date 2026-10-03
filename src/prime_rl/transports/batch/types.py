@@ -81,9 +81,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
 
-    # Per-token side arrays by handle (see ``prime_rl.transports.payload``), positions
-    # relative to ``token_ids``. Coexists with the inline ``routed_experts`` /
-    # ``sampling_mask``; a sample carries a field one way or the other.
+    # By-handle routed_experts / sampling_mask rows, positions relative to ``token_ids``.
     payload: list[PayloadSegment] | None = None
 
 
@@ -123,5 +121,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
 
-    # See TrainingSample.payload; positions relative to ``input_ids``.
+    # Positions relative to ``input_ids``.
     payload: list[PayloadSegment] | None = None

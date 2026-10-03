@@ -4,10 +4,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import msgspec
 import numpy as np
 
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.transports.payload import clip_segments, shift_segments
+from prime_rl.transports.payload import clip_segments
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -554,7 +555,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
-    payload: list | None = [] if any(sample.payload for sample in bin_content.samples) else None
+    payload = []
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -600,8 +601,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
-        if payload is not None and sample.payload:
-            payload.extend(shift_segments(sample.payload, len(input_ids) - sample_len))
+        for segment in sample.payload or ():
+            payload.append(msgspec.structs.replace(segment, pos=segment.pos + len(input_ids) - sample_len))
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -629,7 +630,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
-        payload=payload,
+        payload=payload or None,
     )
 
 
@@ -801,10 +802,6 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         assert len(micro_batch.sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE, (
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
-        )
-    for segment in micro_batch.payload or ():
-        assert 0 <= segment.pos and segment.end <= num_tokens, (
-            f"payload segment {segment.pos}:{segment.end} outside {num_tokens} tokens"
         )
 
 
