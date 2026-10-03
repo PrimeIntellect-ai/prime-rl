@@ -103,7 +103,7 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
 )
 def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, updates, allowed) -> None:
     original = {"source": [{"env": {"id": "single_agent"}}], "run": {"name": "resume-test"}}
-    saved = EvalConfig.model_validate(original)
+    saved = EvalConfig.model_validate_json(orjson.dumps(original))
     if "client" in updates:
         updates = updates | {"client": saved.client.model_dump() | updates["client"]}
     current = EvalConfig.model_validate(original | updates | {"resume": True})
