@@ -371,6 +371,14 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
+            if routed_experts is not None:
+                is_total_recall = routed_experts.shape[-1] == 2 * model.config.get_text_config().num_experts_per_tok
+                if is_total_recall != config.enable_total_router_recall:
+                    raise ValueError(
+                        "Routed-experts payload does not match trainer.enable_total_router_recall: set it to "
+                        f"{is_total_recall} or match inference.enable_return_routed_expert_weights."
+                    )
+
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
