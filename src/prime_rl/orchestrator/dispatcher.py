@@ -83,12 +83,17 @@ class DispatcherMetrics:
     errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
     )
+    scored_timeouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
         self.cancelled_by_kind_env[(kind, env_name)] += n
 
     def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
         self.errored_by_kind_env[(kind, env_name)] += 1
+
+    def record_scored_timeout(self, *, env_name: str) -> None:
+        """A train agent-deadline exhaustion kept as a scored outcome (``train_timeouts = "score"``)."""
+        self.scored_timeouts_by_env[env_name] += 1
 
     def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
         """Return per-tick counters and clear them. Emits the full pre-
@@ -108,8 +113,10 @@ class DispatcherMetrics:
             out[f"dispatcher/errored/{env}"] = float(
                 self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
             )
+        out["dispatcher/scored_timeouts/train"] = float(sum(self.scored_timeouts_by_env.get(e, 0) for e in train_envs))
         self.cancelled_by_kind_env.clear()
         self.errored_by_kind_env.clear()
+        self.scored_timeouts_by_env.clear()
         return out
 
 
@@ -144,8 +151,10 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
+        train_timeouts: str = "drop",
     ) -> None:
         self.policy = policy
+        self.train_timeouts = train_timeouts
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -671,11 +680,16 @@ class Dispatcher:
 
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
-                # Training keeps a timed-out rollout out of the batch: an error,
-                # like any other failure. Eval keeps it as a scored outcome.
-                trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
-                trace.ok = False
-                episode.ok = False
+                if self.train_timeouts == "score" and is_scored_budget_failure(trace):
+                    # Opt-in: a healthy agent-deadline exhaustion is a scored task outcome (grader reward, normally 0),
+                    # not an infrastructure error, so it stays in advantages, the curriculum and the batch.
+                    self.metrics.record_scored_timeout(env_name=meta.env_name)
+                else:
+                    # Training keeps a timed-out rollout out of the batch: an error,
+                    # like any other failure. Eval keeps it as a scored outcome.
+                    trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
+                    trace.ok = False
+                    episode.ok = False
             if not trace.has_error and not trace.is_timeout and trace.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure (``has_error`` reads ``ok``).
@@ -872,3 +886,14 @@ class Dispatcher:
             "dispatcher/off_policy/max": float(max(staleness, default=0)),
             "dispatcher/off_policy/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }
+
+def is_scored_budget_failure(trace: vf.Trace) -> bool:
+    """A timed-out train trace that is a healthy agent-budget exhaustion: stopped by the agent deadline, no recorded
+    error, at least one sampled turn, and a grader reward. Anything else (episode/finalize deadlines, errors, empty or
+    ungraded traces) is not a task outcome and stays an error."""
+    if not trace.is_timeout or trace.has_error or trace.stop_condition != "agent_timeout":
+        return False
+    if trace.num_turns <= 0:
+        return False
+    # ``Trace.reward`` sums the non-None scores (0.0 when none were recorded), so check for an actual grader score.
+    return any(score is not None for score in (trace.rewards or {}).values())
