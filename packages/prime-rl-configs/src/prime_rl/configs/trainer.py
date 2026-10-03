@@ -497,16 +497,6 @@ class BaseOptimizerConfig(BaseConfig):
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
 
 
-class SGDConfig(BaseOptimizerConfig):
-    type: Literal["sgd"] = "sgd"
-
-    nesterov: bool = True
-    """Use Nesterov momentum."""
-
-    momentum: float = 0.9
-    """SGD momentum factor."""
-
-
 class AdamWConfig(BaseOptimizerConfig):
     type: Literal["adamw"] = "adamw"
 
@@ -534,9 +524,7 @@ class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
 
-OptimizerConfig: TypeAlias = Annotated[
-    SGDConfig | AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")
-]
+OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
 
 
 class CheckpointConfig(BaseConfig):
@@ -551,9 +539,6 @@ class CheckpointConfig(BaseConfig):
 
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
-
-    skip_progress: bool = False
-    """Skip loading the progress from checkpoint."""
 
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""

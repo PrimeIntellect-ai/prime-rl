@@ -480,9 +480,6 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
-    skip_progress: bool = False
-    """Skip loading the progress from checkpoint."""
-
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
@@ -585,9 +582,6 @@ class OrchestratorConfig(BaseConfig):
 
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
-
-    collect_inference_metrics: bool = True
-    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """Role for each policy admin client when collecting P/D inference metrics."""

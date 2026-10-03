@@ -250,8 +250,7 @@ class Orchestrator:
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
-        # trainer even when ``ckpt.skip_progress`` leaves the counter unrestored. The curricula
-        # themselves are restored below, once the envs are loaded.
+        # trainer. The curricula themselves are restored below, once the envs are loaded.
         if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming from step {self.resume_step}")
@@ -354,13 +353,11 @@ class Orchestrator:
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
         )
-        # The collector always polls — it feeds the concurrency controller;
-        # metrics fan out to every registered monitor when collection is on.
+        # The collector feeds the concurrency controller; metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
-            log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
         # One awaited scrape so the concurrency controller derives (and logs) its
