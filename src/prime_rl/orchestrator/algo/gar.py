@@ -27,13 +27,15 @@ from prime_rl.monitors.file.traces.update import make_update
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
-from prime_rl.orchestrator.utils import episode_group_id, train_work
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, train_work
+from prime_rl.utils.async_utils import safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
+    from prime_rl.orchestrator.types import Progress
 
-FALLBACK_REASONS = ("timeout", "error", "invalid")
+FALLBACK_REASONS = ("stale", "timeout", "error", "invalid")
 
 # How far a ranking is trusted, by the grader's own confidence.
 CONFIDENCE_SHRINK = {"high": 1.0, "medium": 0.5, "low": 0.0}
@@ -80,8 +82,16 @@ class GARAlgorithm(GRPOAlgorithm):
         self.grader: EnvClient | None = None
         self.grader_clients: InferenceClient | None = None
         self.grader_address_file: Path | None = None
-        """Where the launcher-managed grader server publishes its address; set by ``TrainEnvs``."""
+        self.progress: Progress | None = None
+        self.max_off_policy_steps: int | None = None
         self.slots = asyncio.Semaphore(config.grader.max_concurrent)
+
+    def bind(self, progress: Progress, max_off_policy_steps: int, grader_address_file: Path) -> None:
+        """Wire in the orchestrator's step clock and staleness bound, and where the
+        launcher-managed grader server publishes its address."""
+        self.progress = progress
+        self.max_off_policy_steps = max_off_policy_steps
+        self.grader_address_file = grader_address_file
 
     async def setup(self) -> None:
         from prime_rl.orchestrator.envs import ENV_SERVER_STARTUP_TIMEOUT, wait_for_address
@@ -102,6 +112,11 @@ class GARAlgorithm(GRPOAlgorithm):
             traces = [trace for _, trace in iter_trainable_traces([episode])]
             if traces:
                 members.append((next((trace for trace in traces if "patch" in trace.info), traces[0]), traces))
+        if any(trace.reward not in (0.0, 1.0) for _, traces in members for trace in traces):
+            raise ValueError(
+                f"gar needs binary (0/1) rewards, but env {episode_env_name(episodes[0])!r} produced "
+                f"{sorted({trace.reward for _, traces in members for trace in traces})}"
+            )
         passed = [candidate.reward == 1.0 for candidate, _ in members]
         if all(passed) or not any(passed):
             await super().score_group(episodes)
@@ -114,7 +129,7 @@ class GARAlgorithm(GRPOAlgorithm):
         traces_by_label = {label: traces_by_id[trace_id] for label, trace_id in labels.items()}
 
         started = time.monotonic()
-        grade, verdict, reason = await self.grade(data)
+        grade, verdict, reason = await self.grade(data, self.fallback_step(episodes))
         metrics = {
             "gar/graded": float(verdict is not None),
             "gar/latency": time.monotonic() - started,
@@ -147,26 +162,28 @@ class GARAlgorithm(GRPOAlgorithm):
             ]
         )
 
-    async def grade(self, data: GroupGradeData) -> tuple[vf.Episode | None, GroupVerdict | None, str | None]:
+    async def grade(
+        self, data: GroupGradeData, fallback_step: int | None
+    ) -> tuple[vf.Episode | None, GroupVerdict | None, str | None]:
         """Run one grader episode: the episode (if any), the validated verdict, or the
-        reason the group falls back."""
-        assert self.grader is not None and self.grader_clients is not None, (
-            "grader not connected — setup() must run first"
-        )
-        async with self.slots:
-            try:
-                async with asyncio.timeout(self.config.grader.timeout):
-                    grade = await self.grader.run(
-                        client=self.grader_clients.eval_client,
-                        model=self.config.grader.model.name,
-                        sampling=vf.SamplingConfig(),
-                        task_data=data.model_dump(mode="json"),
-                    )
-            except TimeoutError:
-                return None, None, "timeout"
-            except Exception as e:  # noqa: BLE001 - a grader outage falls back per group
-                get_logger().warning(f"GAR grader request failed: {e!r}")
-                return None, None, "error"
+        reason the group falls back. ``grader.timeout`` covers the wait for a grader
+        slot too, and the group falls back once ``progress.step`` reaches
+        ``fallback_step`` — the last step whose batch can still take it."""
+        grading = asyncio.create_task(self.run_grader(data))
+        stale = asyncio.create_task(self.until_step(fallback_step))
+        try:
+            done, _ = await asyncio.wait(
+                {grading, stale}, timeout=self.config.grader.timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            await safe_cancel_all([grading, stale])
+        if grading not in done:
+            return None, None, "stale" if stale in done else "timeout"
+        try:
+            grade = grading.result()
+        except Exception as e:  # noqa: BLE001 - a grader outage falls back per group
+            get_logger().warning(f"GAR grader request failed: {e!r}")
+            return None, None, "error"
         if not grade.ok or not grade.traces:
             return grade, None, "error"
         try:
@@ -176,6 +193,32 @@ class GARAlgorithm(GRPOAlgorithm):
             get_logger().warning(f"GAR grader verdict rejected: {e}")
             return grade, None, "invalid"
         return grade, verdict, None
+
+    async def run_grader(self, data: GroupGradeData) -> vf.Episode:
+        assert self.grader is not None and self.grader_clients is not None, (
+            "grader not connected — setup() must run first"
+        )
+        async with self.slots:
+            return await self.grader.run(
+                client=self.grader_clients.eval_client,
+                model=self.config.grader.model.name,
+                sampling=vf.SamplingConfig(),
+                task_data=data.model_dump(mode="json"),
+            )
+
+    async def until_step(self, step: int | None) -> None:
+        assert self.progress is not None, "bind() must run first"
+        if step is None:  # frozen-sourced episodes never go stale
+            await asyncio.Event().wait()
+        while self.progress.step < step:
+            await asyncio.sleep(1.0)
+
+    def fallback_step(self, episodes: list[vf.Episode]) -> int | None:
+        """The last step whose batch can still admit this group: at the next one the
+        insertion sweep (``max_off_policy_steps``) would drop it."""
+        assert self.max_off_policy_steps is not None, "bind() must run first"
+        starts = [policy.start for episode in episodes if (policy := train_work(episode).policy) is not None]
+        return min(starts) + self.max_off_policy_steps + 1 if starts else None
 
     def apply(
         self,
@@ -237,9 +280,13 @@ class GARAlgorithm(GRPOAlgorithm):
 
     async def log_grade(self, grade: vf.Episode, episodes: list[vf.Episode], labels: dict[str, str]) -> None:
         """Log the grader's episode to the trace stream as kind ``grade``, linked to
-        its group and, by label, to the candidate traces."""
+        its group and, by label, to the candidate traces. The candidates' transcripts
+        are left out: the candidate traces are already in the stream."""
+        data = vf.WireTaskData.model_validate(grade.task.data.model_dump(mode="json", exclude={"candidates"}))
+        task = grade.task.model_copy(update={"data": data})
+        traces = []
         for trace in grade.traces:
-            trace.info["kind"] = "grade"
-            trace.info["group_id"] = episode_group_id(episodes[0])
-            trace.info["candidates"] = labels
-        await monitors.log([grade], train_work(episodes[0]).step, "grade", "all")
+            info = {**trace.info, "kind": "grade", "group_id": episode_group_id(episodes[0]), "candidates": labels}
+            traces.append(trace.model_copy(update={"task": task, "info": info}))
+        logged = grade.model_copy(update={"task": task, "traces": traces})
+        await monitors.log([logged], train_work(episodes[0]).step, "grade", "all")

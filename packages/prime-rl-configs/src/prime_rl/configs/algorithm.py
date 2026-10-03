@@ -408,7 +408,9 @@ class GraderConfig(BaseConfig):
     unless ``address`` is set)."""
 
     timeout: float = Field(1800.0, gt=0)
-    """Seconds one grader episode may run; past it the group keeps plain GRPO advantages."""
+    """Seconds a group may wait for a grader slot and be graded; past it the group keeps
+    plain GRPO advantages. A group also falls back at the last step whose batch can
+    still take it under ``max_off_policy_steps``."""
 
     max_concurrent: int = Field(32, ge=1)
     """Grader episodes in flight at once for this source; further groups wait their turn."""

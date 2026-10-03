@@ -29,7 +29,7 @@ import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
-from prime_rl.orchestrator.algo import Algorithm, GARAlgorithm, build_algorithm
+from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
@@ -234,15 +234,12 @@ class TrainEnvs(Envs[TrainEnv]):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
-            algorithm = build_algorithm(config.algo, clients)
-            if isinstance(algorithm, GARAlgorithm):
-                algorithm.grader_address_file = env_address_file(config_dir, "grade", config.resolved_name)
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
                 env_address_file(config_dir, "train", config.resolved_name),
                 GenerationSource(config.algo.sampling, clients, renderer_config),
-                algorithm,
+                build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
 
