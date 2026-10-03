@@ -438,6 +438,8 @@ demo_key = "demonstration"
 
 The orchestrator filters samples with no training signal. This includes samples with zero advantage on all RL tokens. Samples that still carry CE or reference-KL components are retained. Filtering an RL token also removes its trainer/inference mismatch-KL contribution.
 
+Set `min_abs_advantage` on a train source to also filter near-zero advantages: RL tokens with `|A| <= min_abs_advantage` are filtered like zero-advantage tokens. The check is per sample, so in a group with mixed advantages the near-baseline samples are dropped and the rest train. The default `0.0` filters only exact zeros.
+
 `orchestrator.constant_trainer_batch_size` defaults to `true`. The orchestrator filters samples before they count toward the batch target. It collects replacements, so rollout-based batches contain `orchestrator.batch_size` training traces. Set the option to `false` to filter after collection without replacement. This setting can improve orchestrator throughput, but it produces smaller trainer batches.
 
 ## Task Samplers

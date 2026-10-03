@@ -290,6 +290,13 @@ class TrainSourceConfig(EnvConfig):
     sampler: TaskSamplerConfig = StandardSamplerConfig()
     """Task selection policy. The default cycles through the taskset in source order."""
 
+    min_abs_advantage: float = Field(0.0, ge=0)
+    """Treat RL tokens with ``|advantage| <= min_abs_advantage`` like zero-advantage tokens:
+    they leave the RL loss, and a sample left with no RL, CE, or ref-KL signal is dropped
+    (and backfilled when ``constant_trainer_batch_size`` is set). The check is per sample, so
+    near-baseline samples in a group are dropped while the rest train. The default 0 drops
+    only exactly-zero advantages."""
+
 
 class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
