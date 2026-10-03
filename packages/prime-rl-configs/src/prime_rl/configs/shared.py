@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
+from verifiers.v1.configs.client import BaseClientConfig
 
 from prime_rl.utils.config import BaseConfig
 
@@ -212,21 +213,9 @@ class DynamoConfig(BaseConfig):
     """Dynamo frontend URL used to discover inference workers for RL control."""
 
 
-class ClientConfig(BaseConfig):
+class ClientConfig(BaseClientConfig):
     wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
-
-    base_url: str = "http://localhost:8000/v1"
-    """Base URL for the OpenAI API. For multi-replica deployments, point this at a router in front of the replicas."""
-
-    api_key_var: str = "VLLM_API_KEY"
-    """Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL."""
-
-    headers: dict[str, str] = {}
-    """Static headers sent with every request."""
-
-    headers_from_env: dict[str, str] = {}
-    """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
 
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
@@ -236,6 +225,13 @@ class ClientConfig(BaseConfig):
 
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
+
+
+class VLLMClientConfig(ClientConfig):
+    """Client defaults for the live inference deployment managed by training."""
+
+    base_url: str = "http://localhost:8000/v1"
+    api_key_var: str = "VLLM_API_KEY"
 
 
 class LogConfig(BaseConfig):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -12,38 +11,16 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    EvalClientConfig,
+    TrainClientConfig,
+    resolve_api_key,
+    resolve_headers,
+)
 
-from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
-
-
-def resolve_api_key(api_key_var: str) -> str:
-    """The API key named by ``api_key_var``; ``PRIME_API_KEY`` also falls back to the prime
-    CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
-    api_key = os.environ.get(api_key_var)
-    if not api_key and api_key_var == "PRIME_API_KEY":
-        from prime_sandboxes import Config as PrimeConfig
-
-        api_key = PrimeConfig().api_key
-    return api_key or "EMPTY"
-
-
-def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
-    """The static headers plus those read from the environment. A Prime Inference client
-    without a team header gets the team from ``$PRIME_TEAM_ID`` or the prime CLI config,
-    like the verifiers client: a team's internal models are served only under it."""
-    env_headers = {
-        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-    }
-    headers = {**client_config.headers, **env_headers}
-    if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
-        from prime_sandboxes import Config as PrimeConfig
-
-        if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
-            headers["X-Prime-Team-ID"] = team_id
-    return headers
 
 
 class PrefillScorer:
@@ -60,8 +37,8 @@ class PrefillScorer:
             # for these chat-completions teacher configs.
             self._client = AsyncOpenAI(
                 base_url=config.base_url,
-                api_key=resolve_api_key(config.api_key_var),
-                default_headers=config.headers or None,
+                api_key=resolve_api_key(config),
+                default_headers=resolve_headers(config) or None,
             )
         return await prefill_logprobs(self._client, model, token_ids)
 
@@ -274,10 +251,7 @@ def setup_client(
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
-    headers = resolve_headers(client_config)
-    return config_cls(
-        base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
-    )
+    return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -290,8 +264,9 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = resolve_headers(client_config)
-        api_key = resolve_api_key(client_config.api_key_var)
+        config = client_config.model_copy(update={"base_url": base_url})
+        headers = resolve_headers(config)
+        api_key = resolve_api_key(config)
         if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
