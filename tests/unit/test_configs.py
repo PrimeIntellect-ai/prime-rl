@@ -497,51 +497,49 @@ def test_group_defaults_match_source_defaults(group):
 
 
 def test_policy_sources_accept_different_top_p_values():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        config = OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "train": {
-                    "source": [
-                        {
-                            "name": "top-p-95",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.95},
-                        },
-                        {
-                            "name": "top-p-97",
-                            "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.97},
-                        },
-                    ]
-                },
-            }
-        )
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {
+                        "name": "top-p-95",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.95},
+                    },
+                    {
+                        "name": "top-p-97",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.97},
+                    },
+                ]
+            },
+        }
+    )
 
     assert [source.sampling.top_k for source in config.train.source] == [512, 512]
 
 
 def test_policy_sources_reject_mixed_top_k_capture():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
-            OrchestratorConfig.model_validate(
-                {
-                    "renderer": {"name": "qwen3"},
-                    "train": {
-                        "source": [
-                            {
-                                "name": "truncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                                "sampling": {"top_p": 0.95},
-                            },
-                            {
-                                "name": "untruncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                            },
-                        ]
-                    },
-                }
-            )
+    with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "truncated",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                        },
+                        {
+                            "name": "untruncated",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 1.0},
+                        },
+                    ]
+                },
+            }
+        )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():

@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias, get_args
 
@@ -48,15 +47,15 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
-    top_p: float = Field(1.0, gt=0, le=1.0)
-    """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
-    distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer and
-    rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
+    top_p: float = Field(0.97, gt=0, le=1.0)
+    """Nucleus (top-p) sampling for train rollouts. Values below 1.0 (the default) truncate
+    the sampling distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer
+    and rollout distributions stay consistent. Set 1.0 to sample the full distribution
+    without replay — see docs/inference.md (Sampling Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
-    a default top-k is injected when only top-p truncates so sampling masks stay
-    bounded — see docs/inference.md (Sampling Replay)."""
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay and defaults
+    top-k to 512 so sampling masks stay bounded — see docs/inference.md (Sampling Replay)."""
 
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
@@ -638,7 +637,8 @@ class OrchestratorConfig(BaseConfig):
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
         Owned here: every truncating config gets a top-k bound (bounds the sampling
         masks); opd/opsd is rejected (full-vocab prefill refs would mix
-        normalizations). Frozen-source envs sample externally and are exempt."""
+        normalizations); eval sources, which share the capturing server, default
+        to the same top-k. Frozen-source envs sample externally and are exempt."""
         policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
             [self.train.sampling] if not self.train.source else []
         )
@@ -661,14 +661,8 @@ class OrchestratorConfig(BaseConfig):
                 f"sampling mask, so unbounded masks blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
             )
 
-        unbounded = [sampling for sampling in truncating if sampling.top_k is None]
-        if unbounded:
-            warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every sampling mask is "
-                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
-                stacklevel=2,
-            )
-            for sampling in unbounded:
+        for sampling in truncating:
+            if sampling.top_k is None:
                 sampling.top_k = TRAIN_TOP_K_BOUND
 
         algos = [env.algo for env in self.train.source] or [self.train.algo]
@@ -676,8 +670,20 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
                 "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
-                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
+                "ref_kl term. Set top_p = 1.0 (and no top_k) on the train sampling or remove the opd/opsd algo."
             )
+
+        # Capture is engine-wide: vLLM rejects eval requests without top_k > 0 or with temperature 0.
+        if self.eval is not None:
+            for source in self.eval.source:
+                if source.sampling.temperature == 0:
+                    raise ValueError(
+                        f"Eval source '{source.resolved_name}' samples with temperature 0, which the inference "
+                        "server rejects while truncated train sampling captures sampling masks. Use a non-zero "
+                        "eval temperature or set top_p = 1.0 on the train sampling."
+                    )
+                if source.sampling.top_k is None:
+                    source.sampling.top_k = TRAIN_TOP_K_BOUND
 
         return self
 

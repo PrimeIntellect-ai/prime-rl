@@ -32,6 +32,7 @@ name = "prime-qwen3"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
+top_p = 1.0 # opd/opsd refs are full-vocab, so no truncated sampling (and no sampling replay)
 
 [[orchestrator.train.source]]
 name = "reverse-text-grpo"
