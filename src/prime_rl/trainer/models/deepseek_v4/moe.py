@@ -11,7 +11,7 @@ from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter, filter_replayed_experts
 
 
 class ClampedSwiglu:
@@ -38,7 +38,7 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
     `TokenChoiceTopKRouter.forward` picks its scoring function from an inline
     `if/elif/else: raise` chain with no hook to extend, and `"sqrtsoftplus"` is outside
     the `ScoreFuncType` it accepts, so the whole method is restated below. Only the
-    scoring line is new: the `routed_experts` bypass, the selection bias, the
+    scoring line is new: the `routed_experts` bypass (and its replay filter), the selection bias, the
     normalization, the scaling and the per-expert token count are the base class's,
     unchanged.
     """
@@ -61,6 +61,11 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
 
         # NOTE: the selection bias only steers selection. The gating value top_scores is
         #       still derived from the original scores.
+        if routed_experts is not None and self.replay_min_score_ratio is not None:
+            routed_experts = filter_replayed_experts(
+                scores, routed_experts, self.replay_min_score_ratio, self.selection_bias
+            )
+
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
             selected_experts_indices = routed_experts

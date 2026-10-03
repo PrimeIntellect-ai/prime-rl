@@ -48,6 +48,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4HashRouter
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -230,6 +231,23 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
     logger.warning(
         f"Forced balanced routing on {num_routers} MoE layers (debug.force_balanced_routing=True). "
         "Expert assignment is round-robin; gradient flow through the router is broken."
+    )
+
+
+def apply_router_replay_filter(model: nn.Module, min_score_ratio: float) -> None:
+    """Filter implausible replayed experts in every learned MoE router (see `filter_replayed_experts`)."""
+    num_routers = 0
+    for layer in get_language_model(model).layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        # Hash routers select by token id, not by score, so there is nothing to filter.
+        if isinstance(mlp, MoE) and not isinstance(mlp.router, DeepseekV4HashRouter):
+            mlp.router.replay_min_score_ratio = min_score_ratio
+            num_routers += 1
+
+    if num_routers == 0:
+        raise ValueError("No MoE routers found for router_replay_min_score_ratio. Is this a custom-impl MoE model?")
+    get_logger().info(
+        f"Filtering replayed experts below {min_score_ratio} x the router's own top-k on {num_routers} MoE layers"
     )
 
 

@@ -14,6 +14,8 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    TokenChoiceTopKRouter,
+    filter_replayed_experts,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -252,3 +254,26 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_filter_replayed_experts():
+    scores = torch.tensor([[0.30, 0.25, 0.20, 0.15, 0.06, 0.04], [0.01, 0.02, 0.40, 0.30, 0.15, 0.12]])
+    routed = torch.tensor([[3, 4, 1], [0, 2, 1]], dtype=torch.int32)
+    # Thresholds are 0.5 * 0.20 and 0.5 * 0.15: dropped slots take the router's best experts not already kept.
+    filtered = filter_replayed_experts(scores, routed, min_score_ratio=0.5)
+    assert filtered.dtype == routed.dtype
+    assert filtered.tolist() == [[3, 0, 1], [3, 2, 4]]
+
+    router = TokenChoiceTopKRouter(
+        dim=8, num_experts=6, top_k=3, score_func="softmax", route_norm=True, route_scale=1.0
+    )
+    router.init_weights(0.5)
+    x = torch.randn(16, 8)
+    routed = torch.stack([torch.randperm(6)[:3] for _ in range(16)])
+    router.replay_min_score_ratio = 1.0
+    top_scores, selected, _, _ = router(x, routed_experts=routed)
+    # With ratio 1 only the router's own top-k survive, as distinct experts.
+    own = torch.topk(router.gate(x), k=3, dim=1).indices
+    assert selected.sort(dim=1).values.tolist() == own.sort(dim=1).values.tolist()
+    top_scores.pow(2).sum().backward()
+    assert router.gate.weight.grad.abs().sum() > 0

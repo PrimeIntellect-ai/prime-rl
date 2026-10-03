@@ -301,6 +301,14 @@ This however is not free, it adds a significant overhead to the HTTP requests as
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
 
+Plain replay can force an expert that the trainer's router scores very low, so its recomputed gating weight is far from the one inference used. `trainer.router_replay_min_score_ratio` (α, off by default) filters these out, following Cursor's Composer 2 report ([arXiv:2603.24477](https://arxiv.org/abs/2603.24477), section 6.2). For each token and MoE layer, a replayed expert is kept only if its router score is at least α times the lowest score among the trainer router's own top-k. Dropped experts are replaced by the router's own top-k picks, best first, so each token still uses `top_k` distinct experts. Scores are the router's gating scores after the score function (softmax/sigmoid probabilities, before route normalization and without the load-balancing selection bias; full-softmax probabilities for `topk_softmax` routers). The router stays trainable because gating weights are still computed by the trainer. α = 1 falls back to the trainer's own routing; smaller α keeps more of the replay. Cursor does not publish their threshold. A reasonable start is 0.5: routing flips caused by numerics are near-ties with a score ratio close to 1, so they are still replayed, and only experts the trainer clearly disagrees with are replaced.
+
+```toml
+[trainer]
+enable_router_replay = true
+router_replay_min_score_ratio = 0.5
+```
+
 ### Sampling Replay
 
 Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over a sampling mask of surviving token ids. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same mask — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: vLLM records the sampling mask at sampling time (`--return-sampling-mask`, native since vLLM 0.28) and the trainer renormalizes its logprobs over it.
