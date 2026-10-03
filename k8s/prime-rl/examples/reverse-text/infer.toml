@@ -1,2 +1,5 @@
-[model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+# The orchestrator samples with top_p < 1 by default, so the trainer replays sampling masks.
+enable_return_sampling_mask = true
+
+[vllm]
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"

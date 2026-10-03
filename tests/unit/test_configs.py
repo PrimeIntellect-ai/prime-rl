@@ -546,6 +546,27 @@ def test_policy_sources_reject_mixed_top_k_capture():
         )
 
 
+def test_default_train_sampling_replays_except_frozen_sources():
+    source = {"env": {"taskset": {"id": "reverse-text"}}}
+    frozen = {
+        **source,
+        "name": "distill",
+        "algo": {"type": "sft", "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8001/v1"}}},
+    }
+    config = RLConfig.model_validate(
+        {"trainer": {}, "orchestrator": {"train": {"source": [source, frozen]}}, "inference": {}}
+    )
+    policy, teacher = (s.sampling for s in config.orchestrator.train.source)
+    assert (policy.top_p, policy.top_k) == (0.97, 512)
+    assert (teacher.top_p, teacher.top_k) == (1.0, None)
+    assert config.inference.enable_return_sampling_mask
+
+    with pytest.raises(ValidationError, match="temperature 0"):
+        OrchestratorConfig.model_validate(
+            {"train": {"source": [source]}, "eval": {"sampling": {"temperature": 0}, "source": [source]}}
+        )
+
+
 def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
