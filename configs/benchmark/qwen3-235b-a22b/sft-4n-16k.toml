@@ -1,0 +1,64 @@
+# Qwen3-235B-A22B SFT throughput benchmark, matched to the torchtitan run described in
+# configs/benchmark/README.md: 4 nodes x 8 GPUs (FSDP over 32 GPUs, ep=8), seq 16384, one packed
+# 16384-token sample per GPU per step (32 x 16384 tokens per step), full activation checkpointing,
+# AdamW with fp32 master weights and fp32 optimizer states, bf16 compute, fp32 reduce, torch.compile
+# with fullgraph, 20 steps. Routing is forced round-robin balanced because torchtitan trains from
+# random init, whose natural routing is not comparable; real routing is ~40% slower on both stacks.
+#
+#   uv run sft @ configs/benchmark/qwen3-235b-a22b/sft-4n-16k.toml
+#
+# There is no [ckpt] block: this run measures step time, it does not produce a usable checkpoint.
+# `dist_timeout_seconds` covers the first run, which builds the HF -> prime-rl conversion cache.
+
+dist_timeout_seconds = 14400
+max_steps = 20
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+
+# The renderer registry lists Qwen/Qwen3-235B-A22B but not the 2507 Thinking variant, which uses
+# the same Qwen3 chat template.
+[renderer]
+name = "qwen3"
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507"
+impl = "custom"
+seq_len = 16384
+ep = 8
+optim_cpu_offload = false
+ac_offloading = "None"
+# fullgraph needs the router inside the block's FSDP unit, which the fp32 router is not.
+moe_router_dtype = "bfloat16"
+
+# Selective AC does not fit at seq 16384 on 4 nodes with fp32 AdamW states and the torch dispatch.
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.compile]
+fullgraph = true
+
+[model.moe.dispatch]
+type = "torch"
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+seq_len = 16384
+batch_size = 32
+micro_batch_size = 1
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+
+[slurm]
+job_name = "bench-qwen235b-sft-4n-16k"
+partition = "all"
+
+[model.debug]
+force_balanced_routing = true
