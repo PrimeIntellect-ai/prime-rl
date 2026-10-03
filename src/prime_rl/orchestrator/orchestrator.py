@@ -627,8 +627,11 @@ class Orchestrator:
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
-        await monitors.log(effective.vf_episodes, step, "train", "effective")
-        await monitors.log_annotations(stamp_batch(effective.vf_episodes, step))
+        # main_loop owns these finalized graphs until publication returns.
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        await monitors.log(effective_episodes, step, "train", "effective")
+        annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
+        await monitors.log_annotations(annotations)
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -640,73 +643,88 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
-        # full arrival window; ``effective`` is the exact shipped cohort.
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", batch.episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
-            for env_name, env_pool in pool.by_env().items():
-                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
-        total_attempts = len(batch.episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
-        failures_by_env: dict[str, list[DispatchFailure]] = {}
-        for failure in batch.failures:
-            failures_by_env.setdefault(failure.env_name, []).append(failure)
-        episodes_by_env = batch.episodes.by_env()
-        for env_name in set(episodes_by_env) | set(failures_by_env):
-            env_failures = failures_by_env.get(env_name, [])
-            env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
-            metrics |= dispatch_failure_metrics(
-                env_failures,
-                prefix=f"train/{env_name}/all",
-                total_attempts=env_attempts,
-            )
+        def _train_batch_metrics(
+            batch: TrainBatch, effective: TrainEpisodes, step: int
+        ) -> tuple[dict[str, float], int, int, int]:
+            """Read finalized batch graphs without touching live orchestrator state."""
+            # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
+            # full arrival window; ``effective`` is the exact shipped cohort.
+            metrics: dict[str, float] = {}
+            for subset, pool in (("all", batch.episodes), ("effective", effective)):
+                metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
+                for env_name, env_pool in pool.by_env().items():
+                    metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
+            total_attempts = len(batch.episodes) + len(batch.failures)
+            metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
+            failures_by_env: dict[str, list[DispatchFailure]] = {}
+            for failure in batch.failures:
+                failures_by_env.setdefault(failure.env_name, []).append(failure)
+            episodes_by_env = batch.episodes.by_env()
+            for env_name in set(episodes_by_env) | set(failures_by_env):
+                env_failures = failures_by_env.get(env_name, [])
+                env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
+                metrics |= dispatch_failure_metrics(
+                    env_failures,
+                    prefix=f"train/{env_name}/all",
+                    total_attempts=env_attempts,
+                )
 
-        # Progress / timing / env-share accounting (assembled here, not in the metrics
-        # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
-        # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
-        # matrix reports.
-        num_tokens = batch.episodes.num_total_tokens
-        num_input = sum(record.trace.num_input_tokens for record in effective.records)
-        num_output = sum(record.trace.num_output_tokens for record in effective.records)
-        num_rollouts = batch.episodes.num_traces
-        group_ids = {episode_group_id(episode) for episode in batch.episodes}
-        group_ids.update(failure.group_id for failure in batch.failures)
-        num_unique_examples = len(group_ids)
-        metrics |= {
-            "progress/tokens": num_tokens,
-            "progress/input_tokens": num_input,
-            "progress/output_tokens": num_output,
-            "progress/rollouts": num_rollouts,
-            "progress/tasks": num_unique_examples,
+            # Progress / timing / env-share accounting (assembled here, not in the metrics
+            # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
+            # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
+            # matrix reports.
+            num_tokens = batch.episodes.num_total_tokens
+            num_input = sum(record.trace.num_input_tokens for record in effective.records)
+            num_output = sum(record.trace.num_output_tokens for record in effective.records)
+            num_rollouts = batch.episodes.num_traces
+            group_ids = {episode_group_id(episode) for episode in batch.episodes}
+            group_ids.update(failure.group_id for failure in batch.failures)
+            num_unique_examples = len(group_ids)
+            # Staleness of the shipped cohort, decomposed into its in-flight and
+            # in-queue shares; ``dropped`` counts queued traces the sink voided
+            # since the last ship.
+            staleness = [episode_staleness(episode, step) for episode in effective]
+            if staleness:
+                totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+                metrics |= {
+                    "off_policy/mean": sum(totals) / len(totals),
+                    "off_policy/max": float(max(totals)),
+                    "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
+                    "off_policy/in_flight/max": float(max(in_flight)),
+                    "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
+                    "off_policy/in_queue/max": float(max(in_queue)),
+                }
+            for env_name, env_pool in batch.episodes.by_env().items():
+                metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
+            metrics["progress/input_tokens"] = num_input
+            metrics["progress/output_tokens"] = num_output
+            return metrics, num_tokens, num_rollouts, num_unique_examples
+
+        # Counter resets stay on the loop; only finalized graph reads run in the worker.
+        source_metrics = self.train_source.metrics()
+        stale_drops = self.train_sink.stale_drops
+        self.train_sink.stale_drops = 0
+        progress_metrics = {
             "progress/total_tokens": self.progress.total_tokens,
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
+            "time/wait_for_policy": self.wait_for_policy_time,
+        }
+        metrics, num_tokens, num_rollouts, num_unique_examples = await asyncio.to_thread(
+            _train_batch_metrics, batch, effective, step
+        )
+        metrics |= {
+            "progress/tokens": num_tokens,
+            "progress/rollouts": num_rollouts,
+            "progress/tasks": num_unique_examples,
             "time/step": step_time,
             "time/pack": pack_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
-        # Staleness of the shipped cohort, decomposed into its in-flight and
-        # in-queue shares; ``dropped`` counts queued traces the sink voided
-        # since the last ship.
-        staleness = [episode_staleness(episode, step) for episode in effective]
-        if staleness:
-            totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
-            metrics |= {
-                "off_policy/mean": sum(totals) / len(totals),
-                "off_policy/max": float(max(totals)),
-                "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
-                "off_policy/in_flight/max": float(max(in_flight)),
-                "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
-                "off_policy/in_queue/max": float(max(in_queue)),
-            }
-        metrics["off_policy/dropped"] = float(self.train_sink.stale_drops)
-        self.train_sink.stale_drops = 0
-        for env_name, env_pool in batch.episodes.by_env().items():
-            metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
-        metrics |= self.train_source.metrics()
+        metrics |= progress_metrics
+        metrics["off_policy/dropped"] = float(stale_drops)
+        metrics |= source_metrics
         await monitors.log(metrics, step=step)
 
         active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
@@ -749,7 +767,7 @@ class Orchestrator:
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
 
-        self.log_train_batch(batch, step=step, step_time=step_time)
+        await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
 
         if config.max_steps is not None and step >= config.max_steps:
             await self.wait_for_version(step, reason="before shutdown")
