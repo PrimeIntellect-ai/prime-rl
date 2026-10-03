@@ -82,6 +82,8 @@ uv run rl @ examples/basic/wordle/rl.toml \
   --monitors.wandb.name ... 
 ```
 
+This config runs on 8 GPUs (6 for inference, 2 for training). To run on 2 GPUs (1 inference, 1 trainer), add `--deployment.num-train-gpus 1 --deployment.num-infer-gpus 1 --orchestrator.batch-size 128`.
+
 This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).

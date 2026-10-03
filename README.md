@@ -146,7 +146,7 @@ uv run inference --vllm.model Qwen/Qwen3-0.6B
 5. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
 
 ```bash
-uv run rl @ configs/basic/reverse-text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml
 ```
 
 </details>

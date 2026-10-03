@@ -15,3 +15,5 @@ uv run rl @ examples/basic/hendrycks-sanity/rl.toml \
   --monitors.wandb.project your-project \
   --monitors.wandb.name your-run
 ```
+
+To run on 2 GPUs (1 inference, 1 trainer), add `--deployment.num-train-gpus 1 --deployment.num-infer-gpus 1 --orchestrator.batch-size 128`.
