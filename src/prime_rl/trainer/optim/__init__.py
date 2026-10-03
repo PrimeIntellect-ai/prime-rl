@@ -71,12 +71,7 @@ def setup_optimizer(
         if full_offload_dtype_policy is None:
             raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
-            model,
-            named_params,
-            pin_memory=not (
-                config.type in ("adamw", "sign_sgd") and full_offload_config.cpu_optimizer_backend == "native"
-            ),
-            dtype_policy=full_offload_dtype_policy,
+            model, named_params, dtype_policy=full_offload_dtype_policy
         )
 
     optimizer = _create_optimizer(

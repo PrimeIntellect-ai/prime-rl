@@ -61,9 +61,6 @@ class OptimizerInBackwardOffloadConfig(BaseConfig):
     bit-faithful to that path, disable offloading.
     """
 
-    cpu_optimizer_backend: Literal["native", "torch"] = "native"
-    """CPU optimizer implementation used by full offload (AdamW or SignSGD). ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
-
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
