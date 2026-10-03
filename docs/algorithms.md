@@ -325,7 +325,46 @@ type = "grpo"
 type = "linear"
 ```
 
+On the CLI, enable it with `--orchestrator.train.algo.length-penalty.type linear`.
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
+
+#### Cost penalty
+
+The `cost` penalty charges each rollout for what it would cost and how long the user would wait once the model is deployed. Both are priced in USD and divided by what a solve is worth:
+
+$$s_i' = s_i - \bar{s} \cdot \frac{\text{cost}_i + \text{time}_i / 3600 \cdot \texttt{usd\_per\_hour}}{\texttt{usd\_per\_success}}$$
+
+It uses the same pass-rate gate $\bar{s}$ as `linear`. Unlike `linear`, it is in absolute units and not normalized by the group.
+
+- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6). All model calls in the trace count, including subagents. Judge calls do not count. Calls to non-policy models carry no token ids, so they are priced at zero and skipped entirely, including their context. Their duration counts as tool time.
+- **Time (s)** = modelled model time + measured tool time.
+  - Model time is Σ (uncached input / `input_tokens_per_s` + output / `output_tokens_per_s`), scaled by the measured parallelism: the union of call intervals / the sum of call durations (1 for sequential calls).
+  - Tool time is the measured agent span minus the union of call intervals. Failed calls and calls without token ids are left out of the union, so their duration counts as tool time.
+  - Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model. Tool and harness time is the same in deployment, so it is measured.
+- **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier policy call's prompt + completion in the same trace (any agent). This is exact up to node boundaries: a match that continues past the first differing message node is not credited. This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
+
+**How to pick.** Set `usd_per_success` to what a fully solved task is worth. Set `usd_per_hour` to what an hour of the user waiting is worth (0 ignores time). Fill `deployment` from the deployed model's price sheet and per-request speed. `input_usd_per_mtok`, `output_usd_per_mtok`, and `output_tokens_per_s` are required. `cached_input_usd_per_mtok` defaults to 10% of the input price, and `input_tokens_per_s` to 5000.
+
+Example: with `usd_per_success = 5` and `usd_per_hour = 30`, a rollout that costs $0.40 and takes 6 minutes gets a penalty of (0.40 + 0.1 · 30) / 5 = 0.68, times the group's pass rate. Under GRPO only differences within a group matter. A rollout that is $0.40 and 6 minutes cheaper than its siblings gains the same advantage as solving 0.68 more of the task at pass rate 1.
+
+Per-trace values are logged under `metrics/cost_penalty/*`:
+- `penalty`: the amount before the pass-rate gate, in reward units.
+- `cost_usd` and `time_s`.
+- `model_time_s` and `tool_time_s`.
+- `parallelism` and `prefix_cache_hit_rate`.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "cost"
+usd_per_success = 5.0      # a fully solved task is worth 5 USD
+usd_per_hour = 30.0        # an hour of waiting costs the user 30 USD
+
+[orchestrator.train.algo.length_penalty.deployment]
+input_usd_per_mtok = 0.6
+output_usd_per_mtok = 2.2
+output_tokens_per_s = 80
+```
 
 ### Hierarchical GRPO
 

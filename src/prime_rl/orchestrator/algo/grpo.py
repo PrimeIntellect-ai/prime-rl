@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig
+from prime_rl.configs.algorithm import CostPenaltyConfig, GRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
@@ -31,16 +31,22 @@ class GRPOAlgorithm(Algorithm):
         if length_penalty is None:
             shaped_rewards = rewards
         else:
-            output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
-            total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
-            turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
-            input = total - output
-            penalty_frac = (
-                length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
-                + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
-                + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
-            )
-            penalty = rewards.mean() * penalty_frac
+            if length_penalty.type == "cost":
+                costs = [rollout_cost(trace, length_penalty) for trace in traces]
+                for trace, cost in zip(traces, costs, strict=True):
+                    trace.record_metrics({f"cost_penalty/{name}": value for name, value in cost.items()})
+                ungated_penalty = torch.tensor([c["penalty"] for c in costs], dtype=rewards.dtype)
+            else:
+                output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
+                total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
+                turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
+                input = total - output
+                ungated_penalty = (
+                    length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
+                    + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
+                    + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
+                )
+            penalty = rewards.mean() * ungated_penalty
             shaped_rewards = rewards - penalty
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
@@ -51,3 +57,79 @@ class GRPOAlgorithm(Algorithm):
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
+
+
+def _common_prefix(a: list[int], b: list[int]) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float]:
+    """Modelled deployment cost (USD) and wait time (s) of one rollout, with their parts, and
+    the resulting penalty before the pass-rate gate.
+
+    A call's input is cached up to its longest common prefix with any earlier call's
+    prompt + completion in the trace (all agents, by call start), exact up to node
+    boundaries: graph nodes dedup identical prefixes, so the prefix is the leading
+    already-seen nodes on the call's path, extended token-wise into the first unseen
+    node against its seen siblings, and not beyond it. Calls to non-policy models carry
+    no token ids: they are priced at zero and do not seed the prefix cache."""
+    nodes = trace.nodes
+    seen: set[int] = set()
+    seen_children: dict[int | None, list[int]] = {}
+    uncached = cached = output = 0
+    # Failed calls (no node) and non-policy calls (no token ids) count as tool time.
+    policy_calls = [c for c in trace.calls if c.node is not None and nodes[c.node].token_ids]
+    for call in sorted(policy_calls, key=lambda c: c.time.start):
+        path = [call.node]
+        while (parent := nodes[path[-1]].parent) is not None:
+            path.append(parent)
+        path.reverse()
+        node = nodes[call.node]
+        num_sampled = sum(node.mask)
+        prompt_tail = node.token_ids[: node.mask.index(True)] if num_sampled else node.token_ids
+        spans = [nodes[n].token_ids for n in path[:-1]] + [prompt_tail]
+        k = 0
+        while k < len(path) - 1 and path[k] in seen:
+            k += 1
+        siblings = seen_children.get(path[k - 1] if k else None, [])
+        hit = sum(map(len, spans[:k])) + max(
+            (_common_prefix(spans[k], nodes[s].token_ids) for s in siblings), default=0
+        )
+        cached += hit
+        uncached += sum(map(len, spans)) - hit
+        output += num_sampled
+        for parent, n in zip([None, *path], path):
+            if n not in seen:
+                seen.add(n)
+                seen_children.setdefault(parent, []).append(n)
+
+    intervals = sorted((c.time.start, c.time.end) for c in policy_calls if c.time.duration > 0)
+    busy = sum(end - start for start, end in intervals)
+    union, reach = 0.0, float("-inf")
+    for start, end in intervals:
+        union += max(0.0, end - max(start, reach))
+        reach = max(reach, end)
+    parallelism = union / busy if busy else 1.0
+    deployment = penalty.deployment
+    model_time = (uncached / deployment.input_tokens_per_s + output / deployment.output_tokens_per_s) * parallelism
+    tool_time = max(0.0, trace.timing.agent.duration - union)
+    time_s = model_time + tool_time
+    cost = (
+        deployment.input_usd_per_mtok * uncached
+        + deployment.cached_input_usd_per_mtok * cached
+        + deployment.output_usd_per_mtok * output
+    ) / 1e6
+    return {
+        "penalty": (cost + time_s / 3600 * penalty.usd_per_hour) / penalty.usd_per_success,
+        "cost_usd": cost,
+        "time_s": time_s,
+        "model_time_s": model_time,
+        "tool_time_s": tool_time,
+        "parallelism": parallelism,
+        "prefix_cache_hit_rate": cached / max(1, cached + uncached),
+    }
