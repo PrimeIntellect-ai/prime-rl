@@ -157,7 +157,16 @@ class TrainEnv(Env):
         super().__init__(config, address, address_file)
         self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling = vf.SamplingConfig(**generation_source.sampling_args(config.sampling.to_sampling_args()))
+        self.sampling = vf.SamplingConfig(
+            **config.sampling.model_dump(exclude_none=True, exclude={"top_k", "extra_body"}),
+            # Keep top_k nested so an agent's extra_body can override it.
+            extra_body={
+                **config.sampling.extra_body,
+                **config.sampling.model_dump(exclude_none=True, include={"top_k"}),
+            },
+            # Only policy rollouts need sampling logprobs for importance ratios.
+            logprobs=True if generation_source.uses_live_policy else None,
+        )
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = (
             config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"

@@ -39,11 +39,3 @@ class GenerationSource:
     @property
     def uses_live_policy(self) -> bool:
         return self.config.source == "policy"
-
-    def sampling_args(self, args: dict) -> dict:
-        """Source-specific sampling-arg overrides. Sampling logprobs are only
-        needed for importance ratios on policy-sampled tokens — frozen
-        endpoints may reject the knob."""
-        if not self.uses_live_policy:
-            args.pop("logprobs", None)
-        return args
