@@ -42,7 +42,7 @@ def make_rollout(
             )
         ]
         if advantages is not None
-        else []
+        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=True)]
     )
     trace = vf.Trace(
         task=vf.TraceTask(
@@ -111,7 +111,9 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0])) is False
+    empty = make_rollout(sampled, reward=1.0, advantages=[1.0])
+    empty[0].traces[0].nodes[0].sampled = False
+    assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0]) + empty) is False
     assert source.metrics() == {
         "curriculum/test/admission_rate": 0.0,
         "curriculum/test/sampler/pool/unseen": 2.0,
