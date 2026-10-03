@@ -10,6 +10,9 @@ Configurations for running prime-rl.
   `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft + a standalone
   vLLM serving pre-flight). For the tutorialized equivalents, see
   [`examples/advanced/`](../examples/advanced).
+- **[`benchmark/`](benchmark)** — SFT throughput benchmarks matched to torchtitan runs
+  (`qwen3-235b-a22b`, 4 nodes at seq 16k), with the torchtitan counterpart and the measured
+  numbers in its README.
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
   (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), `multi-env/`
