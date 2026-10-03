@@ -342,6 +342,39 @@ class TrainSink:
             self.zero_output_units += survivor_tokens or episode_tokens or self.config.seq_len * n_owed
         self._warn_zero_output()
 
+        # Retain graph/call statistics for metrics, but release discarded training payloads.
+        protected_nodes = {
+            id(node)
+            for pending_group in self.pending_groups.values()
+            for episode in pending_group
+            for trace in episode.traces
+            for node in trace.nodes
+        }
+        protected_nodes.update(
+            id(node) for episode in self.episode_by_trace.values() for trace in episode.traces for node in trace.nodes
+        )
+        for episode in group:
+            for trace in episode.traces:
+                if any(id(node) in protected_nodes for node in trace.nodes):
+                    continue
+                for node in trace.nodes:
+                    message = node.message
+                    kwargs = {"role": message.role, "content": ""}
+                    if message.role == "tool":
+                        kwargs.update(tool_call_id=message.tool_call_id, name=message.name)
+                    node.message = type(message)(**kwargs)
+                    node.token_ids = []
+                    node.renderer_token_ids = None
+                    node.mask = []
+                    node.is_content = []
+                    node.logprobs = []
+                    node.reference_logprobs = None
+                    node.trainer_logprobs = None
+                    node.entropies = None
+                    node.loss_weights = None
+                    node.routed_experts = None
+                    node.sampling_mask = None
+
     def _warn_zero_output(self) -> None:
         """Warn once per batch-equivalent of finalized units that shipped no
         payload, so a run that produces no training signal stays visible in the
