@@ -550,7 +550,11 @@ def test_default_train_sampling_replays_except_frozen_sources():
         "algo": {"type": "sft", "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8001/v1"}}},
     }
     config = RLConfig.model_validate(
-        {"trainer": {}, "orchestrator": {"train": {"source": [source, frozen]}}, "inference": {}}
+        {
+            "trainer": {},
+            "orchestrator": {"train": {"sampling": {"max_completion_tokens": 128}, "source": [source, frozen]}},
+            "inference": {},
+        }
     )
     policy, teacher = (s.sampling for s in config.orchestrator.train.source)
     assert (policy.top_p, policy.top_k) == (0.97, 512)
