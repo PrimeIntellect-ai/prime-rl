@@ -533,7 +533,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
                 num_decode_replicas=infer_deploy.num_decode_replicas,
                 prefill_port=infer_deploy.prefill_port,
                 decode_port=infer_deploy.decode_port,
-                use_deep_gemm=inference.use_deep_gemm,
                 prefill_env_vars=infer_deploy.prefill_env_vars,
                 decode_env_vars=infer_deploy.decode_env_vars,
                 prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
