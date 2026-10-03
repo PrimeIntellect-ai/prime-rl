@@ -87,9 +87,7 @@ class EvalSink:
 
 
 async def log_eval_batch(batch: EvalBatch, *, policy_version: int) -> None:
-    """Log one completed eval epoch through the monitors: its non-errored (``effective``)
-    episodes - the full cohort already streamed into ``all`` on arrival - and its
-    ``eval/{env}/...`` metrics. Shared by the RL orchestrator and the ``EvalRunner``."""
+    """Log one finished eval epoch: effective episodes plus ``eval/{env}/...`` metrics."""
     episodes = batch.episodes
     effective = episodes.effective
     if effective:
@@ -97,7 +95,6 @@ async def log_eval_batch(batch: EvalBatch, *, policy_version: int) -> None:
         await monitors.log_annotations(stamp_batch(effective.vf_episodes, batch.step))
     await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
 
-    # Eval batches are per-env, so there is no ``agg`` axis.
     metrics: dict[str, float] = {}
     for subset, pool in (("all", episodes), ("effective", effective)):
         metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
