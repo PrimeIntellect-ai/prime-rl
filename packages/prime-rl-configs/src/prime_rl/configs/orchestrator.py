@@ -632,10 +632,7 @@ class OrchestratorConfig(BaseConfig):
         Owned here: every truncating config gets a top-k bound (bounds the sampling
         masks); opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations). Frozen-source envs sample externally and are exempt."""
-        policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
-            [self.train.sampling] if not self.train.source else []
-        )
-        truncating = [sampling for sampling in policy_samplings if sampling.truncates_distribution()]
+        truncating = [sampling for sampling in self.policy_samplings if sampling.truncates_distribution()]
         if not truncating:
             return self
 
@@ -673,6 +670,13 @@ class OrchestratorConfig(BaseConfig):
             )
 
         return self
+
+    @property
+    def policy_samplings(self) -> list[TrainSamplingConfig]:
+        """Sampling configs of the train envs that sample from the live policy."""
+        return [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
+            [self.train.sampling] if not self.train.source else []
+        )
 
     @property
     def any_policy_sourced(self) -> bool:

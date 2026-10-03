@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -34,6 +35,11 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    # Score centering: the trainer's (replayed) and the sampler's logprob of every
+    # sampling-mask id, aligned per token. Trainer padding and non-replayed rows are a
+    # constant 0.0 (no gradient); sampler padding is -inf.
+    trainer_mask_logprobs: Float[Tensor, "seq mask"] | None = field(default=None)
+    inference_mask_logprobs: Float[Tensor, "seq mask"] | None = field(default=None)
 
 
 @dataclass
@@ -89,6 +95,20 @@ def selective_log_softmax_with_sampling_mask(
     logz_masked = torch.logsumexp(mask_logits, dim=-1)
     target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
     return torch.where(replay, target_logits - logz_masked, full_logprobs)
+
+
+def sampling_mask_logprobs(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    sampling_mask: Int[Tensor, "batch seq mask"],
+) -> Float[Tensor, "batch seq mask"]:
+    """Replayed logprob of every mask id (score centering), 0.0 at padding and on rows
+    without replay. Non-replayed rows are zeroed before the logsumexp, as above."""
+    replay = sampling_replay_mask(sampling_mask, index).unsqueeze(-1)
+    valid = replay & (sampling_mask >= 0)
+    mask_logits = torch.where(valid, torch.gather(logits, -1, sampling_mask.clamp_min(0).long()), float("-inf"))
+    mask_logits = torch.where(replay, mask_logits, 0.0)
+    return torch.where(valid, mask_logits - mask_logits.logsumexp(-1, keepdim=True), 0.0)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -178,6 +198,8 @@ class IPOLoss:
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
+        if loss_config.score_centering:
+            loss = loss + loss_config.adv_tau * self.score_centering_loss(inputs, advantages, weights)
 
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
@@ -188,6 +210,27 @@ class IPOLoss:
         }
 
         return LossOutputs(loss=loss, metrics=metrics)
+
+    def score_centering_loss(self, inputs: LossInputs, advantages: Tensor, weights: Tensor | None) -> Tensor:
+        """Score centering (arXiv:2609.20807) composed with the IPO weight, exact over the
+        sampling mask S: subtract the sampler-expected weighted score
+        sum_{v in S} q(v) w(v) grad log p(v) from every token's update, where w is IPO's
+        capped ratio inside the trust region and 0 outside. Applies to every loss token,
+        including ones whose sampled token IPO masks. Samples without sampler mask logprobs
+        (e.g. frozen-source rollouts, padding batches) get no centering."""
+        if inputs.trainer_mask_logprobs is None or inputs.inference_mask_logprobs is None:
+            return inputs.trainer_logprobs.new_zeros(())
+        trainer = inputs.trainer_mask_logprobs[inputs.loss_mask]
+        sampler = inputs.inference_mask_logprobs[inputs.loss_mask]
+        with torch.no_grad():
+            valid = sampler.isfinite()
+            q, p = sampler.exp(), trainer.exp()
+            ratio = (trainer - sampler).clamp(max=math.log(self.config.max_importance_ratio)).exp()
+            coef = torch.where(valid & ((p - q).abs() <= self.config.eps), q * ratio, 0.0)
+        per_token_loss = advantages * (coef * trainer).sum(-1)
+        if weights is not None:
+            per_token_loss = per_token_loss * weights
+        return per_token_loss.sum()
 
 
 class IcePopLoss:
@@ -387,6 +430,8 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    trainer_mask_logprobs: list[Float[Tensor, "seq_i mask"]] | None = None,
+    inference_mask_logprobs: list[Float[Tensor, "seq_i mask"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -418,6 +463,8 @@ def compute_loss(
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        trainer_mask_logprobs: Trainer logprobs at the sampling-mask ids per sequence, or None
+        inference_mask_logprobs: Sampler logprobs at the sampling-mask ids per sequence, or None
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -433,6 +480,8 @@ def compute_loss(
         ce_weights = [None] * n
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
+    if trainer_mask_logprobs is None or inference_mask_logprobs is None:
+        trainer_mask_logprobs = inference_mask_logprobs = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -447,7 +496,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_mask_logp, i_mask_logp in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -456,6 +505,8 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        trainer_mask_logprobs,
+        inference_mask_logprobs,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -466,6 +517,8 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                trainer_mask_logprobs=t_mask_logp,
+                inference_mask_logprobs=i_mask_logp,
             )
 
         if rl_w is None:

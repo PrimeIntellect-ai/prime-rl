@@ -530,21 +530,28 @@ class RLConfig(BaseConfig):
         masks the trainer replays (OrchestratorConfig guarantees truncating
         configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
         on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
-        so eval sampling against the same server must set both."""
-        policy_samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
-        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        so eval sampling against the same server must set both. Score centering reads the
+        sampler's logprobs at the mask ids, so it needs truncation on every policy env."""
+        policy_samplings = self.orchestrator.policy_samplings
+        score_centering = self.trainer.loss.type == "ipo" and self.trainer.loss.score_centering
+        if score_centering and not all(sampling.truncates_distribution() for sampling in policy_samplings):
+            raise ValueError(
+                "trainer.loss.score_centering requires truncated train sampling (top_p < 1 or top_k) on "
+                "every policy-sampled env: it centers over the sampling mask that sampling replay captures."
+            )
         if not any(sampling.truncates_distribution() for sampling in policy_samplings):
             return self
         if self.inference is None:
             warnings.warn(
                 "Truncated train sampling with no managed inference server: set "
                 "`enable_return_sampling_mask = true` on the standalone server's config so it "
-                "returns the sampling masks the trainer replays.",
+                "returns the sampling masks the trainer replays (and `enable_return_sampling_mask_logprobs "
+                "= true` for score centering).",
                 stacklevel=2,
             )
             return self
         self.inference.enable_return_sampling_mask = True
+        self.inference.enable_return_sampling_mask_logprobs = score_centering
         if self.orchestrator.eval is not None:
             warnings.warn(
                 "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "

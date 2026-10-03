@@ -87,6 +87,7 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
     For example, `counts=[2, 1]` and `ids=[4, 7, 9]` become `counts=[2]` and
     `ids=[4, 7]` for one token. For three tokens, they become
     `counts=[2, 1, 0]` with unchanged ids. Zero-count rows disable replay.
+    The optional sampler `logprobs` follow `ids`.
     """
     if mask is None:
         return None
@@ -99,6 +100,9 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
     return SamplingMask(
         ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
         counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
+        logprobs=None
+        if mask.logprobs is None
+        else np.ascontiguousarray(mask.logprobs[: len(ids)], dtype=np.float32).tobytes(),
     )
 
 
