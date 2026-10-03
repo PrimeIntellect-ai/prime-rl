@@ -262,7 +262,9 @@ class Orchestrator:
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
         self.payload_gc = (
-            PayloadGC(config.payload_root, config.max_off_policy_steps) if config.payload_root is not None else None
+            PayloadGC(config.payload_root, config.max_off_policy_steps, resume=self.resume_step is not None)
+            if config.payload_root is not None
+            else None
         )
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
