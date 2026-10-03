@@ -1,10 +1,12 @@
 """Training-side episode, group, and batch assembly.
 
 ``add()`` takes one completed episode, ``fail()`` a request that produced no
-episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
-readiness check the sink sweeps ``pending_batch`` for traces past
-``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
-is what guarantees nothing stale ships."""
+episode, and ``cancel()`` a ``GroupCancellation`` for some of a group's
+episodes. Before every readiness check the sink sweeps ``pending_batch`` for
+traces past ``max_off_policy_steps`` — this sweep, not the dispatcher's
+in-flight cancel, is what guarantees nothing stale ships. Staleness is per
+episode: a stale episode is dropped alone, and its group is scored from the
+members that remain."""
 
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
-from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, rollout_age, train_work
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -80,9 +82,8 @@ class TrainSink:
         self.pending_stale_attempts = 0
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
-        # A dropped group's terminal marker; its ``count`` fills in for the
-        # episodes the group will never deliver.
-        self.pending_group_cancellations: dict[str, GroupCancellation] = {}
+        # Their ``count``s fill in for the episodes the group will never deliver.
+        self.pending_group_cancellations: dict[str, list[GroupCancellation]] = defaultdict(list)
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
         # Queued traces voided by the staleness sweep since the last ship;
@@ -124,12 +125,9 @@ class TrainSink:
         return self._maybe_batch()
 
     async def cancel(self, cancellation: GroupCancellation) -> TrainBatch | None:
-        """Process a dropped group's terminal marker: its ``count`` completes
-        the group's episode accounting so finalization still fires. A
-        ``stale`` drop also voids the group's already-arrived episodes in
-        ``process_group`` — they share the group's dispatch version, so they
-        are equally stale."""
-        self.pending_group_cancellations[cancellation.group_id] = cancellation
+        """Process a cancellation marker: its ``count`` completes the group's
+        episode accounting so finalization still fires."""
+        self.pending_group_cancellations[cancellation.group_id].append(cancellation)
         if not self._group_complete(cancellation.group_id, cancellation.env_name):
             return None
         await self.process_group(cancellation.group_id)
@@ -147,8 +145,7 @@ class TrainSink:
         return self._maybe_batch()
 
     def _group_complete(self, group_id: str, env_name: str) -> bool:
-        cancellation = self.pending_group_cancellations.get(group_id)
-        cancelled = cancellation.count if cancellation is not None else 0
+        cancelled = sum(cancellation.count for cancellation in self.pending_group_cancellations[group_id])
         failed = len(self.pending_group_failures[group_id])
         return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
 
@@ -159,11 +156,9 @@ class TrainSink:
         return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
-        """Void queued traces past ``max_off_policy_steps``. The batch being
-        collected is ``progress.step`` and trains policy v{step-1}, so a
-        queued trace generated from v{k} would ship at staleness
-        ``(step-1) - k``. This sweep is the hard guarantee on trained
-        staleness; the dispatcher's in-flight cancel only saves compute.
+        """Void queued traces past ``max_off_policy_steps``. This sweep is the
+        hard guarantee on trained staleness; the dispatcher's in-flight cancel
+        only saves compute.
         Queued traces only age when ``progress.step`` advances, so the full
         sweep runs once per step; ``trace_ids`` scopes the check to a freshly
         inserted group, whose traces may already be stale on arrival.
@@ -177,14 +172,10 @@ class TrainSink:
                 return
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
-        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
-        if min_version <= 0:
-            return
         dropped = 0
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
-            policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            if not self._is_stale(episode):
                 continue
             del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
@@ -197,6 +188,10 @@ class TrainSink:
                 "Consider increasing it to avoid this."
             )
 
+    def _is_stale(self, episode: vf.Episode) -> bool:
+        policy = train_work(episode).policy
+        return policy is not None and rollout_age(policy.start, self.progress.step) > self.config.max_off_policy_steps
+
     async def process_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local algorithm work on one native episode."""
         env_name = episode_env_name(episode)
@@ -205,12 +200,12 @@ class TrainSink:
     async def process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
-        cancellation = self.pending_group_cancellations.pop(group_id, None)
-        if not group and not failures and cancellation is None:
+        cancellations = self.pending_group_cancellations.pop(group_id, [])
+        if not group and not failures and not cancellations:
             return
 
         env_name = (
-            episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
+            episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellations[0].env_name)
         )
         env = self.train_envs.get(env_name)
         traces = [trace for episode in group for trace in episode.traces]
@@ -220,26 +215,17 @@ class TrainSink:
             + sum(not episode.ok for episode in group if not episode.traces)
             + len(failures)
         )
-        n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
+        cancelled = sum(cancellation.count for cancellation in cancellations)
+        n_owed = len(group) + len(failures) + cancelled
         self.pending_failures.extend(failures)
-        if cancellation is not None:
-            self.pending_cancelled_attempts += cancellation.count
-            if cancellation.reason == "stale":
-                self.pending_stale_attempts += cancellation.count
+        self.pending_cancelled_attempts += cancelled
+        self.pending_stale_attempts += sum(c.count for c in cancellations if c.reason == "stale")
 
-        # A stale drop voids the whole group: every member shares the dispatch
-        # version, so the arrived episodes are exactly as stale as the
-        # cancelled tail. Stale groups bypass the curriculum — a pipeline
-        # decision is not a task result.
-        if cancellation is not None and cancellation.reason == "stale":
-            self.pending_episodes.extend(group, admitted=False, cancelled=True)
-            self._record_zero_output(group, [], n_owed)
-            get_logger().debug(
-                f"Dropped group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
-            )
-            return
-
+        # Stale members are left out like errored ones, before the algorithm
+        # and the curriculum see the group.
+        stale = [episode for episode in group if self._is_stale(episode)]
+        group = [episode for episode in group if not self._is_stale(episode)]
+        self.pending_episodes.extend(stale, admitted=False, cancelled=True)
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
             await env.algorithm.finalize_group(group)
@@ -286,11 +272,9 @@ class TrainSink:
                 if trace.id in samples_by_trace:
                     self.episode_by_trace[trace.id] = episode
         self._drop_stale(samples_by_trace)
-        # A group's traces share one dispatch version, so the insertion sweep
-        # voids all or none of them. A fully-voided group shipped nothing —
-        # advance the zero-output tally instead of resetting it, or a stalled
-        # trainer plus a tight bound could void groups forever without ever
-        # surfacing the warning.
+        # A fully-voided group shipped nothing — advance the zero-output tally
+        # instead of resetting it, or a stalled trainer plus a tight bound
+        # could void groups forever without ever surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
             return
