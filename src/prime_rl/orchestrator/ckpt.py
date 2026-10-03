@@ -1,4 +1,5 @@
-"""Checkpoint manager for orchestrator progress and train-source state. Layout:
+"""Checkpoint manager for orchestrator progress, train-source state, and the
+train sink's queued traces. Layout:
 ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
 
 from __future__ import annotations
@@ -9,10 +10,12 @@ import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
+from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.logger import format_time, get_logger
@@ -27,7 +30,7 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def save(self, progress: Progress, train_source: TrainSource, train_sink: TrainSink, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -36,7 +39,12 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                state = {
+                    "progress": progress,
+                    "train_source": train_source.state_dict(),
+                    "train_sink": train_sink.state_dict(),
+                }
+                torch.save(state, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
@@ -46,15 +54,20 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
+    def load(
+        self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None
+    ) -> dict[str, Any] | None:
         """``path`` overrides where the checkpoint is read from (an external run's
-        ``step_<N>/orchestrator``)."""
+        ``step_<N>/orchestrator``). Returns the train sink's state for
+        ``TrainSink.load_state_dict`` (the sink is built later in setup), or
+        None when the checkpoint has none."""
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
         get_logger().debug(f"Loading checkpoint from {state_file}")
         start = time.perf_counter()
+        sink_state = None
         if self.config.skip_progress:
             get_logger().info("Skipping progress and train source loading from checkpoint")
         else:
@@ -68,7 +81,9 @@ class CheckpointManager:
             for name in state["train_source"]["envs"]:
                 if name in train_source.curricula:
                     get_logger().info(f"Resumed curriculum state for env {name}")
+            sink_state = state.get("train_sink")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
+        return sink_state
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from typing import Any
 
 import verifiers.v1 as vf
 
@@ -109,6 +110,22 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def state_dict(self) -> dict[str, Any]:
+        """Accepted traces still waiting for a batch. Saved with the
+        orchestrator checkpoint so a resume replays them instead of
+        regenerating them."""
+        return {"pending_batch": self.pending_batch, "episode_by_trace": self.episode_by_trace}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self.pending_batch = state_dict["pending_batch"]
+        self.episode_by_trace = state_dict["episode_by_trace"]
+        for trace_id, samples in self.pending_batch.items():
+            self.train_source.pending[episode_env_name(self.episode_by_trace[trace_id])] += 1
+            if self.token_batch_size is not None:
+                self.pending_tokens += payload_tokens(samples, self._trace(trace_id))
+        self._drop_stale()
+        get_logger().info(f"Replaying {len(self.pending_batch)} queued traces from the checkpoint")
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size

@@ -297,7 +297,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data and mixer state, accepted samples queued for the next batch | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -329,6 +329,8 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+A resume replays the samples that were queued for the next batch when the checkpoint was written, dropping those that would exceed `max_off_policy_steps`; in-flight rollouts are regenerated.
 
 ### Exporting Checkpoints
 
