@@ -85,6 +85,8 @@ class TaskRequest:
     """Rollouts of the task this request asks for; None is the env's group size."""
     group_id: str | None = None
     """The group these rollouts join (a resume completing a task's landed group); None mints one."""
+    prefix: vf.Prefix | None = None
+    """Recorded model calls every rollout of the group replays before sampling (prefix sources)."""
 
 
 @dataclass
@@ -127,6 +129,7 @@ class GroupState:
     emitted: int = 0
     policy_version_at_start: int = 0
     group_id: uuid.UUID | None = None
+    prefix: vf.Prefix | None = None
 
 
 @dataclass

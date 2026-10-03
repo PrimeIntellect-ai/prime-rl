@@ -541,6 +541,7 @@ class Dispatcher:
             target_episodes=rollouts,
             policy_version_at_start=self.policy.version,
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
+            prefix=request.prefix,
         )
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
@@ -608,6 +609,7 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    prefix=group.prefix,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode

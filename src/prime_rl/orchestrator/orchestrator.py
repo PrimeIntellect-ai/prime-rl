@@ -233,6 +233,7 @@ class Orchestrator:
             config_dir,
             clients=self.clients,
             renderer_config=config.renderer,
+            prefixes=config.train.prefix,
         )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
@@ -278,7 +279,11 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
-        self.train_source = TrainSource(self.train_envs, batch_size=config.batch_size)
+        self.train_source = TrainSource(
+            self.train_envs,
+            batch_size=config.batch_size,
+            prefixes=config.train.prefix,
+        )
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
@@ -706,7 +711,7 @@ class Orchestrator:
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         total_prompts = sum(batch.shipped_prompts.values())
-        for env_name in self.train_envs.names:
+        for env_name in self.train_source.env_names:
             metrics[f"mixer/{env_name}/shipped_prompt_share"] = (
                 batch.shipped_prompts.get(env_name, 0.0) / total_prompts if total_prompts else 0.0
             )
@@ -809,7 +814,7 @@ class Orchestrator:
         the eval halves drop entirely when nothing is accumulating."""
         disp_gauges = self.dispatcher.gauges()
         disp_drain = self.dispatcher.metrics.drained(
-            train_envs={e.name for e in self.train_envs},
+            train_envs=set(self.train_source.env_names),
             eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
         )
         watcher_gauges = self.watcher.gauges()
@@ -822,7 +827,8 @@ class Orchestrator:
         train_buffered = self.train_sink.buffered_count()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
         eval_batches = self.eval_sink.batch_progress() if self.eval_sink is not None else []
-        multi_train = len(self.train_envs) > 1
+        train_names = self.train_source.env_names
+        multi_train = len(train_names) > 1
         multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 
         # Train batch: finalized-group survivors only (0→target). Partial-group
@@ -830,7 +836,7 @@ class Orchestrator:
         train_pct = train_batch / train_target if train_target else 0.0
         train_batch_part = f"Train batch {train_batch}/{train_target} ({train_pct:.1%})"
         if multi_train:
-            pairs = [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
+            pairs = [(name, train_batch_by_env.get(name, 0)) for name in train_names]
             train_batch_part += " (" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
         if train_buffered:
             train_batch_part += f" (+{train_buffered} buffered)"
@@ -846,7 +852,7 @@ class Orchestrator:
             f"{inflight_train + inflight_eval} inflight episodes (train={inflight_train}, eval={inflight_eval}"
         )
         if multi_train or multi_eval:
-            env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
+            env_pairs = [(name, inflight_by_env.get(("train", name), 0)) for name in train_names]
             if self.eval_envs is not None:
                 env_pairs += [(e.name, inflight_by_env.get(("eval", e.name), 0)) for e in self.eval_envs]
             inflight_part += " | " + ", ".join(f"{n}={v}" for n, v in env_pairs)
@@ -889,7 +895,7 @@ class Orchestrator:
             f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%} | Timeout {episodes.metrics.is_timeout.mean():.1%}"
         )
-        if len(self.train_envs) <= 1:
+        if len(self.train_source.env_names) <= 1:
             get_logger().success(head)
             return
 

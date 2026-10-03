@@ -32,7 +32,9 @@ class GRPOAlgorithm(Algorithm):
         else:
             output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
             total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
-            turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
+            # Replayed prefix calls are context, not turns of this policy.
+            turns = [trace.num_turns - trace.info.get("prefix", {}).get("realized_cut", 0) for trace in traces]
+            turns = torch.tensor(turns, dtype=rewards.dtype)
             input = total - output
             penalty_frac = (
                 length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
