@@ -71,10 +71,9 @@ def redistribute(rewards: list[float], quality: list[float], lambda_max: float) 
     return [advantage - shift for advantage in advantages], lam
 
 
-CLEAR_GAP = 2.0
-"""In the ``advantages`` mode, a gap the grader marks ``clear`` counts this many
-``slight`` ones: enough to separate a clearly better tier, while the group's spread
-stays within twice its all-slight value."""
+MARGINS = {"slight": 0.25, "clear": 0.5, "large": 1.0}
+"""In the ``advantages`` mode, the step between adjacent tiers, in reward units: a
+``large`` gap is the 0/1 pass-vs-fail gap, ``clear`` half of it, ``slight`` a quarter."""
 
 
 def cited_hacks(verdict: GroupVerdict, data: GroupGradeData) -> dict[str, str]:
@@ -91,24 +90,18 @@ def cited_hacks(verdict: GroupVerdict, data: GroupGradeData) -> dict[str, str]:
 
 def rank_advantages(tiers: list[list[str]], margins: list[str], unranked: list[str]) -> dict[str, float]:
     """The ``advantages`` mode's per-label advantage from tiers (best first) and the
-    margin of each gap between adjacent tiers (``clear`` or ``slight``).
-
-    A ``slight`` gap is the win-rate difference of the two tiers (a tie counts 1/2),
-    scaled by ``2 (n - 1) / n`` for the ``n`` tiered labels, which makes it
-    ``(|T_j| + |T_j+1|) / n``; a ``clear`` gap is ``CLEAR_GAP`` times that. Scores add
-    up from the bottom tier and are centered to zero mean. With two tiers and slight
-    gaps this is exactly GRPO's advantage for 0/1 rewards with the top tier passing.
-    A single tier carries no signal (all zero). ``unranked`` labels get 0."""
+    margin of each gap between adjacent tiers (``MARGINS``). The bottom tier scores 0
+    and each tier above adds its gap's margin, so the scores are implied rewards
+    (a ``large`` gap is a pass over a fail); the advantages are those scores centered
+    to zero mean, i.e. GRPO's advantages for them. A single tier carries no signal (all
+    zero). ``unranked`` labels get 0."""
     labels = [label for tier in tiers for label in tier]
-    if len(tiers) < 2:
-        return dict.fromkeys(labels + unranked, 0.0)
     scores, level = {}, 0.0
     for j in reversed(range(len(tiers))):
         if j < len(tiers) - 1:
-            gap = (len(tiers[j]) + len(tiers[j + 1])) / len(labels)
-            level += gap * (CLEAR_GAP if margins[j] == "clear" else 1.0)
+            level += MARGINS[margins[j]]
         scores.update(dict.fromkeys(tiers[j], level))
-    mean = sum(scores.values()) / len(labels)
+    mean = sum(scores.values()) / len(labels) if labels else 0.0
     return {**{label: score - mean for label, score in scores.items()}, **dict.fromkeys(unranked, 0.0)}
 
 
@@ -373,14 +366,14 @@ class GARAlgorithm(GRPOAlgorithm):
     ) -> dict[str, dict[str, Any]]:
         """The ``advantages`` mode: advantages from the ranking alone
         (:func:`rank_advantages`), confirmed hacks in a tier of their own below the
-        last, a ``clear`` gap above them. Returns each label's ``info.gar`` record."""
+        last, a ``large`` gap above them. Returns each label's ``info.gar`` record."""
         hacks = cited_hacks(verdict, data)
         confirmed = [label for label, hack in hacks.items() if hack == "confirmed"]
         tiers = [list(tier) for tier in verdict.ranking]
         margins = list(verdict.margins) or ["slight"] * (len(tiers) - 1)
         if confirmed:
             tiers.append(confirmed)
-            margins.append("clear")
+            margins.append("large")
         tiered = {label for tier in tiers for label in tier}
         # A confirmed hack whose citation failed is in no tier: it gets no signal.
         unranked = [label for label in traces_by_label if label not in tiered]

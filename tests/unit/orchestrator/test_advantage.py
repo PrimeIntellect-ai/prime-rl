@@ -331,20 +331,16 @@ def test_gar_redistribution():
 
 
 def test_gar_rank_advantages():
-    # Two tiers, slight: GRPO's 0/1 advantages with the top tier passing.
-    adv = rank_advantages([["a"], ["b", "c", "d"]], ["slight"], [])
+    # Steps are margins in reward units: c3 = 0, c1 = c4 = 0 + 1 (large), c2 = 1 + 0.25 (slight).
+    adv = rank_advantages([["c2"], ["c1", "c4"], ["c3"]], ["slight", "large"], [])
+    assert adv == pytest.approx({"c2": 0.4375, "c1": 0.1875, "c4": 0.1875, "c3": -0.8125})
+    # Two tiers with a large gap: GRPO's 0/1 advantages with the top tier passing.
+    adv = rank_advantages([["a"], ["b", "c", "d"]], ["large"], [])
     assert adv == pytest.approx({"a": 0.75, "b": -0.25, "c": -0.25, "d": -0.25})
-    # A clear gap doubles its step; ties share a score; the result is zero-mean.
-    adv = rank_advantages([["a"], ["b", "c"], ["d"]], ["clear", "slight"], [])
-    assert adv["b"] == adv["c"]
-    assert adv["a"] - adv["b"] == pytest.approx(1.5)  # clear: 2 x (1 + 2) / 4
-    assert adv["b"] - adv["d"] == pytest.approx(0.75)  # slight: (2 + 1) / 4
-    assert sum(adv.values()) == pytest.approx(0.0)
-    slight = rank_advantages([["a"], ["b", "c"], ["d"]], ["slight", "slight"], [])
-    assert adv["a"] - adv["b"] == pytest.approx(2 * (slight["a"] - slight["b"]))
-    # Hacks as the last tier end lowest; unranked labels get no signal.
-    adv = rank_advantages([["a", "b"], ["c"], ["h"]], ["slight", "clear"], ["u"])
+    # Hacks as the last tier end lowest; unranked labels get no signal; zero mean.
+    adv = rank_advantages([["a", "b"], ["c"], ["h"]], ["clear", "large"], ["u"])
     assert min(adv, key=adv.get) == "h"
+    assert adv["a"] - adv["c"] == pytest.approx(0.5)
     assert adv["u"] == 0.0
     assert sum(adv.values()) == pytest.approx(0.0)
     # One tier: no signal.

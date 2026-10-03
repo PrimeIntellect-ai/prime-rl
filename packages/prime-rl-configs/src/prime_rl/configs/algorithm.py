@@ -452,11 +452,13 @@ class GARAlgoConfig(GRPOAlgoConfig):
     mode: Literal["rewards", "advantages"] = "rewards"
     """``rewards``: the above, the grader reshapes reward-based advantages.
     ``advantages``: rewards are not used. Every group is graded; the grader ranks all
-    candidates into tiers (ties allowed) with optional ``clear``/``slight`` margins
-    between adjacent tiers, confirmed hacks go below the last tier, and the advantages
-    come from the ranking alone (zero mean; two tiers give GRPO's 0/1 advantages; a
-    ``clear`` gap counts double). A single tier or any grader failure gives the group
-    zero advantages. ``f_min`` and ``lambda_max`` apply to ``rewards`` only."""
+    candidates into tiers (ties allowed) with a margin per gap between adjacent tiers
+    (``slight`` = 1/4, ``clear`` = 1/2, ``large`` = 1 = the 0/1 pass-vs-fail gap;
+    default ``slight``), confirmed hacks go below the last tier with a ``large`` gap.
+    The tiers' implied scores (bottom 0, each tier up adds its margin) centered to zero
+    mean are the advantages, i.e. GRPO's advantages for those scores. A single tier or
+    any grader failure gives the group zero advantages. ``f_min`` and ``lambda_max``
+    apply to ``rewards`` only."""
 
     f_min: float = Field(0.5, gt=0, le=1)
     """Quality factor of the worst-ranked candidate; the best gets 1."""
