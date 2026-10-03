@@ -108,7 +108,37 @@ class LinearLengthPenaltyConfig(BaseConfig):
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
 
-LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
+class CostPenaltyConfig(BaseConfig):
+    """``pass_rate``-scaled penalty on the modelled deployment cost and user wait time of each rollout, subtracted from its reward before the GRPO baseline: ``reward - pass_rate * (cost_weight * cost_usd + time_weight * time_s)``. Pricing and speeds describe the model as it will be deployed, not the RL inference server. See docs/algorithms.md."""
+
+    type: Literal["cost"] = "cost"
+
+    cost_weight: float = Field(ge=0, allow_inf_nan=False)
+    """Reward per USD of modelled cost. Set to ``1 / value of a solved task in USD`` so a rollout costing as much as the task is worth loses its whole reward (at pass rate 1)."""
+
+    time_weight: float = Field(ge=0, allow_inf_nan=False)
+    """Reward per second of modelled wall-clock time. Set to ``cost_weight * (USD value of one hour of user time) / 3600``; 0 disables the time term."""
+
+    input_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million uncached input tokens."""
+
+    cached_input_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million prefix-cached input tokens."""
+
+    output_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million output tokens."""
+
+    prefill_tokens_per_s: float = Field(gt=0, allow_inf_nan=False)
+    """Per-request prefill speed of the deployed model, in uncached input tokens per second."""
+
+    decode_tokens_per_s: float = Field(gt=0, allow_inf_nan=False)
+    """Per-request decode speed of the deployed model, in output tokens per second."""
+
+    sandbox_usd_per_hour: float = Field(ge=0, allow_inf_nan=False)
+    """USD per hour of sandbox lifetime (boot + setup + agent + finalize). 0 when rollouts run without a paid sandbox."""
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[LinearLengthPenaltyConfig | CostPenaltyConfig, Field(discriminator="type")]
 
 
 class EchoRoleConfig(BaseConfig):
@@ -206,7 +236,15 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
-    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+    """Penalty subtracted from each reward before the GRPO baseline: ``linear`` (``LinearLengthPenaltyConfig``, a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max) or ``cost`` (``CostPenaltyConfig``, a ``pass_rate``-scaled modelled deployment cost and wait time). None disables it."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_length_penalty_type(cls, data: Any) -> Any:
+        # `linear` predates the union; keep configs that omit `type` valid.
+        if isinstance(data, dict) and isinstance(data.get("length_penalty"), dict):
+            data["length_penalty"] = {"type": "linear", **data["length_penalty"]}
+        return data
 
     length_weighted_baseline: bool = False
     """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
