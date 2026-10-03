@@ -4,6 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    CostDeploymentConfig,
     CostPenaltyConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
@@ -302,29 +303,26 @@ def test_cost_penalty_prefix_cache_and_parallel_time():
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
         calls=[call(1, 100, 101), call(3, 102, 103), call(5, 102.5, 103.5), call(7, 104, 105)],
-        timing=vf.Timing(
-            boot=vf.TimeSpan(start=99, end=100),
-            agent=vf.AgentSpan(start=100, end=106),
-            finalize=vf.TimeSpan(start=106, end=107),
-        ),
+        timing=vf.Timing(agent=vf.AgentSpan(start=100, end=106)),
     )
     config = CostPenaltyConfig(
-        cost_weight=1.0,
-        time_weight=1.0,
-        input_usd_per_mtok=1e6,
-        cached_input_usd_per_mtok=1e5,
-        output_usd_per_mtok=2e6,
-        prefill_tokens_per_s=10,
-        decode_tokens_per_s=4,
-        sandbox_usd_per_hour=3600,
+        usd_per_success=2,
+        usd_per_hour=3600,
+        deployment=CostDeploymentConfig(
+            input_usd_per_mtok=1e6,
+            output_usd_per_mtok=2e6,
+            output_tokens_per_s=4,
+            input_tokens_per_s=10,
+        ),
     )
     cached, uncached, output = 19, 14, 8
     parallelism = 3.5 / 4  # union of call intervals / sum of call durations
     model_time = (uncached / 10 + output / 4) * parallelism
     time_s = model_time + 2.5  # 6 s agent span - 3.5 s in model calls
-    cost = uncached + 0.1 * cached + 2 * output + (2 + time_s)  # boot + finalize + time_s of sandbox at 1 USD/s
+    cost = uncached + 0.1 * cached + 2 * output  # cached input defaults to 10% of the input price
     assert rollout_cost(trace, config) == pytest.approx(
         {
+            "penalty": (cost + time_s) / 2,
             "cost_usd": cost,
             "time_s": time_s,
             "model_time_s": model_time,

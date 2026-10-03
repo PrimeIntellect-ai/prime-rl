@@ -36,13 +36,7 @@ class GRPOAlgorithm(Algorithm):
                 costs = [rollout_cost(trace, length_penalty) for trace in traces]
                 for trace, cost in zip(traces, costs, strict=True):
                     trace.record_metrics({f"cost_penalty/{name}": value for name, value in cost.items()})
-                ungated_penalty = torch.tensor(
-                    [
-                        length_penalty.cost_weight * c["cost_usd"] + length_penalty.time_weight * c["time_s"]
-                        for c in costs
-                    ],
-                    dtype=rewards.dtype,
-                )
+                ungated_penalty = torch.tensor([c["penalty"] for c in costs], dtype=rewards.dtype)
             else:
                 output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
                 total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
@@ -83,7 +77,8 @@ def _common_prefix(a: list[int], b: list[int]) -> int:
 
 
 def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float]:
-    """Modelled deployment cost (USD) and wait time (s) of one rollout, with their parts.
+    """Modelled deployment cost (USD) and wait time (s) of one rollout, with their parts, and
+    the resulting penalty before the pass-rate gate.
 
     A call's input is cached up to its longest common prefix with any earlier call's
     prompt + completion in the trace (all agents, by call start), exact up to node
@@ -127,18 +122,17 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
         union += max(0.0, end - max(start, reach))
         reach = max(reach, end)
     parallelism = union / busy if busy else 1.0
-    model_time = (uncached / penalty.prefill_tokens_per_s + output / penalty.decode_tokens_per_s) * parallelism
-    timing = trace.timing
-    tool_time = max(0.0, timing.agent.duration - union)
+    deployment = penalty.deployment
+    model_time = (uncached / deployment.input_tokens_per_s + output / deployment.output_tokens_per_s) * parallelism
+    tool_time = max(0.0, trace.timing.agent.duration - union)
     time_s = model_time + tool_time
-    # The measured agent span includes RL-server queueing, so the sandbox lives for the modelled time instead.
-    sandbox_hours = (timing.boot.duration + timing.setup.duration + timing.finalize.duration + time_s) / 3600
     cost = (
-        penalty.input_usd_per_mtok * uncached
-        + penalty.cached_input_usd_per_mtok * cached
-        + penalty.output_usd_per_mtok * output
-    ) / 1e6 + penalty.sandbox_usd_per_hour * sandbox_hours
+        deployment.input_usd_per_mtok * uncached
+        + deployment.cached_input_usd_per_mtok * cached
+        + deployment.output_usd_per_mtok * output
+    ) / 1e6
     return {
+        "penalty": (cost + time_s / 3600 * penalty.usd_per_hour) / penalty.usd_per_success,
         "cost_usd": cost,
         "time_s": time_s,
         "model_time_s": model_time,
