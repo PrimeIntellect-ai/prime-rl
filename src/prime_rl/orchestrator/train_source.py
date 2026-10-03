@@ -59,6 +59,9 @@ class TrainSource:
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        expected_fields = {"rng", "envs"}
+        if set(state_dict) != expected_fields:
+            raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
         env_states = state_dict["envs"]
         if set(env_states) != set(self.samplers):
             raise ValueError(

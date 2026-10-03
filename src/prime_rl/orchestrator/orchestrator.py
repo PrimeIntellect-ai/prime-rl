@@ -242,7 +242,7 @@ class Orchestrator:
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
-        # trainer. The curricula themselves are restored below, once the envs are loaded.
+        # trainer. The samplers themselves are restored below, once the envs are loaded.
         if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming from step {self.resume_step}")
