@@ -441,20 +441,13 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
+        filesystem when no inference server is configured.
         """
         if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
+            if self.inference is None:
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
-            raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
-                "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
-                "have no disk artifact to load from."
-            )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
@@ -520,52 +513,6 @@ class RLConfig(BaseConfig):
     def validate_eplb(self):
         if self.inference is not None and self.inference.vllm.enable_eplb:
             raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_lora(self):
-        if self.trainer.model.lora is not None:
-            if self.orchestrator.model.lora is None:
-                from prime_rl.configs.orchestrator import LoRAConfig
-
-                self.orchestrator.model.lora = LoRAConfig()
-
-            if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
-                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
-                )
-
-            if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
-                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
-                )
-
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
-
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
-            if self.inference is not None:
-                self.inference.vllm.enable_lora = True
-                self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank.",
-                    stacklevel=2,
-                )
-
         return self
 
     @model_validator(mode="after")
@@ -703,7 +650,7 @@ class RLConfig(BaseConfig):
                 # Without this, in-memory weight transfer expects dp*tp workers
                 # but only api_server_count*tp exist, causing a deadlock.
                 dp = self.inference.vllm.data_parallel_size
-                if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
+                if self.inference.vllm.api_server_count < dp:
                     self.inference.vllm.api_server_count = dp
 
         elif self.deployment.type == "multi_node":  # multi-node
@@ -750,10 +697,7 @@ class RLConfig(BaseConfig):
                         f"({inferred_dp_local}) when inference.vllm.enable_expert_parallel is enabled in multi-node deployment."
                     )
 
-                if (
-                    not self.inference.vllm.enable_lora
-                    and self.inference.vllm.api_server_count == self.inference.vllm.data_parallel_size
-                ):
+                if self.inference.vllm.api_server_count == self.inference.vllm.data_parallel_size:
                     self.inference.vllm.api_server_count = inferred_dp_local
 
             # Auto-infer DP and api_server_count for standard multi-node inference.

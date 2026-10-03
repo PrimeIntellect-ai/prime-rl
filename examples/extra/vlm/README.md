@@ -1,11 +1,11 @@
 # VLM SFT
 
-Multimodal (VLM) supervised fine-tuning configs, dense and MoE. VLM training requires a custom PrimeRL implementation (`impl = "custom"`, `[model.vlm]` set — see [Advanced § Multimodal Training](../../../docs/advanced.md#multimodal-training)); these configs use the Qwen3.5 dense and Qwen3.6 MoE VLM implementations. Both LoRA-finetune with a frozen vision encoder and assistant-only loss masking.
+Multimodal (VLM) supervised fine-tuning configs, dense and MoE. VLM training requires a custom PrimeRL implementation (`impl = "custom"`, `[model.vlm]` set — see [Advanced § Multimodal Training](../../../docs/advanced.md#multimodal-training)); these configs use the Qwen3.5 dense and Qwen3.6 MoE VLM implementations. Both fine-tune with a frozen vision encoder and assistant-only loss masking.
 
 | Config | Model | Hardware |
 |---|---|---|
-| [`sft.toml`](sft.toml) | `Qwen/Qwen3.5-0.8B` (dense, LoRA rank 16) | tiny — sanity-scale (20 steps) |
-| [`sft-moe.toml`](sft-moe.toml) | `Qwen/Qwen3.6-35B-A3B` (MoE, LoRA rank 32, `ep = 8`) | one 8-GPU node (`num_train_gpus = 8`) |
+| [`sft.toml`](sft.toml) | `Qwen/Qwen3.5-0.8B` (dense) | tiny — sanity-scale (20 steps) |
+| [`sft-moe.toml`](sft-moe.toml) | `Qwen/Qwen3.6-35B-A3B` (MoE, `ep = 8`) | one 8-GPU node (`num_train_gpus = 8`) |
 
 ## Run it
 

@@ -27,18 +27,7 @@ from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
-class LoRAConfig(BaseConfig):
-    rank: int | None = Field(None, ge=1)
-    """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
-
-    alpha: float | None = Field(None, ge=0)
-    """LoRA alpha for this run. If None, uses the trainer's alpha."""
-
-
 class ModelConfig(BaseModelConfig):
-    lora: LoRAConfig | None = None
-    """Per-run LoRA configuration. If None, LoRA is disabled."""
-
     client: ClientConfig = ClientConfig()
     """Client of the live deployment (``[orchestrator.model.client]``)."""
 

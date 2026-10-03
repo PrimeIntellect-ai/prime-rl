@@ -238,7 +238,7 @@ class SFTConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig | None = None
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
-    LoRA and external inference use filesystem broadcast."""
+    External inference uses filesystem broadcast."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -399,31 +399,14 @@ class SFTConfig(BaseConfig):
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
-        # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
-        if self.model.lora is not None:
-            if self.inference is not None:
-                self.inference.vllm.enable_lora = True
-                self.inference.vllm.max_lora_rank = self.model.lora.rank
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank.",
-                    stacklevel=2,
-                )
-
         if self.weight_broadcast is None:
-            if self.model.lora is not None or self.inference is None:
+            if self.inference is None:
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
             if self.weight_broadcast.type == "nixl":
                 raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
-            if self.model.lora is not None:
-                raise ValueError(
-                    "LoRA training is not yet supported with in-memory weight broadcast. "
-                    "Set weight_broadcast.type = 'filesystem'."
-                )
             if self.eval.retrigger_on_resume:
                 raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
@@ -503,7 +486,7 @@ class SFTConfig(BaseConfig):
                     f"inference.vllm.tensor_parallel_size ({vllm.tensor_parallel_size})."
                 )
             vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
-        if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
+        if vllm.api_server_count < vllm.data_parallel_size:
             vllm.api_server_count = vllm.data_parallel_size
         if self.weight_broadcast.type == "nccl":
             self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
@@ -562,15 +545,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
-        return self
-
-    @model_validator(mode="after")
-    def vlm_freeze_incompatible_with_lora(self):
-        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
-            raise ValueError(
-                "freeze_vision_encoder=false is incompatible with LoRA. "
-                "LoRA freezes all non-adapter parameters including the vision encoder."
-            )
         return self
 
     @model_validator(mode="after")

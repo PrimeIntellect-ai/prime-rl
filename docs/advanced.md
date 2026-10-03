@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, and disaggregated prefill/decode inference. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, and disaggregated prefill/decode inference. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
 
 ## Table of Contents
 
@@ -11,7 +11,6 @@ This page covers the specialized features layered on top of the core training st
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
-- [LoRA Training](#lora-training)
 - [Disaggregated Prefill/Decode Inference](#disaggregated-prefilldecode-inference)
 
 ## Custom Modeling
@@ -137,7 +136,7 @@ With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is 
 enabled = ["gate_up", "qkv"]   # [] disables
 ```
 
-Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning and is skipped. Fusions are skipped when LoRA is enabled.
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning and is skipped.
 
 Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
 
@@ -177,25 +176,10 @@ VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
-- **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
+- **Vision encoder frozen by default.** Set `freeze_vision_encoder = false` to fine-tune the encoder.
 - **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
-
-## LoRA Training
-
-LoRA is enabled by adding `[model.lora]`:
-
-```toml
-[model.lora]
-rank = 16
-alpha = 32
-dropout = 0.0
-```
-
-`target_modules` defaults to a reasonable cross-family set (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, `experts`, plus a few latent-projection names for Nemotron). Unknown names are silently ignored, so the defaults work across architectures. Add architecture-specific names to extend coverage (e.g. `in_proj` / `out_proj` for Mamba).
-
-LoRA is supported across SFT and RL. NCCL weight broadcast is **not** supported with LoRA — the default NCCL transport automatically falls back to filesystem when LoRA is enabled. Broadcast dirs of LoRA runs contain the raw adapter (`adapter_model.safetensors` + `adapter_config.json`).
 
 ## Disaggregated Prefill/Decode Inference
 

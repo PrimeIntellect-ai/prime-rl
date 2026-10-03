@@ -1,51 +1,50 @@
 {
-  "config": {
-    "type": "rl",
-    "num_gpus": 4,
-    "model_name": "Qwen/Qwen3-0.6B",
-    "lora_rank": null,
-    "seq_len": 65536,
-    "ac": "Recompute",
-    "selective_targets": null,
-    "attention": "flash_attention_2",
-    "output": "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json",
-    "dry_run": false,
-    "timeout": 600,
-    "max_steps": 4,
-    "micro_batches": 2,
-    "ep": 1,
-    "cp": 1,
-    "fused_lm_head_token_chunk_size": 1024,
-    "docker_image": null,
-    "device_name": "NVIDIA RTX A6000",
-    "commit_sha": "7007d2ef",
-    "timestamp": "2026-08-29T02:28:40.728120+00:00",
-    "success": true,
-    "error_reason": null,
-    "time_taken": 317.33935201819986
+ "config": {
+  "type": "rl",
+  "num_gpus": 4,
+  "model_name": "Qwen/Qwen3-0.6B",
+  "seq_len": 65536,
+  "ac": "Recompute",
+  "selective_targets": null,
+  "attention": "flash_attention_2",
+  "output": "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json",
+  "dry_run": false,
+  "timeout": 600,
+  "max_steps": 4,
+  "micro_batches": 2,
+  "ep": 1,
+  "cp": 1,
+  "fused_lm_head_token_chunk_size": 1024,
+  "docker_image": null,
+  "device_name": "NVIDIA RTX A6000",
+  "commit_sha": "7007d2ef",
+  "timestamp": "2026-08-29T02:28:40.728120+00:00",
+  "success": true,
+  "error_reason": null,
+  "time_taken": 317.33935201819986
+ },
+ "metrics": {
+  "mfu": {
+   "mean": 15.880248465863398,
+   "std": 0.005915779562921215,
+   "min": 15.873443653590638,
+   "max": 15.884167926432548
   },
-  "metrics": {
-    "mfu": {
-      "mean": 15.880248465863398,
-      "std": 0.005915779562921215,
-      "min": 15.873443653590638,
-      "max": 15.884167926432548
-    },
-    "throughput": {
-      "mean": 7586.197539502296,
-      "std": 2.826043462792163,
-      "min": 7582.946793757898,
-      "max": 7588.069915881657
-    },
-    "step_time": {
-      "mean": 69.21047159920757,
-      "std": 0.022114607283211834,
-      "min": 69.19065106380731,
-      "max": 69.234325167723
-    },
-    "peak_memory": {
-      "gib": 8.55078125,
-      "pct": 18.038939985655993
-    }
+  "throughput": {
+   "mean": 7586.197539502296,
+   "std": 2.826043462792163,
+   "min": 7582.946793757898,
+   "max": 7588.069915881657
+  },
+  "step_time": {
+   "mean": 69.21047159920757,
+   "std": 0.022114607283211834,
+   "min": 69.19065106380731,
+   "max": 69.234325167723
+  },
+  "peak_memory": {
+   "gib": 8.55078125,
+   "pct": 18.038939985655993
   }
+ }
 }

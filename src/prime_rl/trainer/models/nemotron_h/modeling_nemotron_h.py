@@ -154,17 +154,6 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config: NemotronHConfig):
         return conversion_chain(config)
 
-    @classmethod
-    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        import re
-
-        for name in list(state_dict):
-            hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
-            if hf_name != name:
-                state_dict[hf_name] = state_dict.pop(name)
-        return state_dict
-
-
 class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__(config)

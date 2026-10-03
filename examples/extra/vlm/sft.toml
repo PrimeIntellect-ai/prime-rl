@@ -16,9 +16,6 @@ vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"
 freeze_vision_encoder = true
 
-[model.lora]
-rank = 16
-
 [model.ac]
 freq = 1
 

@@ -17,10 +17,6 @@ impl = "auto"
 [trainer.model.ac]
 freq = 1
 
-[trainer.model.lora]
-rank = 32
-alpha = 64
-
 [trainer.optim]
 lr = 1e-5
 

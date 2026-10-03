@@ -11,7 +11,7 @@ import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
-from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.eval import PRIME_INFERENCE_URL
@@ -132,7 +132,7 @@ class InferenceClient:
 class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
-    update_weights, init_broadcaster, load_lora_adapter live on the engines),
+    update_weights, init_broadcaster live on the engines),
     so these clients bypass it via ``admin_base_url``.
 
     The client order is load-bearing: ``admin_base_url`` order must match the
@@ -431,61 +431,6 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger = get_logger()
     await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
-
-
-def _is_retryable_lora_error(exception: BaseException) -> bool:
-    """Check if an exception should trigger a retry for LoRA loading."""
-    if isinstance(exception, httpx.HTTPStatusError):
-        # Retry on 404 (adapter not found) or 500 (server error during loading)
-        return exception.response.status_code in (404, 500)
-    # Retry on transport-level failures (timeouts, connection resets, etc.) so
-    # the per-call read timeout below turns a stuck server into a bounded retry
-    # loop instead of propagating as a hard failure on the first hiccup.
-    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
-        return True
-    return False
-
-
-# Per-attempt and total bounds for `/load_lora_adapter`. A LoRA load is fast
-# (small adapter file + KV cache reset, single-digit seconds in practice) but
-# the global admin AsyncClient uses `timeout=None`, so a stuck server would
-# hang the orchestrator forever.
-# `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
-# `_TOTAL` is the wall-clock budget across all retries — pick whichever
-# stop condition fires first.
-LORA_LOAD_READ_TIMEOUT_S = 30.0
-LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
-
-
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
-
-    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
-    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
-    KV computed under old weights is never reused.
-
-    Retries with exponential backoff if the adapter files are not found,
-    which can happen due to NFS propagation delays.
-    """
-    logger = get_logger()
-    lora_path_posix = lora_path.as_posix()
-
-    @retry(
-        retry=retry_if_exception(_is_retryable_lora_error),
-        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
-    async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
-
-    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
 
 
 async def init_nixl_broadcast(

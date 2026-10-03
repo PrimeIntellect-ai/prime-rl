@@ -13,7 +13,6 @@ from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import (
-    ADAPTER_SAFE_WEIGHTS_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
 )
@@ -46,11 +45,10 @@ def save_state_dict(
     state_dict: dict[str, Tensor],
     save_dir: Path,
     save_sharded: bool = True,
-    adapter: bool = False,
 ):
     """Save a state dict to a local directory as safetensors."""
     logger = get_logger()
-    weights_name = ADAPTER_SAFE_WEIGHTS_NAME if adapter else SAFE_WEIGHTS_NAME
+    weights_name = SAFE_WEIGHTS_NAME
     save_dir.mkdir(parents=True, exist_ok=True)
     if save_sharded:
         filename_pattern = weights_name.replace(".safetensors", "{suffix}.safetensors")
@@ -192,9 +190,6 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
                 continue
             partial[resolve_fqn(model, key)] = value.to("cpu")
         dist.barrier()
-
-    if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in partial.keys()):
-        raise ValueError("gather_weights_parallel does not support LoRA state dicts")
 
     return partial
 

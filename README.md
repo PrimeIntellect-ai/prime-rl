@@ -176,7 +176,7 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 
 1. [**Reverse Text**](examples/basic/reverse-text/README.md): Train `Qwen3-0.6B` to reverse a small chunk of text. Demonstrates tiny-scale single-turn SFT and RL training. Can be trained on a single consumer GPU in a few minutes, and is ideal for getting started.
 2. [**Wordle**](examples/basic/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
-3. [**Alphabet Sort**](examples/basic/alphabet-sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Demonstrates multi-turn RL training via LoRA without SFT warmup. Can be trained on a single H100 GPU in just over an hour. Ideal for exploring LoRA-based training.
+3. [**Alphabet Sort**](examples/basic/alphabet-sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Demonstrates multi-turn RL training without SFT warmup. Can be trained on a single H100 GPU in just over an hour.
 4. [**Wiki Search**](examples/basic/wiki-search/README.md): Train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia. Demonstrates multi-turn with web search tool use.
 5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Run a sanity check experiment on `DeepSeek-R1-Distill-Qwen-1.5B` using a filtered subset of MATH where the model already partially solves 20-80% of problems. Useful for algorithm ablations.
 
@@ -199,7 +199,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use prime-rl.
 - [**Eval**](docs/eval.md) - Standalone evals against any inference server, online evals, resume, platform upload
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
 - [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
-- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA
+- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training
 - [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 
 ## Contributing

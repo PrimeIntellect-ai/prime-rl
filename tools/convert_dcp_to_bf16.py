@@ -6,8 +6,7 @@ the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
 The model and tokenizer configs are read from the run's resolved config
-(``<run>/configs/latest/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
-supported — the script exports full fine-tunes only.
+(``<run>/configs/latest/resolved/trainer.json`` or ``sft.json``).
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
@@ -28,7 +27,6 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
@@ -90,17 +88,6 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
     return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 
 
-def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
-    if model_config.lora is not None:
-        raise ValueError("LoRA checkpoints are not supported - dcp_to_bf16 exports full fine-tunes only")
-    metadata = FileSystemReader(dcp_dir).read_metadata()
-    lora_keys = [k for k in metadata.state_dict_metadata if "lora_A" in k or "lora_B" in k or ".base_layer." in k]
-    if lora_keys:
-        raise ValueError(
-            f"Checkpoint contains LoRA keys (e.g. {lora_keys[0]}) - dcp_to_bf16 exports full fine-tunes only"
-        )
-
-
 def setup_single_process_env() -> None:
     """Default the torchrun env vars so the script also runs under plain ``python``."""
     if "RANK" in os.environ:
@@ -151,7 +138,6 @@ def load_and_convert(ckpt_dir: Path):
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
     model_config, tokenizer_config = resolve_run_configs(step_dir)
-    check_not_lora(model_config, dcp_dir)
 
     setup_single_process_env()
     setup_torch_distributed()

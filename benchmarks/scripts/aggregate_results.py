@@ -42,9 +42,6 @@ def get_hardware(config: dict) -> str:
 
 def get_training_type(config: dict) -> str:
     train_type = config.get("type", "unknown").upper()
-    lora_rank = config.get("lora_rank")
-    if lora_rank is not None:
-        return f"{train_type} LoRA(r={lora_rank})"
     return f"{train_type} Full"
 
 
@@ -55,7 +52,6 @@ def get_config_key(config: dict) -> str:
             config.get("model_name", "unknown"),
             get_hardware(config),
             config.get("type", "rl"),
-            str(config.get("lora_rank") or "none"),
             str(config.get("seq_len", 0)),
             config.get("ac", "None"),
             config.get("attention", "unknown"),

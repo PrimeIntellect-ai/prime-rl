@@ -2,7 +2,7 @@
 
 vLLM ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.scale_out.token_in_token_out.serving.ServingTokens`` that covers
-prefix-cache salting, lora dispatch, multimodal content parts and features,
+prefix-cache salting, multimodal content parts and features,
 prompt logprobs, priority, ``data_parallel_rank`` header routing, server-side
 ``max_tokens`` defaulting, ``usage`` reporting, and expanded prompt metadata.
 We subclass it for the one bit still missing from the upstream handler: compact

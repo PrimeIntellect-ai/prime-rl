@@ -84,13 +84,13 @@ clean = true
 CLI accepts space-separated values or a JSON literal. TOML uses an array literal. Both forms target the same field:
 
 ```bash
-uv run rl @ rl.toml --trainer.model.lora.target-modules q_proj k_proj v_proj
-uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v_proj"]'
+uv run rl @ rl.toml --model.fusions.enabled gate_up qkv
+uv run rl @ rl.toml --model.fusions.enabled '["gate_up", "qkv"]'
 ```
 
 ```toml
-[trainer.model.lora]
-target_modules = ["q_proj", "k_proj", "v_proj"]
+[model.fusions]
+enabled = ["gate_up", "qkv"]
 ```
 
 Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
@@ -117,7 +117,7 @@ Many sub-configs are typed `SomeConfig | None`. Two patterns enable them:
 - **Bare flag with defaults**: `--model.compile` or, in TOML, an empty section `[model.compile]`. The sub-config materializes with all-default values.
 - **Enable and set fields together**: `--model.compile.fullgraph` (CLI) or any populated `[model.compile]` table (TOML).
 
-To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI or assign the string `"None"` in TOML (see [None](#none)). This is how `[ckpt]`, `[model.lora]`, `[model.compile]`, `[trainer.wandb]`, etc. are turned on and off.
+To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI or assign the string `"None"` in TOML (see [None](#none)). This is how `[ckpt]`, `[model.compile]`, `[trainer.wandb]`, etc. are turned on and off.
 
 ### None
 
@@ -244,7 +244,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 
 - [**Reverse Text**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) — `Qwen3-0.6B` reversing a chunk of text. Tiny single-turn SFT + RL; runs on a single consumer GPU in minutes.
 - [**Wordle**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wordle) — `Qwen3-1.7B` playing Wordle. Multi-turn SFT + RL; 2–4 H100s.
-- [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/alphabet-sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn LoRA RL without SFT warmup; one H100.
+- [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/alphabet-sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn RL without SFT warmup.
 - [**Wiki Search**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wiki-search) — `Qwen3-4B-Instruct-2507` answering trivia by searching a Wikipedia corpus. Multi-turn with tool use.
 - [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/hendrycks-sanity) — `DeepSeek-R1-Distill-Qwen-1.5B` on a filtered MATH subset. Useful for algorithm ablations.
 

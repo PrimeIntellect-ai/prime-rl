@@ -30,9 +30,6 @@ def setup_vllm_env(config: InferenceConfig):
     os.environ["VLLM_USE_DEEP_GEMM"] = deep_gemm_enabled
     os.environ["VLLM_MOE_USE_DEEP_GEMM"] = deep_gemm_enabled
 
-    if config.vllm.enable_lora:
-        os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
-
     if config.log.json_logging:
         # Route vLLM's stdlib loggers through a JSON formatter matching
         # trainer / orchestrator. The env var (not in-process dictConfig)

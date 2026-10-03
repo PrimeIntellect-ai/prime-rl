@@ -91,7 +91,7 @@ class CompileConfig(BaseConfig):
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
-    """Runtime parameter fusions. ``gate_up`` runs each MoE expert's gate and up projections as one grouped GEMM; ``qkv`` runs attention's q, k and v projections as one GEMM. Only modules that support a fusion are packed, checkpoints keep the canonical parameter names and shapes, and fusions are skipped when LoRA is enabled. Set to ``[]`` to disable."""
+    """Runtime parameter fusions. ``gate_up`` runs each MoE expert's gate and up projections as one grouped GEMM; ``qkv`` runs attention's q, k and v projections as one GEMM. Only modules that support a fusion are packed, checkpoints keep the canonical parameter names and shapes. Set to ``[]`` to disable."""
 
     shard_fused_on_dim1: bool = False
     """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
@@ -103,34 +103,6 @@ class IndexCacheConfig(BaseConfig):
 
     topk_pattern: str | None = None
     """Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers."""
-
-
-class LoRAConfig(BaseConfig):
-    rank: int = Field(16, ge=1)
-    """Rank of the low-rank decomposition matrices."""
-
-    alpha: float = Field(32.0, ge=0)
-    """LoRA scaling parameter."""
-
-    dropout: float = Field(0.0, ge=0, le=1)
-    """LoRA dropout rate."""
-
-    target_modules: list[str] = [
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-        "experts",
-        "fc1_latent_proj",
-        "fc2_latent_proj",
-    ]
-    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
-
-    modules_to_save: list[str] = []
-    """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
 
 
 class DebugModelConfig(BaseConfig):
@@ -336,9 +308,6 @@ class ModelConfig(BaseModelConfig):
 
     freeze_moe_router: bool = False
     """Freeze MoE router parameters during training."""
-
-    lora: LoRAConfig | None = None
-    """LoRA configuration. If None, LoRA is disabled."""
 
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
@@ -804,15 +773,6 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def vlm_freeze_incompatible_with_lora(self):
-        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
-            raise ValueError(
-                "freeze_vision_encoder=false is incompatible with LoRA. "
-                "LoRA freezes all non-adapter parameters including the vision encoder."
-            )
-        return self
-
-    @model_validator(mode="after")
     def dont_do_massive_traces(self):
         if self.trace_path:
             if self.max_steps is None:
@@ -832,20 +792,6 @@ class TrainerConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
-                "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
-            )
-        if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:
-            raise ValueError(
-                "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
-                "adapter tensors, so fully-trained modules would silently diverge from inference."
-            )
         return self
 
     @model_validator(mode="after")

@@ -18,9 +18,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
-from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -145,9 +143,6 @@ def train(config: SFTConfig):
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
-
-    if config.model.lora is not None:
-        get_lora_state().reset_adapter_parameters()
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -275,9 +270,6 @@ def train(config: SFTConfig):
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
-        if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
-
         token_count = loss_mask.sum(dtype=torch.int64)
 
         # Labels without a temperature make the LM head return the summed cross-entropy directly.
@@ -381,7 +373,6 @@ def train(config: SFTConfig):
             config.run_dir,
             config.weight_broadcast,
             parallel_dims,
-            config.model.lora,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
         # transport and lets the evals process re-trigger at the resume step

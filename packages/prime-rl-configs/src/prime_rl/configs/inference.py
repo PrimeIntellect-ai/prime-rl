@@ -24,11 +24,6 @@ class ServerConfig(BaseConfig):
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
 
 
-# Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
-# tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
-# not depend on vLLM, and importing it costs seconds in every config-parsing process.
-VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
-
 # vLLM all2all backend options for expert-parallel deployments.
 All2AllBackend = Literal[
     "allgather_reducescatter",
@@ -110,19 +105,6 @@ class VllmConfig(BaseConfig):
     quantization: QuantizationType | None = None
     """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
 
-    enable_lora: bool = False
-    """Enable LoRA."""
-
-    max_loras: int = 1
-    """Maximum number of concurrently served LoRAs. prime-rl serves one adapter and reloads
-    it in place every policy version (same name, same lora_int_id), so one slot suffices."""
-
-    max_lora_rank: int | None = None
-    """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
-
-    lora_target_modules: list[str] | None = None
-    """LoRA target modules."""
-
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE models."""
 
@@ -178,29 +160,9 @@ class VllmConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_max_lora_rank(self):
-        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
-
-        vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
-        This validator ensures that any configured rank is rounded up to the minimum valid value
-        that can serve adapters of the requested rank.
-        """
-        if self.max_lora_rank is not None:
-            original_rank = self.max_lora_rank
-            for valid_rank in VALID_VLLM_LORA_RANKS:
-                if valid_rank >= self.max_lora_rank:
-                    self.max_lora_rank = valid_rank
-                    break
-            else:
-                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_api_server_count(self):
         """
-        Ensures that we have at least as many API servers as data parallel
-        size. Unless LoRA is enabled, in which case only one API server is
-        supported (vLLM limitation).
+        Ensures that we have at least as many API servers as data parallel size.
         """
         if self.model_extra and self.model_extra.get("headless", False):
             self.api_server_count = 0
@@ -210,9 +172,6 @@ class VllmConfig(BaseConfig):
             min_api_server_count = self.data_parallel_size_local or self.data_parallel_size
             if self.api_server_count < min_api_server_count:
                 self.api_server_count = min_api_server_count
-
-        if self.enable_lora:
-            self.api_server_count = 1  # LoRA requires only one API server
         return self
 
 
@@ -301,7 +260,6 @@ KNOWN_SCORERS = frozenset(
         "token-load-scorer",
         "latency-scorer",
         "session-affinity-scorer",
-        "lora-affinity-scorer",
     }
 )
 
@@ -607,7 +565,7 @@ class InferenceConfig(BaseConfig):
     # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
     # own default (e.g. quantization is inferred from the checkpoint).
     _OMIT_IF_NONE = frozenset(
-        {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
+        {"chat_template", "tool_call_parser", "reasoning_parser", "quantization", "rope_scaling"}
     )
 
     def to_namespace(self) -> Namespace:

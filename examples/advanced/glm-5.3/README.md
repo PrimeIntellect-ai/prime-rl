@@ -64,7 +64,7 @@ uv run rl @ examples/advanced/glm-5.3/swe.toml
 uv run rl @ examples/advanced/glm-5.3/swe.toml @ examples/advanced/glm-5.3/swe-llmd.toml
 ```
 
-The inference configs are standalone pre-flights: they serve the FP8 checkpoint through the same entrypoint the trainer uses (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster` included — never call `vllm serve` directly), and are a fast way to check that this cluster can serve the model at all before committing it to a run:
+The inference configs are standalone pre-flights: they serve the FP8 checkpoint through the same entrypoint the trainer uses (`/update_weights`, `/init_broadcaster` included — never call `vllm serve` directly), and are a fast way to check that this cluster can serve the model at all before committing it to a run:
 
 ```bash
 uv run inference @ examples/advanced/glm-5.3/infer/pd.toml

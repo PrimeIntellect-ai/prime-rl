@@ -18,11 +18,6 @@ vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"
 freeze_vision_encoder = true
 
-[model.lora]
-rank = 32
-alpha = 32
-target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "experts"]
-
 [model.ac]
 mode = "selective"
 
