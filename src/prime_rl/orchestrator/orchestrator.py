@@ -779,7 +779,7 @@ class Orchestrator:
         if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
             return
         is_final = self.config.max_steps is not None and step >= self.config.max_steps
-        fired = self.eval_source.trigger(step, force=is_final)
+        fired, _ = self.eval_source.trigger(step, force=is_final)
         if not fired:
             return
         self.eval_triggered_steps.add(step)
