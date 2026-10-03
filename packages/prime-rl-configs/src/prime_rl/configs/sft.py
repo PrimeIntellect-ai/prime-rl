@@ -284,6 +284,13 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = False
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
         default the run directory, W&B run name and platform run name to it when not

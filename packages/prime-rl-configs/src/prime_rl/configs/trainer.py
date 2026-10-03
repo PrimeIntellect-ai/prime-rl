@@ -332,8 +332,8 @@ class ModelConfig(BaseModelConfig):
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
-    freeze_moe_router: bool = False
-    """Freeze MoE router parameters during training."""
+    freeze_moe_router: bool | Literal["auto"] = "auto"
+    """Freeze MoE router gate parameters (``requires_grad=False``, so they get no optimizer state). ``auto`` (default) resolves to ``True`` for RL and ``False`` for SFT: in RL, router updates shift which experts the trainer picks away from what inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. A no-op for non-MoE models."""
 
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
@@ -686,6 +686,13 @@ class TrainerConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: RL keeps the pretrained router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = True
         return self
 
     @model_validator(mode="after")
