@@ -555,6 +555,22 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_payload_root(self):
+        """Multi-node runs pass router-replay ids and sampling masks by handle through
+        ``<run dir>/payloads``, which the SLURM deployment shares with the trainer.
+        Disaggregated P/D stays inline: the PD router merges only inline routing."""
+        inference = self.inference
+        if (
+            inference is not None
+            and self.orchestrator.payload_root is None
+            and (inference.vllm.enable_return_routed_experts or inference.enable_return_sampling_mask)
+            and self.deployment.type == "multi_node"
+            and inference.deployment.type != "disaggregated"
+        ):
+            self.orchestrator.payload_root = (self.run_dir / "payloads").absolute()
+        return self
+
+    @model_validator(mode="after")
     def validate_disaggregated_combined_replay(self):
         inference = self.inference
         if (

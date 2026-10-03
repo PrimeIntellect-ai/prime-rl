@@ -3,7 +3,9 @@ import ctypes
 import gc
 import logging
 import math
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import verifiers.v1 as vf
@@ -43,6 +45,13 @@ def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
     """Oldest dispatch version whose episodes may still train in batch
     ``step`` — anything older would ship past ``max_off_policy_steps``."""
     return (step - 1) - max_off_policy_steps
+
+
+def delete_payloads_before(payload_root: Path, version: int) -> None:
+    """Delete the by-handle payload directories ``v<k>`` with ``k < version``."""
+    for path in payload_root.glob("v*"):
+        if int(path.name[1:]) < version:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:
