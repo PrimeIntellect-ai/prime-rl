@@ -129,6 +129,7 @@ clear_thinking = false
 
 [orchestrator.train.sampling]
 temperature = 1.0
+top_p = 1.0 # sampling replay (V2 model runner) is not validated with P/D, Mooncake or llm-d
 
 [orchestrator.train.sampling.extra_body.chat_template_kwargs]
 clear_thinking = false
