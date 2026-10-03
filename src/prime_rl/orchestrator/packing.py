@@ -1,7 +1,7 @@
 from transformers import AutoConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.trainer.batch import build_bin_cost, prepare_batch
+from prime_rl.trainer.batch import build_bin_cost, get_model_num_experts, prepare_batch
 from prime_rl.transports.batch.types import MicroBatch, TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -24,6 +24,7 @@ class BatchPacker:
             )
             model_config = None
         self.bin_cost = build_bin_cost(model_config)
+        self.num_experts = get_model_num_experts(model_config)
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(
@@ -32,4 +33,5 @@ class BatchPacker:
             num_train_workers=self.num_train_workers,
             bin_cost=self.bin_cost,
             pad_to_multiple_of=self.pad_to_multiple_of,
+            num_experts=self.num_experts,
         )
