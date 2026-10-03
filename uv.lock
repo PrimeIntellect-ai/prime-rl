@@ -5921,7 +5921,7 @@ wheels = [
 
 [[package]]
 name = "r2e-gym"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/swe/r2e_gym" }
 dependencies = [
     { name = "verifiers" },
