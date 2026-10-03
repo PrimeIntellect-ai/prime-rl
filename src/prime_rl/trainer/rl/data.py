@@ -15,6 +15,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.payload import read_field
 
 
 class TensorMicroBatch(TypedDict):
@@ -46,6 +47,10 @@ class TensorMicroBatch(TypedDict):
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
+
+    # True when routed_experts and sampling_mask were read by handle for this rank's CP
+    # window: already sharded, and the mask already shifted onto label positions.
+    payload_cp_window: bool
 
     # Materialized immediately before this microbatch's forward pass.
     mm_refs: MMRefs | None
@@ -132,6 +137,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "payload_cp_window": False,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -164,6 +170,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "payload_cp_window": False,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -181,8 +188,12 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        cp_rank: int = 0,
+        cp_size: int = 1,
     ):
         self.world = get_world()
+        self.cp_rank = cp_rank
+        self.cp_size = cp_size
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
@@ -220,6 +231,12 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+        payload_cp_window = False
+        if micro_batch.payload:
+            assert routed_experts is None and sampling_mask is None, (
+                "a micro batch carries payloads inline or by handle"
+            )
+            routed_experts, sampling_mask, payload_cp_window = self._read_payload(micro_batch)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -243,6 +260,7 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            payload_cp_window=payload_cp_window,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,
@@ -253,6 +271,30 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
+
+    def _read_payload(self, micro_batch: MicroBatch) -> tuple[Tensor | None, Tensor | None, bool]:
+        """Read this rank's rows of the by-handle payloads. Text micro batches read only the
+        rank's contiguous CP chunk, with the sampling mask taken one position ahead so it
+        lands on the labels (``shift_tensor_left``); multimodal ones read the full sequence
+        because the model may defer CP sharding."""
+        segments = micro_batch.payload
+        num_tokens = len(micro_batch.input_ids)
+        cp_window = micro_batch.mm_refs is None
+        lo, hi = 0, num_tokens
+        if cp_window and self.cp_size > 1:
+            assert num_tokens % self.cp_size == 0, f"{num_tokens} tokens do not split into {self.cp_size} CP chunks"
+            chunk = num_tokens // self.cp_size
+            lo, hi = chunk * self.cp_rank, chunk * (self.cp_rank + 1)
+        shift = 1 if cp_window else 0
+        routed_experts = read_field(segments, "routed_experts", lo, hi, 0, np.int32)
+        sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1, np.int32)
+        if sampling_mask is not None:
+            # Rows are -1 padded on the right; keep the widest row of this window.
+            width = max(int((sampling_mask >= 0).sum(-1).max(initial=0)), 1)
+            sampling_mask = torch.from_numpy(np.ascontiguousarray(sampling_mask[:, :width])).unsqueeze(0)
+        if routed_experts is not None:
+            routed_experts = torch.from_numpy(routed_experts).unsqueeze(0)
+        return routed_experts, sampling_mask, cp_window
 
 
 def _torch_dtype(name: str) -> torch.dtype:

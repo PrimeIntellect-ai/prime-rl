@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
+from prime_rl.transports.payload import clip_segments, shift_segments
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -378,6 +379,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    payload = training_example.payload
 
     if len(input_ids) > seq_len:
         cut = seq_len
@@ -401,6 +403,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
+        if payload is not None:
+            payload = clip_segments(payload, 0, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -460,7 +464,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        payload=payload,
     )
+
+
+def _has_routed_experts(sample: MicroBatch) -> bool:
+    return sample.routed_experts is not None or any(s.field == "routed_experts" for s in sample.payload or ())
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
@@ -487,7 +496,7 @@ class _MicroBatchBin:
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
-        if (first_sample.routed_experts is None) != (sample.routed_experts is None):
+        if _has_routed_experts(first_sample) != _has_routed_experts(sample):
             return False
 
         return True
@@ -545,6 +554,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
+    payload: list | None = [] if any(sample.payload for sample in bin_content.samples) else None
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -590,6 +600,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+        if payload is not None and sample.payload:
+            payload.extend(shift_segments(sample.payload, len(input_ids) - sample_len))
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -617,6 +629,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
+        payload=payload,
     )
 
 
@@ -789,6 +802,10 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
+    for segment in micro_batch.payload or ():
+        assert 0 <= segment.pos and segment.end <= num_tokens, (
+            f"payload segment {segment.pos}:{segment.end} outside {num_tokens} tokens"
+        )
 
 
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
@@ -803,6 +820,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
+    if dummy.payload is not None:
+        dummy.payload = [segment for segment in dummy.payload if segment.field != "sampling_mask"] or None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None
