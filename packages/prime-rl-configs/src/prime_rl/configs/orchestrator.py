@@ -610,14 +610,11 @@ class OrchestratorConfig(BaseConfig):
     tasks_per_minute: int | None = Field(None, ge=1)
     """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
 
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+    batch_size: int = Field(128, ge=1)
+    """Samples to train on per step."""
 
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
@@ -755,17 +752,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
         group_sizes = [source.group_size for source in self.train.source] or [self.train.group_size]
-        if self.batch_size is not None and any(self.batch_size % size for size in group_sizes):
+        if any(self.batch_size % size for size in group_sizes):
             raise ValueError(
                 f"Batch size {self.batch_size} must be divisible by every train source's group_size {sorted(set(group_sizes))}"
             )
