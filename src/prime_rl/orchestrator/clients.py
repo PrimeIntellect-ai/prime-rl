@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     EvalClientConfig,
@@ -32,14 +33,8 @@ class PrefillScorer:
 
     async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
         if self._client is None:
-            # Build the OpenAI client straight from the config fields — works for any
-            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
-            # for these chat-completions teacher configs.
-            self._client = AsyncOpenAI(
-                base_url=config.base_url,
-                api_key=resolve_api_key(config),
-                default_headers=resolve_headers(config) or None,
-            )
+            # Prefill scoring uses the SDK even when generation uses the eval relay.
+            self._client = build_async_openai(config)
         return await prefill_logprobs(self._client, model, token_ids)
 
     async def aclose(self) -> None:
