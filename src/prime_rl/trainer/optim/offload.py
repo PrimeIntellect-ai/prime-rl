@@ -629,7 +629,6 @@ class GradientOffloadManager:
         return total_norm
 
     def load_cpu_chunk(self, chunk_idx: int, *, wait: bool = True) -> list[torch.Tensor | None]:
-        """Return the unscaled FP32 accumulated gradients of a chunk (``None`` for params without one)."""
         if wait:
             self.wait()
         gradients: list[torch.Tensor | None] = []
@@ -786,8 +785,6 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         sources: list[torch.Tensor],
     ) -> None:
         assert self._master_weights is not None
-        if len(sources) != len(self._chunks[chunk_idx]):
-            raise ValueError("Compute-weight sources must match the optimizer chunk")
         with torch.cuda.stream(stream):
             for param_idx, param in enumerate(self._chunks[chunk_idx]):
                 master = self._master_weights[id(param)]
@@ -900,10 +897,6 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._update_compute_weights(chunk_idx, self._h2d_stream, compute_params)
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
 
-    def _record_native_optimizer_step(self) -> None:
-        # LRScheduler normally sets this marker through its optimizer.step wrapper.
-        self.optimizer._opt_called = True
-
     def step(self, closure=None):
         if closure is not None:
             raise ValueError("Optimizer closures are not supported with CPU optimizer offload")
@@ -916,7 +909,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             get_logger().debug(
                 "Offload pipeline: " + " ".join(f"{key}={value:.3f}s" for key, value in sorted(timings.items()))
             )
-            self._record_native_optimizer_step()
+            # LRScheduler normally sets this marker through its optimizer.step wrapper.
+            self.optimizer._opt_called = True
             self._initialized = True
             return
         # Synchronous path (validation steps and checkpoint boundaries).
@@ -928,7 +922,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
         torch.cuda.current_stream().wait_stream(self._h2d_stream)
         torch.cuda.synchronize()
-        self._record_native_optimizer_step()
+        self.optimizer._opt_called = True
         self._initialized = True
 
     def zero_grad(self, set_to_none: bool = True):
@@ -965,9 +959,6 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             return
         if self.optimizer.state:
             return
-        self._initialize_native_cpu_adamw_state()
-
-    def _initialize_native_cpu_adamw_state(self) -> None:
         alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
         offsets = {}
         slab_numel = 0
