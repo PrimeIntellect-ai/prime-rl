@@ -16,6 +16,9 @@ def setup_vllm_env(config: InferenceConfig):
     # patch is V1-only. setdefault keeps an explicit env-var choice authoritative.
     if config.enable_return_sampling_mask:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
+        if config.enable_return_sampling_mask_logprobs:
+            # Read by the vLLM plugin in every process (spawned workers inherit it).
+            os.environ["PRIME_RETURN_SAMPLING_MASK_LOGPROBS"] = "1"
     elif config.vllm.enable_return_routed_experts:
         use_v2_runner = config.deployment.type != "disaggregated"
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1" if use_v2_runner else "0")

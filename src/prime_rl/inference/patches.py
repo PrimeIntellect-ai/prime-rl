@@ -30,6 +30,61 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS") == "1":
+        monkey_patch_sampling_mask_logprobs()
+
+
+def monkey_patch_sampling_mask_logprobs():
+    """Return the sampler's logprob of every sampling-mask id (score centering).
+
+    vLLM builds the mask from the processed logits (temperature + top-k/top-p, -inf
+    outside the kept set S), so ``log_softmax`` over them is the sampler's renormalized
+    logprob on S. Each value rides the existing mask plumbing (engine IPC, output
+    processor) untouched by packing it with its id into one int64
+    (``float32 bits << 32 | id``); ``PrimeRlServingTokens`` unpacks the pair into
+    ``sampling_mask`` / ``sampling_mask_logprobs``. Rows wider than the compact buffer
+    (ties, served from the bitmask) carry -9999 (zero probability: no centering on that
+    token, JSON-safe unlike NaN). Applied only with ``enable_return_sampling_mask_logprobs``
+    (``PRIME_RETURN_SAMPLING_MASK_LOGPROBS=1``). While on, only our non-streaming
+    ``serve_tokens_full_generator`` unpacks the masks: streaming and offline ``LLM``
+    consumers see packed ids and are unsupported.
+    """
+    import numpy as np
+    from vllm.v1.outputs import SamplingMaskLists
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    class _SamplingMaskTensorsWithLogprobs(SamplingMaskTensors):
+        # No __slots__: instances carry a ``logprobs`` [num_reqs, max_num_kept] attribute.
+        def to_cpu_nonblocking(self):
+            out = _SamplingMaskTensorsWithLogprobs(*SamplingMaskTensors.to_cpu_nonblocking(self))
+            out.logprobs = self.logprobs.to("cpu", non_blocking=True)
+            return out
+
+        def tolists(self) -> SamplingMaskLists:
+            lists = SamplingMaskTensors.tolists(self)
+            counts = self.counts.cpu().numpy()
+            logprobs = self.logprobs.cpu().numpy()
+            width = logprobs.shape[1]
+            values = np.concatenate(
+                [
+                    logprobs[row, :count] if count <= width else np.full(count, -9999.0, np.float32)
+                    for row, count in enumerate(counts)
+                ]
+                + [np.zeros(0, np.float32)]
+            )
+            bits = values.astype(np.float32).view(np.uint32).astype(np.int64) << 32
+            return SamplingMaskLists(bits | lists.token_ids.astype(np.int64), lists.offsets)
+
+    from_logits = SamplingMaskTensors.from_logits.__func__
+
+    def from_logits_with_logprobs(cls, logits, num_sampled_tokens, max_num_kept):
+        tensors = _SamplingMaskTensorsWithLogprobs(*from_logits(cls, logits, num_sampled_tokens, max_num_kept))
+        # Slots past each row's count are uninitialized; clamp so the gather stays in range.
+        ids = tensors.token_ids.long().clamp(0, logits.shape[1] - 1)
+        tensors.logprobs = (logits.gather(1, ids) - logits.logsumexp(-1, keepdim=True)).float()
+        return tensors
+
+    SamplingMaskTensors.from_logits = classmethod(from_logits_with_logprobs)
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():

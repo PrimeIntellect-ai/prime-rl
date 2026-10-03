@@ -46,6 +46,8 @@ class TensorMicroBatch(TypedDict):
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
+    # The sampler's logprob of each mask id (score centering), -inf padded.
+    sampling_mask_logprobs: Float[Tensor, "batch seq mask"] | None
 
     # Materialized immediately before this microbatch's forward pass.
     mm_refs: MMRefs | None
@@ -132,6 +134,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "sampling_mask_logprobs": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -164,6 +167,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "sampling_mask_logprobs": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -210,16 +214,20 @@ class DataLoader:
                 .to(torch.int32)
                 .unsqueeze(0)
             )
-        sampling_mask = None
+        sampling_mask = sampling_mask_logprobs = None
         packed_sampling_mask = micro_batch.sampling_mask
         if packed_sampling_mask is not None:
             counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
-            ids = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
             # Boolean assignment fills row-major, matching the flat concat order.
             max_mask_size = max(int(counts.max()), 1) if counts.size else 1
+            in_mask = np.arange(max_mask_size)[None, :] < counts[:, None]
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
-            padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
+            padded[in_mask] = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+            if packed_sampling_mask.logprobs is not None:
+                padded_logprobs = np.full((len(counts), max_mask_size), -np.inf, dtype=np.float32)
+                padded_logprobs[in_mask] = np.frombuffer(packed_sampling_mask.logprobs, dtype=np.float32)
+                sampling_mask_logprobs = torch.from_numpy(padded_logprobs).unsqueeze(0)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -243,6 +251,7 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            sampling_mask_logprobs=sampling_mask_logprobs,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,

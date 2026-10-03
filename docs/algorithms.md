@@ -14,6 +14,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
+    - [Score Centering](#score-centering)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -208,8 +209,26 @@ The knobs under `[trainer.loss]` are:
 |---|---|---|
 | `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `score_centering` | false | Add the [score-centering](#score-centering) correction. Requires truncated train sampling. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+#### Score Centering
+
+Score centering ([arXiv:2609.20807](https://arxiv.org/abs/2609.20807)) cancels the drift that trainer-inference mismatch adds to the policy gradient. Rollouts are sampled from $\mu$ but scored by $\pi$, so the expected update at a prefix carries $\mathbb{E}_\mu[\hat{A}]\,\bar{s}$ with $\bar{s} = \sum_{v} \mu_v w_v \nabla \log \pi_v$: a pull toward the sampler. Here $w_v$ is the IPO weight (the capped ratio $\pi_v/\mu_v$, or 0 outside the trust region). Score centering subtracts $\bar{s}$ from every token's update. With [sampling replay](inference.md#sampling-replay), both distributions live on the sampling mask $S_t$, so the expectation is exact:
+
+$$
+\mathcal{L}_{SC}(\theta) = \frac{1}{N}\sum_t \tau_A \hat{A}_t \sum_{v \in S_t} \mathrm{sg}\!\left[\mu_v w_v\right] \log \pi_v,
+$$
+
+where $\mu$ and $\pi$ are both renormalized over $S_t$.
+
+```toml
+[trainer.loss]
+score_centering = true
+```
+
+It requires truncated train sampling (`top_p < 1` or `top_k`). The `rl` entrypoint then sets `inference.enable_return_sampling_mask_logprobs`, so the server also returns the sampler's logprob of every mask id; set it yourself on a standalone server. This costs about 4 B per kept id on the way to the trainer and about 20 B per kept id in the response.
 
 ### IcePop Loss
 
