@@ -18,6 +18,7 @@ from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
+from pydantic import TypeAdapter
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
@@ -30,8 +31,12 @@ CONFIG_NAME = "eval.json"
 running, beside the episodes it produces, recording the config those episodes were
 measured with."""
 
-# These fields control execution without changing the experiment being measured.
-OPERATIONAL_FIELDS = {
+# Operational settings and group defaults already resolved into each source.
+IGNORED_FIELDS = {
+    "env": True,
+    "sampling": True,
+    "select": True,
+    "group_size": True,
     "resume": True,
     "clean": True,
     "dry_run": True,
@@ -80,15 +85,20 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[dict]:
     directories = archives(run_dir)
     if current.is_dir() or not directories:
         directories.append(current)
-    expected = config.model_dump(mode="json", exclude=OPERATIONAL_FIELDS)
+    expected = config.model_dump(mode="json", exclude=IGNORED_FIELDS)
+    snapshot = TypeAdapter(dict)
     landed: dict[str, dict] = {}
     for directory in directories:
         saved_path = directory / CONFIG_NAME
         if not saved_path.is_file():
             raise ValueError(f"--resume: no saved experiment config at {saved_path}")
-        saved = EvalConfig.model_validate_json(saved_path.read_bytes())
-        previous = saved.model_dump(mode="json", exclude=OPERATIONAL_FIELDS)
-        changed = sorted(key for key in expected if expected[key] != previous[key])
+        # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
+        previous = snapshot.dump_python(snapshot.validate_json(saved_path.read_bytes()), exclude=IGNORED_FIELDS)
+        changed = sorted(
+            key
+            for key in expected.keys() | previous.keys()
+            if key not in expected or key not in previous or expected[key] != previous[key]
+        )
         if changed:
             raise ValueError(
                 f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
