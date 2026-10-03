@@ -39,19 +39,22 @@ class TrainSource:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
-        """Report a finalized group and return whether it should train."""
+    def on_result(self, group: list[vf.Episode], *, observe: bool = True, count: bool = True) -> bool:
+        """Report a finalized group and return whether it should train;
+        ``count`` adds the decision to the admission rate."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = episode_env_name(group[0])
-        admitted = self.curricula[env_name].on_result(group)
+        admitted = self.curricula[env_name].on_result(group, observe=observe)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
-        if admitted:
-            self._admitted[env_name] += 1
-        else:
-            self._rejected[env_name] += 1
+        if count:
+            (self._admitted if admitted else self._rejected)[env_name] += 1
         return admitted
+
+    def observe(self, group: list[vf.Episode]) -> None:
+        """Report a group to its curriculum's sampler without gating it."""
+        self.curricula[episode_env_name(group[0])].observe(group)
 
     def metrics(self) -> dict[str, float]:
         metrics: dict[str, float] = {}
