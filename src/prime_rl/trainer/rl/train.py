@@ -245,6 +245,8 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            cp_rank=parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0,
+            cp_size=parallel_dims.cp,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
@@ -398,7 +400,8 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
-            if sampling_mask is not None:
+            payload_cp_window = micro_batch["payload_cp_window"]
+            if sampling_mask is not None and not payload_cp_window:
                 # Sampling masks ride at the sampled token's own position (like inference
                 # logprobs); shift to align with the label each position predicts.
                 sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
@@ -421,9 +424,9 @@ def train(config: TrainerConfig):
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None and not defer_vlm_cp_to_model:
+                if routed_experts is not None and not defer_vlm_cp_to_model and not payload_cp_window:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-                if sampling_mask is not None:
+                if sampling_mask is not None and not payload_cp_window:
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
