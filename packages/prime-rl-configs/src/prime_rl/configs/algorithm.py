@@ -209,7 +209,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
     length_weighted_baseline: bool = False
-    """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns; falls back to the plain mean when the group has no trainable tokens."""
+    """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):
