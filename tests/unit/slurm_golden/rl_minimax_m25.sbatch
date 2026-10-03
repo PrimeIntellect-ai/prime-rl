@@ -174,8 +174,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+
     INFER_NODE_RANK=$SLURM_PROCID
-    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -250,8 +252,7 @@ launch_router() {
     "${cmd[@]}" >> "$log" 2>&1 &
 }
 
-
-# Start the single global router on inference node 0 (external LB across all per-rank endpoints)
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "sticky_least_loaded" "$LOG_DIR/inference/router.log"
     fi
@@ -262,7 +263,6 @@ launch_router() {
     # them) rooted on the replica-head DP coordinator. data_parallel_address is
     # per-node, not per-rank: every rank on the head reaches the coordinator via the
     # head LOCAL_IP, ranks on other nodes via the head hostname (matches the P/D path).
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
     INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi

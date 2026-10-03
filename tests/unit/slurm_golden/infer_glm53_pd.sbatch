@@ -16,17 +16,21 @@ set -e
 # Configs
 export NUM_NODES=6
 export GPUS_PER_NODE=8
+export NUM_INFER_NODES=6
+export NODES_PER_INFER_REPLICA=6
+export NUM_INFER_REPLICAS=1
+export ROUTER_PORT=8000
+export INFERENCE_TP=1
+export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+export INFERENCE_DATA_PARALLEL_RPC_PORT=13345
 export NUM_PREFILL_NODES=4
 export NUM_DECODE_NODES=2
 export NUM_PREFILL_REPLICAS=1
 export NUM_DECODE_REPLICAS=1
-export NODES_PER_REPLICA=$((NUM_PREFILL_NODES + NUM_DECODE_NODES))
 export NODES_PER_PREFILL_REPLICA=4
 export NODES_PER_DECODE_REPLICA=2
 export PREFILL_PORT=8100
 export DECODE_PORT=8200
-export ROUTER_PORT=8000
-export RPC_PORT=13345
 
 # Paths
 export PROJECT_DIR=/project
@@ -51,26 +55,38 @@ uv sync --all-extras --all-packages
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
-# Single global router on node 0 fronts every per-rank endpoint.
-INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+echo "HOSTNAMES=${HOSTNAMES[@]}"
+INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
+INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
+ADMIN_URLS=""
 ROUTER_ARGS=""
-# External-LB: one --prefill/--decode endpoint per DP rank (PORT + k) on each node.
-for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-    host="${HOSTNAMES[$p]}"
-    for ((k=0; k<8; k++)); do
-        ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+# External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
+for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
+    replica_base=$((r * NODES_PER_INFER_REPLICA))
+    for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+        host="${INFER_HOSTS[$((replica_base + p))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
+            ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+        done
     done
-done
-for ((d=0; d<NUM_DECODE_NODES; d++)); do
-    host="${HOSTNAMES[$((NUM_PREFILL_NODES + d))]}"
-    for ((k=0; k<8; k++)); do
-        ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+    for ((d=0; d<NUM_DECODE_NODES; d++)); do
+        host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
+            ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+        done
     done
 done
 export INFER_URLS
+export ADMIN_URLS
 export ROUTER_ARGS
-echo "HOSTNAMES=${HOSTNAMES[@]}"
+echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
+echo "ADMIN_URLS=${ADMIN_URLS}"
 
 
 
@@ -131,9 +147,16 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
     [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
+
+    # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
+    if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
+        mkdir -p /tmp/deepep_build/nvshmem
+        ln -sfn "$OUTPUT_DIR/nvshmem/lib" /tmp/deepep_build/nvshmem/lib
+    fi
+
     INFER_NODE_RANK=$SLURM_PROCID
-    LOCAL_IP=$(hostname -I | awk "{print \$1}")
-    # Inference env vars: launcher defaults + [inference.env_vars]
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -142,7 +165,15 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export VLLM_ENGINE_READY_TIMEOUT_S="4200"
     export UCX_TLS="all"
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
+
+    echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+
+    CONFIG_PATH="$CONFIG_DIR/inference.json"
 
 # rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,
 # the target of the top-level inference.log symlink) so it captures real server output;
@@ -200,15 +231,8 @@ launch_router() {
     "${cmd[@]}" >> "$log" 2>&1 &
 }
 
+    # PD disaggregated: NIXL KV transfer + role-based inference
 
-# NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
-    if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
-        mkdir -p /tmp/deepep_build/nvshmem
-        ln -sfn "$OUTPUT_DIR/nvshmem/lib" /tmp/deepep_build/nvshmem/lib
-    fi
-
-    # Reconstruct hostnames array
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
     # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
     # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
@@ -230,7 +254,6 @@ launch_router() {
     [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
     export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
-
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
@@ -239,23 +262,16 @@ launch_router() {
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
-    DP_PER_NODE=8
-    TP=$((GPUS_PER_NODE / DP_PER_NODE))
-
-    # Determine outer replica (P/D pair) and role
-    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_REPLICA))
-    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_REPLICA))
-    REPLICA_BASE=$((REPLICA_IDX * NODES_PER_REPLICA))
+    REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
 
     if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
-        # ── Prefill node ──
         ROLE="prefill"
         SUB_REPLICA=$((RANK_IN_REPLICA / NODES_PER_PREFILL_REPLICA))
         ROLE_RANK=$((RANK_IN_REPLICA % NODES_PER_PREFILL_REPLICA))
-        DP=$((NODES_PER_PREFILL_REPLICA * DP_PER_NODE))
+        DP=$((NODES_PER_PREFILL_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$PREFILL_PORT
+        START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
-
         # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
         # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
         export VLLM_USE_BREAKABLE_CUDAGRAPH=0
@@ -264,24 +280,23 @@ launch_router() {
 
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
     else
-        # ── Decode node ──
         export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
         ROLE_RANK=$((RANK_IN_DECODE % NODES_PER_DECODE_REPLICA))
-        DP=$((NODES_PER_DECODE_REPLICA * DP_PER_NODE))
+        DP=$((NODES_PER_DECODE_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$DECODE_PORT
+        START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
-
 
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
     fi
 
-    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
-        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+    echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
+        | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
-    # Start the single global router on node 0 (external LB across all per-rank endpoints)
+    # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "sticky_least_loaded" "$LOG_DIR/inference/router.log"
     fi
@@ -291,11 +306,11 @@ launch_router() {
     # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
     # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
-    for k in $(seq 0 $((DP_PER_NODE - 1))); do
-        GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
-        RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
+    for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
+        GLOBAL_RANK=$((START_RANK + k))
+        RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 
 # Wait for the first background job to exit and propagate its exit code. This

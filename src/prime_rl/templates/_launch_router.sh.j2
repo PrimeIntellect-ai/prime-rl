@@ -1,5 +1,5 @@
-{# Shared launch helper for the single global router, included once per template
-   and called by inference node 0. The router backend (vllm-router vs llm-d
+{# Shared launch helper for the single global router, included by
+   _inference_plane.sh.j2 launch() (which sets HOSTNAMES) and called by inference node 0. The router backend (vllm-router vs llm-d
    EPP+Envoy) is chosen here via router.type, so the call sites stay
    router-agnostic. llm-d endpoint discovery enumerates every inference node:
    all nodes for regular mode; for disaggregated mode all prefill nodes across
@@ -13,11 +13,10 @@ launch_router() {
     export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
     local LLMD_DIR="$LOG_DIR/inference/llmd"
     mkdir -p "$LLMD_DIR"
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 {%- if is_disaggregated %}
 {%- set ep_disaggregated = true %}
-{%- set ep_num_prefill = num_prefill_nodes * (num_infer_replicas | default(1)) %}
-{%- set ep_num_decode = num_decode_nodes * (num_infer_replicas | default(1)) %}
+{%- set ep_num_prefill = num_prefill_nodes * num_infer_replicas %}
+{%- set ep_num_decode = num_decode_nodes * num_infer_replicas %}
 {%- set ep_dp = dp_per_node %}
 {%- set ep_prefill_port = prefill_port %}
 {%- set ep_sidecar_port = router.decode_sidecar_port %}
@@ -27,7 +26,7 @@ LLMD_EOF
     cat > "$LLMD_DIR/endpoints.yaml" <<LLMD_EOF
 {% include 'llmd/endpoints.yaml.j2' %}
 LLMD_EOF
-    local node=0 ip reps=${NUM_INFER_REPLICAS:-1} span=${NODES_PER_INFER_REPLICA:-$((NUM_PREFILL_NODES + NUM_DECODE_NODES))}
+    local node=0 ip reps=$NUM_INFER_REPLICAS span=$NODES_PER_INFER_REPLICA
     for ((rr=0; rr<reps; rr++)); do
         for ((p=0; p<NUM_PREFILL_NODES; p++)); do
             ip=$(getent hosts "${HOSTNAMES[$((rr * span + p))]}" | awk "{print \$1}")
@@ -42,7 +41,7 @@ LLMD_EOF
     done
 {%- else %}
 {%- set ep_disaggregated = false %}
-{%- set ep_num_nodes = num_infer_nodes | default(num_nodes) %}
+{%- set ep_num_nodes = num_infer_nodes %}
 {%- set ep_dp = dp_per_node %}
 {%- set ep_backend_port = backend_port %}
     cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF

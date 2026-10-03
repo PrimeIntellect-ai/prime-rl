@@ -16,10 +16,15 @@ set -e
 # Configs
 export NUM_NODES=2
 export GPUS_PER_NODE=8
-
+export NUM_INFER_NODES=2
+export NODES_PER_INFER_REPLICA=1
+export NUM_INFER_REPLICAS=2
 export ROUTER_PORT=8000
+export INFERENCE_TP=4
+export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+export INFERENCE_DATA_PARALLEL_RPC_PORT=13345
 export BACKEND_PORT=8100
-export RPC_PORT=13345
+export INFERENCE_ENABLE_EXPERT_PARALLEL=1
 
 # Paths
 export PROJECT_DIR=/project
@@ -44,20 +49,28 @@ uv sync --all-extras --all-packages
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
+echo "HOSTNAMES=${HOSTNAMES[@]}"
+INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 
-# External LB: one router on node 0; one endpoint per DP rank (BACKEND_PORT + dp_local) on every node.
-INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
-DP_PER_NODE=2
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
+INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
+ADMIN_URLS=""
 ROUTER_ARGS=""
-for host in ${HOSTNAMES[@]}; do
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + d))"
+# External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
     done
 done
 export INFER_URLS
+export ADMIN_URLS
 export ROUTER_ARGS
-echo "HOSTNAMES=${HOSTNAMES[@]}"
+echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
+echo "ADMIN_URLS=${ADMIN_URLS}"
 
 
 
@@ -118,9 +131,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
     [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
+
+
     INFER_NODE_RANK=$SLURM_PROCID
-    LOCAL_IP=$(hostname -I | awk "{print \$1}")
-    # Inference env vars: launcher defaults + [inference.env_vars]
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -129,7 +144,15 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export VLLM_ENGINE_READY_TIMEOUT_S="4200"
     export UCX_TLS="all"
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
+
+    echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+
+    CONFIG_PATH="$CONFIG_DIR/inference.json"
 
 # rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,
 # the target of the top-level inference.log symlink) so it captures real server output;
@@ -187,29 +210,27 @@ launch_router() {
     "${cmd[@]}" >> "$log" 2>&1 &
 }
 
-
-
-    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
-        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
-
-    DP_PER_NODE=2
-    TP=$((GPUS_PER_NODE / DP_PER_NODE))
-    EP=1
-
-    # Start the single global router on node 0 (balances across per-rank endpoints — no intra-node DP header)
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "sticky_least_loaded" "$LOG_DIR/inference/router.log"
     fi
 
-    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
-    # each pinned to its TP slice of GPUs. Each node is an independent replica, so any MoE EP
-    # group is node-local (rendezvous on LOCAL_IP); dense models run independent engines.
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
+    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
+    # each pinned to its TP slice of GPUs; the router balances across the per-rank
+    # endpoints. For MoE the ranks form one external-LB DP group (EP all2all spans
+    # them) rooted on the replica-head DP coordinator. data_parallel_address is
+    # per-node, not per-rank: every rank on the head reaches the coordinator via the
+    # head LOCAL_IP, ranks on other nodes via the head hostname (matches the P/D path).
+    REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
+    INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
+    for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
+        RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
-            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
+            GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
             # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
             # independent single-engine servers. vLLM rejects the external-LB DP

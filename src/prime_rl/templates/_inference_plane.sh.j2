@@ -1,0 +1,249 @@
+{#- The inference plane shared by inference.sbatch.j2 and multi_node_rl.sbatch.j2, imported
+    `with context`. The inference nodes are the first NUM_INFER_NODES hosts, grouped into
+    NUM_INFER_REPLICAS replicas of NODES_PER_INFER_REPLICA nodes. Every node runs one external-LB
+    vLLM server per DP rank (P/D disaggregated or regular), and inference node 0 runs the single
+    global router in front of all of them. Also used by multi_node_sft.sbatch.j2 for online eval.
+
+    Required context: router, router_port, backend_port, inference_tp, dp_per_node,
+    inference_data_parallel_rpc_port, inference_enable_expert_parallel, num_infer_nodes,
+    num_infer_replicas, inference_env_vars. P/D (is_disaggregated) also needs num_prefill_nodes,
+    num_decode_nodes, num_prefill_replicas, num_decode_replicas, prefill_nodes_per_replica,
+    decode_nodes_per_replica, prefill_port, decode_port, prefill_env_vars, decode_env_vars,
+    prefill_vllm_extra_json, decode_vllm_extra_json. KV offload (kv_offload, kv_offload_mooncake)
+    also needs kv_offload_cpu_bytes, kv_offload_disk_path, kv_offload_device_name. The calling
+    template exports NUM_INFER_NODES, NODES_PER_INFER_REPLICA, NUM_INFER_REPLICAS, GPUS_PER_NODE,
+    HOSTNAMES_STR, CONFIG_DIR and LOG_DIR. -#}
+
+{#- Inference exports for the batch script header. Requires GPUS_PER_NODE. #}
+{% macro exports() -%}
+export ROUTER_PORT={{ router_port }}
+export INFERENCE_TP={{ inference_tp }}
+export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
+{% if is_disaggregated -%}
+export NUM_PREFILL_NODES={{ num_prefill_nodes }}
+export NUM_DECODE_NODES={{ num_decode_nodes }}
+export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
+export NUM_DECODE_REPLICAS={{ num_decode_replicas }}
+export NODES_PER_PREFILL_REPLICA={{ prefill_nodes_per_replica }}
+export NODES_PER_DECODE_REPLICA={{ decode_nodes_per_replica }}
+export PREFILL_PORT={{ prefill_port }}
+export DECODE_PORT={{ decode_port }}
+{%- if router.type == "llm-d" %}
+export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
+{%- endif %}
+{%- else -%}
+export BACKEND_PORT={{ backend_port }}
+export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
+{%- endif %}
+{%- endmacro %}
+
+{#- Router endpoints and URLs, computed on the batch node. Requires HOSTNAMES. #}
+{% macro urls() -%}
+INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
+INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
+ADMIN_URLS=""
+ROUTER_ARGS=""
+{% if is_disaggregated -%}
+# External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
+for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
+    replica_base=$((r * NODES_PER_INFER_REPLICA))
+    for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+        host="${INFER_HOSTS[$((replica_base + p))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
+            ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+        done
+    done
+    for ((d=0; d<NUM_DECODE_NODES; d++)); do
+        host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
+            ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+        done
+    done
+done
+{%- else -%}
+# External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
+    done
+done
+{%- endif %}
+export INFER_URLS
+export ADMIN_URLS
+export ROUTER_ARGS
+echo "INFER_HOSTS=${INFER_HOSTS[*]}"
+echo "INFER_URLS=${INFER_URLS}"
+echo "ADMIN_URLS=${ADMIN_URLS}"
+{%- endmacro %}
+
+{#- Per-node launch, run inside the srun body on every inference node. #}
+{% macro launch() %}
+    INFER_NODE_RANK=$SLURM_PROCID
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
+{%- for key, value in inference_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
+
+{%- if kv_offload %}
+    ulimit -l unlimited
+{%- endif %}
+{%- if kv_offload_mooncake %}
+{% include "_mooncake_store.sh.j2" %}
+{%- endif %}
+
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
+
+    echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+
+    CONFIG_PATH="$CONFIG_DIR/inference.json"
+{% include '_launch_rank.sh.j2' %}
+{% include '_launch_router.sh.j2' %}
+
+{%- if is_disaggregated %}
+    # PD disaggregated: NIXL KV transfer + role-based inference
+
+    # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
+    # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
+    # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
+    GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
+    if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
+    # Enumerate RDMA NICs for UCX/NIXL from sysfs (ibv_devices is not on the job
+    # PATH). Prefer InfiniBand ports and fall back to RoCE: "all" would also pick
+    # up non-functional devices (e.g. an Ethernet bond UCX cannot open), which
+    # fails NIXL backend creation. Hosts without RDMA devices keep "all" (TCP).
+    rdma_ports() {
+        for port in /sys/class/infiniband/*/ports/*; do
+            [ "$(cat "$port/link_layer" 2>/dev/null)" = "$1" ] || continue
+            grep -q ACTIVE "$port/state" 2>/dev/null || continue
+            dev=${port%/ports/*}
+            echo "$(basename "$dev"):$(basename "$port")"
+        done | paste -sd,
+    }
+    UCX_NET_DEVICES=$(rdma_ports InfiniBand)
+    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
+    export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+    export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
+    export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+
+    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
+    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+
+    DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+
+    REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
+
+    if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
+        ROLE="prefill"
+        SUB_REPLICA=$((RANK_IN_REPLICA / NODES_PER_PREFILL_REPLICA))
+        ROLE_RANK=$((RANK_IN_REPLICA % NODES_PER_PREFILL_REPLICA))
+        DP=$((NODES_PER_PREFILL_REPLICA * INFERENCE_DP_LOCAL))
+        PORT=$PREFILL_PORT
+        START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
+        # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
+        # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
+        export VLLM_USE_BREAKABLE_CUDAGRAPH=0
+{% for key, value in prefill_env_vars.items() %}
+        export {{ key }}="{{ value }}"
+{% endfor %}
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
+    else
+        export UCX_NET_DEVICES=mlx5_0:1
+        ROLE="decode"
+        RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
+        SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
+        ROLE_RANK=$((RANK_IN_DECODE % NODES_PER_DECODE_REPLICA))
+        DP=$((NODES_PER_DECODE_REPLICA * INFERENCE_DP_LOCAL))
+        PORT=$DECODE_PORT
+        START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
+        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
+{% for key, value in decode_env_vars.items() %}
+        export {{ key }}="{{ value }}"
+{% endfor %}
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
+    fi
+
+    echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
+        | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+
+    # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+    fi
+{%- if router.type == "llm-d" %}
+    # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
+    # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
+    # Every decode node fronts its own local ranks, so launch on each (not just the
+    # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
+    if [ "$ROLE" = "decode" ]; then
+        SIDECAR_LOG="$LOG_DIR/inference/sidecar_${INFER_NODE_RANK}.log"
+        echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        pd-sidecar \
+            --port $DECODE_SIDECAR_PORT \
+            --vllm-port $DECODE_PORT \
+            --kv-connector nixlv2 \
+            --secure-proxy=false \
+            --enable-ssrf-protection=false \
+            --inference-pool prime-rl \
+            --data-parallel-size $INFERENCE_DP_LOCAL \
+            >> $SIDECAR_LOG 2>&1 &
+    fi
+{%- endif %}
+
+    # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
+    # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
+    # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
+    # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
+    if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+    for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
+        GLOBAL_RANK=$((START_RANK + k))
+        RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
+        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+    done
+{%- else %}
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+    fi
+
+    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
+    # each pinned to its TP slice of GPUs; the router balances across the per-rank
+    # endpoints. For MoE the ranks form one external-LB DP group (EP all2all spans
+    # them) rooted on the replica-head DP coordinator. data_parallel_address is
+    # per-node, not per-rank: every rank on the head reaches the coordinator via the
+    # head LOCAL_IP, ranks on other nodes via the head hostname (matches the P/D path).
+    REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
+    INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
+    for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
+        RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
+        RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
+        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
+            GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        else
+            # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
+            # independent single-engine servers. vLLM rejects the external-LB DP
+            # args when data_parallel_size == 1; enable_expert_parallel in the
+            # inference config alone shards experts across the TP group.
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
+        fi
+    done
+{%- endif %}
+{%- endmacro %}

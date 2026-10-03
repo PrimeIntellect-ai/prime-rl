@@ -1,4 +1,4 @@
-{# Shared external-LB vLLM launch helper, included once per template and called
+{# Shared external-LB vLLM launch helper, included by _inference_plane.sh.j2 launch() and called
    from every per-rank launch site (multi-node and disaggregated).
    One vLLM API server per DP rank, pinned to its GPU slice. #}
 # rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,

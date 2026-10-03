@@ -190,8 +190,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+
     INFER_NODE_RANK=$SLURM_PROCID
-    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -266,9 +268,7 @@ launch_router() {
     "${cmd[@]}" >> "$log" 2>&1 &
 }
 
-
-# PD disaggregated: NIXL KV transfer + role-based inference
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # PD disaggregated: NIXL KV transfer + role-based inference
 
     # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
     # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave

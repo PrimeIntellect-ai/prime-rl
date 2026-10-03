@@ -191,8 +191,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+
     INFER_NODE_RANK=$SLURM_PROCID
-    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -281,7 +283,6 @@ launch_router() {
     export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
     local LLMD_DIR="$LOG_DIR/inference/llmd"
     mkdir -p "$LLMD_DIR"
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF
 
 apiVersion: inference.networking.x-k8s.io/v1alpha1
@@ -458,7 +459,7 @@ endpoints:
       llm-d.ai/role: decode
 
 LLMD_EOF
-    local node=0 ip reps=${NUM_INFER_REPLICAS:-1} span=${NODES_PER_INFER_REPLICA:-$((NUM_PREFILL_NODES + NUM_DECODE_NODES))}
+    local node=0 ip reps=$NUM_INFER_REPLICAS span=$NODES_PER_INFER_REPLICA
     for ((rr=0; rr<reps; rr++)); do
         for ((p=0; p<NUM_PREFILL_NODES; p++)); do
             ip=$(getent hosts "${HOSTNAMES[$((rr * span + p))]}" | awk "{print \$1}")
@@ -578,9 +579,7 @@ LLMD_EOF
     envoy -c "$LLMD_DIR/envoy.yaml" >> "$log" 2>&1 &
 }
 
-
-# PD disaggregated: NIXL KV transfer + role-based inference
-    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # PD disaggregated: NIXL KV transfer + role-based inference
 
     # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
     # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave

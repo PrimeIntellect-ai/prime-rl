@@ -1,3 +1,4 @@
+{% import '_inference_plane.sh.j2' as plane with context -%}
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
@@ -30,10 +31,9 @@ export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if online_eval -%}
-export ROUTER_PORT={{ router_port }}
-export BACKEND_PORT={{ backend_port }}
-export RPC_PORT={{ data_parallel_rpc_port }}
-export DP_PER_NODE={{ dp_per_node }}
+export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
+export NUM_INFER_REPLICAS={{ num_infer_replicas }}
+{{ plane.exports() }}
 {%- endif %}
 
 # Paths
@@ -84,23 +84,8 @@ echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
 {% if online_eval -%}
-INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+{{ plane.urls() }}
 export HOSTNAMES_STR="${INFER_HOSTS[*]}"
-INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
-ADMIN_URLS=""
-ROUTER_ARGS=""
-for host in ${INFER_HOSTS[@]}; do
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + d))/v1"
-        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + d))"
-    done
-done
-export INFER_URLS
-export ADMIN_URLS
-export ROUTER_ARGS
-echo "INFER_HOSTS=${INFER_HOSTS[*]}"
-echo "INFER_URLS=${INFER_URLS}"
-echo "ADMIN_URLS=${ADMIN_URLS}"
 {%- endif %}
 
 # Install environment
@@ -155,36 +140,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 {% if online_eval -%}
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
-    INFER_NODE_RANK=$SLURM_PROCID
-    LOCAL_IP=$(hostname -I | awk "{print \$1}")
-    CONFIG_PATH=$CONFIG_DIR/inference.json
-
-    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
-{%- for key, value in inference_env_vars.items() %}
-    export {{ key }}="{{ value }}"
-{%- endfor %}
-
-{% include '_launch_rank.sh.j2' %}
-{% include '_launch_router.sh.j2' %}
-
-    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
-        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
-
-    TP=$((GPUS_PER_NODE / DP_PER_NODE))
-    EP={{ "1" if enable_expert_parallel else "0" }}
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
-        RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
-            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
-        else
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
-        fi
-    done
+{{ plane.launch() }}
 
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
 {%- if eval_env_names %}
 
         mkdir -p $LOG_DIR/envs/eval

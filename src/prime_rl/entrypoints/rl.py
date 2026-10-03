@@ -486,59 +486,15 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
-    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
-        infer_deploy = config.inference.deployment
-
-        script = template.render(
-            **config.slurm.template_vars,
-            is_disaggregated=True,
-            run_name=config.run.name,
-            config_dir=config_dir,
-            log_dir=log_dir,
-            output_dir=config.run_dir,
-            launcher_dir=get_launcher_dir(config.run_dir),
-            launcher_log_dir=get_launcher_log_dir(config.run_dir),
-            num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
-            nodes_per_infer_replica=infer_deploy.num_nodes,
-            num_infer_replicas=config.deployment.num_infer_replicas,
-            num_prefill_nodes=infer_deploy.num_prefill_nodes,
-            num_decode_nodes=infer_deploy.num_decode_nodes,
-            prefill_nodes_per_replica=infer_deploy.prefill_nodes_per_replica,
-            decode_nodes_per_replica=infer_deploy.decode_nodes_per_replica,
-            num_prefill_replicas=infer_deploy.num_prefill_replicas,
-            num_decode_replicas=infer_deploy.num_decode_replicas,
-            gpus_per_node=config.deployment.gpus_per_node,
-            router=config.inference.router,
-            router_port=config.inference.server.port,
-            prefill_port=infer_deploy.prefill_port,
-            decode_port=infer_deploy.decode_port,
-            inference_tp=config.inference.vllm.tensor_parallel_size,
-            inference_data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port,
-            use_deep_gemm=config.inference.use_deep_gemm,
-            prefill_env_vars=infer_deploy.prefill_env_vars,
-            decode_env_vars=infer_deploy.decode_env_vars,
-            trainer_env_vars=trainer_env_vars,
-            orchestrator_env_vars=orchestrator_env_vars,
-            inference_env_vars=inference_env_vars,
-            prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
-            decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
-            dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
-            **mooncake_vars,
-            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
-            ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
-            orchestrator_on_inference=config.deployment.orchestrator_on_inference,
-            train_env_names=train_env_names,
-            eval_env_names=eval_env_names,
-            **modelexpress_vars,
-        )
     else:
-        script = template.render(
+        inference = config.inference
+        template_vars = dict(
             **config.slurm.template_vars,
+            **mooncake_vars,
+            **modelexpress_vars,
             is_disaggregated=False,
             run_name=config.run.name,
-            config_dir=config_dir,  # TODO: should prob have each subconfig path separately
+            config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
@@ -548,21 +504,13 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router=config.inference.router if config.inference else VllmRouterConfig(),
-            router_port=config.inference.server.port if config.inference else 8000,
-            infer_nodes_per_replica=config.deployment.infer_nodes_per_replica,
-            backend_port=config.inference.backend_port if config.inference else 8100,
-            inference_tp=config.inference.vllm.tensor_parallel_size if config.inference else 1,
-            inference_enable_expert_parallel=config.inference.vllm.enable_expert_parallel
-            if config.inference
-            else False,
-            inference_data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port
-            if config.inference
-            else 29600,
-            dp_per_node=(config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size)
-            if config.inference
-            else 1,
-            **mooncake_vars,
+            router=inference.router if inference else VllmRouterConfig(),
+            router_port=inference.server.port if inference else 8000,
+            backend_port=inference.backend_port if inference else 8100,
+            inference_tp=inference.vllm.tensor_parallel_size if inference else 1,
+            inference_enable_expert_parallel=inference.vllm.enable_expert_parallel if inference else False,
+            inference_data_parallel_rpc_port=inference.vllm.data_parallel_rpc_port if inference else 29600,
+            dp_per_node=config.deployment.gpus_per_node // inference.vllm.tensor_parallel_size if inference else 1,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
@@ -572,8 +520,26 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
-            **modelexpress_vars,
         )
+        if inference is not None and inference.deployment.type == "disaggregated":
+            infer_deploy = inference.deployment
+            template_vars.update(
+                is_disaggregated=True,
+                num_prefill_nodes=infer_deploy.num_prefill_nodes,
+                num_decode_nodes=infer_deploy.num_decode_nodes,
+                prefill_nodes_per_replica=infer_deploy.prefill_nodes_per_replica,
+                decode_nodes_per_replica=infer_deploy.decode_nodes_per_replica,
+                num_prefill_replicas=infer_deploy.num_prefill_replicas,
+                num_decode_replicas=infer_deploy.num_decode_replicas,
+                prefill_port=infer_deploy.prefill_port,
+                decode_port=infer_deploy.decode_port,
+                use_deep_gemm=inference.use_deep_gemm,
+                prefill_env_vars=infer_deploy.prefill_env_vars,
+                decode_env_vars=infer_deploy.decode_env_vars,
+                prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
+                decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
+            )
+        script = template.render(**template_vars)
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)

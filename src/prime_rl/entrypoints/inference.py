@@ -69,6 +69,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
+    num_nodes = getattr(config.deployment, "num_nodes", 1)
 
     offload = config.kv_cache_offload
     is_mooncake = offload is not None and offload.type == "mooncake"
@@ -82,7 +83,10 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,
-        num_nodes=getattr(config.deployment, "num_nodes", 1),
+        num_nodes=num_nodes,
+        num_infer_nodes=num_nodes,
+        inference_tp=config.vllm.tensor_parallel_size,
+        inference_data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
         port=config.server.port,
         router=config.router,
         router_port=config.server.port,
@@ -107,19 +111,22 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
+            # One P/D replica spans every node.
+            nodes_per_infer_replica=num_nodes,
+            num_infer_replicas=1,
         )
     elif is_multi_node:
         template_vars.update(
             backend_port=config.backend_port,
-            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
-            enable_expert_parallel=config.vllm.enable_expert_parallel,
-            infer_nodes_per_replica=config.deployment.num_nodes,
+            inference_enable_expert_parallel=config.vllm.enable_expert_parallel,
+            # Every node is an independent replica.
+            nodes_per_infer_replica=1,
+            num_infer_replicas=num_nodes,
         )
 
     script = template.render(**template_vars)

@@ -17,10 +17,14 @@ set -e
 export NUM_TRAIN_NODES=2
 export NUM_INFER_NODES=2
 export GPUS_PER_NODE=8
+export NODES_PER_INFER_REPLICA=1
+export NUM_INFER_REPLICAS=2
 export ROUTER_PORT=8000
+export INFERENCE_TP=1
+export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
+export INFERENCE_DATA_PARALLEL_RPC_PORT=13345
 export BACKEND_PORT=8100
-export RPC_PORT=13345
-export DP_PER_NODE=8
+export INFERENCE_ENABLE_EXPERT_PARALLEL=0
 
 # Paths
 export PROJECT_DIR=/project
@@ -59,14 +63,18 @@ echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
-export HOSTNAMES_STR="${INFER_HOSTS[*]}"
+
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
 INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
 ADMIN_URLS=""
 ROUTER_ARGS=""
-for host in ${INFER_HOSTS[@]}; do
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + d))/v1"
-        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + d))"
+# External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
     done
 done
 export INFER_URLS
@@ -75,6 +83,7 @@ export ROUTER_ARGS
 echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
 echo "ADMIN_URLS=${ADMIN_URLS}"
+export HOSTNAMES_STR="${INFER_HOSTS[*]}"
 
 # Install environment
 cd $PROJECT_DIR
@@ -118,11 +127,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
-    INFER_NODE_RANK=$SLURM_PROCID
-    LOCAL_IP=$(hostname -I | awk "{print \$1}")
-    CONFIG_PATH=$CONFIG_DIR/inference.json
 
-    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
+    INFER_NODE_RANK=$SLURM_PROCID
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    # Inference env vars: launcher defaults + config env_vars
     export CUDA_DEVICE_ORDER="PCI_BUS_ID"
     export PYTHONUNBUFFERED="1"
     export OMP_NUM_THREADS="1"
@@ -131,7 +139,15 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export VLLM_ENGINE_READY_TIMEOUT_S="4200"
     export UCX_TLS="all"
+    LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
+
+    echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+
+    CONFIG_PATH="$CONFIG_DIR/inference.json"
 
 # rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,
 # the target of the top-level inference.log symlink) so it captures real server output;
@@ -189,25 +205,37 @@ launch_router() {
     "${cmd[@]}" >> "$log" 2>&1 &
 }
 
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "sticky_least_loaded" "$LOG_DIR/inference/router.log"
+    fi
 
-    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
-        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
-
-    TP=$((GPUS_PER_NODE / DP_PER_NODE))
-    EP=0
-    for ((d=0; d<DP_PER_NODE; d++)); do
-        RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
+    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
+    # each pinned to its TP slice of GPUs; the router balances across the per-rank
+    # endpoints. For MoE the ranks form one external-LB DP group (EP all2all spans
+    # them) rooted on the replica-head DP coordinator. data_parallel_address is
+    # per-node, not per-rank: every rank on the head reaches the coordinator via the
+    # head LOCAL_IP, ranks on other nodes via the head hostname (matches the P/D path).
+    REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
+    INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
+    for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
+        RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
-            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
+            GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
+            # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
+            # independent single-engine servers. vLLM rejects the external-LB DP
+            # args when data_parallel_size == 1; enable_expert_parallel in the
+            # inference config alone shards experts across the TP group.
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done
 
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "sticky_least_loaded" "$LOG_DIR/inference/router.log"
 
         mkdir -p $LOG_DIR/envs/eval
         uv run env-server @ $CONFIG_DIR/envs/eval/reverse-text.json \
