@@ -85,12 +85,13 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
     boundaries: graph nodes dedup identical prefixes, so the prefix is the leading
     already-seen nodes on the call's path, extended token-wise into the first unseen
     node against its seen siblings, and not beyond it. Calls to non-policy models carry
-    no token ids and are priced at zero."""
+    no token ids: they are priced at zero and do not seed the prefix cache."""
     nodes = trace.nodes
     seen: set[int] = set()
     seen_children: dict[int | None, list[int]] = {}
     uncached = cached = output = 0
-    for call in sorted((c for c in trace.calls if c.node is not None), key=lambda c: c.time.start):
+    policy_calls = (c for c in trace.calls if c.node is not None and nodes[c.node].token_ids)
+    for call in sorted(policy_calls, key=lambda c: c.time.start):
         path = [call.node]
         while (parent := nodes[path[-1]].parent) is not None:
             path.append(parent)
