@@ -30,6 +30,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
+    reshard_module,
     setup_processor,
     setup_tokenizer,
     setup_model,
@@ -494,6 +495,10 @@ def train(config: SFTConfig):
         # optimizer step (so eval_on_start evaluates untrained weights)
         if run_validation_this_step:
             run_validation(progress.step)
+            # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
+            # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
+            # unsharded parameters. Reshard so clipping sees every gradient.
+            reshard_module(model)
 
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)

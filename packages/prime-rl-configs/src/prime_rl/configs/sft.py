@@ -85,6 +85,25 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
+class SFTColumnsConfig(BaseConfig):
+    """Dataset columns the trainer reads. Set a field to read a column under another name."""
+
+    messages: str = "messages"
+    """Column with the whole chat as a list of OpenAI chat messages."""
+
+    prompt: str = "prompt"
+    """Column with the prompt as a list of OpenAI chat messages, read with ``completion`` when a row has no messages."""
+
+    completion: str = "completion"
+    """Column with the completion as a list of OpenAI chat messages."""
+
+    tools: str = "tools"
+    """Column with the tool schemas in OpenAI function-calling format."""
+
+    renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -111,6 +130,9 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns that carry per-sample renderer arguments."""
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
@@ -245,6 +267,13 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def resolve_moe_router_dtype_auto(self):
+        """Resolve ``model.moe_router_dtype='auto'``: SFT defaults to bf16 routing, skipping the fp32 gate GEMM and its fp32 FSDP unit."""
+        if self.model.moe_router_dtype == "auto":
+            self.model.moe_router_dtype = "bfloat16"
+        return self
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):

@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 
 import pytest
@@ -485,3 +486,111 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+CUSTOM_RENDERER_SOURCE = """
+from typing import Literal
+
+from renderers.base import RenderedTokens
+from renderers.configs import BaseRendererConfig
+
+
+class EffortRendererConfig(BaseRendererConfig):
+    name: Literal["effort"] = "effort"
+    _template_fields = frozenset({"reasoning_effort"})
+
+    reasoning_effort: Literal["low", "high"] = "low"
+
+
+class EffortRenderer:
+    config_class = EffortRendererConfig
+
+    def __init__(self, tokenizer, config):
+        self.config = config
+
+    def render(self, messages, **kwargs):
+        return RenderedTokens(token_ids=[0, 1], message_indices=[-1, 0], sampled_mask=[False, True])
+
+    def get_stop_token_ids(self):
+        return [1]
+"""
+
+
+@pytest.fixture
+def custom_renderer_config(tmp_path):
+    from renderers import CustomRendererConfig
+
+    path = tmp_path / "effort_renderer.py"
+    path.write_text(CUSTOM_RENDERER_SOURCE)
+    return CustomRendererConfig(import_path=f"{path}:EffortRenderer")
+
+
+def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
+    resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config)
+
+    default = resolver({"messages": [], "reasoning_effort": None})
+    high = resolver({"messages": [], "reasoning_effort": "high"})
+
+    assert default.config.reasoning_effort == "low"
+    assert high.config.reasoning_effort == "high"
+    assert resolver({"messages": [], "reasoning_effort": "high"}) is high
+    with pytest.raises(ValueError):
+        resolver({"messages": [], "reasoning_effort": "medium"})
+
+
+def test_renderer_resolver_reads_mapped_columns(custom_renderer_config):
+    resolver = sft_data.RendererResolver(
+        tokenizer=None, config=custom_renderer_config, columns={"reasoning_effort": "effort"}
+    )
+
+    assert resolver({"effort": "high", "reasoning_effort": "low"}).config.reasoning_effort == "high"
+    assert resolver({"reasoning_effort": "high"}).config.reasoning_effort == "low"
+
+
+def test_renderer_resolver_rejects_renderer_columns_without_the_field():
+    from renderers import PrimeQwen3RendererConfig
+
+    resolver = sft_data.RendererResolver(tokenizer=None, config=PrimeQwen3RendererConfig())
+
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        resolver({"messages": [], "reasoning_effort": "high"})
+
+
+def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    dataset = Dataset.from_list([{"conversation": [{"role": "assistant", "content": "a0"}]}])
+
+    sample = next(
+        iter(SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(messages="conversation")))
+    )
+    assert sample["input_ids"] == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
+    assert sample["target_ids"] == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
+
+    with pytest.raises(ValueError, match="'messages' column"):
+        next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
+    with pytest.raises(ValueError, match="data.columns.prompt"):
+        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
+
+
+def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer):
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+    dataset = Dataset.from_list(
+        [{"messages": [{"role": "assistant", "content": "a0"}], "schemas": json.dumps(tools), "tools": []}]
+    )
+    seen: list = []
+
+    class RecordingRenderer:
+        def render(self, messages, tools=None, **kwargs):
+            seen.append(tools)
+            return dummy_renderer.render(messages)
+
+        def get_stop_token_ids(self):
+            return dummy_renderer.get_stop_token_ids()
+
+    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer())))
+    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
+
+    assert seen == [[], tools]

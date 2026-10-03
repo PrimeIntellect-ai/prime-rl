@@ -185,8 +185,10 @@ env.taskset.id = "math"
 group_size = 32  # this source's own value wins over the group's 16
 
 [orchestrator.eval.env]
-retries.max_retries = 3
-retries.include = ["ProviderError", "SandboxError"]
+retries.rules = [
+  {type = "ProviderError", max_retries = 3},
+  {type = "SandboxError", max_retries = 3},
+]
 timeout.episode = 7200
 
 [orchestrator.eval.select]  # evaluate 128 tasks of each taskset
