@@ -236,12 +236,21 @@ class AdminPlane:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: ClientConfig,
+    model_name: str,
+    *,
+    max_off_policy_steps: int | None = None,
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
-        return DynamoAdminPlane(client_config, model_name)
+        return DynamoAdminPlane(
+            client_config,
+            model_name,
+            max_off_policy_steps=max_off_policy_steps,
+        )
     return AdminPlane(client_config)
 
 
