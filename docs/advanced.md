@@ -137,7 +137,7 @@ With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is 
 enabled = ["gate_up", "qkv"]   # [] disables
 ```
 
-Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning, or fails at startup with `raise_on_fail = true`. Fusions are skipped when LoRA is enabled.
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning and is skipped. Fusions are skipped when LoRA is enabled.
 
 Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
 
