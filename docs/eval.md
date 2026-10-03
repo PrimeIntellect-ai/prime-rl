@@ -80,7 +80,7 @@ Every source's env server is spawned by the eval process unless the source sets 
 
 ## Resume
 
-An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes and the ones the interruption cut off run again.
+An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: saved episodes accepted by the source environment's `complete()` hook rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch), and only the rollouts still owed run. The default hook accepts `episode.ok`; environments can override it to define valid results. Rejected or malformed episodes, episodes whose completion hook raises, and the ones the interruption cut off run again.
 
 ```bash
 uv run eval @ eval.toml --run.name my-eval

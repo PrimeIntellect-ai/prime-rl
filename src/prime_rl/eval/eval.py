@@ -29,7 +29,10 @@ class Eval:
         landed: list[vf.WireEpisode] = []
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
-            landed = resume.take_landed(config.run_dir)
+            envs = {source.resolved_name: vf.load_environment(source.env) for source in config.source}
+            landed = resume.take_landed(
+                config.run_dir, lambda episode: envs[episode.env.name or episode.env.id].complete(episode)
+            )
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
