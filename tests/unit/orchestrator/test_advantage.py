@@ -151,9 +151,11 @@ def _scalar(episode: vf.Episode) -> float:
     raise AssertionError("episode has no trainable token")
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
+def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), clients=None)
+    algo = GRPOAlgorithm(
+        GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline), clients=None
+    )
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
@@ -179,6 +181,18 @@ def test_grpo_plain_mean():
 def test_grpo_singleton_group_is_zero():
     # A group of size 1 has reward == mean, so its advantage is 0.
     assert _grpo([_build_episode(0.7, sampled_lengths=[2])]) == pytest.approx([0.0], abs=1e-6)
+
+
+def test_grpo_length_weighted_baseline():
+    # L = [10 + 20 (two turns, observation excluded), 10]: b = (30 * 1 + 10 * 0) / 40 = 0.75
+    group = [
+        _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
+        _build_episode(0.0, sampled_lengths=[10]),
+    ]
+    advs = _grpo(group, length_weighted_baseline=True)
+    assert advs == pytest.approx([0.25, -0.75])
+    # per-token advantage is zero-mean across the group's trainable tokens
+    assert 30 * advs[0] + 10 * advs[1] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_max_rl_mean_normalized():

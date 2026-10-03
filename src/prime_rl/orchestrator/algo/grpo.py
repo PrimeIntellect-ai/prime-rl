@@ -6,7 +6,7 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
@@ -20,6 +20,7 @@ class GRPOAlgorithm(Algorithm):
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
+        self.length_weighted_baseline = config.length_weighted_baseline
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
@@ -28,7 +29,7 @@ class GRPOAlgorithm(Algorithm):
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         length_penalty = self.length_penalty
         if length_penalty is None:
-            advantages = rewards - rewards.mean()
+            shaped_rewards = rewards
         else:
             output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
             total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
@@ -41,6 +42,13 @@ class GRPOAlgorithm(Algorithm):
             )
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
-            advantages = shaped_rewards - shaped_rewards.mean()
+        baseline = shaped_rewards.mean()
+        if self.length_weighted_baseline:
+            lengths = torch.tensor(
+                [sum(sum(node.mask) for node in trainable_nodes(trace)) for trace in traces], dtype=rewards.dtype
+            )
+            if lengths.sum() > 0:
+                baseline = (lengths * shaped_rewards).sum() / lengths.sum()
+        advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
