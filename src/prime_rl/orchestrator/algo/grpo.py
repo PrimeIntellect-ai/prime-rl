@@ -90,7 +90,8 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
     seen: set[int] = set()
     seen_children: dict[int | None, list[int]] = {}
     uncached = cached = output = 0
-    policy_calls = (c for c in trace.calls if c.node is not None and nodes[c.node].token_ids)
+    # Failed calls (no node) and non-policy calls (no token ids) count as tool time.
+    policy_calls = [c for c in trace.calls if c.node is not None and nodes[c.node].token_ids]
     for call in sorted(policy_calls, key=lambda c: c.time.start):
         path = [call.node]
         while (parent := nodes[path[-1]].parent) is not None:
@@ -115,8 +116,7 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
                 seen.add(n)
                 seen_children.setdefault(parent, []).append(n)
 
-    # Failed calls (no node) stay out of the union, so their duration counts as tool time.
-    intervals = sorted((c.time.start, c.time.end) for c in trace.calls if c.node is not None and c.time.duration > 0)
+    intervals = sorted((c.time.start, c.time.end) for c in policy_calls if c.time.duration > 0)
     busy = sum(end - start for start, end in intervals)
     union, reach = 0.0, float("-inf")
     for start, end in intervals:
