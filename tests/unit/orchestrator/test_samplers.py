@@ -77,7 +77,6 @@ def test_train_source_observes_sampler_with_state_and_metrics() -> None:
     assert source.metrics() == {"sampler/test/pool/unseen": 2.0, "sampler/test/pool/all": 1.0}
 
     state = source.state_dict()
-    # Extra per-env checkpoint keys, such as gate state, are ignored.
     state["envs"]["test"]["gates"] = {}
     restored = TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=len(tasks), config=config)])
     restored.load_state_dict(state)
