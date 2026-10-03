@@ -74,7 +74,10 @@ def redistribute(rewards: list[float], quality: list[float], lambda_max: float) 
 
 class GARAlgorithm(GRPOAlgorithm):
     """GRPO whose mixed groups are graded by an agentic group grader. Owns the
-    grader: its frozen model pool and the client onto its env server."""
+    grader: its frozen model pool and the client onto its env server. Grading takes
+    minutes, so groups finalize in the background."""
+
+    finalize_in_background = True
 
     def __init__(self, config: GARAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
