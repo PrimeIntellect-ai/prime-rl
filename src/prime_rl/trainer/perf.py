@@ -5,7 +5,7 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from prime_rl.trainer.lora import has_lora_layers
-from prime_rl.trainer.models.layers.lora import MultiLoRAModule
+from prime_rl.trainer.models.layers.lora import LoRAModule
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -213,10 +213,10 @@ class PerfCounter:
         return flop_per_token
 
     def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
+        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRAModules)."""
         params = 0
         for module in self.model.modules():
-            if isinstance(module, MultiLoRAModule):
+            if isinstance(module, LoRAModule):
                 adapter_params, _ = module.get_lora_param_counts()
                 params += adapter_params
         return params

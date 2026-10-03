@@ -6,43 +6,20 @@ import torch.nn as nn
 
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import (
-    MultiLoRALinear,
-    MultiLoRAModule,
-    get_lora_num_tokens,
-    get_multilora_scaling,
-    set_lora_num_tokens,
-    set_multilora_scaling,
-)
-from prime_rl.trainer.models.layers.lora.multi_moe import (
-    MultiLoRAGptOssGroupedExperts,
-    MultiLoRAGroupedExperts,
-    MultiLoRANonGatedGroupedExperts,
+    LoRAGptOssGroupedExperts,
+    LoRAGroupedExperts,
+    LoRALinear,
+    LoRAModule,
 )
 from prime_rl.trainer.models.layers.moe import GroupedExperts
-from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
 class LoRAState:
-    """Module registry + shared tensors for the single LoRA adapter.
+    """Registry of the modules adapted by the LoRA adapter, used for adapter state dicts and parameter resets."""
 
-    Owns the canonical ``lora_num_tokens`` / ``scaling_factors`` tensors the
-    LoRA layers read (the layers capture references at construction, so this
-    must exist before ``apply_lora_to_model`` builds them) and the registry of
-    adapted modules used for optimizer setup, adapter state dicts, and
-    parameter resets."""
-
-    def __init__(self, config: LoRAConfig, device: torch.device):
-        set_lora_num_tokens(None, reset_reference=True)
-        set_multilora_scaling(None, reset_reference=True)
-        set_lora_num_tokens(torch.zeros(1, dtype=torch.int32, device=device), reset_reference=True)
-        set_multilora_scaling(
-            torch.full((1,), config.alpha / config.rank, dtype=torch.bfloat16, device=device),
-            reset_reference=True,
-        )
-        self.lora_num_tokens = get_lora_num_tokens()
-        self.scaling_factors = get_multilora_scaling()
-        self._modules: list[tuple[str, MultiLoRAModule]] = []
+    def __init__(self):
+        self._modules: list[tuple[str, LoRAModule]] = []
         self._adapter_state_dict_converter: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None
 
     def register_adapter_state_dict_converter(
@@ -51,7 +28,7 @@ class LoRAState:
         """Register a converter applied to adapter state dicts (e.g. model.convert_adapter_to_hf)."""
         self._adapter_state_dict_converter = converter
 
-    def register_module(self, prefix: str, module: MultiLoRAModule) -> None:
+    def register_module(self, prefix: str, module: LoRAModule) -> None:
         """Register an adapted module with its FQN prefix (e.g. "model.layers.0.self_attn.q_proj")."""
         self._modules.append((prefix, module))
 
@@ -59,14 +36,8 @@ class LoRAState:
         """Adapter-only state dict, converted for HF compatibility when a converter is registered."""
         state_dict = {}
         for prefix, module in self._modules:
-            # MoE modules expose a custom state_dict_for_adapter returning the
-            # vLLM-compatible per-expert format
-            if hasattr(module, "state_dict_for_adapter"):
-                for name, tensor in module.state_dict_for_adapter(0).items():
-                    state_dict[f"{prefix}.{name}"] = tensor.detach()
-            else:
-                for name, param in module.named_parameters_for_adapter(0):
-                    state_dict[f"{prefix}.{name}.weight"] = param.detach()
+            for name, tensor in module.adapter_state_dict().items():
+                state_dict[f"{prefix}.{name}"] = tensor
 
         if self._adapter_state_dict_converter is not None:
             state_dict = self._adapter_state_dict_converter(state_dict)
@@ -75,7 +46,7 @@ class LoRAState:
     def reset_adapter_parameters(self) -> None:
         """Reset the adapter to fresh initialization across all registered modules."""
         for _, module in self._modules:
-            module.reset_parameters(0)
+            module.reset_parameters()
 
 
 _LORA_STATE: LoRAState | None = None
@@ -88,9 +59,9 @@ def get_lora_state() -> LoRAState:
     return _LORA_STATE
 
 
-def setup_lora_state(config: LoRAConfig, device: torch.device) -> LoRAState:
+def setup_lora_state() -> LoRAState:
     global _LORA_STATE
-    _LORA_STATE = LoRAState(config, device)
+    _LORA_STATE = LoRAState()
     return _LORA_STATE
 
 
@@ -221,7 +192,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     logger = get_logger()
     from prime_rl.trainer.models import PreTrainedModelPrimeRL
 
-    lora_state = setup_lora_state(config, torch.device("cuda", get_world().local_rank))
+    lora_state = setup_lora_state()
     if isinstance(model, PreTrainedModelPrimeRL):
         lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
     uses_gpt_oss_moe_adapter = (
@@ -250,25 +221,18 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 
         # Handle Linear layers
         if isinstance(base_module, nn.Linear):
-            lora_module = MultiLoRALinear(
+            lora_module = LoRALinear(
                 base_layer=base_module,
                 rank=config.rank,
-                n_adapters=1,
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
         # Handle GroupedExperts (MoE)
         elif isinstance(base_module, GroupedExperts):
-            if uses_gpt_oss_moe_adapter:
-                wrapper = MultiLoRAGptOssGroupedExperts
-            elif base_module.gate_proj is not None:
-                wrapper = MultiLoRAGroupedExperts
-            else:
-                wrapper = MultiLoRANonGatedGroupedExperts
+            wrapper = LoRAGptOssGroupedExperts if uses_gpt_oss_moe_adapter else LoRAGroupedExperts
             lora_module = wrapper(
                 base_layer=base_module,
                 rank=config.rank,
-                n_adapters=1,
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
@@ -290,7 +254,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_adapter_params = 0
     lora_adapted_params = 0
     for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, LoRAModule):
             adapter_params, adapted_params = module.get_lora_param_counts()
             lora_adapter_params += adapter_params
             lora_adapted_params += adapted_params
@@ -306,7 +270,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 def has_lora_layers(model: nn.Module) -> bool:
     """Check if model has LoRA layers."""
     for module in model.modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, LoRAModule):
             return True
     return False
 
@@ -332,7 +296,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     modules_to_save = set()
 
     for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
+        if isinstance(module, LoRAModule):
             module_suffix = name.split(".")[-1]
             target_modules.add(module_suffix)
 

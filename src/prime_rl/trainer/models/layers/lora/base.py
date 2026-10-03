@@ -6,77 +6,22 @@ from torch import nn
 
 _LORA_PREFIX = "base_layer."
 
-# Global state for multilora - initialized once in train.py, referenced by modules
-LORA_NUM_TOKENS: torch.Tensor | None = None  # [n_adapters] token counts per adapter
-SCALING_FACTORS: torch.Tensor | None = None  # [max_runs] scaling factors per run
 
-
-def set_lora_num_tokens(num_tokens: torch.Tensor, reset_reference: bool = False) -> None:
-    """Set the number of tokens per adapter.
-
-    Args:
-        num_tokens: Tensor of shape [n_adapters] with token counts per adapter.
-        reset_reference: If True, replace the tensor reference. If False, copy values in-place.
-    """
-    global LORA_NUM_TOKENS
-    if LORA_NUM_TOKENS is None or reset_reference:
-        if SCALING_FACTORS is not None and num_tokens is not None:
-            assert num_tokens.shape == SCALING_FACTORS.shape, (
-                f"lora_num_tokens shape {num_tokens.shape} != scaling_factors shape {SCALING_FACTORS.shape}"
-            )
-        LORA_NUM_TOKENS = num_tokens
-    else:
-        LORA_NUM_TOKENS.copy_(num_tokens)
-
-
-def get_lora_num_tokens() -> torch.Tensor:
-    """Get the current lora_num_tokens tensor.
-
-    Raises:
-        AssertionError: If called before set_lora_num_tokens() has been called.
-    """
-    assert LORA_NUM_TOKENS is not None, "LORA_NUM_TOKENS not initialized. Call set_lora_num_tokens() first."
-    return LORA_NUM_TOKENS
-
-
-def set_multilora_scaling(scaling_factors: torch.Tensor, reset_reference: bool = False) -> None:
-    """Set per-run scaling factors (alpha / rank).
-
-    Args:
-        scaling_factors: Tensor of shape [max_runs] with scaling factors per run.
-        reset_reference: If True, replace the tensor reference. If False, copy values in-place.
-    """
-    global SCALING_FACTORS
-    if SCALING_FACTORS is None or reset_reference:
-        if LORA_NUM_TOKENS is not None and scaling_factors is not None:
-            assert scaling_factors.shape == LORA_NUM_TOKENS.shape, (
-                f"scaling_factors shape {scaling_factors.shape} != lora_num_tokens shape {LORA_NUM_TOKENS.shape}"
-            )
-        SCALING_FACTORS = scaling_factors
-    else:
-        SCALING_FACTORS.copy_(scaling_factors)
-
-
-def get_multilora_scaling() -> torch.Tensor:
-    """Get the current scaling factors tensor.
-
-    Raises:
-        AssertionError: If called before set_multilora_scaling() has been called.
-    """
-    assert SCALING_FACTORS is not None, "SCALING_FACTORS not initialized. Call set_multilora_scaling() first."
-    return SCALING_FACTORS
-
-
-class MultiLoRAModule(nn.Module):
-    """
-    Base class for Multi run LoRA modules.
-    """
+class LoRAModule(nn.Module):
+    """Base class for modules that wrap a frozen base layer with a LoRA adapter."""
 
     base_layer: nn.Module
 
-    def __init__(self, base_layer: nn.Module) -> None:
+    def __init__(self, base_layer: nn.Module, rank: int, alpha: float, dropout: float) -> None:
         super().__init__()
+        if rank <= 0:
+            raise ValueError("rank must be > 0")
         self.base_layer = base_layer
+        self.rank = rank
+        self.alpha = alpha
+        # The scale is applied at bf16 precision; changing this changes training numerics.
+        self.scaling = torch.tensor(alpha / rank, dtype=torch.bfloat16).item()
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
         # Freeze base layer parameters
         for param in self.base_layer.parameters():
@@ -88,25 +33,13 @@ class MultiLoRAModule(nn.Module):
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
     @abstractmethod
-    def reset_parameters(self, index: int | None = None) -> None:
-        """Reset LoRA parameters.
-
-        Args:
-            index: If provided, reset only the parameters for that adapter index.
-                   If None, reset all adapter parameters.
-        """
+    def reset_parameters(self) -> None:
+        """Reset LoRA parameters (Kaiming uniform for A, zeros for B)."""
         ...
 
     @abstractmethod
-    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
-        """Get named parameters for a specific adapter index.
-
-        Args:
-            idx: The adapter index to get parameters for
-
-        Returns:
-            List of (name, parameter) tuples for the specified adapter
-        """
+    def adapter_state_dict(self) -> dict[str, torch.Tensor]:
+        """Detached adapter tensors keyed in the format vLLM loads, relative to this module."""
         ...
 
     @abstractmethod
@@ -115,7 +48,7 @@ class MultiLoRAModule(nn.Module):
 
         Returns:
             A tuple of (adapter_params, adapted_params) where:
-            - adapter_params: Number of parameters in ONE LoRA adapter (lora_A + lora_B)
+            - adapter_params: Number of LoRA adapter parameters (lora_A + lora_B)
             - adapted_params: Number of base layer parameters being adapted by LoRA
         """
         ...
