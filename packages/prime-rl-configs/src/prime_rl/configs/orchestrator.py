@@ -299,7 +299,7 @@ class TrainSourceConfig(EnvConfig):
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
     ratio: float = Field(1.0, gt=0)
-    """Target share of this environment's prompts (groups) in each training batch. Relative weights are normalized across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal share per env. A batch of ``batch_size`` traces then holds ``ratio``-proportional numbers of prompts, each contributing ``group_size`` traces. The share counts shipped prompts, so on average it holds regardless of how many groups an env loses to filtering: envs are dispatched in proportion to their share divided by their measured acceptance rate (groups cancelled as stale are not made up for). The share holds on average: a batch ships as soon as it is full, so one batch can be off by a few groups."""
+    """Target share of this environment's prompts (groups) in each training batch. Relative weights are normalized across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal share per env. A batch of ``batch_size`` traces then holds ``ratio``-proportional numbers of prompts, each contributing ``group_size`` traces. The share counts shipped prompts, so on average it holds regardless of how many groups an env loses to filtering or staleness: envs are dispatched in proportion to their share divided by their measured acceptance rate. The share holds on average: a batch ships as soon as it is full, so one batch can be off by a few groups."""
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the

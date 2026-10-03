@@ -340,7 +340,7 @@ class TrainSink:
         # surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
-            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason="stale")
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             return
         self.train_source.on_group_finalized(env_name, accepted=True, cancel_reason=cancel_reason)
         self.zero_output_units = 0

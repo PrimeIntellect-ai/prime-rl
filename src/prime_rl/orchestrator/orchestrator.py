@@ -583,8 +583,6 @@ class Orchestrator:
         now = time.perf_counter()
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
-        if step_time:
-            self.train_source.on_step(step_time)
 
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.
