@@ -10,6 +10,7 @@ from prime_rl.orchestrator.batch import (
     prepare_batch,
     prepare_sample,
 )
+from prime_rl.orchestrator.train_sink import _prune_small_advantages
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 
@@ -541,3 +542,19 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def test_prune_small_advantages_is_per_sample():
+    group = [
+        TrainingSample(
+            token_ids=[1, 2],
+            mask=[False, True],
+            logprobs=[0.0, -0.1],
+            temperatures=[1.0, 1.0],
+            advantages=[0.0, advantage],
+            env_name="test-env",
+        )
+        for advantage in (0.05, -0.1, 0.5)
+    ]
+    assert [_prune_small_advantages(sample, 0.0) for sample in group] == [True, True, True]
+    assert [_prune_small_advantages(sample, 0.1) for sample in group] == [False, False, True]

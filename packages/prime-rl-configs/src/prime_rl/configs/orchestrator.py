@@ -270,31 +270,6 @@ TaskSamplerConfig: TypeAlias = Annotated[
 ]
 
 
-class AdvRangeGateConfig(BaseConfig):
-    type: Literal["advantage_range"] = "advantage_range"
-
-    reject_min: float = 0.0
-    reject_max: float = 0.0
-
-    @model_validator(mode="after")
-    def validate_range(self):
-        if self.reject_min > self.reject_max:
-            raise ValueError("reject_min must be less than or equal to reject_max")
-        return self
-
-
-AdmissionGateConfig: TypeAlias = AdvRangeGateConfig
-
-
-class CurriculumConfig(BaseConfig):
-    sampler: TaskSamplerConfig = Field(default_factory=StandardSamplerConfig)
-    """Task selection policy. The default cycles through the task iterator in source order."""
-
-    gates: dict[str, AdmissionGateConfig] = Field(default_factory=dict)
-    """Named admission policies. Every gate observes every finalized group,
-    and a group trains only when every gate admits it."""
-
-
 class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -312,9 +287,15 @@ class TrainSourceConfig(EnvConfig):
     Setting only some params keeps the group's algorithm; a different ``type`` is
     this env's own algorithm."""
 
-    curriculum: CurriculumConfig | None = None
-    """User-authored task sampler and admission gates. The default cycles
-    through the taskset and admits every finalized group."""
+    sampler: TaskSamplerConfig = StandardSamplerConfig()
+    """Task selection policy. The default cycles through the taskset in source order."""
+
+    min_abs_advantage: float = Field(0.0, ge=0)
+    """Treat RL tokens with ``|advantage| <= min_abs_advantage`` like zero-advantage tokens:
+    they leave the RL loss, and a sample left with no RL, CE, or ref-KL signal is dropped
+    (and backfilled when ``constant_trainer_batch_size`` is set). The check is per sample, so
+    near-baseline samples in a group are dropped while the rest train. The default 0 drops
+    only exactly-zero advantages."""
 
 
 class EvalSourceConfig(EnvConfig):

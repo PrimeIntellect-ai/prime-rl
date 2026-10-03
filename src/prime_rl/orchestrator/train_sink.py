@@ -31,8 +31,9 @@ def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None)
     return sum(len(sample.token_ids) for sample in samples) or (trace.num_total_tokens if trace is not None else 0)
 
 
-def _prune_zero_advantages(sample: TrainingSample) -> bool:
-    """Remove zero-advantage tokens from the RL component."""
+def _prune_small_advantages(sample: TrainingSample, min_abs_advantage: float) -> bool:
+    """Remove RL tokens with ``|advantage| <= min_abs_advantage`` (by default exactly zero)
+    from the RL component. Returns whether the sample still carries any training signal."""
     if sample.advantages is None:
         return True
 
@@ -45,7 +46,7 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     for index, (trainable, advantage, weight) in enumerate(
         zip(sample.mask, sample.advantages, rl_weights, strict=True)
     ):
-        if trainable and advantage == 0.0 and weight != 0.0:
+        if trainable and abs(advantage) <= min_abs_advantage and weight != 0.0:
             rl_weights[index] = 0.0
             changed = True
 
@@ -60,7 +61,7 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
 
 
 class TrainSink:
-    """Score native episodes, admit groups, then compile trainer payloads."""
+    """Score native episodes, then compile trainer payloads."""
 
     def __init__(
         self,
@@ -71,7 +72,7 @@ class TrainSink:
         progress: Progress,
         batch_size: int | None,
         token_batch_size: int | None,
-        on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        on_group: Callable[[list[vf.Episode]], None],
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -82,7 +83,7 @@ class TrainSink:
         self.progress = progress
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.on_result = on_result
+        self.on_group = on_group
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -151,7 +152,7 @@ class TrainSink:
 
     async def fail(self, failure: DispatchFailure) -> TrainBatch | None:
         """Count a request failure toward its group without presenting it as
-        an episode to the algorithm or curriculum."""
+        an episode to the algorithm or sampler."""
         if failure.kind != "train":
             raise ValueError(f"TrainSink cannot process a {failure.kind} dispatch failure")
         self.pending_group_failures[failure.group_id].append(failure)
@@ -250,10 +251,10 @@ class TrainSink:
 
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
-        # cancelled tail. Stale groups bypass the curriculum — a pipeline
+        # cancelled tail. Stale groups bypass the sampler — a pipeline
         # decision is not a task result.
         if cancellation is not None and cancellation.reason == "stale":
-            self.pending_episodes.extend(group, admitted=False, cancelled=True)
+            self.pending_episodes.extend(group, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
@@ -264,14 +265,14 @@ class TrainSink:
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
             await env.algorithm.finalize_group(group)
-        admitted = self._admit(group) if group else False
-        if not survivors or not admitted:
-            self.pending_episodes.extend(group, admitted=admitted)
+        if group:
+            self.on_group(group)
+        if not survivors:
+            self.pending_episodes.extend(group)
             self._record_zero_output(group, survivors, n_owed)
-            reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=no trainable survivors"
             )
             return
 
@@ -292,11 +293,13 @@ class TrainSink:
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
-                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
+                samples = [
+                    sample for sample in samples if _prune_small_advantages(sample, env.config.min_abs_advantage)
+                ]
             if samples:
                 samples_by_trace[trace.id] = samples
 
-        self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
+        self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace))
         if not samples_by_trace:
             self._record_zero_output(group, survivors, n_owed)
             return
@@ -322,12 +325,13 @@ class TrainSink:
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
+    def _min_abs_advantage(self, trace_id: str) -> float:
+        env_name = episode_env_name(self.episode_by_trace[trace_id])
+        return self.train_envs.get(env_name).config.min_abs_advantage
+
     def _trace(self, trace_id: str) -> vf.Trace:
         episode = self.episode_by_trace[trace_id]
         return next(trace for trace in episode.traces if trace.id == trace_id)
-
-    def _admit(self, group: list[vf.Episode]) -> bool:
-        return self.on_result(group) if self.on_result is not None else True
 
     def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
@@ -353,8 +357,7 @@ class TrainSink:
             return
         self.reported_zero_output_windows = windows
         get_logger().warning(
-            f"No admitted train payload after {self.zero_output_units} finalized units "
-            f"({windows} zero-output batch equivalents)"
+            f"No train payload after {self.zero_output_units} finalized units ({windows} zero-output batch equivalents)"
         )
 
     def process_batch(self) -> TrainBatch:
@@ -380,7 +383,9 @@ class TrainSink:
 
         if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
-                trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
+                trace_id: [
+                    sample for sample in samples if _prune_small_advantages(sample, self._min_abs_advantage(trace_id))
+                ]
                 for trace_id, samples in selected
             }
             selected_by_trace = {trace_id: samples for trace_id, samples in selected_by_trace.items() if samples}

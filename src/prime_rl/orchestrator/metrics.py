@@ -37,14 +37,12 @@ class TraceRecord:
     episode: vf.Episode
     trace: vf.Trace
     sampled: bool
-    admitted: bool
     cancelled: bool
 
 
 def _records(
     episodes: list[vf.Episode],
     sampled_trace_ids: set[str],
-    admitted: set[str],
     cancelled: set[str],
 ) -> list[TraceRecord]:
     return [
@@ -52,7 +50,6 @@ def _records(
             episode=episode,
             trace=trace,
             sampled=trace.id in sampled_trace_ids,
-            admitted=episode.id in admitted,
             cancelled=episode.id in cancelled,
         )
         for episode in episodes
@@ -365,9 +362,6 @@ class TrainMetrics(EpisodeMetrics):
             out[f"{metric_prefix}/is_trainable/mean"] = sum(
                 float(is_trainable(record.trace)) for record in traces.records
             ) / len(traces.records)
-            out[f"{metric_prefix}/is_admitted/mean"] = sum(float(record.admitted) for record in traces.records) / len(
-                traces.records
-            )
         return out
 
 
@@ -410,19 +404,17 @@ class EpisodeCollection:
         self,
         episodes: list[vf.Episode] | None = None,
         sampled_trace_ids: set[str] | None = None,
-        admitted: set[str] | None = None,
         cancelled: set[str] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
     ) -> None:
         self.episodes = episodes if episodes is not None else []
         self.sampled_trace_ids = sampled_trace_ids if sampled_trace_ids is not None else set()
-        self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
         self.cancelled = cancelled if cancelled is not None else set()
         self._predicate = predicate
 
     @property
     def records(self) -> list[TraceRecord]:
-        records = _records(self.episodes, self.sampled_trace_ids, self.admitted, self.cancelled)
+        records = _records(self.episodes, self.sampled_trace_ids, self.cancelled)
         if self._predicate is None:
             return records
         return [record for record in records if self._predicate(record)]
@@ -464,13 +456,10 @@ class EpisodeCollection:
         episode: vf.Episode,
         *,
         sampled_trace_ids: set[str] | None = None,
-        admitted: bool = True,
         cancelled: bool = False,
     ) -> None:
         self.episodes.append(episode)
         self.sampled_trace_ids.update(sampled_trace_ids or set())
-        if admitted:
-            self.admitted.add(episode.id)
         if cancelled:
             self.cancelled.add(episode.id)
 
@@ -479,13 +468,10 @@ class EpisodeCollection:
         episodes: list[vf.Episode],
         *,
         sampled_trace_ids: set[str] | None = None,
-        admitted: bool = True,
         cancelled: bool = False,
     ) -> None:
         self.episodes.extend(episodes)
         self.sampled_trace_ids.update(sampled_trace_ids or set())
-        if admitted:
-            self.admitted.update(episode.id for episode in episodes)
         if cancelled:
             self.cancelled.update(episode.id for episode in episodes)
 
@@ -502,14 +488,9 @@ class TrainEpisodes(EpisodeCollection):
         return TrainEpisodes(
             self.episodes,
             self.sampled_trace_ids,
-            self.admitted,
             self.cancelled,
             predicate=lambda record: (
-                record.admitted
-                and record.sampled
-                and not record.cancelled
-                and not record.trace.has_error
-                and record.trace.agent.trainable
+                record.sampled and not record.cancelled and not record.trace.has_error and record.trace.agent.trainable
             ),
         )
 
@@ -518,7 +499,7 @@ class TrainEpisodes(EpisodeCollection):
         for episode in self.selected_episodes:
             grouped.setdefault(episode_env_name(episode), []).append(episode)
         return {
-            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._predicate)
+            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.cancelled, self._predicate)
             for env_name, episodes in grouped.items()
         }
 

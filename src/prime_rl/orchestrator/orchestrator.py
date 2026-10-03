@@ -4,7 +4,7 @@
 and drives the pipeline. Components are single-purpose:
 
 - ``Dispatcher`` schedules environment runs and emits completed episodes.
-- ``TrainSink`` ingests train rollouts (score → admission → sample compilation)
+- ``TrainSink`` ingests train rollouts (score → sample compilation)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
@@ -250,7 +250,7 @@ class Orchestrator:
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
-        # trainer even when ``ckpt.skip_progress`` leaves the counter unrestored. The curricula
+        # trainer even when ``ckpt.skip_progress`` leaves the counter unrestored. The samplers
         # themselves are restored below, once the envs are loaded.
         if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
@@ -373,7 +373,7 @@ class Orchestrator:
             progress=self.progress,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            on_result=self.train_source.on_result,
+            on_group=self.train_source.observe,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
