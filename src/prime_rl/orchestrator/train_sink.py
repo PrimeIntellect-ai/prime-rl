@@ -24,7 +24,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TaskRequest, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -117,15 +117,23 @@ class TrainSink:
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
-    def state_dict(self) -> dict[str, Any]:
+    def state_dict(self, tasks: dict[str, vf.Task]) -> dict[str, Any]:
         """Accepted traces still waiting for a batch: their samples and
-        :class:`QueuedTrace` records, no episodes. Saved with the orchestrator
-        checkpoint so a resume replays them instead of regenerating them. The
-        copies are shallow: queued samples are not mutated until they ship."""
+        :class:`QueuedTrace` records, no episodes. Plus the finished episodes
+        of each unfinished group still open in the dispatcher, with its task
+        (``tasks``, by group id). Saved with the orchestrator checkpoint so a
+        resume replays them instead of regenerating them. The copies are
+        shallow: queued samples are not mutated until they ship, and a group
+        finalized mid-write is rescored on resume."""
         return {
             "pending_batch": dict(self.pending_batch),
             "queued": dict(self.queued),
             "group_traces": dict(self.group_traces),
+            "partial_groups": {
+                group_id: (tasks[group_id], list(episodes))
+                for group_id, episodes in self.pending_groups.items()
+                if episodes and group_id in tasks
+            },
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
@@ -139,6 +147,36 @@ class TrainSink:
             self.group_queued[queued.group_id] += 1
         self._drop_stale()
         get_logger().info(f"Replaying {len(self.pending_batch)} queued traces from the checkpoint")
+
+        # Unfinished groups keep their members within the age bound and
+        # re-dispatch the rest under the same task and group id.
+        kept = 0
+        for group_id, (task, episodes) in state_dict.get("partial_groups", {}).items():
+            env_name = episode_env_name(episodes[0])
+            max_off_policy_steps = self.train_envs.get(env_name).config.max_off_policy_steps
+            min_version = min_fresh_version(self.progress.step, max_off_policy_steps)
+            fresh = [
+                episode
+                for episode in episodes
+                if (policy := train_work(episode).policy) is None or policy.start >= min_version
+            ]
+            if not fresh:
+                continue
+            self.pending_groups[group_id] = fresh
+            self.train_source.resumed_groups.append(
+                TaskRequest(
+                    env_name=env_name,
+                    task=task,
+                    step=self.progress.step,
+                    rollouts=self.group_size_for(env_name) - len(fresh),
+                    group_id=group_id,
+                )
+            )
+            kept += len(fresh)
+        if kept:
+            get_logger().info(
+                f"Resuming {len(self.train_source.resumed_groups)} unfinished groups with {kept} finished episodes"
+            )
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -353,7 +391,8 @@ class TrainSink:
                 self.episode_by_trace[trace.id] = episode
         self._drop_stale(samples_by_trace)
         # A group's traces share one dispatch version, so the insertion sweep
-        # voids all or none of them. A fully-voided group shipped nothing —
+        # voids all or none of them (except in a group completed after a
+        # resume, whose saved members are older). A fully-voided group shipped nothing —
         # advance the zero-output tally instead of resetting it, or a stalled
         # trainer plus a tight bound could void groups forever without ever
         # surfacing the warning.

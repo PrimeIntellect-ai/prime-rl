@@ -441,7 +441,13 @@ class Orchestrator:
             if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                await self.ckpt_manager.save(self.progress, self.train_source, self.train_sink, step=self.progress.step)
+                await self.ckpt_manager.save(
+                    self.progress,
+                    self.train_source,
+                    self.train_sink,
+                    self.dispatcher.train_group_tasks(),
+                    step=self.progress.step,
+                )
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -977,7 +983,9 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        await self.ckpt_manager.save(self.progress, self.train_source, self.train_sink, step)
+        await self.ckpt_manager.save(
+            self.progress, self.train_source, self.train_sink, self.dispatcher.train_group_tasks(), step
+        )
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.train_sink import TrainSink
@@ -45,16 +46,24 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    async def save(self, progress: Progress, train_source: TrainSource, train_sink: TrainSink, step: int) -> None:
+    async def save(
+        self,
+        progress: Progress,
+        train_source: TrainSource,
+        train_sink: TrainSink,
+        group_tasks: dict[str, vf.Task],
+        step: int,
+    ) -> None:
         """Progress and train-source state are small and written on the event
         loop, which keeps the dispatcher from mutating them mid-save. The
-        sink's queued traces can be large: they are snapshotted on the loop
-        and written to ``queue.pt`` in a thread."""
+        sink's queued traces and unfinished groups (``group_tasks``: the task
+        of each open train group) can be large: they are snapshotted on the
+        loop and written to ``queue.pt`` in a thread."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
         _atomic_save({"progress": progress, "train_source": train_source.state_dict()}, ckpt_path / "progress.pt")
-        await asyncio.to_thread(_atomic_save, train_sink.state_dict(), ckpt_path / "queue.pt")
+        await asyncio.to_thread(_atomic_save, train_sink.state_dict(group_tasks), ckpt_path / "queue.pt")
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )

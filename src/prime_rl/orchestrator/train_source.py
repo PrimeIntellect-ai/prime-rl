@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from typing import Any
 
 import verifiers.v1 as vf
@@ -108,6 +108,8 @@ class TrainSource:
         self.dispatch_weights: dict[str, float] = {}
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
+        self.resumed_groups: deque[TaskRequest] = deque()
+        """Missing members of groups left unfinished by a restart, dispatched before any new task."""
 
     def weights(self) -> dict[str, float]:
         return {
@@ -118,6 +120,8 @@ class TrainSource:
     def next_task(self, *, step: int, capacity: int, inflight: dict[str, int]) -> TaskRequest:
         """``capacity`` is the train share of the dispatcher's in-flight cap,
         ``inflight`` the train episodes in flight per env."""
+        if self.resumed_groups:
+            return self.resumed_groups.popleft()
         weights = self.weights()
         self.inflight = inflight
         # Caps need a duration estimate for every env.
