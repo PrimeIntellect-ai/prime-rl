@@ -21,7 +21,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
-- [Curricula](#curricula)
+- [Task Samplers](#task-samplers)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
   - [Best-Effort Interleaving](#best-effort-interleaving)
@@ -157,7 +157,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 - `async score_episode(episode)` — rollout-local scoring as one episode arrives.
 - `async score_group(episodes)` — group-relative scoring after the cohort completes.
 
-The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
+The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes until scoring finishes. Only then are traces flattened into `TrainingSample`s.
 
 Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.train.algo.advantage`.
 
@@ -423,8 +423,6 @@ class MyAlgorithm(Algorithm):
 
 Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
 
-Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
-
 ### Reference Scoring
 
 `OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_episode`: as each episode arrives they query a reference and attach sampled-token reference logprobs to its graph nodes:
@@ -438,44 +436,32 @@ type = "opsd"
 demo_key = "demonstration"
 ```
 
-Scoring runs before curriculum admission, so a rollout that is later rejected still costs its reference compute.
-
 The orchestrator filters samples with no training signal. This includes samples with zero advantage on all RL tokens. Samples that still carry CE or reference-KL components are retained. Filtering an RL token also removes its trainer/inference mismatch-KL contribution.
 
 `orchestrator.constant_trainer_batch_size` defaults to `true`. The orchestrator filters samples before they count toward the batch target. It collects replacements, so rollout-based batches contain `orchestrator.batch_size` training traces. Set the option to `false` to filter after collection without replacement. This setting can improve orchestrator throughput, but it produces smaller trainer batches.
 
-## Curricula
+## Task Samplers
 
-Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized `list[vf.Episode]`; each gate inspects the same native episodes. The group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
+Each training source has one task sampler, set with `sampler`. It chooses the source's next task and observes every finalized group of episodes. Sampler state is saved in orchestrator checkpoints, and sampler metrics are logged under `sampler/<env>/`.
 
-Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`.
-
-Three small implementations are included:
-
-- `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
-- `DifficultyPoolSampler` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight; weight `0` disables sampling from that pool. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
-- `AdvRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in token filter, it can reject a configurable advantage range. Groups without an advantage stream are admitted.
+- `standard` (`StandardSampler`) is the default: it advances the task iterator and cycles finite tasksets in source order.
+- `difficulty_pool` (`DifficultyPoolSampler`) samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight; weight `0` disables sampling from that pool. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
 
 ```toml
-[orchestrator.train.source.curriculum.sampler]
+[orchestrator.train.source.sampler]
 type = "difficulty_pool"
 
-[orchestrator.train.source.curriculum.sampler.pools.hard]
+[orchestrator.train.source.sampler.pools.hard]
 threshold = 0.25
 weight = 0.2
 
-[orchestrator.train.source.curriculum.sampler.pools.normal]
+[orchestrator.train.source.sampler.pools.normal]
 threshold = 0.75
 weight = 1.0
 
-[orchestrator.train.source.curriculum.sampler.pools.easy]
+[orchestrator.train.source.sampler.pools.easy]
 threshold = 1.0
 weight = 0.2
-
-[orchestrator.train.source.curriculum.gates.low_signal]
-type = "advantage_range"
-reject_min = -0.05
-reject_max = 0.05
 ```
 
 ## Multi-Turn Trajectories

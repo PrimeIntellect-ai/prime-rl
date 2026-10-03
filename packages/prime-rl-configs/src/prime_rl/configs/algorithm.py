@@ -348,9 +348,7 @@ class OPSDAlgoConfig(BaseAlgoConfig):
 class SFTAlgoConfig(BaseAlgoConfig):
     type: Literal["sft"] = "sft"
     """SFT distillation: cross-entropy on the sampled tokens. The ``ce`` loss
-    ignores advantages and SFT assigns none — it trains on every sampled token.
-    A curriculum can reject results using reward or any other finalized
-    rollout data."""
+    ignores advantages and SFT assigns none — it trains on every sampled token."""
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
 
@@ -372,7 +370,7 @@ class DebugAlgoConfig(BaseAlgoConfig):
     type: Literal["debug"] = "debug"
     """Debugging algorithm for infra work: every sampled token of every clean
     trainable trace gets the same constant ``advantage`` (default 1.0),
-    ignoring rewards entirely. Every admitted rollout is trainable and every
+    ignoring rewards entirely. Every clean rollout is trainable and every
     action token carries gradient signal, so the full RL path (advantage
     transport, importance ratios, trust region, optimizer, weight update)
     can be exercised regardless of the reward function. Not a real training

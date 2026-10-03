@@ -55,7 +55,6 @@ max_inflight = 4096
 [[orchestrator.train.source]]
 name = "swe"
 ratio = 0.3
-curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "r2e-gym"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["intellect-3.1", "swe"]
@@ -63,7 +62,6 @@ env.agent.runtime.labels = ["intellect-3.1", "swe"]
 [[orchestrator.train.source]]
 name = "deepdive"
 ratio = 0.2
-curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "deepdive"
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
@@ -73,7 +71,6 @@ env.agent.runtime.labels = ["intellect-3.1", "deepdive"]
 [[orchestrator.train.source]]
 name = "math"
 ratio = 0.3
-curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
@@ -81,7 +78,6 @@ env.agent.runtime.type = "subprocess"
 [[orchestrator.train.source]]
 name = "logic"
 ratio = 0.2
-curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_logic"
 env.taskset.filter.max = 0.874
 env.agent.harness.id = "null"
@@ -90,7 +86,6 @@ env.agent.runtime.type = "subprocess"
 [[orchestrator.train.source]]
 name = "code"
 ratio = 0.2
-curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_code"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"

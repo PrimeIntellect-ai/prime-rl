@@ -33,7 +33,6 @@ def mk(
     group_id: str = "g0",
     trainable: bool = True,
     is_trainable: bool = True,
-    is_admitted: bool = True,
     setup: float = 0.0,
     agent: float = 0.0,
     agent_model: float = 0.0,
@@ -79,7 +78,6 @@ def mk(
         group=SimpleNamespace(id=group_id),
     )
     episode._sampled_trace_ids = {trace.id}
-    episode._admitted = is_admitted
     return episode
 
 
@@ -88,14 +86,12 @@ def combine(*episodes):
     first = episodes[0]
     first.traces = [trace for episode in episodes for trace in episode.traces]
     first._sampled_trace_ids = {trace_id for episode in episodes for trace_id in episode._sampled_trace_ids}
-    first._admitted = all(episode._admitted for episode in episodes)
     return first
 
 
 def train_episodes(episodes) -> TrainEpisodes:
     sampled_trace_ids = {trace_id for episode in episodes for trace_id in episode._sampled_trace_ids}
-    admitted = {episode.id for episode in episodes if episode._admitted}
-    return TrainEpisodes(episodes, sampled_trace_ids, admitted)
+    return TrainEpisodes(episodes, sampled_trace_ids)
 
 
 def train_wandb(episodes, subset: str = "all") -> dict:
@@ -115,7 +111,7 @@ def test_container_effective_by_env_and_listlike():
         [
             mk(env_name="a"),
             mk(env_name="a", has_error=True),
-            mk(env_name="b", is_admitted=False),
+            mk(env_name="b", trainable=False),
             mk(env_name="b"),
         ]
     )
@@ -126,7 +122,7 @@ def test_container_effective_by_env_and_listlike():
     by_env = rc.by_env()
     assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainEpisodes)
     added = mk()
-    rc.append(added, sampled_trace_ids=added._sampled_trace_ids, admitted=added._admitted)
+    rc.append(added, sampled_trace_ids=added._sampled_trace_ids)
     assert len(rc) == 5
 
 
@@ -191,7 +187,7 @@ def test_agent_metrics_are_flat_over_traces():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = train_episodes([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_admitted=False)])
+    rc = train_episodes([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk()])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/agent/is_completed/mean"] == 1.0
@@ -265,15 +261,14 @@ def test_nested_timing():
 
 def test_train_only_metrics_absent_from_eval():
     rollouts = [
-        mk(is_trainable=True, is_admitted=False),
+        mk(is_trainable=True),
         mk(is_trainable=False),
     ]
     out = train_wandb(rollouts)
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
-    assert out["train/agg/all/agent/is_admitted/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalEpisodes(rollouts, group_size=2).metrics.to_wandb(prefix="eval/x", subset="all")
-    assert not any("is_trainable" in key or "is_admitted" in key for key in eval_out)
+    assert not any("is_trainable" in key for key in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():

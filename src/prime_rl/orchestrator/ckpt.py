@@ -66,8 +66,8 @@ class CheckpointManager:
                     setattr(progress, key, value)
             train_source.load_state_dict(state["train_source"])
             for name in state["train_source"]["envs"]:
-                if name in train_source.curricula:
-                    get_logger().info(f"Resumed curriculum state for env {name}")
+                if name in train_source.samplers:
+                    get_logger().info(f"Resumed sampler state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 

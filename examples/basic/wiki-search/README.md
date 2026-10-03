@@ -7,7 +7,6 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer 
 - **Multi-turn tool use**: The model learns to use V1 tools across multiple turns through native function calling
 - **Locally-hosted storage**: Uses ChromaDB and its local embedding model for retrieval
 - **LLM judges**: Uses an LLM judge to evaluate answer quality alongside tool execution metrics
-- **Online difficulty buffer**: Uses difficulty-based sampling to ensure rollouts have strictly non-zero advantages
 
 > This example runs on 8 GPUs (6 for inference, 2 for training). To run on 2 GPUs (1 inference, 1 trainer), add `--deployment.num-train-gpus 1 --deployment.num-infer-gpus 1 --orchestrator.batch-size 128` to the `rl` command.
 
