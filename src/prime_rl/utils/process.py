@@ -47,19 +47,15 @@ def get_physical_gpu_ids() -> list[int]:
     return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
 
 
-def partition_gpus(*counts: int) -> list[list[int]]:
-    """Split the launcher's physical GPUs into consecutive groups of the given sizes."""
+def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int], list[int]]:
+    """Split the launcher's physical GPUs into inference GPUs followed by trainer GPUs."""
     physical_gpu_ids = get_physical_gpu_ids()
-    if sum(counts) > len(physical_gpu_ids):
+    if num_infer + num_train > len(physical_gpu_ids):
         raise ValueError(
-            f"Requested {sum(counts)} GPUs via deployment settings, but only "
+            f"Requested {num_infer + num_train} GPUs via deployment settings, but only "
             f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
         )
-    groups, offset = [], 0
-    for count in counts:
-        groups.append(physical_gpu_ids[offset : offset + count])
-        offset += count
-    return groups
+    return physical_gpu_ids[:num_infer], physical_gpu_ids[num_infer : num_infer + num_train]
 
 
 def torchrun_cmd(
@@ -174,6 +170,7 @@ class ProcessGroup:
 
     def _sigterm_handler(self, signum, frame):
         get_logger().warning("Received SIGTERM, terminating all processes...")
+        # Clean up here too: a SIGTERM during __exit__'s cleanup would otherwise leave orphans.
         self.cleanup()
         sys.exit(1)
 
@@ -182,7 +179,7 @@ class ProcessGroup:
         cleanup_processes(self.processes)
 
     def start(self, name: str, cmd: list[str], env: dict[str, str], log_path: Path) -> None:
-        get_logger().debug(f"{name.capitalize()} command: {' '.join(cmd)}")
+        get_logger().debug(f"{name[:1].upper() + name[1:]} command: {' '.join(cmd)}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # If we don't log stdout, the inference server hangs
         with open(log_path, "w") as log_file:
