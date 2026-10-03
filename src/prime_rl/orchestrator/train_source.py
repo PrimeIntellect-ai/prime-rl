@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -146,7 +145,6 @@ class TrainSource:
         """Accepted groups per env with traces waiting in the sink."""
         self.durations = {name: 0.0 for name in self.env_names}
         self.completed: Counter[str] = Counter()
-        self.first_dispatch: dict[str, float] = {}
         self.inflight: dict[str, int] = {}
         self.caps: dict[str, float] | None = None
         self.dispatch_weights: dict[str, float] = {}
@@ -180,14 +178,14 @@ class TrainSource:
         ``inflight`` the train episodes in flight per env."""
         weights = self.weights()
         self.inflight = inflight
+        # Caps need a duration estimate for every env.
         self.caps = None
-        durations = self.duration_estimates()
-        if durations is not None:
+        if all(self.completed[name] for name in self.env_names):
             demand = {
                 name: target * acceptance_correction(self.acceptance_rate(name)) * self.group_sizes[name]
                 for name, target in self.targets.items()
             }
-            self.caps = inflight_caps(demand, durations, capacity, self.max_off_policy_steps)
+            self.caps = inflight_caps(demand, self.durations, capacity, self.max_off_policy_steps)
             uncapped = {
                 name: weight if inflight.get(name, 0) < self.caps[name] else 0.0 for name, weight in weights.items()
             }
@@ -195,24 +193,7 @@ class TrainSource:
                 weights = uncapped
         self.dispatch_weights = weights
         env_name = smooth_round_robin(self.current, weights)
-        self.first_dispatch.setdefault(env_name, time.monotonic())
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
-
-    def duration_estimates(self) -> dict[str, float] | None:
-        """Mean episode duration per env, for the caps. Until an env completes
-        an episode, it is taken to be as slow as the slowest measured env, or
-        as old as its first dispatch, whichever is longer, so the caps split
-        the slots at the steady-state mix from the first completion on."""
-        measured = [self.durations[name] for name in self.env_names if self.completed[name]]
-        if not measured:
-            return None
-        now = time.monotonic()
-        return {
-            name: self.durations[name]
-            if self.completed[name]
-            else max(max(measured), now - self.first_dispatch.get(name, now))
-            for name in self.env_names
-        }
 
     def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
