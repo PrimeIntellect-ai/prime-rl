@@ -23,6 +23,7 @@ import asyncio
 import os
 import time
 import uuid
+from collections import deque
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -501,26 +502,31 @@ class Orchestrator:
         Native episodes are persisted as verifier artifacts. Dispatch failures
         and group cancellations remain internal accounting events.
 
-        The sinks return a finalized batch (or ``None``); we just dispatch on
-        the result."""
+        The eval sink returns a finalized batch (or ``None``); the train sink
+        reports when a batch is ready, which ``ship_train_batch`` builds and ships.
+        Results taken from ``out_q`` meanwhile wait in ``backlog`` and are routed
+        first afterwards."""
+        backlog: deque[vf.Episode | DispatchFailure | GroupCancellation] = deque()
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
-            if self.draining and self.dispatcher.is_idle:
+            if self.draining and not backlog and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
 
-            try:
-                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                self._raise_if_component_stopped()
-                continue
+            if backlog:
+                item = backlog.popleft()
+            else:
+                try:
+                    item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    self._raise_if_component_stopped()
+                    continue
 
             if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
-                train_batch = await self.train_sink.cancel(item)
-                if train_batch is not None and not self.draining and not self.stopped.is_set():
-                    await self.finalize_train_batch(train_batch)
+                if await self.train_sink.cancel(item):
+                    await self.ship_train_batch(backlog)
                 continue
             if isinstance(item, DispatchFailure):
                 if item.kind == "eval":
@@ -529,9 +535,8 @@ class Orchestrator:
                     if eval_batch is not None:
                         await self.finalize_eval_batch(eval_batch)
                 else:
-                    train_batch = await self.train_sink.fail(item)
-                    if train_batch is not None and not self.draining and not self.stopped.is_set():
-                        await self.finalize_train_batch(train_batch)
+                    if await self.train_sink.fail(item):
+                        await self.ship_train_batch(backlog)
                 continue
             episode = item
 
@@ -555,11 +560,28 @@ class Orchestrator:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            train_batch = await self.train_sink.add(episode)
+            if await self.train_sink.add(episode):
+                await self.ship_train_batch(backlog)
+
+    async def ship_train_batch(self, backlog: deque) -> None:
+        """Build and ship the ready train batch while a side task keeps draining
+        ``out_q`` into ``backlog``, so a slow ship never back-pressures the
+        dispatcher. The sink sees nothing new until the ship is done, so batches,
+        step numbering, gate updates and checkpoints match an inline ship."""
+
+        async def drain_out_q() -> None:
+            while True:
+                backlog.append(await self.dispatcher.out_q.get())
+
+        drain_task = asyncio.create_task(drain_out_q())
+        try:
+            batch = await self.train_sink.process_batch()
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
-            if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+            if not self.draining and not self.stopped.is_set():
+                await self.finalize_train_batch(batch)
+        finally:
+            drain_task.cancel()
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
