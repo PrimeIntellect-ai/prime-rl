@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
+from prime_rl.orchestrator.algo.cripo import CriPOAlgorithm
 from prime_rl.orchestrator.algo.debug import DebugAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
@@ -46,6 +47,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
     "hierarchical_grpo": HierarchicalGRPOAlgorithm,
+    "cripo_s": CriPOAlgorithm,
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
@@ -70,6 +72,7 @@ __all__ = [
     "EchoAlgorithm",
     "GRPOAlgorithm",
     "HierarchicalGRPOAlgorithm",
+    "CriPOAlgorithm",
     "MaxRLAlgorithm",
     "OPDAlgorithm",
     "OPSDAlgorithm",
