@@ -25,15 +25,14 @@ import verifiers.v1 as vf
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.orchestrator import live
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import stamp_arrival
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
-from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.eval_sink import EvalSink, log_eval_batch
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -259,36 +258,16 @@ class EvalRunner:
             pending.discard(eval_batch.env_name)
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch through the monitors, mirroring the
-        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
+        """Log one completed eval epoch through the monitors and report it."""
         if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes)
+        await log_eval_batch(batch, policy_version=batch.step)
 
         episodes = batch.episodes
-        effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        if batch.cancelled:
-            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
-            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
-
-        eff, full = effective.metrics, episodes.metrics
+        eff, full = episodes.effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         if batch.cancelled:

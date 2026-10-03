@@ -43,7 +43,7 @@ from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_adm
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
-from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.eval_sink import EvalSink, log_eval_batch
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
@@ -914,38 +914,17 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        # The non-errored subset is logged on epoch completion (multiple eval envs share the
-        # step's trace file — each epoch appends its cohort once, and every record carries
-        # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        if batch.episodes.effective:
-            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-            await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
-        # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
-        # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
-        episodes = batch.episodes
-        effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
-        metrics["step"] = float(batch.step)
-        await monitors.log(metrics, step=batch.step)
+        await log_eval_batch(batch, policy_version=policy_version)
 
         # Success line — quality metrics over the effective set, error rate over the full returned
         # cohort. ``Stat.mean()`` is 0.0 for an empty set.
-        eff, full = effective.metrics, episodes.metrics
+        eff, full = batch.episodes.effective.metrics, batch.episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(

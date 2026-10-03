@@ -1,12 +1,14 @@
-"""Evaluation-side episode, group, and epoch assembly."""
+"""Evaluation-side episode, group, and epoch assembly, and epoch logging."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from prime_rl import monitors
+from prime_rl.orchestrator.annotations import stamp_batch
 from prime_rl.orchestrator.envs import EvalEnvs
-from prime_rl.orchestrator.metrics import EvalEpisodes
+from prime_rl.orchestrator.metrics import EvalEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation
 from prime_rl.orchestrator.utils import episode_env_name, eval_work
 
@@ -82,3 +84,32 @@ class EvalSink:
             failures=self.pending_batch_failures.pop(key, []),
             cancelled=self.pending_batch_cancellations.pop(key, 0),
         )
+
+
+async def log_eval_batch(batch: EvalBatch, *, policy_version: int) -> None:
+    """Log one completed eval epoch through the monitors: its non-errored (``effective``)
+    episodes - the full cohort already streamed into ``all`` on arrival - and its
+    ``eval/{env}/...`` metrics. Shared by the RL orchestrator and the ``EvalRunner``."""
+    episodes = batch.episodes
+    effective = episodes.effective
+    if effective:
+        await monitors.log(effective.vf_episodes, batch.step, "eval", "effective")
+        await monitors.log_annotations(stamp_batch(effective.vf_episodes, batch.step))
+    await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
+
+    # Eval batches are per-env, so there is no ``agg`` axis.
+    metrics: dict[str, float] = {}
+    for subset, pool in (("all", episodes), ("effective", effective)):
+        metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+    total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+    metrics |= dispatch_failure_metrics(
+        batch.failures,
+        prefix=f"eval/{batch.env_name}/all",
+        total_attempts=total_attempts,
+    )
+    if batch.cancelled:
+        metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
+        metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
+    metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+    metrics["step"] = float(batch.step)
+    await monitors.log(metrics, step=batch.step)
