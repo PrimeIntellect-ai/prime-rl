@@ -790,11 +790,11 @@ class Dispatcher:
 
     async def cancel_inflight_episodes(self) -> None:
         """Cancel all in-flight episodes. Used on shutdown — doesn't emit
-        markers since the sinks are being torn down anyway."""
+        markers since the sinks are being torn down anyway, and leaves their
+        live traces in place for a resumed eval to replay."""
         for meta in self.inflight.values():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
             self.release()
-            self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
