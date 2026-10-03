@@ -1,7 +1,9 @@
 """Convert episode traces into a branch-level Hugging Face dataset.
 
 Train and eval runs save one episode per line in `traces.jsonl`. This tool writes one
-dataset row for every branch of every agent trace. It does not select or filter rows.
+dataset row for every branch of every agent trace. It does not select or filter rows,
+except that grader traces (`info.kind == "grade"`, e.g. GAR's grader) are always skipped:
+they see privileged grading materials and must never become training data.
 
 Each row includes `messages` and JSON-encoded `tools` for SFT. It also includes trace,
 agent, task, run, outcome, error, timing, and usage metadata. Scalar outcome fields such
@@ -41,6 +43,10 @@ def jsonable(value: Any) -> Any:
 
 def as_json(value: Any) -> str:
     return json.dumps(jsonable(value))
+
+
+def is_grader_trace(trace: Trace) -> bool:
+    return trace.info.get("kind") == "grade"
 
 
 def trace_rows(episode: WireEpisode, trace: Trace) -> list[dict]:
@@ -156,7 +162,7 @@ def main() -> None:
     if args.local and args.public:
         parser.error("--public cannot be used with --local")
 
-    num_episodes, num_traces, rows = 0, 0, []
+    num_episodes, num_traces, num_grader, rows = 0, 0, 0, []
     with args.traces.open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -164,8 +170,13 @@ def main() -> None:
             num_episodes += 1
             episode = WireEpisode.model_validate(json.loads(line))
             for trace in episode.traces:
+                if is_grader_trace(trace):
+                    num_grader += 1
+                    continue
                 num_traces += 1
                 rows.extend(trace_rows(episode, trace))
+    if num_grader:
+        print(f"traces-to-hf: skipped {num_grader} grader trace(s) (info.kind == 'grade')")
     print(f"traces-to-hf: {num_episodes} episode(s) -> {num_traces} trace(s) -> {len(rows)} branch(es)")
     if not rows:
         raise SystemExit("traces-to-hf: no branches found")
