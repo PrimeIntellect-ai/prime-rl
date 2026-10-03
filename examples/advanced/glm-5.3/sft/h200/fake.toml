@@ -1,5 +1,5 @@
 [model.debug]
-force_balanced_routing = true
+force_balanced_routing = true  # debug only: forces round-robin expert routing; omit for real runs
 
 [data]
 type = "fake"
