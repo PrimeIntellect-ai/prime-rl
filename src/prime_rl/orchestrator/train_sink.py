@@ -15,11 +15,17 @@ least ``failsafe_min_members`` members have finished, the group is scored over
 every finished member (earlier waves and stale members included), and the
 members at the bound are queued at the front of ``pending_batch`` so the next
 cut takes them. Younger finished members wait for the group to complete or
-for their own bound."""
+for their own bound.
+
+With ``continue_prob`` (Never Give Up), a group whose round closes with no
+success is continued with that probability: the train source dispatches
+another group-size round into the same group, and the finished members are
+held until a round succeeds or the group gives up."""
 
 from __future__ import annotations
 
 import asyncio
+import random
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -42,12 +48,23 @@ from prime_rl.utils.logger import get_logger
 
 @dataclass
 class ScoredGroup:
-    """A group the failsafe split into waves, while members are still owed."""
+    """A group scored in more than one pass: split into waves by the failsafe,
+    or continued for another round."""
 
     members: list[vf.Episode] = field(default_factory=list)
-    """Members scored in earlier waves, or stale; later waves are scored with them."""
+    """Members scored in earlier waves or rounds, or stale; later ones are scored with them."""
     accounted: int = 0
-    """Members delivered, failed, or cancelled in earlier waves."""
+    """Members of the current round delivered, failed, or cancelled in earlier waves."""
+    solved: bool = False
+    """Whether an earlier wave of the current round had a success."""
+    held: list[vf.Episode] = field(default_factory=list)
+    """Unscored fresh members of earlier rounds."""
+    continued: bool = False
+
+
+def solved(episodes: list[vf.Episode]) -> bool:
+    """Whether any member succeeded; a positive reward is a success."""
+    return any(trace.reward > 0 for _, trace in iter_trainable_traces(episodes))
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -101,6 +118,7 @@ class TrainSink:
         self.progress = progress
         self.batch_size = batch_size
         self.train_source = train_source
+        self.rng = random.Random(42)
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -134,7 +152,8 @@ class TrainSink:
     def buffered_count(self) -> int:
         episodes = sum(len(group) for group in self.pending_groups.values())
         failures = sum(len(group) for group in self.pending_group_failures.values())
-        return episodes + failures
+        held = sum(len(group.held) for group in self.scored_groups.values())
+        return episodes + failures + held
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
@@ -291,14 +310,49 @@ class TrainSink:
         self.pending_cancelled_attempts += cancelled
         self.pending_stale_attempts += sum(c.count for c in cancellations if c.reason == "stale")
 
-        # Stale members are left out like errored ones, before the algorithm
-        # and the curriculum see the group.
-        stale = [episode for episode in group if self._is_stale(episode)]
-        group = [episode for episode in group if not self._is_stale(episode)]
-        self.pending_episodes.extend(stale, admitted=False, cancelled=True)
-        survivors = [trace for _, trace in iter_trainable_traces(group)]
+        arrived = group
         state = self.scored_groups.pop(group_id, None)
         first = state is None
+        # Held members of earlier rounds join the round's close or a failsafe
+        # wave with a success.
+        held: list[vf.Episode] = []
+        if state is not None and state.held and (not failsafe or solved(group)):
+            held, state.held = state.held, []
+
+        # Stale members are left out like errored ones, before the algorithm
+        # and the curriculum see the group.
+        stale = [episode for episode in held + group if self._is_stale(episode)]
+        held = [episode for episode in held if not self._is_stale(episode)]
+        group = [episode for episode in group if not self._is_stale(episode)]
+        self.pending_episodes.extend(stale, admitted=False, cancelled=True)
+        group_solved = (state is not None and state.solved) or solved(held + group + stale)
+
+        algo = env.config.algo
+        continue_prob = algo.continue_prob if isinstance(algo, GRPOAlgoConfig) else 0.0
+        if not failsafe and continue_prob > 0:
+            # The round closed. With no success yet, continue the group: hold
+            # the fresh members and have the train source dispatch the next
+            # round. Otherwise it is scored below; a group that gives up has
+            # zero advantages.
+            tried = bool(held or group or stale or (state is not None and state.members))
+            if not group_solved and tried and self.rng.random() < continue_prob:
+                state = state or ScoredGroup()
+                state.members += stale
+                state.held, state.accounted, state.continued = held + group, 0, True
+                self.scored_groups[group_id] = state
+                self.train_source.close_round(group_id, True)
+                self.event_counts["ngu/continued_groups"] += 1
+                self._record_zero_output(arrived, [], n_owed)
+                return
+            if not group_solved and tried:
+                self.event_counts["ngu/gave_up"] += 1
+            elif state is not None and state.continued:
+                self.event_counts["ngu/solved_after_continue"] += 1
+        if not failsafe:
+            self.train_source.close_round(group_id, False)
+
+        group = held + group
+        survivors = [trace for _, trace in iter_trainable_traces(group)]
         if first and not failsafe:
             if survivors:
                 await env.algorithm.finalize_group(group)
@@ -309,14 +363,17 @@ class TrainSink:
             if failsafe:
                 # Only members at the bound ship now. Younger ones wait for the
                 # group to complete, or for the failsafe at their own bound.
-                waiting = [e for e in group if self._age(e) < self.config.max_off_policy_steps]
+                bound = self.config.max_off_policy_steps
+                waiting = [e for e in group[len(held) :] if self._age(e) < bound]
                 if waiting:
                     self.pending_groups[group_id] = waiting
-                group = [e for e in group if self._age(e) == self.config.max_off_policy_steps]
+                state.held += [e for e in held if self._age(e) < bound]
+                group = [e for e in group if self._age(e) == bound]
                 survivors = [trace for _, trace in iter_trainable_traces(group)]
                 n_owed -= len(waiting)
             state.members += stale + group
             state.accounted += n_owed
+            state.solved = group_solved
             if state.accounted < self.group_size_for(env_name):
                 self.scored_groups[group_id] = state
             if first:
@@ -324,8 +381,9 @@ class TrainSink:
         if first and not failsafe:
             admitted = bool(group) and self.train_source.on_result(group)
         else:
-            # Early waves only pass the curriculum's gates; its sampler sees
-            # the group once, with every finished member, when it completes.
+            # Early waves and later rounds only pass the curriculum's gates; its
+            # sampler sees the group once, with every finished member of every
+            # round, when it completes.
             admitted = bool(group) and self.train_source.on_result(group, observe=False)
             if not failsafe:
                 self.train_source.observe(state.members)
