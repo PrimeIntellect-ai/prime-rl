@@ -14,17 +14,21 @@ from prime_rl.monitors.file.traces.live import STAGES, stage
 from prime_rl.orchestrator.types import InflightEpisode, LiveTrace
 
 
+def task_label(data: Any) -> str:
+    """How a dispatch names its task: the task's name, else its index."""
+    name = getattr(data, "name", None)
+    return str(name) if name else f"idx={data.idx}"
+
+
 def dispatch_info(meta: InflightEpisode) -> dict[str, Any]:
     """Who an in-flight episode is, stamped on the first line of each of its live traces
     and on its pending placeholder."""
-    data = meta.task.data
-    name = getattr(data, "name", None)
     return {
         "id": meta.dispatch_id,
         "kind": meta.kind,
         "env": meta.env_name,
         "group": str(meta.group_id),
-        "task": str(name) if name else f"idx={data.idx}",
+        "task": task_label(meta.task.data),
         "policy_version": meta.policy_version,
         "step": meta.step,
         "started": time.time() - (time.monotonic() - meta.started_at) if meta.started_at else None,

@@ -76,8 +76,9 @@ def take_landed(run_dir: Path) -> list[dict]:
     return list(landed.values())
 
 
-def take_partial(run_dir: Path) -> dict[str, list[list[dict]]]:
-    """The eval episodes earlier attempts cut off, per env, each as its newest live traces. A resumed rollout keeps its trace ids, so a later attempt's copy of a trace
+def take_partial(run_dir: Path) -> dict[str, dict[str, list[list[dict]]]]:
+    """The eval episodes earlier attempts cut off, per env and per task as their dispatch
+    names it, each as its newest live traces. A resumed rollout keeps its trace ids, so a later attempt's copy of a trace
     supersedes an earlier one and joins its episode; a trace that landed, ok or errored, is
     never partial."""
     current = get_file_monitor_dir(run_dir)
@@ -91,7 +92,7 @@ def take_partial(run_dir: Path) -> dict[str, list[list[dict]]]:
         for trace in record.get("traces") or []
     }
     live = get_live_dir(run_dir).relative_to(current)
-    episodes: dict[str, tuple[str, dict[str, dict]]] = {}
+    episodes: dict[str, tuple[str, str, dict[str, dict]]] = {}
     owner: dict[str, str] = {}
     for directory in attempts:
         for path in sorted((directory / live).glob("*.jsonl")):
@@ -100,18 +101,18 @@ def take_partial(run_dir: Path) -> dict[str, list[list[dict]]]:
             dispatch, trace = read
             if dispatch.get("kind") != "eval" or trace["id"] in done:
                 continue
-            env_name, traces = episodes.setdefault(dispatch["id"], (dispatch["env"], {}))
+            _, _, traces = episodes.setdefault(dispatch["id"], (dispatch["env"], dispatch["task"], {}))
             previous = owner.get(trace["id"])
             if previous is not None and previous != dispatch["id"]:
-                traces.update(episodes.pop(previous)[1])
+                traces.update(episodes.pop(previous)[2])
                 owner.update(dict.fromkeys(traces, dispatch["id"]))
             traces[trace["id"]] = trace
             owner[trace["id"]] = dispatch["id"]
-    partial: dict[str, list[list[dict]]] = defaultdict(list)
+    partial: dict[str, dict[str, list[list[dict]]]] = defaultdict(lambda: defaultdict(list))
     # newest attempts first: their episodes carry the most progress
-    for env_name, traces in reversed(episodes.values()):
-        partial[env_name].append(list(traces.values()))
-    return dict(partial)
+    for env_name, task, traces in reversed(episodes.values()):
+        partial[env_name][task].append(list(traces.values()))
+    return {env_name: dict(tasks) for env_name, tasks in partial.items()}
 
 
 def plan(
