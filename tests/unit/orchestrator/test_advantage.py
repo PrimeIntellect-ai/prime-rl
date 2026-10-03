@@ -8,6 +8,7 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
+from prime_rl.orchestrator.algo.gar import redistribute, win_rates
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
@@ -268,3 +269,23 @@ def test_assign_advantages_rejects_misaligned():
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
         assign_advantages(episode.traces[0], [0.5])
+
+
+def test_gar_redistribution():
+    assert win_rates([["c1"], ["c2", "c3"], ["c4"]]) == {"c1": 1.0, "c2": 0.5, "c3": 0.5, "c4": 0.0}
+    assert win_rates([["c1", "c2"]]) == {"c1": 0.5, "c2": 0.5}
+    assert win_rates([["c1"]]) == {"c1": 1.0}
+
+    # f = 0.5 + 0.5 * win rate keeps the passes' total credit: lambda = 1 / mean(f) = 4/3.
+    advantages, lam = redistribute([1.0, 1.0, 1.0, 0.0], [1.0, 0.75, 0.5, 1.0], lambda_max=1.5)
+    assert lam == pytest.approx(4 / 3)
+    assert advantages == pytest.approx([1 / 3, 0.25, 1 / 6, -0.75])
+
+    # A binding cap shrinks the passes' mass; re-centering restores a zero-mean group.
+    advantages, lam = redistribute([1.0, 1.0, 1.0, 0.0], [1.0, 0.75, 0.5, 1.0], lambda_max=1.2)
+    assert lam == 1.2
+    assert sum(advantages) == pytest.approx(0.0)
+    assert advantages[0] > advantages[1] > advantages[2] > 0 > advantages[3]
+
+    # No pass (e.g. every pass was a confirmed hack, zeroed): plain zero advantages.
+    assert redistribute([0.0, 0.0], [1.0, 1.0], lambda_max=1.5) == ([0.0, 0.0], 1.0)

@@ -19,6 +19,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Default Advantage](#default-advantage)
   - [Hierarchical GRPO](#hierarchical-grpo)
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
+  - [Groupwise Advantage Redistribution (GAR)](#groupwise-advantage-redistribution-gar)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
 - [Curricula](#curricula)
@@ -74,6 +75,7 @@ type = "grpo"  # the default
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
+| `gar` | policy | `rl` on actions | GAR (MiMo-V2.6 §4.3.2): GRPO whose mixed groups an agentic grader screens for hacks and ranks by quality; confirmed hacks get reward 0 and the passes' credit is redistributed by rank. Needs a `grader`. See [GAR](#groupwise-advantage-redistribution-gar). |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
 
 ### Customizing Components
@@ -151,6 +153,7 @@ At runtime, each env's resolved config builds two objects: a `GenerationSource` 
 | `opd` | `OPDAlgorithm` | `score_episode`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_episode`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | no credit assignment; CE on sampled tokens |
+| `gar` | `GARAlgorithm` | `score_group`: GRPO credit with hack zeroing and grader-ranked redistribution on mixed groups |
 
 Algorithms operate on native verifier artifacts and annotate their message graphs directly:
 
@@ -402,6 +405,31 @@ env.player1.runtime.type = "subprocess"
 ```
 
 Both of `kuhn-poker`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.
+
+### Groupwise Advantage Redistribution (GAR)
+
+`gar` is GRPO for code-agent tasks whose binary test reward cannot tell a clean fix from a sloppy one, or from a hack (MiMo-V2.6 §4.3.2). Every *mixed* group (at least one pass and one fail) is graded by an agent that sees the whole group in one fresh sandbox. All-pass and all-fail groups are plain GRPO.
+
+- **Grader.** The `group-grade` verifiers taskset wraps the source's own taskset (`inner`). Its box holds the inner task's setup, one git branch per candidate with that candidate's `info.patch`, the hidden tests (`stage_verifier`), and a digest plus the full transcript of every candidate. The network is blocked. The grader runs on a frozen model and writes a `GroupVerdict`: a hack level per candidate (`none` / `suspected` / `confirmed`, with cited turn and quote), five quality axes for the passes, the tests it ran, a ranking of the passes in tiers, and its confidence. The launcher serves the grader as an env server of split `grade`.
+- **Hacks.** A `confirmed` hack whose quotes are not found verbatim in the cited turns is downgraded to `suspected`. Only confirmed hacks are applied: their reward becomes 0 *before* the group statistics, so they get a negative advantage.
+- **Redistribution (Eq. 3).** With `A = R − mean(R)` and P the passes, each pass gets `f = f_min + (1 − f_min) · w`, where `w` is its win rate among the ranked passes (a lower tier counts 1, a tie ½), shrunk toward ½ at medium (×0.5) and low (×0) confidence. Then `A'_i = λ f_i A_i` on P with `λ = Σ_P A / Σ_P f A` capped at `lambda_max`, and the group is re-centered to zero mean. A pass always keeps a positive advantage, so grader noise only moves credit among passes.
+- **Fallback.** A grader timeout (`grader.timeout`), error, or invalid verdict keeps the group's plain GRPO advantages.
+- **Latency.** Group finalization runs in the background, so a grading group does not block the pipeline. Groups that turn stale while being graded are dropped like other stale groups.
+- **Evidence.** Each candidate trace carries `info.gar` (label, hack, evidence, axes, tier, `w`, `f`, `λ`, fallback reason, grader trace id), written as a trace annotation. The grader's own episode is logged with kind `grade`. Trace metrics under `gar/` give the graded share, fallback rate by reason, hack rates, `f`, `λ`, latency, and grader tokens and cost.
+
+```toml
+[orchestrator.train.algo]
+type = "gar"
+lambda_max = 1.5
+
+[orchestrator.train.algo.grader]
+model = { name = "zai-org/GLM-5.2", base_url = "http://grader:8000/v1" }
+env = { taskset = { id = "group-grade", task = { inner = { id = "r2e-gym" } } }, agent = { harness = { id = "rlm" } } }
+timeout = 1800
+max_concurrent = 32
+```
+
+The inner taskset must capture `info.patch` (the SWE tasksets in prime-envs do) and implement `stage_verifier` to expose its hidden tests. `examples/advanced/glm-5.3/swe-gar.toml` turns GAR on for the GLM-5.3 SWE run.
 
 ### Authoring an Algorithm
 

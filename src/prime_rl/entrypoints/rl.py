@@ -136,7 +136,7 @@ def rl_local(config: RLConfig):
             trainer=True,
             orchestrator=True,
             inference=config.inference is not None,
-            env_names={split: env_server_names(config, split) for split in ("train", "eval")},
+            env_names={split: env_server_names(config, split) for split in ("train", "eval", "grade")},
         )
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
@@ -456,9 +456,10 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         else {}
     )
 
-    # Env servers launch next to the orchestrator, one per launcher-managed train/eval source.
+    # Env servers launch next to the orchestrator, one per launcher-managed train/eval/grade source.
     train_env_names = env_server_names(config, "train")
     eval_env_names = env_server_names(config, "eval")
+    grade_env_names = env_server_names(config, "grade")
 
     nixl_broadcast = (
         config.weight_broadcast
@@ -531,6 +532,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            grade_env_names=grade_env_names,
             **modelexpress_vars,
         )
     else:
@@ -572,6 +574,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            grade_env_names=grade_env_names,
             **modelexpress_vars,
         )
 
@@ -596,13 +599,14 @@ def rl_slurm(config: RLConfig):
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")
+        grade_env_names = env_server_names(config, "grade")
 
         log_message = format_log_message(
             log_dir=log_dir,
             trainer=True,
             orchestrator=True,
             inference=True,
-            env_names={"train": train_env_names, "eval": eval_env_names},
+            env_names={"train": train_env_names, "eval": eval_env_names, "grade": grade_env_names},
         )
     else:
         write_subconfigs(config, config_dir)
@@ -610,6 +614,7 @@ def rl_slurm(config: RLConfig):
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")
+        grade_env_names = env_server_names(config, "grade")
 
         has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(
@@ -617,7 +622,7 @@ def rl_slurm(config: RLConfig):
             trainer=True,
             orchestrator=has_infer,
             inference=has_infer,
-            env_names={"train": train_env_names, "eval": eval_env_names},
+            env_names={"train": train_env_names, "eval": eval_env_names, "grade": grade_env_names},
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes if has_infer else 0,
         )

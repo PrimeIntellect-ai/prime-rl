@@ -9,6 +9,7 @@ from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
+    GARAlgoConfig,
     GRPOAlgoConfig,
 )
 from prime_rl.configs.monitors import TrainMonitorsConfig
@@ -314,6 +315,13 @@ class TrainSourceConfig(EnvConfig):
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
+
+    @property
+    def grade_source(self) -> EnvConfig | None:
+        """The ``gar`` grader's env server, named after this source; None for other algorithms."""
+        if not isinstance(self.algo, GARAlgoConfig):
+            return None
+        return EnvConfig(name=self.resolved_name, env=self.algo.grader.env, serve=self.algo.grader.serve)
 
 
 class EvalSourceConfig(EnvConfig):
@@ -809,8 +817,10 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_sources(self) -> list[tuple[str, EnvConfig]]:
         """Every ``(split, source)`` this run pulls from, train first then eval — the
-        order that fixes each source's deterministic env-server port."""
+        order that fixes each source's deterministic env-server port. A ``gar`` train
+        source adds its grader as split ``grade``."""
         sources: list[tuple[str, EnvConfig]] = [("train", source) for source in self.train.source]
+        sources += [("grade", grade) for source in self.train.source if (grade := source.grade_source) is not None]
         if self.eval is not None:
             sources += [("eval", source) for source in self.eval.source]
         return sources
