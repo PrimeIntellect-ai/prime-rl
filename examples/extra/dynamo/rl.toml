@@ -19,6 +19,7 @@ group_size = 8
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024
+top_p = 1.0 # the external Dynamo worker does not return the sampling masks that sampling replay needs
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"

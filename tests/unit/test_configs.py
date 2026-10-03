@@ -501,51 +501,74 @@ def test_group_defaults_match_source_defaults(group):
 
 
 def test_policy_sources_accept_different_top_p_values():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        config = OrchestratorConfig.model_validate(
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {
+                        "name": "top-p-95",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.95},
+                    },
+                    {
+                        "name": "top-p-97",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"top_p": 0.97},
+                    },
+                ]
+            },
+        }
+    )
+
+    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+
+
+def test_policy_sources_reject_mixed_top_k_capture():
+    with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
+        OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
                 "train": {
                     "source": [
                         {
-                            "name": "top-p-95",
+                            "name": "truncated",
                             "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.95},
                         },
                         {
-                            "name": "top-p-97",
+                            "name": "untruncated",
                             "env": {"taskset": {"id": "reverse-text"}},
-                            "sampling": {"top_p": 0.97},
+                            "sampling": {"top_p": 1.0},
                         },
                     ]
                 },
             }
         )
 
-    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
 
+def test_default_train_sampling_replays_except_frozen_sources():
+    source = {"env": {"taskset": {"id": "reverse-text"}}}
+    frozen = {
+        **source,
+        "name": "distill",
+        "algo": {"type": "sft", "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8001/v1"}}},
+    }
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {"train": {"sampling": {"max_completion_tokens": 128}, "source": [source, frozen]}},
+            "inference": {},
+        }
+    )
+    policy, teacher = (s.sampling for s in config.orchestrator.train.source)
+    assert (policy.top_p, policy.top_k) == (0.97, 512)
+    assert (teacher.top_p, teacher.top_k) == (1.0, None)
+    assert config.inference.enable_return_sampling_mask
 
-def test_policy_sources_reject_mixed_top_k_capture():
-    with pytest.warns(UserWarning, match="defaulting top_k"):
-        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
-            OrchestratorConfig.model_validate(
-                {
-                    "renderer": {"name": "qwen3"},
-                    "train": {
-                        "source": [
-                            {
-                                "name": "truncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                                "sampling": {"top_p": 0.95},
-                            },
-                            {
-                                "name": "untruncated",
-                                "env": {"taskset": {"id": "reverse-text"}},
-                            },
-                        ]
-                    },
-                }
-            )
+    with pytest.raises(ValidationError, match="temperature 0"):
+        OrchestratorConfig.model_validate(
+            {"train": {"source": [source]}, "eval": {"sampling": {"temperature": 0}, "source": [source]}}
+        )
 
 
 def test_single_node_auto_inference_ports_follow_server_port():
