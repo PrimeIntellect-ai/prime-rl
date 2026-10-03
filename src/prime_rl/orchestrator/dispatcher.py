@@ -141,6 +141,7 @@ class Dispatcher:
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        prioritize_by_deadline: bool,
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
@@ -155,6 +156,7 @@ class Dispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
+        self.prioritize_by_deadline = prioritize_by_deadline
         self.run_id = run_id
         self.run_name = run_name
         # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
@@ -559,10 +561,14 @@ class Dispatcher:
         # Frozen-sourced train rollouts hit a frozen pool; salting per policy
         # version would invalidate its prefix cache every weight update for
         # no reason.
+        # vLLM serves the lowest priority first: the version past which the group is dropped as stale.
         if live_sourced:
             cache_salt = str(group.policy_version_at_start)
+            priority = (
+                group.policy_version_at_start + self.max_off_policy_steps if self.prioritize_by_deadline else None
+            )
         else:
-            cache_salt = None
+            cache_salt = priority = None
 
         group.episodes_to_schedule -= 1
         await self.acquire()
@@ -596,6 +602,7 @@ class Dispatcher:
                     client=client,
                     model_name=model_name,
                     cache_salt=cache_salt,
+                    priority=priority,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
                 )

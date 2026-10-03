@@ -594,6 +594,9 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 
+    prioritize_by_deadline: bool = False
+    """Send each policy request a vLLM ``priority`` equal to its group's staleness deadline: the dispatch version plus ``max_off_policy_steps``. Rollouts closest to being dropped are scheduled first and preempted last. Requires the inference server to run ``scheduling_policy = "priority"``, which the ``rl`` entrypoint sets."""
+
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 

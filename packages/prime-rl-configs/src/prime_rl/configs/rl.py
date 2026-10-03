@@ -500,6 +500,26 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_priority_scheduling(self):
+        if not self.orchestrator.prioritize_by_deadline:
+            return self
+        if self.inference is None:
+            warnings.warn(
+                "orchestrator.prioritize_by_deadline is set, but inference is not configured. When manually "
+                "starting the inference server, pass `--scheduling-policy priority`; vLLM ignores request "
+                "priorities under the default FCFS policy.",
+                stacklevel=2,
+            )
+            return self
+        policy = getattr(self.inference.vllm, "scheduling_policy", "priority")
+        if policy != "priority":
+            raise ValueError(
+                f"orchestrator.prioritize_by_deadline needs inference.vllm.scheduling_policy = 'priority', got {policy!r}."
+            )
+        self.inference.vllm.scheduling_policy = "priority"
+        return self
+
+    @model_validator(mode="after")
     def validate_llmd_no_routed_experts(self):
         """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
 
