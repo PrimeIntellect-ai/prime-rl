@@ -490,8 +490,8 @@ class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
 
-    weight_decay: float = Field(0.01, ge=0)
-    """L2 weight-decay coefficient."""
+    weight_decay: Annotated[float, Field(ge=0)] | Literal["auto"] = "auto"
+    """L2 weight-decay coefficient. ``"auto"`` (default) resolves to ``0.0`` for RL and ``0.01`` for SFT."""
 
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
@@ -770,6 +770,13 @@ class TrainerConfig(BaseConfig):
         """Resolve ``model.moe_router_dtype='auto'``: RL routes in fp32, matching the fp32-routed checkpoints it trains from (e.g. GLM-5.x)."""
         if self.model.moe_router_dtype == "auto":
             self.model.moe_router_dtype = "float32"
+        return self
+
+    @model_validator(mode="after")
+    def resolve_weight_decay_auto(self):
+        """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = 0.0
         return self
 
     @model_validator(mode="after")

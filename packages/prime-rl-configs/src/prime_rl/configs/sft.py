@@ -276,6 +276,13 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def resolve_weight_decay_auto(self):
+        """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = 0.01
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
         default the run directory, W&B run name and platform run name to it when not
