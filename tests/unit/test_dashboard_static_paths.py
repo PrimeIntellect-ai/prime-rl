@@ -12,5 +12,5 @@ def test_index_html_has_no_absolute_refs():
 
 def test_app_js_has_no_absolute_api_paths():
     js = (STATIC_DIR / "app.js").read_text()
-    assert 'fetch(path)' not in js
+    assert "fetch(path)" not in js
     assert 'EventSource("/api/' not in js
