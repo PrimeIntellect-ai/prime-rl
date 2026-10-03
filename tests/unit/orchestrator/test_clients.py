@@ -104,6 +104,7 @@ def test_setup_client_creates_renderer_client():
 
     assert client.type == "train"
     assert client.renderer == renderer_settings
+    assert client.protocol == "tito"
     assert client.renderer_model_name is None
     assert client.base_url == "http://worker-a:8000/v1"
     assert "X-data-parallel-rank" not in client.headers
@@ -154,3 +155,13 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+def test_setup_client_selects_mito_training():
+    client = setup_client(ClientConfig(base_url="http://worker-a:8000/v1"), client_type="mito")
+
+    assert client.type == "train"
+    assert client.protocol == "mito"
+    assert client.base_url == "http://worker-a:8000/v1"
+    assert client.renderer is None
+    assert client.renderer_model_name is None

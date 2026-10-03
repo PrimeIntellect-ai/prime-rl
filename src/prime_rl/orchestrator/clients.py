@@ -265,15 +265,18 @@ def setup_client(
     """Build a v1 client config for the base URL. ``client_type``
     ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
     server should use forwarded as a serialized config so it doesn't fall back to the
-    default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
+    default renderer); ``mito`` → exact-token chat training; otherwise plain
+    chat-completions (``EvalClientConfig``)."""
     is_renderer = client_type == "renderer"
-    config_cls = TrainClientConfig if is_renderer else EvalClientConfig
+    config_cls = TrainClientConfig if client_type in ("renderer", "mito") else EvalClientConfig
     renderer_extra: dict = {}
     if is_renderer:
         renderer_extra = {
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
+    elif client_type == "mito":
+        renderer_extra = {"protocol": "mito"}
     headers = resolve_headers(client_config)
     return config_cls(
         base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
