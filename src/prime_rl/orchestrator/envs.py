@@ -28,7 +28,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, PrefixSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import format_time, get_logger
@@ -120,6 +120,7 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        prefix: vf.Prefix | None = None,
     ) -> vf.WireEpisode:
         """Run and return one typed episode. A failed multi-trace episode marks
         its otherwise-clean traces failed so partial episodes never train.
@@ -131,6 +132,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
+            prefix=prefix,
         )
         for trace in episode.traces:
             if not episode.ok and trace.ok:
@@ -220,7 +222,7 @@ class Envs(Generic[EnvT]):
 class TrainEnvs(Envs[TrainEnv]):
     """Collection of training environments, each paired with its
     :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
-    resolved algorithm config."""
+    resolved algorithm config. A prefix source's name resolves to its env."""
 
     def __init__(
         self,
@@ -230,7 +232,9 @@ class TrainEnvs(Envs[TrainEnv]):
         *,
         clients,
         renderer_config=None,
+        prefixes: Sequence[PrefixSourceConfig] = (),
     ):
+        self.prefix_envs = {prefix.name: prefix.env for prefix in prefixes}
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
@@ -242,6 +246,9 @@ class TrainEnvs(Envs[TrainEnv]):
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
+
+    def get(self, name: str) -> TrainEnv:
+        return self._envs[self.prefix_envs.get(name, name)]
 
 
 class EvalEnvs(Envs[EvalEnv]):

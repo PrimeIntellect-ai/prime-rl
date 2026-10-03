@@ -378,9 +378,61 @@ class SourceGroupConfig(BaseConfig):
         return data
 
 
+class PrefixSourceConfig(BaseConfig):
+    """A train source whose groups continue recent rollouts of a train env from a
+    model call deep inside them, instead of from the task start (prefix replay). Each
+    group replays the first calls of one recent fresh-start episode of ``env``: the
+    env server answers those calls with the recorded completions, in order, while the
+    harness runs the recorded actions on a fresh sandbox; the following calls are
+    sampled. All ``group_size`` rollouts of a group continue the same episode from the
+    same call, and only the sampled calls train."""
+
+    name: str
+    """Mixer source name, unique among train env and prefix names; metrics are keyed by it."""
+
+    env: str
+    """Name of the train env whose episodes are continued, on that env's servers."""
+
+    ratio: float = Field(1.0, gt=0)
+    """Target share of this source's prompts (groups) in each training batch, in the
+    same units as the train envs' ``ratio``. While no buffered episode is eligible, the
+    source is not dispatched and batches do not wait for its share."""
+
+    rollouts: Literal["all", "failed", "passed", "mixed"] = "all"
+    """Which fresh episodes may be continued: all, those with reward below
+    ``pass_threshold``, those at or above it, or any episode of a group that has both."""
+
+    pass_threshold: float = 1.0
+    """Reward at which an episode counts as passed for ``rollouts``."""
+
+    depth: tuple[float, float] = (0.2, 0.9)
+    """Range of the cut as a fraction of the episode's model calls: calls before the cut
+    are replayed, the rest are sampled. The cut is drawn uniformly and is at least 1 and
+    at most the number of calls minus 1."""
+
+    max_age: int = Field(4, ge=0)
+    """Steps between an episode's dispatch and the dispatch of its continuations."""
+
+    buffer_size: int = Field(256, ge=1)
+    """Most recent eligible episodes kept."""
+
+    uses: int = Field(1, ge=1)
+    """Groups dispatched per buffered episode, each from an independently drawn cut."""
+
+    @model_validator(mode="after")
+    def validate_depth(self):
+        lo, hi = self.depth
+        if not 0 <= lo < hi <= 1:
+            raise ValueError(f"depth must satisfy 0 <= lo < hi <= 1, got {self.depth}")
+        return self
+
+
 class TrainConfig(SourceGroupConfig):
     source: list[TrainSourceConfig] = Field(default_factory=list)
     """Training sources."""
+
+    prefix: list[PrefixSourceConfig] = Field(default_factory=list)
+    """Prefix-replay sources: groups that continue recent episodes of a train env."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Sampling that every training source inherits."""
@@ -403,6 +455,18 @@ class TrainConfig(SourceGroupConfig):
             raise ValueError(
                 f"Duplicate training environment names: {set(duplicates)}. Each env must have a unique name."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_prefix_sources(self):
+        env_names = [env.resolved_name for env in self.source]
+        names = env_names + [prefix.name for prefix in self.prefix]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"Prefix source names must be unique among train env and prefix names: {duplicates}")
+        unknown = {prefix.env for prefix in self.prefix} - set(env_names)
+        if unknown:
+            raise ValueError(f"Prefix sources name unknown train envs: {unknown}")
         return self
 
 

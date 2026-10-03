@@ -211,6 +211,32 @@ Everything environment lives under the `env` block (verifiers' `[env]` shape): `
 
 The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 
+#### Prefix sources
+
+A prefix source is a training source whose groups continue a recent episode of a train env from a model call inside it, instead of from the task start:
+
+```toml
+[[orchestrator.train.prefix]]
+name = "swe-prefix"   # mixer source name; metrics are keyed by it
+env = "swe"           # continue episodes of this train env, on its servers
+ratio = 0.25          # prompt share, in the same units as the envs' `ratio`
+rollouts = "all"      # all | failed | passed | mixed (by `pass_threshold`, default 1.0)
+depth = [0.2, 0.9]    # cut, as a fraction of the episode's model calls
+max_age = 4           # steps between the episode's dispatch and its continuations
+buffer_size = 256     # most recent eligible episodes kept
+uses = 1              # groups per buffered episode
+```
+
+Every finished fresh-start group of `env` feeds the buffer, including groups that do not train (all-pass or all-fail). Only clean single-trace episodes with at least two model calls are kept. A prefix group picks one episode and draws one cut. All `group_size` rollouts of the group start the task fresh, and the env server answers their first `cut` model calls with the episode's recorded completions, in order. The harness runs the recorded actions on the fresh sandbox, then the remaining calls are sampled. The model always sees the real tool outputs: replay does not check whether they match the recording, it only measures it. Only the sampled calls train. Each group is one GRPO group with the env's normal reward. Prefix groups skip the env's curriculum, and eval never uses them. While no buffered episode is eligible (at cold start, after the `max_age` expiry, or after an outage), the source gets dispatch weight 0, and batches do not wait for its quota. The buffer is not checkpointed. It refills within a step after a resume.
+
+The prefix source's episodes are logged under its own name (`train/swe-prefix/...`), next to the env's fresh-start metrics. `prefix/<name>/` adds `buffer_size`, `age`, `cut_frac` and `realized_cut_frac` (requested and replayed cut as a fraction of the source episode's calls; they differ only when a rollout ended before its cut), `obs_changed_frac` (share of replayed calls whose new observation differs from the recording), `continuation_reward` and `source_reward`.
+
+Interactions with other training features:
+
+- Prompt-mean loss aggregation counts only loss tokens, so a prefix group weighs the same as a fresh prompt. The replayed calls are context.
+- Length and cost penalties count only the sampled calls. Replayed calls carry no usage, so output tokens, cost and turns exclude them. Input tokens of sampled calls include the replayed context, which is the real cost of continuing from that state.
+- A grader that compares a group's trajectories (for example, a GAR-style judge) sees an identical replayed start in all of them. Its prompt should say that the turns before the cut are shared.
+
 ### Environment Variables
 
 OS environment variables exported into launched component process(es). In `rl` configs, top-level `[env_vars]` applies to trainer, inference, and orchestrator:
