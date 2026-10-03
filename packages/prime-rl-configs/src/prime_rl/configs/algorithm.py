@@ -217,6 +217,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     loss_aggregation: Literal["token", "prompt"] = "token"
     """How the rl loss weights tokens across prompt groups. ``token``: every loss token in the batch weighs the same, so groups with more total tokens dominate the gradient. ``prompt``: prompt-mean (MiMo-V2.6 Eq. 1) — each trainable token of group ``q`` gets rl weight ``1 / T_q`` (``T_q`` = the group's trainable tokens), and the trainer divides the rl loss by the summed weights, i.e. the number of groups. All rl envs of a run must use the same value."""
 
+    continue_prob: float = Field(0.0, ge=0, lt=1)
+    """Never Give Up (arXiv:2609.13443): when a group's round closes with no success (rewards read as binary: no positive reward), dispatch another ``group_size`` rollouts into the same group with this probability. The group is scored once a round succeeds, over the members of all rounds; members that went stale count in the baseline only. 0 disables it."""
+
 
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]

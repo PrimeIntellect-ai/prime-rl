@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+import uuid
+from collections import defaultdict, deque
+from dataclasses import replace
 from typing import Any
 
 import verifiers.v1 as vf
@@ -34,10 +36,27 @@ class TrainSource:
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
+        self.open_groups: dict[str, TaskRequest] = {}
+        """Request of each open train group, by group id."""
+        self.continued_groups: deque[str] = deque()
+        """Groups whose next round is owed, dispatched before any new task."""
 
     def next_task(self, *, step: int) -> TaskRequest:
+        if self.continued_groups:
+            return replace(self.open_groups[self.continued_groups.popleft()], step=step)
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
+        task = next(self.curricula[env_name].sampler)
+        request = TaskRequest(env_name=env_name, task=task, step=step, group_id=str(uuid.uuid4()))
+        self.open_groups[request.group_id] = request
+        return request
+
+    def close_round(self, group_id: str, continued: bool) -> None:
+        """A round of a group closed: queue the next round of the same task and
+        group (Never Give Up), or forget the group."""
+        if continued:
+            self.continued_groups.append(group_id)
+        else:
+            del self.open_groups[group_id]
 
     def on_result(self, group: list[vf.Episode], *, observe: bool = True, count: bool = True) -> bool:
         """Report a finalized group and return whether it should train;
