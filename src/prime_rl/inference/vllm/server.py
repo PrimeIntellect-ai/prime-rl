@@ -18,30 +18,6 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
-from prime_rl.inference.patches import (
-    monkey_patch_dp_coordinator_startup_timeout,
-    monkey_patch_nano_v3_reasoning_parser,
-    monkey_patch_strip_routed_experts_from_chat,
-    monkey_patch_tokenize_params_validation,
-)
-
-# NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.30 — upstream rejects prompt_len > max_model_len - max_tokens
-monkey_patch_tokenize_params_validation()
-# NOTE: Register Nano V3 reasoning parser so configs can use
-# `reasoning_parser = "nano_v3"` without a vLLM plugin file.
-monkey_patch_nano_v3_reasoning_parser()
-# NOTE: routed_experts are consumed only via the serialized /generate path (router
-# replay). The chat-completions path encodes them as a base64 np.save string the PD
-# router cannot merge, which fails eval rollouts (they use chat completions). Strip
-# routed_experts from chat responses since the server-wide enable flag has no
-# per-request toggle.
-monkey_patch_strip_routed_experts_from_chat()
-# NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
-# API server blows through when all engine-core ranks on the node are loading
-# weights concurrently (multi-node disaggregated deployments).
-monkey_patch_dp_coordinator_startup_timeout()
-
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
 # Create our own router for custom endpoints
