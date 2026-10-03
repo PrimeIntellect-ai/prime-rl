@@ -14,7 +14,7 @@ turns the signal half into runtime objects (the sampling half is the env's
   subclass :class:`Algorithm`, assign advantages in the hook whose timing fits,
   and register it below.
 - ``base`` — the :class:`Algorithm` base class. Algorithms annotate native
-  verifier graphs; transport samples are compiled only after admission.
+  verifier graphs; transport samples are compiled only after group scoring.
 - ``routing`` — graph annotation and final transport loss routing.
 """
 

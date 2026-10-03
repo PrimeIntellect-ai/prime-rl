@@ -47,7 +47,7 @@ class Algorithm:
 
     Override :meth:`score_episode` for rollout-local work and
     :meth:`score_group` for cohort-relative work. The train sink compiles the
-    annotated traces into transport samples only after admission.
+    annotated traces into transport samples only after group scoring.
     """
 
     def __init__(self, config: AlgoConfig, clients: InferenceClient):

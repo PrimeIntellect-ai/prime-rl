@@ -115,9 +115,9 @@ All metrics print to the console log (and W&B when configured).
 **Progress** — orchestrator log. Rollout metrics mirror the episode/trace hierarchy, at two levels:
 
 - `{scope}/{subset}/<metric>/<stat>` — episode-level facts only: the token/turn/branch counts, summed over an episode's traces.
-- `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, curriculum admission, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
+- `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
 
-`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (admitted, clean, and trainable). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
+`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (sampled into a batch, clean, and trainable). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
 
 | Metric | Description |
 |--------|-------------|
@@ -128,7 +128,6 @@ All metrics print to the console log (and W&B when configured).
 | `train/agg/effective/<agent>/is_truncated/mean` | fraction of that agent's rollouts truncated |
 | `train/agg/all/<agent>/has_error/mean` | fraction of that agent's rollouts errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
 | `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge |
-| `train/agg/all/<agent>/is_admitted/mean` | fraction accepted by the source curriculum; per-source counters and custom policy metrics live under `curriculum/<env>/` |
 | `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics for that agent (e.g. pass rate) |
 | `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of that agent's phase |
 | `eval/<env>/effective/<agent>/{avg@k,pass@k}` | eval scores for that agent, when configured |
@@ -191,7 +190,7 @@ offset they carry to read a single episode or its token streams. Both are derive
 deleting them only costs a reader the work of rebuilding what it needs. The stream
 holds native `vf.Episode` records (training tensors excluded; per-token floats rounded
 to `monitors.file.float_decimals`, 4 by default), one line per episode in arrival order, whatever kind of work it did —
-including trace-less failures, curriculum-rejected work, and work that never enters a
+including trace-less failures and work that never enters a
 batch, so it is crash-durable. Each record carries its provenance: `env` (`id` plus the
 orchestrator's `name`), full `task`, `group` (`id`), and `run`.
 
