@@ -48,10 +48,6 @@ from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.packing import BatchPacker
-from prime_rl.orchestrator.patches import (
-    monkey_patch_chat_completion_logprobs,
-    monkey_patch_oai_iterable_types,
-)
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -78,12 +74,8 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
-
-monkey_patch_oai_iterable_types()
-monkey_patch_chat_completion_logprobs()
-
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)

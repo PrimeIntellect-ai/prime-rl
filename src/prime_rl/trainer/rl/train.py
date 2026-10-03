@@ -71,7 +71,8 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
