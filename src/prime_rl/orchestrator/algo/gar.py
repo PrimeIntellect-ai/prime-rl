@@ -1,10 +1,11 @@
 """GAR — groupwise advantage redistribution (MiMo-V2.6 §4.3.2).
 
-A mixed-outcome group (at least one pass and one fail) is graded by an agent that
-sees the whole group in one sandbox: the ``group-grade`` verifiers taskset, served
-on the source's ``grade`` env server and run on a frozen grader model. Its verdict
-zeroes the reward of confirmed hacks before the group statistics and ranks the
-remaining passes; :func:`redistribute` turns the ranking into advantages (Eq. 3).
+A mixed group (rewards not all equal) is graded by an agent that sees the whole group
+in one sandbox: the ``group-grade`` verifiers taskset, served on the source's ``grade``
+env server and run on a frozen grader model. The grader ranks the candidates above
+the group mean reward (P) and audits every candidate for hacks. A confirmed hack's
+reward drops to the group's minimum before the group statistics;
+:func:`redistribute` turns the ranking into advantages (Eq. 3).
 Any grader failure keeps the group's plain GRPO advantages.
 """
 
@@ -27,7 +28,7 @@ from prime_rl.monitors.file.traces.update import make_update
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
-from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, train_work
+from prime_rl.orchestrator.utils import episode_group_id, train_work
 from prime_rl.utils.async_utils import safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
@@ -36,9 +37,6 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Progress
 
 FALLBACK_REASONS = ("stale", "timeout", "error", "invalid")
-
-# How far a ranking is trusted, by the grader's own confidence.
-CONFIDENCE_SHRINK = {"high": 1.0, "medium": 0.5, "low": 0.0}
 
 
 def win_rates(ranking: list[list[str]]) -> dict[str, float]:
@@ -57,16 +55,16 @@ def win_rates(ranking: list[list[str]]) -> dict[str, float]:
 
 
 def redistribute(rewards: list[float], quality: list[float], lambda_max: float) -> tuple[list[float], float]:
-    """Eq. 3: ``A = R - mean(R)``; each pass (``R == 1``) gets ``lambda * f * A`` with
-    ``lambda = sum_P A / sum_P f A`` capped at ``lambda_max``; then the group is
-    re-centered to zero mean (a no-op unless the cap binds)."""
+    """Eq. 3: ``A = R - mean(R)``; each member of P, the rollouts with ``A > 0``, gets
+    ``lambda * f * A`` with ``lambda = sum_P A / sum_P f A`` capped at ``lambda_max``;
+    then the group is re-centered to zero mean (a no-op unless the cap binds)."""
     mean = sum(rewards) / len(rewards)
     advantages = [reward - mean for reward in rewards]
-    passes = [i for i, reward in enumerate(rewards) if reward == 1.0]
-    if not passes or len(passes) == len(rewards):
+    above = [i for i, advantage in enumerate(advantages) if advantage > 0]
+    if not above:
         return advantages, 1.0
-    lam = min(lambda_max, sum(advantages[i] for i in passes) / sum(quality[i] * advantages[i] for i in passes))
-    for i in passes:
+    lam = min(lambda_max, sum(advantages[i] for i in above) / sum(quality[i] * advantages[i] for i in above))
+    for i in above:
         advantages[i] *= lam * quality[i]
     shift = sum(advantages) / len(advantages)
     return [advantage - shift for advantage in advantages], lam
@@ -115,15 +113,12 @@ class GARAlgorithm(GRPOAlgorithm):
             traces = [trace for _, trace in iter_trainable_traces([episode])]
             if traces:
                 members.append((next((trace for trace in traces if "patch" in trace.info), traces[0]), traces))
-        if any(trace.reward not in (0.0, 1.0) for _, traces in members for trace in traces):
-            raise ValueError(
-                f"gar needs binary (0/1) rewards, but env {episode_env_name(episodes[0])!r} produced "
-                f"{sorted({trace.reward for _, traces in members for trace in traces})}"
-            )
-        passed = [candidate.reward == 1.0 for candidate, _ in members]
-        if all(passed) or not any(passed):
+        rewards = [candidate.reward for candidate, _ in members]
+        if len(set(rewards)) < 2:
             await super().score_group(episodes)
             return
+        mean = sum(rewards) / len(rewards)
+        passed = [reward > mean for reward in rewards]
 
         data, labels = GroupGradeData.from_traces(
             [candidate for candidate, _ in members], passed, random.Random(episode_group_id(episodes[0]))
@@ -230,7 +225,7 @@ class GARAlgorithm(GRPOAlgorithm):
         traces_by_label: dict[str, list[vf.Trace]],
         common: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
-        """Zero confirmed hacks, rescale the passes by the ranking, and assign the
+        """Drop confirmed hacks to the group's minimum reward, rescale P by the ranking, and assign the
         advantages. Returns each label's ``info.gar`` record."""
         candidates = {candidate.label: candidate for candidate in data.candidates}
         verdicts = {candidate.label: candidate for candidate in verdict.candidates}
@@ -241,27 +236,27 @@ class GARAlgorithm(GRPOAlgorithm):
             else v.hack
             for label, v in verdicts.items()
         }
-        passes = [label for label, candidate in candidates.items() if candidate.passed and hacks[label] != "confirmed"]
-        shrink = CONFIDENCE_SHRINK[verdict.confidence]
-        rates = win_rates([[label for label in tier if label in passes] for tier in verdict.ranking])
-        rates = {label: 0.5 + shrink * (rate - 0.5) for label, rate in rates.items()}
+        ranked = [label for label, candidate in candidates.items() if candidate.passed and hacks[label] != "confirmed"]
+        rates = win_rates([[label for label in tier if label in ranked] for tier in verdict.ranking])
         f_min = self.config.f_min
-        # A pass the ranking leaves out (a confirmed hack that failed its citation) sits mid-table.
-        quality = {label: 1.0 if len(passes) == 1 else f_min + (1 - f_min) * rates.get(label, 0.5) for label in passes}
+        # A candidate the ranking leaves out sits mid-table: a pass whose confirmed hack
+        # failed its citation, or one lifted above the mean by a hack's dropped reward.
+        quality = {label: f_min + (1 - f_min) * rates.get(label, 0.5) for label in candidates}
 
         traces = [(label, trace) for label, label_traces in traces_by_label.items() for trace in label_traces]
-        rewards = [0.0 if hacks[label] == "confirmed" else trace.reward for label, trace in traces]
-        advantages, lam = redistribute(
-            rewards, [quality.get(label, 1.0) for label, _ in traces], self.config.lambda_max
-        )
+        # The group's worst observed outcome: 0 in a mixed binary group, and no reward
+        # bounds assumed otherwise; a hack never ends above an honest rollout.
+        floor = min(trace.reward for _, trace in traces)
+        rewards = [floor if hacks[label] == "confirmed" else trace.reward for label, trace in traces]
+        advantages, lam = redistribute(rewards, [quality[label] for label, _ in traces], self.config.lambda_max)
         for (label, trace), advantage in zip(traces, advantages, strict=True):
             assign_advantages(trace, advantage)
             trace.record_metric("gar/lambda", lam)
-            trace.record_metric("gar/all_fail", float(not passes))
+            trace.record_metric("gar/all_fail", float(not ranked))
             if candidates[label].passed:
                 trace.record_metric("gar/hack_confirmed", float(hacks[label] == "confirmed"))
                 trace.record_metric("gar/hack_suspected", float(hacks[label] == "suspected"))
-            if label in quality:
+            if label in rates:
                 trace.record_metric("gar/f", quality[label])
 
         tiers = {label: index for index, tier in enumerate(verdict.ranking) for label in tier}
@@ -270,12 +265,10 @@ class GARAlgorithm(GRPOAlgorithm):
                 "label": label,
                 **common,
                 "hack": hacks[label],
-                "hack_kind": verdicts[label].hack_kind,
                 "evidence": [evidence.model_dump() for evidence in verdicts[label].evidence],
-                "axes": verdicts[label].axes,
                 "tier": tiers.get(label),
                 "w": rates.get(label),
-                "f": quality.get(label),
+                "f": quality[label] if label in rates else None,
                 "lambda": lam,
             }
             for label in candidates
