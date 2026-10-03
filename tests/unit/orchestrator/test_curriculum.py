@@ -99,6 +99,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     pools = {"all": DifficultyPoolConfig(threshold=1.0, weight=1.0)}
     config = SimpleNamespace(
         ratio=1.0,
+        group_size=1,
         curriculum=CurriculumConfig(
             sampler=DifficultyPoolSamplerConfig(pools=pools),
             gates={
@@ -112,7 +113,8 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
 
     sampled = source.next_task(step=1).task
     assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0])) is False
-    assert source.metrics() == {
+    metrics = source.metrics()
+    assert {name: value for name, value in metrics.items() if name.startswith("curriculum/")} == {
         "curriculum/test/admission_rate": 0.0,
         "curriculum/test/sampler/pool/unseen": 2.0,
         "curriculum/test/sampler/pool/all": 1.0,

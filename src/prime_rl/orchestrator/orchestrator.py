@@ -278,7 +278,7 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
-        self.train_source = TrainSource(self.train_envs)
+        self.train_source = TrainSource(self.train_envs, batch_size=config.batch_size)
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
@@ -373,7 +373,7 @@ class Orchestrator:
             progress=self.progress,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            on_result=self.train_source.on_result,
+            train_source=self.train_source,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -706,6 +706,13 @@ class Orchestrator:
         self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
+        shipped_by_env = batch.cohort.by_env()
+        for env_name in self.train_envs.names:
+            shipped = shipped_by_env.get(env_name)
+            metrics[f"mixer/{env_name}/shipped_share"] = (
+                shipped.num_traces / batch.cohort.num_traces if shipped is not None else 0.0
+            )
+        metrics["mixer/quota_shortfall"] = float(batch.quota_shortfall)
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
 

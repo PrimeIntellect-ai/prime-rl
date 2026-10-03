@@ -33,7 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -83,9 +83,14 @@ class DispatcherMetrics:
     errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
     )
+    cancelled_by_reason_env: dict[tuple[CancelReason, str], int] = field(default_factory=lambda: defaultdict(int))
 
-    def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
+    def record_cancellation(
+        self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1, reason: CancelReason | None = None
+    ) -> None:
         self.cancelled_by_kind_env[(kind, env_name)] += n
+        if reason is not None:
+            self.cancelled_by_reason_env[(reason, env_name)] += n
 
     def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
         self.errored_by_kind_env[(kind, env_name)] += 1
@@ -108,7 +113,10 @@ class DispatcherMetrics:
             out[f"dispatcher/errored/{env}"] = float(
                 self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
             )
+            for reason in get_args(CancelReason):
+                out[f"dispatcher/cancelled/{env}/{reason}"] = float(self.cancelled_by_reason_env.get((reason, env), 0))
         self.cancelled_by_kind_env.clear()
+        self.cancelled_by_reason_env.clear()
         self.errored_by_kind_env.clear()
         return out
 
@@ -765,7 +773,7 @@ class Dispatcher:
             # always resolve from the group or a claimed meta.
             kind = group.kind if group is not None else claimed[-1][1].kind
             env_name = group.env_name if group is not None else claimed[-1][1].env_name
-            self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
+            self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled, reason=reason)
             get_logger().debug(
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
@@ -846,7 +854,7 @@ class Dispatcher:
                 else self.eval_envs.get(request.env_name).config.group_size
             )
             cancelled += count
-            self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
+            self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count, reason="superseded")
             await self.out_q.put(
                 GroupCancellation(
                     kind="eval",

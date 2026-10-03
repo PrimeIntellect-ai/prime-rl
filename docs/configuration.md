@@ -145,12 +145,12 @@ Omit `type` to keep the default variant.
 
 ### Environments
 
-Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
+Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry batch shares:
 
 ```toml
 [[orchestrator.train.source]]
 name = "gsm8k"
-ratio = 3  # 75% of batches
+ratio = 3  # 75% of each batch's samples
 env.taskset.id = "gsm8k"
 env.taskset.split = "train"
 env.agent.harness.id = "null"
@@ -158,7 +158,7 @@ env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-ratio = 1  # default — 25% of batches
+ratio = 1  # default — 25% of each batch's samples
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
@@ -197,7 +197,14 @@ limit = 128
 
 The group `env` block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source. `select` picks which tasks of a source's taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order.
 
-`ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire; a standalone eval has neither.
+`ratio` is a training-source field: each env's target share of the samples (traces) in every training batch. It defaults to `1` (equal share per env), and values are relative weights normalized across envs. The share holds regardless of `group_size` and of how many of an env's groups are filtered out (no trainable signal, curriculum gates, staleness):
+
+- **Dispatch.** The orchestrator opens new groups by smooth weighted round-robin. An env's weight is its share divided by its `group_size` and by its measured acceptance rate (the fraction of its finished groups that queue samples for training), and it is raised while the env is behind on the batch being collected.
+- **Batch quota.** With `batch_size`, a batch ships once every env has queued its share of samples; extra samples stay queued for the next batch. If an env cannot fill its share, the batch ships anyway once the queue holds two batches or once a queued sample would exceed `max_off_policy_steps` at the next step, with the gap filled from the oldest samples of other envs (logged as `mixer/quota_shortfall`). With `token_batch_size`, `ratio` steers dispatch only.
+
+`mixer/<env>/shipped_share` tracks the share each env actually got; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of dispatch) and `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups) show how it got there.
+
+Eval sources of a training run carry `interval` instead of `ratio`, the step interval at which they fire; a standalone eval has neither.
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 

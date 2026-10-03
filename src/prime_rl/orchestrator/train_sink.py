@@ -9,8 +9,8 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 
 import verifiers.v1 as vf
 
@@ -19,16 +19,37 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
+QUOTA_ESCAPE_BATCHES = 2
+
 
 def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None) -> int:
     """Token cost of one trainer-bound trace."""
     return sum(len(sample.token_ids) for sample in samples) or (trace.num_total_tokens if trace is not None else 0)
+
+
+def select_by_quota(trace_envs: list[str], quotas: dict[str, int]) -> tuple[list[int], int]:
+    """Pick a batch from queued traces (their envs, oldest first): up to each
+    env's quota, oldest first within an env; slots an env cannot fill go to
+    the oldest leftover traces of any env. Returns the picked indices in queue
+    order and the number of slots filled that way (the shortfall)."""
+    taken: Counter[str] = Counter()
+    selected = []
+    for index, env in enumerate(trace_envs):
+        if taken[env] < quotas.get(env, 0):
+            taken[env] += 1
+            selected.append(index)
+    shortfall = sum(quotas.values()) - len(selected)
+    if shortfall:
+        picked = set(selected)
+        selected += [index for index in range(len(trace_envs)) if index not in picked][:shortfall]
+    return sorted(selected), shortfall
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -71,7 +92,7 @@ class TrainSink:
         progress: Progress,
         batch_size: int | None,
         token_batch_size: int | None,
-        on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        train_source: TrainSource,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -82,7 +103,8 @@ class TrainSink:
         self.progress = progress
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.on_result = on_result
+        self.train_source = train_source
+        self.quotas = train_source.quotas(batch_size) if batch_size is not None else None
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -168,14 +190,32 @@ class TrainSink:
 
     def _maybe_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
-        meet the threshold."""
+        meet the threshold. A trace batch also waits for every env's quota
+        until :meth:`_quota_escape` gives up on it."""
         self._drop_stale()
-        ready = (
-            len(self.pending_batch) >= self.batch_size
-            if self.batch_size is not None
-            else self.pending_tokens >= (self.token_batch_size or 0)
-        )
-        return self.process_batch() if ready else None
+        if self.batch_size is None:
+            return self.process_batch() if self.pending_tokens >= (self.token_batch_size or 0) else None
+        if len(self.pending_batch) < self.batch_size:
+            return None
+        assert self.quotas is not None
+        quota_met = all(self.train_source.pending[env] >= quota for env, quota in self.quotas.items())
+        return self.process_batch() if quota_met or self._quota_escape() else None
+
+    def _quota_escape(self) -> bool:
+        """Ship a batch short of its quotas once the queue holds
+        ``QUOTA_ESCAPE_BATCHES`` batches, or once a queued trace would go stale
+        at the next step. An env that cannot fill its quota (outage, very slow
+        rollouts) then delays a step by at most one more batch of collection,
+        and no queued trace is dropped while waiting for it."""
+        assert self.batch_size is not None
+        if len(self.pending_batch) >= QUOTA_ESCAPE_BATCHES * self.batch_size:
+            return True
+        next_min_version = min_fresh_version(self.progress.step + 1, self.config.max_off_policy_steps)
+        for episode in self.episode_by_trace.values():
+            policy = train_work(episode).policy
+            if policy is not None and policy.start < next_min_version:
+                return True
+        return False
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being
@@ -206,6 +246,7 @@ class TrainSink:
             if policy is None or policy.start >= min_version:
                 continue
             samples = self.pending_batch.pop(trace_id)
+            self.train_source.pending[episode_env_name(episode)] -= 1
             if self.token_batch_size is not None:
                 self.pending_tokens -= payload_tokens(samples, self._trace(trace_id))
             del self.episode_by_trace[trace_id]
@@ -242,6 +283,7 @@ class TrainSink:
             + len(failures)
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
+        cancel_reason = cancellation.reason if cancellation is not None else None
         self.pending_failures.extend(failures)
         if cancellation is not None:
             self.pending_cancelled_attempts += cancellation.count
@@ -255,6 +297,7 @@ class TrainSink:
         if cancellation is not None and cancellation.reason == "stale":
             self.pending_episodes.extend(group, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancellation.reason)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
@@ -268,6 +311,7 @@ class TrainSink:
         if not survivors or not admitted:
             self.pending_episodes.extend(group, admitted=admitted)
             self._record_zero_output(group, survivors, n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
@@ -299,9 +343,11 @@ class TrainSink:
         self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
         if not samples_by_trace:
             self._record_zero_output(group, survivors, n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             return
 
         self.pending_batch.update(samples_by_trace)
+        self.train_source.pending[env_name] += len(samples_by_trace)
         for episode in group:
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
@@ -318,7 +364,9 @@ class TrainSink:
         # surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             return
+        self.train_source.on_group_finalized(env_name, accepted=True, cancel_reason=cancel_reason)
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
@@ -327,7 +375,7 @@ class TrainSink:
         return next(trace for trace in episode.traces if trace.id == trace_id)
 
     def _admit(self, group: list[vf.Episode]) -> bool:
-        return self.on_result(group) if self.on_result is not None else True
+        return self.train_source.on_result(group)
 
     def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
@@ -359,8 +407,22 @@ class TrainSink:
 
     def process_batch(self) -> TrainBatch:
         items = list(self.pending_batch.items())
+        shortfall = 0
         if self.batch_size is not None:
-            selected = items[: self.batch_size]
+            assert self.quotas is not None
+            trace_envs = [episode_env_name(self.episode_by_trace[trace_id]) for trace_id, _ in items]
+            indices, shortfall = select_by_quota(trace_envs, self.quotas)
+            selected = [items[index] for index in indices]
+            if shortfall:
+                short = {
+                    env: quota - self.train_source.pending[env]
+                    for env, quota in self.quotas.items()
+                    if self.train_source.pending[env] < quota
+                }
+                get_logger().warning(
+                    f"Step {self.progress.step}: shipping with {shortfall} traces short of the env quotas {short}, "
+                    "filled from other envs"
+                )
         else:
             assert self.token_batch_size is not None
             cut = 0
@@ -377,6 +439,7 @@ class TrainSink:
         selected_ids = set(selected_by_trace)
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
+            self.train_source.pending[episode_env_name(self.episode_by_trace[trace_id])] -= 1
 
         if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
@@ -418,4 +481,5 @@ class TrainSink:
             buffered_episode_ids=buffered_episode_ids,
             cancelled_attempts=cancelled_attempts,
             stale_attempts=stale_attempts,
+            quota_shortfall=shortfall,
         )
