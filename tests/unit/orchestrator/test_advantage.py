@@ -322,6 +322,33 @@ def test_cost_penalty_prefix_cache_and_parallel_time():
     )
 
 
+def test_cost_penalty_skips_calls_without_token_ids():
+    """A non-policy call (no token ids) on a tokenized conversation adds no cost and no cached prefix."""
+    prompt = vf.MessageNode(parent=None, message=vf.UserMessage(content="u"), token_ids=[1, 2, 3], mask=[False] * 3)
+    judge = vf.MessageNode(parent=0, message=vf.AssistantMessage(content="j"), sampled=True)
+    policy = vf.MessageNode(
+        parent=0, message=vf.AssistantMessage(content="a"), token_ids=[4, 5], mask=[True, True], sampled=True
+    )
+    trace = vf.Trace[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=[prompt, judge, policy],
+        calls=[
+            vf.ModelCall(node=1, time=vf.TimeSpan(start=0, end=1)),
+            vf.ModelCall(node=2, time=vf.TimeSpan(start=2, end=3)),
+        ],
+        timing=vf.Timing(agent=vf.AgentSpan(start=0, end=3)),
+    )
+    config = CostPenaltyConfig(
+        usd_per_success=1,
+        usd_per_hour=0,
+        deployment=CostDeploymentConfig(input_usd_per_mtok=1e6, output_usd_per_mtok=1e6, output_tokens_per_s=1),
+    )
+    cost = rollout_cost(trace, config)
+    assert cost["cost_usd"] == pytest.approx(3 + 2)  # only the policy call: 3 uncached input + 2 output
+    assert cost["prefix_cache_hit_rate"] == 0.0
+
+
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
