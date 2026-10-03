@@ -5,7 +5,13 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import (
+    compute_entropy,
+    sampling_mask_logprobs,
+    selective_log_softmax_with_sampling_mask,
+    shift_tensor_left,
+    shift_tensor_right,
+)
 from prime_rl.utils.utils import default_dtype
 
 
@@ -58,6 +64,37 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_hidden1, grad_hidden0, rtol=0, atol=1e-5)
     torch.testing.assert_close(grad_weight1, grad_weight0, rtol=0, atol=1e-5)
+
+
+def test_fused_lm_head_mask_logprobs_match_reference_forward_and_backward_cpu():
+    torch.manual_seed(0)
+    b, s, h, v, k = 1, 6, 8, 37, 4
+    temperature = torch.full((b, s), 1.3)
+    hidden0 = torch.randn(b, s, h, requires_grad=True)
+    weight0 = torch.randn(v, h, requires_grad=True)
+    mask = torch.stack([torch.randperm(v)[:k] for _ in range(s)]).unsqueeze(0).to(torch.int32)
+    labels = mask[..., 0].long()  # replayable rows
+    mask[0, 1, 2:] = -1  # padding
+    mask[0, 2] = -1  # no mask: full-vocab fallback
+    labels[0, 3] = next(i for i in range(v) if i not in mask[0, 3])  # label outside its mask: fallback
+    mask_grad = torch.randn(b, s, k)
+
+    scaled = (hidden0 @ weight0.t()) / temperature.unsqueeze(-1)
+    logp0 = selective_log_softmax_with_sampling_mask(scaled, labels, mask)
+    mask_logp0 = sampling_mask_logprobs(scaled, labels, mask)
+    (logp0.sum() + (mask_logp0 * mask_grad).sum()).backward()
+
+    hidden1 = hidden0.detach().clone().requires_grad_(True)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=4)
+    lm.weight = torch.nn.Parameter(weight0.detach().clone())
+    lm.return_mask_logprobs = True
+    out = lm(hidden1, labels, temperature=temperature, sampling_mask=mask)
+    (out["logprobs"].sum() + (out["mask_logprobs"] * mask_grad).sum()).backward()
+
+    torch.testing.assert_close(out["logprobs"], logp0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["mask_logprobs"], mask_logp0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(hidden1.grad, hidden0.grad, rtol=0, atol=1e-5)
+    torch.testing.assert_close(lm.weight.grad, weight0.grad, rtol=0, atol=1e-5)
 
 
 def test_fused_lm_head_frozen_weight_backward_cpu():

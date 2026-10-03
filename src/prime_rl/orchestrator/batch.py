@@ -290,9 +290,11 @@ def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
 
 def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingMask:
     counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)[:seq_len]
+    num_bytes = int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE
     return SamplingMask(
-        ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
+        ids=sampling_mask.ids[:num_bytes],
         counts=counts.tobytes(),
+        logprobs=sampling_mask.logprobs[:num_bytes] if sampling_mask.logprobs is not None else None,
     )
 
 
@@ -531,6 +533,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_mask_logprobs = any(
+        sample.sampling_mask is not None and sample.sampling_mask.logprobs is not None for sample in bin_content.samples
+    )
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -545,7 +550,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
-    sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    sampling_mask: SamplingMask | None = (
+        SamplingMask(ids=b"", counts=b"", logprobs=b"" if has_mask_logprobs else None) if has_sampling_mask else None
+    )
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
@@ -593,6 +600,12 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+            if sampling_mask.logprobs is not None:
+                # Masks without sampler logprobs get zero probability: no centering there.
+                sampling_mask.logprobs += (
+                    sample_mask.logprobs
+                    or np.full(len(sample_mask.ids) // _SAMPLING_MASK_ITEMSIZE, -9999.0, np.float32).tobytes()
+                )
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -792,6 +805,8 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"sampling_mask ids/counts inconsistent after packing: "
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
+        mask_logprobs = micro_batch.sampling_mask.logprobs
+        assert mask_logprobs is None or len(mask_logprobs) == len(micro_batch.sampling_mask.ids)
 
 
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:

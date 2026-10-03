@@ -10,7 +10,9 @@ per-token JSON: ``routed_experts`` as ``{data, shape, start, dtype}`` base64
 raw bytes (the form the PD router can merge and the renderers parse),
 ``completion_logprobs`` as a ``{data, shape, dtype}`` float32 array instead of
 ``logprobs.content``, and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
-instead of one list per token.
+instead of one list per token, plus ``sampling_mask_logprobs`` (float32, parallel
+to the ids) when the sampler logprobs at the mask ids are captured for score
+centering.
 
 Per-token Python objects are what makes the API server slow under RL load:
 ~100+ concurrent 16k-token requests keep tens of millions of them alive, and
@@ -51,6 +53,7 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
     completion_logprobs: dict[str, Any] | None = None
     sampling_mask: dict[str, Any] | None = None  # type: ignore[assignment]
+    sampling_mask_logprobs: dict[str, Any] | None = None
 
 
 class PrimeRlGenerateResponse(GenerateResponse):
@@ -74,6 +77,15 @@ def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
     values = np.full(len(starts), LOGPROB_SENTINEL, dtype=np.float32)
     values[has_entry] = flat[starts[has_entry]]
     return np.maximum(values, LOGPROB_SENTINEL)
+
+
+def unpack_sampling_mask_logprobs(packed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split ``float32 bits << 32 | id`` mask entries (``monkey_patch_sampling_mask_logprobs``)
+    into int32 ids and float32 sampler logprobs."""
+    bits = packed.view(np.uint64)
+    ids = (bits & np.uint64(0xFFFFFFFF)).astype(np.int32)
+    logprobs = (bits >> np.uint64(32)).astype(np.uint32).view(np.float32)
+    return ids, logprobs
 
 
 class _PackedOutputs:
@@ -101,7 +113,11 @@ class _PackedOutputs:
                     self._request.sampling_params.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
-                    fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
+                    ids = mask.ids
+                    if ids.dtype == np.int64:
+                        ids, logprobs = unpack_sampling_mask_logprobs(ids)
+                        fields["sampling_mask_logprobs"] = encode_array(logprobs)
+                    fields["sampling_mask"] = {"ids": encode_array(ids), "counts": encode_array(mask.counts)}
                     output.sampling_mask = None
             yield request_output
 

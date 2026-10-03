@@ -16,7 +16,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import IPOLossConfig, TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -32,6 +32,7 @@ from prime_rl.trainer.rl.loss import (
     _mismatch_kl_from_log_ratio,
     selective_log_softmax,
     selective_log_softmax_with_sampling_mask,
+    sampling_mask_logprobs,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
@@ -66,6 +67,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -154,6 +156,11 @@ def train(config: TrainerConfig):
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
+    score_centering = isinstance(config.loss, IPOLossConfig) and config.loss.score_centering
+    if score_centering:
+        for module in model.modules():
+            if isinstance(module, FusedOutputLinear):
+                module.return_mask_logprobs = True
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -364,6 +371,9 @@ def train(config: TrainerConfig):
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
+            inference_mask_logprobs = None
+            if score_centering and micro_batch["sampling_mask_logprobs"] is not None:
+                inference_mask_logprobs = micro_batch["sampling_mask_logprobs"].to("cuda")
 
             mm_kwargs = None
             mm_forward_policy = None
@@ -467,11 +477,15 @@ def train(config: TrainerConfig):
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
+                if inference_mask_logprobs is not None:
+                    out["mask_logprobs"] = sampling_mask_logprobs(scaled_logits, labels, sampling_mask)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                if inference_mask_logprobs is not None:
+                    out["mask_logprobs"] = gather_for_cp(out["mask_logprobs"], cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -481,6 +495,9 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+            trainer_mask_logprobs = None
+            if inference_mask_logprobs is not None:
+                trainer_mask_logprobs = torch.nn.functional.pad(out["mask_logprobs"][:, :-1], (0, 0, 1, 0))
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
@@ -497,6 +514,12 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                trainer_mask_logprobs=trainer_mask_logprobs[0].split(sequence_lengths)
+                if trainer_mask_logprobs is not None
+                else None,
+                inference_mask_logprobs=inference_mask_logprobs[0].split(sequence_lengths)
+                if inference_mask_logprobs is not None
+                else None,
             )
 
             # Backward pass
