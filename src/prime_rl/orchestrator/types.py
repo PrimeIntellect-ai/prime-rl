@@ -143,6 +143,8 @@ class TrainBatch:
     cancelled_attempts: int = 0
     # Stale attempts are a subset of cancelled_attempts.
     stale_attempts: int = 0
+    # Shipped prompts per env, counting each trace as 1 / (its group's queued traces).
+    shipped_prompts: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
