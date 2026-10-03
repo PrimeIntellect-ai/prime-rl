@@ -430,13 +430,13 @@ class GraderConfig(BaseConfig):
 class GARAlgoConfig(GRPOAlgoConfig):
     type: Literal["gar"] = "gar"  # type: ignore[assignment]
     """GAR — groupwise advantage redistribution (MiMo-V2.6 §4.3.2): GRPO whose
-    mixed-outcome groups are graded by an agent that sees the whole group in one
-    sandbox. A confirmed hack's reward becomes 0 before the group statistics; the
-    passing rollouts' advantages are then rescaled by a quality factor from the
-    grader's ranking (``f = f_min + (1 - f_min) * win rate``), with the positive mass
-    kept (``lambda``, capped at ``lambda_max``) and the group re-centered. Rewards
-    must be binary. Any grader failure, timeout or invalid verdict keeps the
-    group's plain GRPO advantages."""
+    mixed groups (rewards not all equal) are graded by an agent that sees the whole
+    group in one sandbox. A confirmed hack's reward drops to the group's minimum
+    before the group statistics; the rollouts with a positive advantage are then
+    rescaled by a quality factor from the grader's ranking
+    (``f = f_min + (1 - f_min) * win rate``), with their positive mass kept
+    (``lambda``, capped at ``lambda_max``) and the group re-centered. Any grader
+    failure, timeout or invalid verdict keeps the group's plain GRPO advantages."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
@@ -444,10 +444,10 @@ class GARAlgoConfig(GRPOAlgoConfig):
     """The group grader: env, served model and limits."""
 
     f_min: float = Field(0.5, gt=0, le=1)
-    """Quality factor of the worst-ranked pass; the best gets 1."""
+    """Quality factor of the worst-ranked candidate; the best gets 1."""
 
     lambda_max: float = Field(1.5, ge=1)
-    """Cap on the rescale factor that keeps the passes' total advantage."""
+    """Cap on the rescale factor that keeps the positive advantages' total."""
 
     @model_validator(mode="after")
     def forbid_length_penalty(self):

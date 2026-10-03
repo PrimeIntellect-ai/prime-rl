@@ -287,5 +287,10 @@ def test_gar_redistribution():
     assert sum(advantages) == pytest.approx(0.0)
     assert advantages[0] > advantages[1] > advantages[2] > 0 > advantages[3]
 
-    # No pass (e.g. every pass was a confirmed hack, zeroed): plain zero advantages.
+    # Non-binary rewards: P is the rollouts above the mean 0.5 (0.9 and 0.6); lambda = 0.5 / 0.4.
+    advantages, lam = redistribute([0.9, 0.6, 0.3, 0.2], [0.75, 1.0, 1.0, 1.0], lambda_max=1.5)
+    assert lam == pytest.approx(1.25)
+    assert advantages == pytest.approx([0.375, 0.125, -0.2, -0.3])
+
+    # Equal rewards (e.g. every pass was a confirmed hack, dropped to the minimum): zero advantages.
     assert redistribute([0.0, 0.0], [1.0, 1.0], lambda_max=1.5) == ([0.0, 0.0], 1.0)
