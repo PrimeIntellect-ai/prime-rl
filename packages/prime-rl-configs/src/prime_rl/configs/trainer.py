@@ -11,7 +11,6 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
-    MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -682,9 +681,6 @@ class TrainerConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    metrics_server: MetricsServerConfig | None = None
-    """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""

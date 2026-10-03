@@ -21,7 +21,7 @@ class ServerConfig(BaseConfig):
     """Port to bind to."""
 
     liveness_timeout_seconds: float = Field(30.0, gt=0)
-    """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
+    """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. Health checks polling this endpoint should use a timeout at least this high."""
 
 
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so

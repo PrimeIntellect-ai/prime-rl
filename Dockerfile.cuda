@@ -112,7 +112,6 @@ COPY packages/ /app/packages/
 COPY deps/ /app/deps/
 COPY configs /app/configs
 COPY examples /app/examples
-COPY k8s /app/k8s
 COPY benchmarks/scripts /app/benchmarks/scripts
 COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
 
@@ -304,6 +303,6 @@ ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRA
 ENV HF_HUB_ETAG_TIMEOUT=500
 ENV HF_HUB_DOWNLOAD_TIMEOUT=300
 
-# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
+# Use entrypoint for setup (ulimit, etc) but default to sleep infinity
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["sleep", "infinity"]

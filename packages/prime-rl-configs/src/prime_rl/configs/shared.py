@@ -270,14 +270,6 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
-class MetricsServerConfig(BaseConfig):
-    port: int = Field(8000, ge=1, le=65535)
-    """Port to expose metrics and health endpoints on."""
-
-    host: str = "0.0.0.0"
-    """Host to bind the server to."""
-
-
 class BaseTransportConfig(BaseConfig):
     pass
 
