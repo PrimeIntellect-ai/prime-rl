@@ -90,25 +90,6 @@ class TrainSamplingConfig(BaseConfig):
             )
         return self
 
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict, omitting None values."""
-        args: dict[str, Any] = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "logprobs": True,
-        }
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-
-        # Explicit top_k overrides the server-default sentinel in extra_body.
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
-
 
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
