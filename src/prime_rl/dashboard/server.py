@@ -44,6 +44,7 @@ except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
+PANELS_FILE = Path(__file__).parents[1] / "monitors" / "panels.json"
 MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "eval.log"}
 MAX_LOG_CHUNK = 2_000_000
 
@@ -2151,7 +2152,7 @@ async def revalidate_static(request, call_next):
     revalidate them (an ETag answers 304 when unchanged) instead of trusting a heuristic
     freshness from ``Last-Modified``."""
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    if request.url.path in ("/", "/api/panels") or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -2159,6 +2160,12 @@ async def revalidate_static(request, call_next):
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/panels")
+def panels() -> FileResponse:
+    """The overview's curated panels, shared with the W&B overview view."""
+    return FileResponse(PANELS_FILE)
 
 
 def render_status(url: str):

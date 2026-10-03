@@ -438,27 +438,9 @@ function rowsChartHere() {
   return isChartTab() && !(state.tab === "overview" && state.meta?.type === "eval");
 }
 
-const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
-const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
-const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
-const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
-const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
-// max_vio only exists on MoE models: a regex panel stays away on dense ones
-const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
-const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];
-
-// Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
-// paired with the cross-engine tail that flags a single sick engine.
-const INFERENCE_PANELS = [
-  ["inference/agg/kv_cache_usage_perc/mean", "inference/agg/kv_cache_usage_perc/min", "inference/agg/kv_cache_usage_perc/max"],
-  ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"],
-  ["inference/agg/num_requests_running/mean", "inference/agg/num_requests_running/min", "inference/agg/num_requests_running/max"],
-  ["inference/agg/num_requests_waiting/mean", "inference/agg/num_requests_waiting/min", "inference/agg/num_requests_waiting/max"],
-  ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
-  ["inference/agg/generation_tokens_total:rate/sum"],
-  ["inference/agg/prompt_tokens_total:rate/sum"],
-  ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"],
-];
+/* the curated panels, shared with the W&B overview (prime_rl/monitors/panels.json);
+   fetched once at init */
+let PANELS = null;
 
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
 const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
@@ -1434,8 +1416,8 @@ function buildSections(meta) {
       // one banded plot per agent, not a multi-color overlay
       { regex: `${escRe(scope)}/effective/[^/]+/reward/mean`, split: true },
       { regex: `${escRe(scope)}/all/[^/]+/reward/mean`, split: true },
-      ...COMMON_METRICS.map((m) => ({ metric: `${scope}/${m}` })),
-      ...COMMON_REGEXES.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
+      ...PANELS.common_metrics.map((m) => ({ metric: `${scope}/${m}` })),
+      ...PANELS.common_regexes.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
     ],
   });
   const evalSection = (name, envPattern, configured = false, env = undefined) => ({
@@ -1449,19 +1431,19 @@ function buildSections(meta) {
       { regex: `eval/${envPattern}/all/[^/]+/avg@.*`, split: true },
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*`, split: true },
       { regex: `eval/${envPattern}/all/cancelled/mean` },
-      ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
-      ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
+      ...[...PANELS.common_metrics, ...PANELS.common_regexes].map((r) => ({ regex: `eval/${envPattern}/${r}` })),
     ],
   });
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
     // the val panes show once a validation value is logged, not on the config alone
-    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => (m.startsWith("val/") ? { regex: escRe(m) } : { metric: m })) });
+    sections.push({ name: "train", panels: PANELS.sft.train.map((p) => (p.metric.startsWith("val/") ? { regex: escRe(p.metric) } : p)) });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
     else sections.push(evalSection("eval", ".*"));
-    sections.push({ name: "stability", panels: SFT_STABILITY_PANELS });
-    sections.push({ name: "performance", panels: SFT_PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
+    // regex panels (max_vio, MoE only) stay away when nothing matches
+    sections.push({ name: "stability", panels: PANELS.sft.stability });
+    sections.push({ name: "performance", panels: PANELS.sft.performance });
     return sections;
   }
   const trainEnvs = meta.train_envs || [];
@@ -1470,9 +1452,7 @@ function buildSections(meta) {
   else sections.push(trainSection("train", "train/agg"));
   if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
   else sections.push(evalSection("eval", ".*"));
-  sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
-  sections.push({ name: "inference", panels: INFERENCE_PANELS.map((metrics) => ({ metrics })) });
-  sections.push({ name: "performance", panels: PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
+  for (const [name, panels] of Object.entries(PANELS.rl)) sections.push({ name, panels });
   return sections;
 }
 
@@ -7491,6 +7471,7 @@ window.addEventListener("hashchange", () => {
   setActive("#metrics-layout", "layout", state.metrics.allLayout);
   setActive("#log-view", "view", state.logs.view);
   applyPaneSize();
+  PANELS = await api("/api/panels");
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "overview";
   state.report.wanted = params.get("report");

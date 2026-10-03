@@ -1,19 +1,20 @@
 """Curated "overview" W&B saved view.
 
-The dashboard mirrors these sections in `prime_rl/dashboard/static/app.js`
-(buildSections + the *_METRICS/INFERENCE_PANELS constants) — keep the two in
-sync when editing panels here.
-
 prime-rl logs many metrics; the default workspace auto-generates a panel per key, which buries the
 few that matter. These build a named saved view grouping the important metrics into sections, so a
 new project gets a usable overview without hand-picking panels. Panels are untitled — each shows
 its raw metric name.
+
+The panels live in `prime_rl/monitors/panels.json`, which the dashboard's overview tab reads too.
+A panel is `{"metric": key}`, `{"metrics": [keys]}` (one multi-series plot) or `{"regex": pattern}`.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal
 
 import wandb
@@ -25,102 +26,39 @@ from prime_rl.utils.logger import get_logger
 
 OVERVIEW_NAME = "overview"
 
-# Rollout metrics (under "<scope>/") shown for BOTH train and eval. Quality metrics read the
-# effective subset — the all subset includes errored rollouts, whose zero values skew the
-# distributions. has_error only exists on all (effective drops errors by construction). The count
-# metrics are episode-level exact keys; the trace-level metrics (reward, truncation, errors) live
-# under the per-agent subtree, whose names are data-dependent — matched by regex, one panel per
-# agent. Only the score metric differs — train scores with "reward/mean", eval with "avg@k" (its k
-# dynamic, so also a regex) — and each section builder prepends its own.
-COMMON_METRICS = [
-    "effective/num_total_tokens/mean",
-    "effective/num_turns/mean",
-    "effective/num_branches/mean",
-]
-COMMON_REGEXES = [
-    "all/[^/]+/has_error/mean",
-    "effective/[^/]+/is_truncated/mean",
-    "all/[^/]+/is_timeout/mean",
-]
-
-STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
-
-PERFORMANCE_METRICS = [
-    "perf/mfu",
-    "time/step",
-    "time/wait_for_batch",
-    "time/wait_for_policy",
-]
-
-# Inference health panels: each pairs the fleet aggregate (mean/sum) with the cross-engine
-# tail that flags a single sick engine - max for pressure metrics, min for health metrics.
-# One saturated engine thrashing its KV cache (preempt -> re-prefill -> cache eviction) hides
-# inside fleet means; the max/min series is what surfaces it.
-INFERENCE_PANELS = [
-    [
-        "inference/agg/kv_cache_usage_perc/mean",
-        "inference/agg/kv_cache_usage_perc/min",
-        "inference/agg/kv_cache_usage_perc/max",
-    ],
-    ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"],
-    [
-        "inference/agg/num_requests_running/mean",
-        "inference/agg/num_requests_running/min",
-        "inference/agg/num_requests_running/max",
-    ],
-    [
-        "inference/agg/num_requests_waiting/mean",
-        "inference/agg/num_requests_waiting/min",
-        "inference/agg/num_requests_waiting/max",
-    ],
-    ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
-    ["inference/agg/generation_tokens_total:rate/sum"],
-    ["inference/agg/prompt_tokens_total:rate/sum"],
-    ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"],
-]
-
-# SFT flavor: no rollout-based train sections — the training signal is the loss curve.
-SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"]
-SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"]
-SFT_PERFORMANCE_METRICS = [
-    "perf/mfu",
-    "perf/throughput",
-    "perf/peak_memory",
-    "time/step",
-    "time/forward_backward",
-    "time/save_ckpt",
-]
+# Rollout metrics (common_metrics / common_regexes, under "<scope>/") are shown for BOTH train and
+# eval. Quality metrics read the effective subset — the all subset includes errored rollouts, whose
+# zero values skew the distributions. has_error only exists on all (effective drops errors by
+# construction). The count metrics are episode-level exact keys; the trace-level metrics (reward,
+# truncation, errors) live under the per-agent subtree, whose names are data-dependent — matched by
+# regex, one panel per agent. Only the score metric differs — train scores with "reward/mean", eval
+# with "avg@k" (its k dynamic, so also a regex) — and each section builder prepends its own.
+# Inference panels pair the fleet aggregate (mean/sum) with the cross-engine tail (max for pressure
+# metrics, min for health metrics): one saturated engine hides inside fleet means.
+PANELS = json.loads((Path(__file__).parents[1] / "panels.json").read_text())
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
 COLUMNS = 4
 ROWS = 6
 
 
-def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LinePlot]:
-    # inference/* is logged against time (step_metric="_timestamp"), plotted on "RelativeTime(Wall)"
-    # (== W&B's "_absolute_runtime", seconds since run start) so runs started at different times
-    # overlay; everything else on "step" (prime-rl's logged training step, not internal "Step").
-    # x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
-    return [wr.LinePlot(x="RelativeTime(Wall)" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
-        wr.LinePlot(x="step", metric_regex=r) for r in regexes
-    ]
+def line_plot(panel: dict) -> wr.LinePlot:
+    if "regex" in panel:
+        return wr.LinePlot(x="step", metric_regex=panel["regex"])
+    # inference/* and the dispatcher gauges are logged against time (step_metric="_timestamp"), plotted
+    # on "RelativeTime(Wall)" (== W&B's "_absolute_runtime", seconds since run start) so runs started at
+    # different times overlay; everything else on "step" (prime-rl's logged training step, not internal
+    # "Step"). x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
+    y = panel.get("metrics") or [panel["metric"]]
+    time_keyed = any(m.startswith(("inference/", "dispatcher/")) for m in y)
+    return wr.LinePlot(x="RelativeTime(Wall)" if time_keyed else "step", y=y)
 
 
-def inference_section() -> ws.Section:
-    # Multi-series panels (aggregate + tail), on wall time like all inference/* metrics.
-    return ws.Section(
-        name="inference",
-        is_open=True,
-        panels=[wr.LinePlot(x="RelativeTime(Wall)", y=list(series)) for series in INFERENCE_PANELS],
-        layout_settings=ws.SectionLayoutSettings(columns=COLUMNS, rows=ROWS),
-    )
-
-
-def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ()) -> ws.Section:
+def section(name: str, panels: Sequence[dict]) -> ws.Section:
     return ws.Section(
         name=name,
         is_open=True,
-        panels=line_panels(metrics, regexes),
+        panels=[line_plot(p) for p in panels],
         layout_settings=ws.SectionLayoutSettings(columns=COLUMNS, rows=ROWS),
     )
 
@@ -131,22 +69,21 @@ def train_section(name: str, scope: str) -> ws.Section:
     pattern = re.escape(scope)
     return section(
         name,
-        metrics=[f"{scope}/{m}" for m in COMMON_METRICS],
-        regexes=[f"{pattern}/all/[^/]+/reward/mean", f"{pattern}/effective/[^/]+/reward/mean"]
-        + [f"{pattern}/{r}" for r in COMMON_REGEXES],
+        [{"regex": f"{pattern}/effective/[^/]+/reward/mean"}, {"regex": f"{pattern}/all/[^/]+/reward/mean"}]
+        + [{"metric": f"{scope}/{m}"} for m in PANELS["common_metrics"]]
+        + [{"regex": f"{pattern}/{r}"} for r in PANELS["common_regexes"]],
     )
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
     # Same metrics as train, but eval's reward is the per-agent "avg@k" (dynamic k → regex).
     # Everything is a regex so one section can also serve any env (env_pattern=".*").
-    return section(
-        name,
-        regexes=[f"eval/{env_pattern}/all/[^/]+/avg@.*", f"eval/{env_pattern}/effective/[^/]+/avg@.*"]
-        + [f"eval/{env_pattern}/all/cancelled/mean"]
-        + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS]
-        + [f"eval/{env_pattern}/{r}" for r in COMMON_REGEXES],
-    )
+    regexes = [
+        f"eval/{env_pattern}/all/[^/]+/avg@.*",
+        f"eval/{env_pattern}/effective/[^/]+/avg@.*",
+        f"eval/{env_pattern}/all/cancelled/mean",
+    ] + [f"eval/{env_pattern}/{m}" for m in PANELS["common_metrics"] + PANELS["common_regexes"]]
+    return section(name, [{"regex": r} for r in regexes])
 
 
 def build_sections(
@@ -160,13 +97,13 @@ def build_sections(
     # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
     # curves, eval sections are the same rollout-based ones as RL.
     if flavor == "sft":
-        sections = [section("train", metrics=SFT_TRAIN_METRICS)]
+        sections = [section("train", PANELS["sft"]["train"])]
         if eval_envs:
             sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
         else:
             sections.append(eval_section("eval", ".*"))
-        sections.append(section("stability", metrics=SFT_STABILITY_METRICS))
-        sections.append(section("performance", metrics=SFT_PERFORMANCE_METRICS))
+        sections.append(section("stability", PANELS["sft"]["stability"]))
+        sections.append(section("performance", PANELS["sft"]["performance"]))
         return sections
     # With one env the aggregate == that env, so show only its section. With several, put the
     # cross-env aggregate on top followed by a section per env.
@@ -183,9 +120,7 @@ def build_sections(
     else:
         # Env names unknown (e.g. SFT): one regex section matching any eval env.
         sections.append(eval_section("eval", ".*"))
-    sections.append(section("stability", metrics=STABILITY_METRICS))
-    sections.append(inference_section())
-    sections.append(section("performance", metrics=PERFORMANCE_METRICS))
+    sections += [section(name, panels) for name, panels in PANELS["rl"].items()]
     return sections
 
 
