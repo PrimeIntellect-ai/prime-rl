@@ -1,7 +1,9 @@
 """Training-side episode, group, and batch assembly.
 
 ``add()`` takes one completed episode, ``fail()`` a request that produced no
-episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
+episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Algorithms
+with ``finalize_in_background`` run ``finalize_group`` as a background task;
+the orchestrator settles the group via ``finalized()`` once it lands. Before every
 readiness check the sink sweeps ``pending_batch`` for traces past
 ``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
 is what guarantees nothing stale ships."""
@@ -9,13 +11,14 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
@@ -23,7 +26,14 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
+from prime_rl.utils.async_utils import safe_cancel_all
 from prime_rl.utils.logger import get_logger
+
+
+def _is_stale(episode: vf.Episode, min_version: int) -> bool:
+    """Frozen-sourced episodes (no policy span) never go stale."""
+    policy = train_work(episode).policy
+    return policy is not None and policy.start < min_version
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -52,6 +62,17 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
     has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
     return has_rl or has_ce or has_ref_kl
+
+
+@dataclass
+class FinalizingGroup:
+    """A complete group whose background ``finalize_group`` is running."""
+
+    env_name: str
+    task: asyncio.Task
+    group: list[vf.Episode]
+    failures: list[DispatchFailure]
+    cancellation: GroupCancellation | None
 
 
 class TrainSink:
@@ -83,6 +104,11 @@ class TrainSink:
         # A dropped group's terminal marker; its ``count`` fills in for the
         # episodes the group will never deliver.
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
+        self.finalizing: dict[str, FinalizingGroup] = {}
+        # Group ids whose background finalization completed, for the
+        # orchestrator loop to settle via ``finalized()``.
+        self.finalized_q: asyncio.Queue[str] = asyncio.Queue()
+        self.finalize_error: BaseException | None = None
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
         # Queued traces voided by the staleness sweep since the last ship;
@@ -103,7 +129,14 @@ class TrainSink:
     def buffered_count(self) -> int:
         episodes = sum(len(group) for group in self.pending_groups.values())
         failures = sum(len(group) for group in self.pending_group_failures.values())
-        return episodes + failures
+        finalizing = sum(len(entry.group) + len(entry.failures) for entry in self.finalizing.values())
+        return episodes + failures + finalizing
+
+    @property
+    def finalizing_full(self) -> bool:
+        """Whether an env reached its algorithm's ``max_finalizing_groups``."""
+        counts = Counter(entry.env_name for entry in self.finalizing.values())
+        return any(n >= self.train_envs.get(name).algorithm.max_finalizing_groups for name, n in counts.items())
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
@@ -146,6 +179,48 @@ class TrainSink:
         await self.process_group(failure.group_id)
         return self._maybe_batch()
 
+    async def finalized(self, group_id: str) -> TrainBatch | None:
+        """Settle a group whose background ``finalize_group`` completed. Ids
+        already dropped (stale cancel, stop) are ignored."""
+        entry = self.finalizing.pop(group_id, None)
+        if entry is None:
+            return None
+        await self._settle_group(entry.group, entry.failures, entry.cancellation, finalized=True)
+        return self._maybe_batch()
+
+    async def cancel_stale_finalizing(self) -> None:
+        """Called when ``progress.step`` advances: cancel finalizing groups the
+        insertion sweep would void on arrival, accounted like a ``stale`` group
+        cancellation."""
+        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        if min_version <= 0:
+            return
+        stale = [
+            group_id
+            for group_id, entry in self.finalizing.items()
+            if not entry.task.done() and all(_is_stale(episode, min_version) for episode in entry.group)
+        ]
+        for group_id in stale:
+            entry = self.finalizing.pop(group_id)
+            entry.task.cancel()
+            await self._settle_group(entry.group, entry.failures, entry.cancellation, stale=True)
+        if stale:
+            get_logger().warning(
+                f"Cancelled finalization of {len(stale)} groups past "
+                f"max_off_policy_steps={self.config.max_off_policy_steps}. Consider increasing it to avoid this."
+            )
+
+    def raise_if_failed(self) -> None:
+        """Re-raise the first exception from a background ``finalize_group``."""
+        if self.finalize_error is not None:
+            raise self.finalize_error
+
+    async def stop(self) -> None:
+        """Cancel all background finalizations; their groups are dropped."""
+        tasks = [entry.task for entry in self.finalizing.values()]
+        self.finalizing.clear()
+        await safe_cancel_all(tasks)
+
     def _group_complete(self, group_id: str, env_name: str) -> bool:
         cancellation = self.pending_group_cancellations.get(group_id)
         cancelled = cancellation.count if cancellation is not None else 0
@@ -183,8 +258,7 @@ class TrainSink:
         dropped = 0
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
-            policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            if not _is_stale(episode, min_version):
                 continue
             del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
@@ -208,7 +282,41 @@ class TrainSink:
         cancellation = self.pending_group_cancellations.pop(group_id, None)
         if not group and not failures and cancellation is None:
             return
+        env_name = episode_env_name(group[0]) if group else None
+        algorithm = self.train_envs.get(env_name).algorithm if env_name is not None else None
+        stale = cancellation is not None and cancellation.reason == "stale"
+        if (
+            algorithm is not None
+            and algorithm.finalize_in_background
+            and not stale
+            and any(True for _ in iter_trainable_traces(group))
+        ):
+            task = asyncio.create_task(self._finalize_group(group_id, algorithm, group))
+            task.add_done_callback(self._on_finalize_done)
+            self.finalizing[group_id] = FinalizingGroup(env_name, task, group, failures, cancellation)
+            return
+        await self._settle_group(group, failures, cancellation)
 
+    async def _finalize_group(self, group_id: str, algorithm: Algorithm, group: list[vf.Episode]) -> None:
+        await algorithm.finalize_group(group)
+        self.finalized_q.put_nowait(group_id)
+
+    def _on_finalize_done(self, task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None and self.finalize_error is None:
+            self.finalize_error = task.exception()
+
+    async def _settle_group(
+        self,
+        group: list[vf.Episode],
+        failures: list[DispatchFailure],
+        cancellation: GroupCancellation | None,
+        *,
+        finalized: bool = False,
+        stale: bool = False,
+    ) -> None:
+        """Account, admit, and compile one complete group. ``finalized`` skips
+        ``finalize_group`` (it already ran in the background); ``stale`` voids
+        the group like a ``stale`` cancellation."""
         env_name = (
             episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
         )
@@ -231,7 +339,7 @@ class TrainSink:
         # version, so the arrived episodes are exactly as stale as the
         # cancelled tail. Stale groups bypass the curriculum — a pipeline
         # decision is not a task result.
-        if cancellation is not None and cancellation.reason == "stale":
+        if stale or (cancellation is not None and cancellation.reason == "stale"):
             self.pending_episodes.extend(group, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
@@ -241,7 +349,7 @@ class TrainSink:
             return
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
-        if survivors:
+        if survivors and not finalized:
             await env.algorithm.finalize_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:

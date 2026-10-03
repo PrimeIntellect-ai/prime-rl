@@ -433,6 +433,8 @@ Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated
 
 Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
 
+`score_group` normally runs inline in the orchestrator loop. An algorithm whose group scoring awaits slow work sets `finalize_in_background = True`: each complete group's `finalize_group` then runs as a background task, and the group is admitted and batched once it lands. These calls run concurrently and complete in any order, so a stateful algorithm must tolerate interleaved groups. Train dispatch pauses while an env has `max_finalizing_groups` (default 64) groups finalizing. Groups that go stale while finalizing are cancelled when the step advances, and draining cancels the rest.
+
 ### Reference Scoring
 
 `OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_episode`: as each episode arrives they query a reference and attach sampled-token reference logprobs to its graph nodes:
