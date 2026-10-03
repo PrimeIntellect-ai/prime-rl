@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias, get_args
 
@@ -117,7 +118,8 @@ class EvalSamplingConfig(BaseConfig):
     """Nucleus sampling threshold. None defers to the inference server default."""
 
     top_k: int | None = None
-    """Top-k sampling. None defers to the inference server default."""
+    """Top-k sampling. None defers to the inference server default (the model's generation
+    config). While sampling replay is on, the server rejects requests without top-k > 0."""
 
     min_p: float | None = Field(None, ge=0)
     """Min-p sampling threshold. None defers to the inference server default."""
@@ -637,8 +639,8 @@ class OrchestratorConfig(BaseConfig):
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
         Owned here: every truncating config gets a top-k bound (bounds the sampling
         masks); opd/opsd is rejected (full-vocab prefill refs would mix
-        normalizations); eval sources, which share the capturing server, default
-        to the same top-k. Frozen-source envs sample externally and are exempt."""
+        normalizations); eval temperature 0 is rejected (the capturing server is
+        shared). Frozen-source envs sample externally and are exempt."""
         policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
             [self.train.sampling] if not self.train.source else []
         )
@@ -650,7 +652,7 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 "Truncated train sampling (top_p/top_k) requires temperature > 0: greedy sampling has "
                 "no truncated distribution to replay, and the inference server rejects such requests "
-                "while sampling-mask capture is on."
+                "while sampling-mask capture is on. Set top_p = 1.0 (and no top_k) for greedy train sampling."
             )
 
         oversized = [sampling.top_k for sampling in truncating if (sampling.top_k or 0) > TRAIN_TOP_K_BOUND]
@@ -682,8 +684,12 @@ class OrchestratorConfig(BaseConfig):
                         "server rejects while truncated train sampling captures sampling masks. Use a non-zero "
                         "eval temperature or set top_p = 1.0 on the train sampling."
                     )
-                if source.sampling.top_k is None:
-                    source.sampling.top_k = TRAIN_TOP_K_BOUND
+            warnings.warn(
+                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
+                "eval sampling config or the model's generation config) or with temperature 0 are "
+                "rejected by the inference server while truncated train sampling is on.",
+                stacklevel=2,
+            )
 
         return self
 
@@ -753,6 +759,9 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+            # The top_p = 0.97 default is for live-policy sampling only; frozen models sample untruncated unless set.
+            elif "top_p" not in env.sampling.model_fields_set:
+                env.sampling.top_p = 1.0
         return self
 
     @model_validator(mode="after")

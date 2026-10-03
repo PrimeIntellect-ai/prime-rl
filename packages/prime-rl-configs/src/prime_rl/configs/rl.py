@@ -568,7 +568,7 @@ class RLConfig(BaseConfig):
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND and give eval sources a top-k, since
+        configs are bounded by TRAIN_TOP_K_BOUND and warns about eval sampling, since
         capture is engine-wide and vLLM rejects requests without ``top_k > 0``)."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
