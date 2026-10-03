@@ -6,9 +6,8 @@ so the rebuilt stream, the epoch's metrics and the platform upload cover the
 whole epoch - and only the rollouts still owed run. Failed episodes and the in-flight
 ones the interruption cut off are owed again.
 
-The shared Verifiers rollout planner matches these episodes to the current tasks
-by content hash. The resumed config is not checked against the interrupted one:
-any of it may be overridden.
+Each attempt's saved experiment settings must match before its episodes are reused.
+Operational settings such as concurrency and monitoring may change between attempts.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from pathlib import Path
 import orjson
 import verifiers.v1 as vf
 
+from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
 from prime_rl.utils.pathing import get_file_monitor_dir
@@ -27,6 +27,21 @@ CONFIG_NAME = "eval.json"
 """The resolved config an attempt stamps into its file monitor directory once it is
 running, beside the episodes it produces, recording the config those episodes were
 measured with."""
+
+# These fields control execution without changing the experiment being measured.
+OPERATIONAL_FIELDS = {
+    "resume": True,
+    "clean": True,
+    "dry_run": True,
+    "log": True,
+    "dashboard": True,
+    "monitors": True,
+    "heartbeat": True,
+    "concurrency": True,
+    "tasks_per_minute": True,
+    "client": {"wait_for_ready_timeout"},
+    "source": {"__all__": {"serve": {"pool", "max_concurrent"}}},
+}
 
 
 def stamp_config(run_dir: Path, config: dict) -> None:
@@ -54,14 +69,29 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path) -> list[vf.WireEpisode]:
+def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
     """Successful episodes from every attempt; the planner deduplicates them.
     The current file monitor directory joins the archives so the resumed attempt writes a
     fresh stream, plan and metrics; nothing is deleted."""
     current = get_file_monitor_dir(run_dir)
     stream = get_trace_stream(run_dir).relative_to(current)
+    directories = archives(run_dir)
+    if current.is_dir() or not directories:
+        directories.append(current)
+    expected = config.model_dump(mode="json", exclude=OPERATIONAL_FIELDS)
     landed: list[vf.WireEpisode] = []
-    for directory in [*archives(run_dir), current]:
+    for directory in directories:
+        saved_path = directory / CONFIG_NAME
+        if not saved_path.is_file():
+            raise ValueError(f"--resume: no saved experiment config at {saved_path}")
+        saved = EvalConfig.model_validate_json(saved_path.read_bytes())
+        previous = saved.model_dump(mode="json", exclude=OPERATIONAL_FIELDS)
+        changed = sorted(key for key in expected if expected[key] != previous[key])
+        if changed:
+            raise ValueError(
+                f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
+                "Use the saved experiment settings or start a fresh run."
+            )
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
                 episode = vf.WireEpisode.model_validate(record)
