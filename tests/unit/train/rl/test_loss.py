@@ -1,9 +1,8 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CISPOLossConfig, CustomLossConfig, IcePopLossConfig, IPOLossConfig, PPOLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig
 from prime_rl.trainer.rl.loss import (
-    IcePopLoss,
     LossInputs,
     LossOutputs,
     _mismatch_kl_from_log_ratio,
@@ -94,45 +93,8 @@ def test_setup_rl_loss_fn_with_custom_config():
     assert "custom_metric" in result.metrics
 
 
-def test_icepop_loss_masks_ratios_outside_inclusive_band():
-    ratios = torch.tensor([0.1, 0.2, 1.0, 5.0, 10.0], device="cuda")
-    trainer_logprobs = ratios.log().requires_grad_()
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.zeros_like(trainer_logprobs),
-        ref_logprobs=None,
-        advantages=torch.ones_like(trainer_logprobs),
-        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
-    )
-
-    result = setup_rl_loss_fn(IcePopLossConfig()).loss(inputs)
-
-    assert torch.isclose(result.loss, torch.tensor(-6.2, device="cuda"))
-    assert torch.isclose(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
-    result.loss.backward()
-    assert torch.allclose(trainer_logprobs.grad, torch.tensor([0.0, -0.2, -1.0, -5.0, 0.0], device="cuda"))
-
-
-def test_icepop_loss_masks_extreme_ratio_without_nan():
-    trainer_logprobs = torch.tensor([100.0], device="cuda", requires_grad=True)
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.zeros_like(trainer_logprobs),
-        ref_logprobs=None,
-        advantages=torch.ones_like(trainer_logprobs),
-        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
-    )
-
-    result = IcePopLoss(IcePopLossConfig()).loss(inputs)
-
-    assert torch.equal(result.loss, torch.zeros_like(result.loss))
-    assert all(torch.isfinite(value) for value in result.metrics.values())
-    result.loss.backward()
-    assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
-
-
-@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig()])
-def test_ipo_icepop_match_original_on_finite_ratios(config):
+def test_ipo_matches_original_on_finite_ratios():
+    config = IPOLossConfig()
     torch.manual_seed(23)
     trainer_logprobs = (-8 * torch.rand(128, device="cuda")).requires_grad_()
     inference_logprobs = -8 * torch.rand(128, device="cuda")
@@ -144,16 +106,8 @@ def test_ipo_icepop_match_original_on_finite_ratios(config):
     result = setup_rl_loss_fn(config).loss(inputs)
     log_ratio = trainer_logprobs - inference_logprobs
     ratio = log_ratio.exp()
-    if isinstance(config, IPOLossConfig):
-        keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
-        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
-    else:
-        keep = (
-            loss_mask
-            & (log_ratio.detach() >= torch.tensor(config.ratio_low, device="cuda").log())
-            & (log_ratio.detach() <= torch.tensor(config.ratio_high, device="cuda").log())
-        )
-        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
+    keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
+    expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
 
     torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
     actual_grad = torch.autograd.grad(result.loss, trainer_logprobs, retain_graph=True)[0]
@@ -202,84 +156,6 @@ def test_mismatch_kl_retains_small_positive_values():
     torch.testing.assert_close(
         _mismatch_kl_from_log_ratio(log_ratio), torch.tensor([5e-9], device="cuda"), rtol=1e-3, atol=0
     )
-
-
-def test_ppo_clips_by_advantage_sign_and_keeps_unclipped_gradients():
-    ratios = torch.tensor([0.5, 0.9, 1.0, 1.1, 2.0, 2.0], device="cuda")
-    trainer_logprobs = (-10 + ratios.log()).requires_grad_()
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.full_like(trainer_logprobs, -10),
-        ref_logprobs=None,
-        advantages=torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, -1.0], device="cuda"),
-        loss_mask=torch.ones(6, dtype=torch.bool, device="cuda"),
-    )
-
-    result = setup_rl_loss_fn(PPOLossConfig()).loss(inputs)
-
-    torch.testing.assert_close(result.loss, torch.tensor(-2.7, device="cuda"))
-    torch.testing.assert_close(result.metrics["is_clipped"], torch.tensor(1 / 6, device="cuda"))
-    result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-0.5, -0.9, -1.0, -1.1, 0.0, 2.0], device="cuda"))
-
-
-def test_ppo_caps_unbounded_negative_advantage_ratio():
-    trainer_logprobs = torch.tensor([-10.0, float("nan")], device="cuda", requires_grad=True)
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.tensor([-100.0, float("nan")], device="cuda"),
-        ref_logprobs=None,
-        advantages=torch.tensor([-1.0, 1.0], device="cuda"),
-        loss_mask=torch.tensor([True, False], device="cuda"),
-    )
-
-    result = setup_rl_loss_fn(PPOLossConfig()).loss(inputs)
-
-    torch.testing.assert_close(result.loss, torch.tensor(1e4, device="cuda"))
-    assert all(torch.isfinite(value) for value in result.metrics.values())
-    result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([1e4, 0.0], device="cuda"))
-
-
-def test_cispo_clips_detached_weight_without_dropping_gradients():
-    ratios = torch.tensor([0.1, 1.0, 5.0, 10.0], device="cuda")
-    trainer_logprobs = (-10 + ratios.log()).requires_grad_()
-    advantages = torch.tensor([1.0, -1.0, 1.0, 1.0], device="cuda")
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.full_like(trainer_logprobs, -10),
-        ref_logprobs=None,
-        advantages=advantages,
-        loss_mask=torch.ones(4, dtype=torch.bool, device="cuda"),
-    )
-
-    result = setup_rl_loss_fn(CISPOLossConfig()).loss(inputs)
-
-    expected_weight = torch.tensor([0.1, 1.0, 5.0, 5.0], device="cuda")
-    torch.testing.assert_close(result.loss, -(expected_weight * advantages * trainer_logprobs.detach()).sum())
-    torch.testing.assert_close(result.metrics["is_clipped"], torch.tensor(0.25, device="cuda"))
-    result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-0.1, 1.0, -5.0, -5.0], device="cuda"))
-
-
-def test_cispo_handles_extreme_ratio_and_optional_lower_clip():
-    trainer_logprobs = torch.tensor([-10.0, 0.0, float("nan")], device="cuda", requires_grad=True)
-    inputs = LossInputs(
-        trainer_logprobs=trainer_logprobs,
-        inference_logprobs=torch.tensor(
-            [-10.0 - torch.log(torch.tensor(0.1)).item(), -100.0, float("nan")], device="cuda"
-        ),
-        ref_logprobs=None,
-        advantages=torch.ones(3, device="cuda"),
-        loss_mask=torch.tensor([True, True, False], device="cuda"),
-    )
-
-    result = setup_rl_loss_fn(CISPOLossConfig(ratio_low=0.2)).loss(inputs)
-
-    assert torch.isfinite(result.loss)
-    assert all(torch.isfinite(value) for value in result.metrics.values())
-    result.loss.backward()
-    torch.testing.assert_close(trainer_logprobs.grad, torch.tensor([-0.2, -5.0, 0.0], device="cuda"))
 
 
 def test_ce_component_matches_masked_nll():
