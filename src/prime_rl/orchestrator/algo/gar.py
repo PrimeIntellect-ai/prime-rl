@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 from pydantic import ValidationError
+from verifiers.v1.runtimes.prime import delete_checkpoints
 from verifiers.v1.serve import EnvClient
 from verifiers.v1.tasksets.group_grade import GroupGradeData, GroupVerdict, quote_found
 
@@ -86,6 +87,7 @@ class GARAlgorithm(GRPOAlgorithm):
         self.progress: Progress | None = None
         self.max_off_policy_steps: int | None = None
         self.slots = asyncio.Semaphore(config.grader.max_concurrent)
+        self.leftover_checkpoints: set[str] = set()
 
     def bind(self, progress: Progress, max_off_policy_steps: int, grader_address_file: Path) -> None:
         """Wire in the orchestrator's step clock and staleness bound, and where the
@@ -106,6 +108,36 @@ class GARAlgorithm(GRPOAlgorithm):
         await self.grader.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
+        try:
+            await self.grade_group(episodes)
+        finally:
+            await self.delete_checkpoints(episodes)
+
+    async def delete_checkpoints(self, episodes: list[vf.Episode]) -> None:
+        """Delete the group's box checkpoints (``agent.checkpoint_on_finish``) once its
+        grading is over, however it ended; ids that cannot be deleted yet are retried
+        at ``close``."""
+        ids = [
+            trace.info["checkpoint"] for episode in episodes for trace in episode.traces if "checkpoint" in trace.info
+        ]
+        try:
+            self.leftover_checkpoints.update(await delete_checkpoints(ids))
+        except Exception as e:  # noqa: BLE001 - retried at close
+            get_logger().warning(f"GAR checkpoint deletion failed: {e!r}")
+            self.leftover_checkpoints.update(ids)
+
+    async def close(self) -> None:
+        if not self.leftover_checkpoints:
+            return
+        try:
+            leftover = await delete_checkpoints(sorted(self.leftover_checkpoints))
+        except Exception as e:  # noqa: BLE001 - shutdown is best-effort
+            get_logger().warning(f"GAR checkpoint deletion failed at shutdown: {e!r}")
+            return
+        if leftover:
+            get_logger().warning(f"GAR could not delete {len(leftover)} box checkpoints: {leftover}")
+
+    async def grade_group(self, episodes: list[vf.Episode]) -> None:
         # One candidate per episode: the trace carrying its patch (else its first
         # trainable trace); its credit applies to every trainable trace of the episode.
         members: list[tuple[vf.Trace, list[vf.Trace]]] = []
@@ -134,8 +166,15 @@ class GARAlgorithm(GRPOAlgorithm):
             **{f"gar/fallback/{name}": float(reason == name) for name in FALLBACK_REASONS},
         }
         common: dict[str, Any] = {"fallback_reason": reason, "grader_trace_id": None}
+        checkpoint_seconds = [c.info["checkpoint_seconds"] for c, _ in members if "checkpoint_seconds" in c.info]
+        metrics["gar/checkpointed"] = len(checkpoint_seconds) / len(members)
+        if checkpoint_seconds:
+            metrics["gar/checkpoint_seconds"] = sum(checkpoint_seconds) / len(checkpoint_seconds)
         if grade is not None:
             common["grader_trace_id"] = grade.traces[0].id if grade.traces else None
+            for name in ("restores", "restore_seconds"):
+                if grade.traces and name in grade.traces[0].metrics:
+                    metrics[f"gar/{name}"] = grade.traces[0].metrics[name]
             if (usage := vf.Usage.aggregate(t.usage for t in grade.traces if t.usage is not None)) is not None:
                 metrics["gar/grader_tokens"] = float(usage.prompt_tokens + usage.completion_tokens)
                 if usage.cost is not None:
