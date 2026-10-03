@@ -518,8 +518,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_eplb(self):
-        if self.inference is not None and self.inference.vllm.enable_eplb:
-            raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
+        if (
+            self.inference is not None
+            and self.inference.vllm.enable_eplb
+            and self.trainer.weight_broadcast.type != "nccl"
+        ):
+            raise ValueError("inference.vllm.enable_eplb requires NCCL weight updates.")
         return self
 
     @model_validator(mode="after")

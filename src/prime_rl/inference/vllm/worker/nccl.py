@@ -144,4 +144,5 @@ class NCCLWeightUpdateWorker(Worker):
             state_iter,
             self.model_runner.model_config,
             self.vllm_config,
+            eplb_state=model_runner.eplb_state,
         )
