@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,14 +16,18 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     array = np.asarray(routed_experts)
     assert array.ndim == 3
     assert np.issubdtype(array.dtype, np.integer)
-    dtype = np.uint8
-    if array.size:
-        assert array.min() >= 0
-        if array.max() > np.iinfo(np.uint8).max:
-            # Models with >256 experts (e.g. NemotronH Super/Ultra: 512) need wider
-            # indices. The payload self-describes via "dtype" so consumers pick it up.
-            assert array.max() <= np.iinfo(np.uint16).max
-            dtype = np.uint16
+    if os.environ.get("PRIME_RETURN_ROUTED_EXPERT_WEIGHTS") == "1":
+        # int32 expert ids followed by fp32 weight bits (see monkey_patch_return_routed_expert_weights).
+        dtype = np.int32
+    else:
+        dtype = np.uint8
+        if array.size:
+            assert array.min() >= 0
+            if array.max() > np.iinfo(np.uint8).max:
+                # Models with >256 experts (e.g. NemotronH Super/Ultra: 512) need wider
+                # indices. The payload self-describes via "dtype" so consumers pick it up.
+                assert array.max() <= np.iinfo(np.uint16).max
+                dtype = np.uint16
 
     compact = np.ascontiguousarray(array.astype(dtype, copy=False))
     return {

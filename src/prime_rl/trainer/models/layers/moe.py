@@ -368,11 +368,16 @@ class MoE(nn.Module):
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
 
+        replayed_scores = None
         if routed_experts is not None:
             _, _, top_k = routed_experts.shape
             routed_experts = routed_experts.reshape(
                 -1, top_k
             )  # we have to reshape here because the original is non-contiguous
+            if top_k == 2 * self.router.top_k:
+                # Total Router Recall: expert ids followed by the bits of the sampler's fp32 routing weights.
+                routed_experts, replayed_scores = routed_experts.split(self.router.top_k, dim=-1)
+                replayed_scores = replayed_scores.contiguous().view(torch.float32)
 
         # top_scores and selected_experts_indices shape (bs*slen*top_k,)
         # num_tokens_per_expert shape (num_experts,)
@@ -382,6 +387,10 @@ class MoE(nn.Module):
             num_tokens_per_expert,
             routing_confidence_sum,
         ) = self.router(x, routed_experts=routed_experts)
+
+        if replayed_scores is not None:
+            # The sampler's weights are constants: the router gets no gradient under Total Router Recall.
+            top_scores = replayed_scores
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
