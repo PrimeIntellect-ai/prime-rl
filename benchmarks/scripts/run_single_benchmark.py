@@ -25,8 +25,6 @@ from pydantic import Field
 from prime_rl.utils.config import BaseConfig, cli
 from prime_rl.utils.pathing import get_file_monitor_dir
 
-MAX_LORAS = 4
-
 
 def get_commit_sha() -> str:
     """Get current git commit SHA."""
@@ -61,8 +59,6 @@ class BenchmarkConfig(BaseConfig):
     num_gpus: Annotated[int, Field(ge=1, description="Number of GPUs")] = 2
 
     model_name: Annotated[str, Field(description="Model name (e.g., Qwen/Qwen3-0.6B)")] = "Qwen/Qwen3-0.6B"
-
-    lora_rank: Annotated[int | None, Field(description="LoRA rank (None for full fine-tuning)")] = None
 
     seq_len: Annotated[int, Field(ge=1, description="Sequence length")] = 512
 
@@ -158,11 +154,6 @@ def build_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
         cmd.extend(["--model.ac", "--model.ac.mode", "selective"])
     elif config.ac == "Offload":
         cmd.append("--model.ac-offloading")
-
-    # Add LoRA configuration if applicable
-    if config.lora_rank is not None:
-        cmd.extend(["--model.lora.rank", str(config.lora_rank)])
-        cmd.extend(["--max-concurrent-runs", str(MAX_LORAS)])
 
     # Add expert parallelism if enabled
     if config.ep > 1:

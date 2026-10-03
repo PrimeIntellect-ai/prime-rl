@@ -38,7 +38,6 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
@@ -706,7 +705,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
@@ -779,7 +778,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
-    state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         state_dict.pop("lm_head.weight")
     dcp_load(
@@ -789,19 +787,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     write_back_loaded_packed_parameters(model, state_dict)
     _move_buffers_to_cuda(model, config)
 
-    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
-    if lora_modules:
-        generator: torch.Generator | None = None
-        if parallel_dims.dp_replicate_enabled:
-            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
-            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
-            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
-            if dp_replicate_mesh.get_local_rank() == 0:
-                seed_tensor.random_()
-            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
-            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
-        for module in lora_modules:
-            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
 
@@ -860,7 +845,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
-    """Apply LoRA and identify any vision encoder that must remain frozen."""
+    """Identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
         frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
@@ -869,8 +854,6 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
         if frozen_vision_encoder is not None:
             get_logger().info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
 
-    if config.lora is not None:
-        apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
 
 
@@ -951,9 +934,7 @@ def setup_model(
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if config.fusions.enabled and config.lora is not None:
-        logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
-    elif config.fusions.enabled:
+    if config.fusions.enabled:
         applied = apply_model_fusions(model, config.fusions.enabled)
         logger.info(f"Applied runtime model fusions: {applied}")
 
@@ -982,11 +963,6 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
-    if parallel_dims.ep_enabled:
-        # EP replaces params with DTensors that default to requires_grad=True,
-        # re-freeze base params that LoRA froze earlier.
-        if config.lora is not None:
-            freeze_all_except_lora_and_specified(model, config.lora)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
@@ -1012,7 +988,7 @@ def setup_model(
         model.init_buffers_post_meta()
         _move_buffers_to_cuda(model, config)
     else:
-        load_dcp_from_hf(model, config, parallel_dims)
+        load_dcp_from_hf(model, config)
 
     _reset_runtime_moe_buffers(model)
     return model

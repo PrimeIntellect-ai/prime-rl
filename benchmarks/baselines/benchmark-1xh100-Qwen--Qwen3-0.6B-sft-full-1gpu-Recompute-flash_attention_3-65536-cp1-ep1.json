@@ -3,7 +3,6 @@
     "type": "sft",
     "num_gpus": 1,
     "model_name": "Qwen/Qwen3-0.6B",
-    "lora_rank": null,
     "seq_len": 65536,
     "ac": "Recompute",
     "attention": "flash_attention_3",

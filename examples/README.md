@@ -20,8 +20,8 @@ All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch
 Walk-throughs for the core environments (baseline eval → optional SFT warmup → RL → eval), each with its own README:
 
 - [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B): `eval.toml` → `sft.toml` → `rl.toml`
-- [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator, LoRA
-- [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
+- [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator
+- [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
 - [`hendrycks-sanity/`](basic/hendrycks-sanity/README.md) — single-turn math, long-running
 
@@ -30,7 +30,7 @@ Walk-throughs for the core environments (baseline eval → optional SFT warmup �
 Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 - [`dynamo/`](extra/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
-- [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE LoRA configs
+- [`vlm/`](extra/vlm/README.md) — multimodal (VLM) SFT, dense + MoE configs
 
 ## Related config folders
 

@@ -3,13 +3,12 @@
 In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia corpus using multi-turn tool use. This example highlights several key features of prime-rl and verifiers environment features:
 
 - **Single-file configuration**: All training settings (trainer, orchestrator, and inference) are specified in a single `rl.toml` file
-- **LoRA training**: Efficient fine-tuning using LoRA (Low-Rank Adaptation) on attention and MLP layers
 - **Multi-turn tool use**: The model learns to use V1 tools across multiple turns through native function calling
 - **Locally-hosted storage**: Uses ChromaDB and its local embedding model for retrieval
 - **LLM judges**: Uses an LLM judge to evaluate answer quality alongside tool execution metrics
 - **Online difficulty buffer**: Uses difficulty-based sampling to ensure rollouts have strictly non-zero advantages
 
-> This example runs on 8 GPUs (6 for inference, 2 for training). To run on 2 GPUs (1 inference, 1 trainer), add `--deployment.num-train-gpus 1 --deployment.num-infer-gpus 1 --orchestrator.batch-size 128` to the `rl` command.
+> This example runs on 8 GPUs (6 for inference, 2 for training).
 
 ## Setup
 
@@ -59,7 +58,6 @@ This example uses a **single `rl.toml` file** that contains all configuration fo
 
 Key configuration highlights:
 
-- **LoRA training**: Rank 8, alpha 32 for efficient fine-tuning
 - **Tool calling**: Uses Hermes parser for automatic tool selection with Qwen3-4B-Instruct-2507
 - **Multi-turn**: Tool calls and results are carried across turns by the V1 harness
 - **Online difficulty buffer**: Uses difficulty-based sampling with 2x oversampling
@@ -70,7 +68,7 @@ Start the inference server:
 
 ```bash
 # Run this in the inference terminal
-uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes
+uv run inference --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes
 ```
 
 Evaluate the base model:
@@ -93,7 +91,7 @@ uv run rl @ examples/basic/wiki-search/rl.toml \
 ```
 
 The unified config file automatically configures:
-- **Trainer**: LoRA fine-tuning with specified hyperparameters
+- **Trainer**: full fine-tuning with specified hyperparameters
 - **Orchestrator**: Rollout generation with tool calling enabled
 - **Inference**: vLLM server for Qwen3-4B-Instruct-2507 with tool parsing enabled
 
@@ -105,7 +103,7 @@ Evaluate your trained model:
 
 ```bash
 # Run this in the inference terminal
-uv run inference --vllm.enable-lora --vllm.model <user>/Qwen3-4B-Instruct-WikiSearch-RL --vllm.tool-call-parser hermes
+uv run inference --vllm.model <user>/Qwen3-4B-Instruct-WikiSearch-RL --vllm.tool-call-parser hermes
 ```
 
 ```bash

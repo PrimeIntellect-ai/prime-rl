@@ -1,8 +1,8 @@
 # Alphabet Sort
 
-In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the `alphabet-sort` taskset.
+In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the `alphabet-sort` taskset.
 
-> This example runs on a single H100 GPU.
+> This example runs on 8 GPUs (4 for the trainer, 4 for inference).
 
 ## Setup
 
@@ -33,7 +33,7 @@ We use non-default settings to balance the difficulty: 3 fixed turns (instead of
 Start the inference server:
 ```bash
 # Run this in the inference terminal
-uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507
+uv run inference --vllm.model Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Evaluate the base model:
@@ -80,8 +80,9 @@ The correct alphabetical order by last name should be: Akman, Cakir, Durgun. The
 
 ## RL
 
-We train with LoRA (rank 32, alpha 64) for 100 steps.
+We train with full fine-tuning for 200 steps.
 
+> The W&B logs, the uploaded checkpoint, and the eval numbers below come from an earlier LoRA version of this example (rank 32, alpha 64, 100 steps). LoRA support has since been removed.
 
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
@@ -92,7 +93,7 @@ uv run rl @ examples/basic/alphabet-sort/rl.toml \
   --monitors.wandb.name ...
 ```
 
-This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_200`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL`](https://huggingface.co/PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL).
 
@@ -101,7 +102,7 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetS
 Let's see how our final RL checkpoint performs on the eval set.
 ```bash
 # Run this in the inference terminal
-uv run inference --vllm.enable-lora --vllm.model PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
+uv run inference --vllm.model PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 ```bash

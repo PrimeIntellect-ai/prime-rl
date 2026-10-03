@@ -1,7 +1,5 @@
 import os
 
-import torch
-
 
 def apply_shared_vllm_patches():
     """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process.
@@ -14,8 +12,6 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
-    _patch_lora_key_prefix()
-    _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_nixl_connector()
@@ -26,10 +22,6 @@ def apply_shared_vllm_patches():
     monkey_patch_tokenize_params_validation()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
-    monkey_patch_minimax_m2_for_lora()
-    # Set by `server()` when the LoRA target modules include no expert layers.
-    if os.environ.get("PRIME_NO_MOE_LORA") == "1":
-        monkey_patch_no_moe_lora()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -326,189 +318,6 @@ def monkey_patch_strip_routed_experts_from_chat():
     )
 
 
-def _patch_qwen35_moe_lora_format():
-    """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
-
-    vLLM 0.24.0 still defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
-    which makes the LoRA loader expect 3D stacked-expert adapters
-    (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
-    rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
-    per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
-    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
-    when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
-    Without this override the adapters fail to load with key/shape mismatches.
-
-    The rest of the old Qwen3.5 LoRA shim (the in_proj_qkvz packed-mapping fix and the
-    N-slice ``can_replace_layer`` / ``slice_lora_a`` generalizations for vllm#36372) is
-    handled natively by 0.23.0 and was dropped. Remove this too once we either adopt the
-    3D stacked save format (like gpt-oss) or start the engine with
-    ``enable_mixed_moe_lora_format=True``.
-    """
-    from vllm.model_executor.models.qwen3_5 import Qwen3_5MoeForConditionalGeneration
-
-    Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
-
-
-def _patch_lora_key_prefix():
-    """Accept both bare-suffix and fully-qualified expert module names in LoRA adapters.
-
-    Copy of vLLM 0.24.0's ``LoRAModel.from_local_checkpoint`` with one change: the
-    ``.experts`` branch of ``check_unexpected_modules`` accepts either the bare suffix
-    (``down_proj``) or the qualified per-expert name (``experts.N.down_proj``), where
-    upstream only accepts the qualified form. Our trainer's 2D per-expert adapters
-    (Qwen3.5-MoE) carry names whose qualified form is not in the expected set while
-    the bare suffix is; Qwen3-30B-A3B adapters go the other way. Upstream fix
-    vllm-project/vllm#38522 was closed unmerged, so this stays.
-    """
-    from vllm.lora.lora_model import (
-        LoRAModel,
-        MoEEPLoadSpec,
-        PEFTHelper,
-        TensorizerConfig,
-        WeightsMapper,
-        _is_remote_expert_key,
-        get_lora_id,
-        is_base_embedding_weights,
-        os,
-        parse_fine_tuned_lora_name,
-        safetensors,
-    )
-
-    def _patched_from_local_checkpoint(
-        cls,
-        lora_dir: str,
-        expected_lora_modules: set[str],
-        peft_helper: PEFTHelper,
-        *,
-        lora_model_id: int | None = None,
-        device: str = "cuda",
-        dtype: torch.dtype | None = None,
-        model_vocab_size: int | None = None,
-        weights_mapper: WeightsMapper | None = None,
-        tensorizer_config_dict: dict | None = None,
-        skip_prefixes: list[str] | None = None,
-        moe_ep_spec: MoEEPLoadSpec | None = None,
-    ) -> "LoRAModel":
-        """Create a LoRAModel from a local checkpoint.
-
-        Args:
-            lora_dir: The local path that has lora data.
-            expected_lora_modules: Name of modules that are expected to be
-                replaced by lora.
-            peft_helper: Loaded lora configuration information.
-            lora_model_id: LoRA model id. If not given, automatically set by
-                a global counter.
-            device: Device where the lora model is loaded.
-            dtype: dtype of the lora model weights.
-            skip_prefixes: List of module name prefixes to skip during loading.
-                Models can define this to skip modules not used in inference
-                (e.g., MTP layers). Format: ["mtp."]
-            moe_ep_spec: When 2D FusedMoE LoRA modules are present with
-                expert parallelism enabled, the (ep_rank, local, global)
-                slicing metadata shared across all MoE layers. Non-local
-                expert weights are skipped at read time instead of being
-                loaded and discarded later.
-
-        Returns:
-            Loaded LoRA Model.
-        """
-        lora_tensor_path = os.path.join(lora_dir, "adapter_model.safetensors")
-        lora_bin_file_path = os.path.join(lora_dir, "adapter_model.bin")
-        lora_pt_file_path = os.path.join(lora_dir, "adapter_model.pt")
-
-        tensors: dict[str, torch.Tensor] = {}
-        unexpected_modules: list[list[str] | str] = []
-
-        def check_unexpected_modules(modules: dict):
-            for lora_module in modules.keys():  # noqa
-                if is_base_embedding_weights(lora_module):
-                    continue
-                # Handle PEFT file format where experts.base_layer is the
-                # gate_up_proj and experts is the down_proj
-                if "base_layer" in lora_module:
-                    continue
-                # Skip modules based on model-defined prefixes
-                if skip_prefixes and cls._should_skip_module(lora_module, skip_prefixes):
-                    continue
-                module_name, _ = parse_fine_tuned_lora_name(lora_module, weights_mapper)
-                # Case for expert lora weights.
-                ## START PATCHED CODE (upstream only accepts the qualified form)
-                if ".experts" in module_name:
-                    expert_suffix = module_name.split(".")[-1]
-                    experts_qualified = "experts" + module_name.split(".experts", 1)[-1]
-                    if expert_suffix not in expected_lora_modules and experts_qualified not in expected_lora_modules:
-                        unexpected_modules.append(module_name)
-                ## END PATCHED CODE
-
-                elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
-                    unexpected_modules.append(module_name)
-
-            if unexpected_modules:
-                raise ValueError(
-                    f"While loading {lora_dir}, expected"
-                    f" target modules in {expected_lora_modules}"
-                    f" but received {unexpected_modules}."
-                    f" Please verify that the loaded LoRA module is correct"
-                )
-
-        if tensorizer_config_dict:
-            from tensorizer import TensorDeserializer
-
-            tensorizer_config = TensorizerConfig(**tensorizer_config_dict)
-            tensorizer_dir = tensorizer_config.tensorizer_dir
-            if tensorizer_dir is None:
-                raise ValueError("tensorizer_dir must be set in tensorizer config.")
-            lora_tensor_path = os.path.join(tensorizer_dir, "adapter_model.tensors")
-            tensorizer_args = tensorizer_config._construct_tensorizer_args()
-            tensors = TensorDeserializer(
-                lora_tensor_path,
-                dtype=tensorizer_config.dtype,
-                device=device,
-                **tensorizer_args.deserialization_kwargs,
-            )
-            check_unexpected_modules(tensors)
-
-        elif os.path.isfile(lora_tensor_path):
-            # Find unexpected modules.
-            # Use safetensor key as a source of truth to find expected modules.
-            # in peft if you have target_modules A, B, C and C does not exist
-            # in the model it won’t error and model will be trained with A, B
-            # loraified. C won’t exist in the safetensor but it will exist in
-            # the target_modules of the adapter_config.json.
-            unexpected_modules = []
-            with safetensors.safe_open(lora_tensor_path, framework="pt") as f:  # type: ignore
-                # Load tensors if there are only expected modules.
-                check_unexpected_modules(f)
-                for module in f.keys():  # noqa
-                    if moe_ep_spec is not None and _is_remote_expert_key(module, moe_ep_spec):
-                        continue
-                    tensors[module] = f.get_tensor(module)
-        elif os.path.isfile(lora_bin_file_path) or os.path.isfile(lora_pt_file_path):
-            lora_file_path = lora_bin_file_path if os.path.isfile(lora_bin_file_path) else lora_pt_file_path
-            tensors = torch.load(lora_file_path, map_location=device, weights_only=True)
-            check_unexpected_modules(tensors)
-            if moe_ep_spec is not None:
-                # `.bin`/`.pt` adapters can't be lazy-loaded, but pruning
-                # the dict here still frees the non-local expert tensors
-                # before the dtype cast / pin_memory work that follows.
-                tensors = {k: v for k, v in tensors.items() if not _is_remote_expert_key(k, moe_ep_spec)}
-        else:
-            raise ValueError(f"{lora_dir} doesn't contain tensors")
-
-        return cls.from_lora_tensors(
-            lora_model_id=get_lora_id() if lora_model_id is None else lora_model_id,
-            tensors=tensors,
-            peft_helper=peft_helper,
-            device=device,
-            dtype=dtype,
-            model_vocab_size=model_vocab_size,
-            weights_mapper=weights_mapper,
-            skip_prefixes=skip_prefixes,
-        )
-
-    LoRAModel.from_local_checkpoint = classmethod(_patched_from_local_checkpoint)
-
-
 # Monkeypatch TokenizeParams to fix overly conservative validation
 def monkey_patch_tokenize_params_validation():
     """
@@ -579,94 +388,6 @@ def monkey_patch_tokenize_params_validation():
     TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
-def monkey_patch_minimax_m2_for_lora():
-    """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
-
-    These patches are only needed when using LoRA with MiniMax M2 but are safe
-    to apply unconditionally (verified with non-LoRA runs). We apply them
-    unconditionally because the vLLM plugin runs before the vLLM config is
-    available, so we can't check if LoRA is enabled.
-
-    Problem 1 — Gate dtype mismatch:
-        vLLM's MiniMaxM2MoE creates the gate (router) with params_dtype=float32
-        and casts inputs to float32. When LoRA is enabled, vLLM wraps ALL
-        ReplicatedLinear layers (including the gate) with LoRA support. Even
-        though our adapter has no gate LoRA weights, the LoRA Triton kernel
-        still runs for all wrapped layers when any adapter is active — and it
-        asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
-        problem because its gate uses the model dtype.
-        Fix: rebuild the gate as GateLinear with a bf16 weight (out_dtype=float32
-        keeps fp32 router logits). vLLM 0.24.0's own forward already drops the
-        float32 input cast. FusedMoE also has router_logits_dtype=float32, so
-        routing precision is preserved inside the expert dispatch.
-
-    Problem 2 — Adapter key naming mismatch:
-        PrimeRL saves adapter keys using its internal naming convention
-        (mlp.experts.{j}.gate_proj/down_proj/up_proj), which matches Qwen3 MoE
-        but not MiniMax M2. vLLM's MiniMax M2 model expects HF-style keys
-        (block_sparse_moe.experts.{j}.w1/w2/w3). For full model weights this
-        is handled by vLLM's load_weights(), but LoRA adapters are loaded
-        through a separate path (LoRAModel.from_local_checkpoint) that doesn't
-        have model-specific key translation.
-        Fix: set hf_to_vllm_mapper on the model class so vLLM remaps adapter
-        keys during LoRA loading. This attribute is only read by _load_adapter
-        in the LoRA worker manager — it has no effect without LoRA.
-    """
-    from vllm.model_executor.models.minimax_m2 import MiniMaxM2ForCausalLM, MiniMaxM2MoE
-    from vllm.model_executor.models.utils import WeightsMapper
-
-    # --- Gate dtype fix (only matters with LoRA, safe without) ---
-    _original_init = MiniMaxM2MoE.__init__
-
-    def _patched_init(self, config, quant_config=None, prefix=""):
-        _original_init(self, config, quant_config, prefix)
-        from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
-
-        # vLLM 0.24.0 builds the gate as GateLinear with a float32 weight; rebuild it
-        # with a bf16 weight (model dtype) so the LoRA Triton kernel's float16/bfloat16
-        # assertion passes, keeping out_dtype=float32 so router logits stay fp32 (the
-        # GateLinear bf16xbf16->fp32 path).
-        self.gate = GateLinear(
-            config.hidden_size,
-            config.num_local_experts,
-            bias=False,
-            out_dtype=torch.float32,
-            prefix=f"{prefix}.gate",
-        )
-
-    MiniMaxM2MoE.__init__ = _patched_init
-
-    # --- Adapter key remapping (only read by vLLM's LoRA adapter loader) ---
-    MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
-        orig_to_new_substr={
-            ".mlp.experts.": ".block_sparse_moe.experts.",
-            ".gate_proj.": ".w1.",
-            ".down_proj.": ".w2.",
-            ".up_proj.": ".w3.",
-        },
-    )
-
-
-def monkey_patch_no_moe_lora():
-    """This disables LoRA for MoE layers and makes them pick better kernels.
-
-    Otherwise, the oracle will always try to pick TritonExperts.
-    For blackwells, we want TRTLLMFlashInfer.
-    """
-    from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
-
-    original_post_init = FusedMoEConfig.__post_init__
-
-    def _patched__post_init__(self: FusedMoEConfig):
-        original_post_init(self)
-        # Disable LoRA for MoE layers. `is_lora_enabled` is only read later during
-        # kernel selection (modular_kernel / unquantized oracle), never inside
-        # `__post_init__`, so flipping it after the original runs is sufficient.
-        self.is_lora_enabled = False
-
-    FusedMoEConfig.__post_init__ = _patched__post_init__
-
-
 def monkey_patch_dp_coordinator_startup_timeout():
     """Raise the DP coordinator startup timeout from vLLM's hard-coded 120s.
 
@@ -677,7 +398,6 @@ def monkey_patch_dp_coordinator_startup_timeout():
     via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
     """
     import multiprocessing.connection
-    import os
 
     from vllm.v1.engine.coordinator import DPCoordinator
 

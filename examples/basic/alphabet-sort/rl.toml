@@ -2,6 +2,10 @@
 max_steps = 200
 seq_len = 2048
 
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
 [ckpt] # Checkpoint at the end of training
 
 [model]
@@ -13,13 +17,6 @@ name = "alphabet-sort"
 
 [trainer.model.ac]
 freq = 1
-
-[trainer.model.lora]
-rank = 32
-alpha = 64
-
-[trainer.optim]
-lr = 1e-5
 
 [orchestrator]
 batch_size = 256
@@ -39,4 +36,5 @@ env.taskset.task.power_per_turn = false
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[inference] # Default inference config
+[inference.vllm]
+data_parallel_size = 4

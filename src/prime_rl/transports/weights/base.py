@@ -122,13 +122,11 @@ class WeightReceiver(ABC):
         broadcast_dir: Path,
         config: WeightBroadcastConfig,
         admin_plane: AdminPlane,
-        model_name: str,
     ) -> None:
         self.logger = get_logger()
         self.broadcast_dir = broadcast_dir
         self.config = config
         self.admin_plane = admin_plane
-        self.model_name = model_name
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""

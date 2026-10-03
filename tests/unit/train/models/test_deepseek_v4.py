@@ -1,6 +1,5 @@
 import math
 import re
-from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -333,7 +332,7 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: meta_model.state_dict().keys())
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
 
-    load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
+    load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path)))
 
     torch.testing.assert_close(meta_model.model.layers[0].mlp.router.tid2eid, expected)
 

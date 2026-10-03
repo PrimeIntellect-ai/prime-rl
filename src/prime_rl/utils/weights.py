@@ -13,7 +13,6 @@ from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import (
-    ADAPTER_SAFE_WEIGHTS_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
 )
@@ -46,14 +45,12 @@ def save_state_dict(
     state_dict: dict[str, Tensor],
     save_dir: Path,
     save_sharded: bool = True,
-    adapter: bool = False,
 ):
     """Save a state dict to a local directory as safetensors."""
     logger = get_logger()
-    weights_name = ADAPTER_SAFE_WEIGHTS_NAME if adapter else SAFE_WEIGHTS_NAME
     save_dir.mkdir(parents=True, exist_ok=True)
     if save_sharded:
-        filename_pattern = weights_name.replace(".safetensors", "{suffix}.safetensors")
+        filename_pattern = SAFE_WEIGHTS_NAME.replace(".safetensors", "{suffix}.safetensors")
         state_dict_split = split_torch_state_dict_into_shards(
             state_dict,
             filename_pattern=filename_pattern,
@@ -62,7 +59,7 @@ def save_state_dict(
             filenames = state_dict_split.filename_to_tensors.keys()
             logger.debug(f"Saving sharded weights to {len(filenames)} files: ({', '.join(filenames)})")
         else:
-            logger.debug(f"Saving unsharded weights to {weights_name}")
+            logger.debug(f"Saving unsharded weights to {SAFE_WEIGHTS_NAME}")
 
         # Save weights (https://github.com/huggingface/transformers/blob/cd74917ffc3e8f84e4a886052c5ab32b7ac623cc/src/transformers/modeling_utils.py#L4252)
         filename_to_tensors = state_dict_split.filename_to_tensors.items()
@@ -88,7 +85,7 @@ def save_state_dict(
                 content = json.dumps(index, indent=2, sort_keys=True) + "\n"
                 f.write(content)
     else:
-        save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
+        save_file(state_dict, save_dir / SAFE_WEIGHTS_NAME, metadata={"format": "pt"})
 
 
 def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -192,9 +189,6 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
                 continue
             partial[resolve_fqn(model, key)] = value.to("cpu")
         dist.barrier()
-
-    if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in partial.keys()):
-        raise ValueError("gather_weights_parallel does not support LoRA state dicts")
 
     return partial
 

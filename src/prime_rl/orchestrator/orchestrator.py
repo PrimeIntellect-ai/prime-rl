@@ -245,7 +245,6 @@ class Orchestrator:
                 if self.resume_step is None:
                     self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
-        # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
@@ -298,14 +297,10 @@ class Orchestrator:
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
-        # A LoRA run's adapter is registered under the base model name: the
-        # single adapter shadows it (vLLM resolves lora_requests before the
-        # base-model match), so requests keep addressing one stable name.
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
             admin_plane=self.admin_plane,
-            model_name=config.model.name,
         )
         await self.receiver.initialize()
         get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")

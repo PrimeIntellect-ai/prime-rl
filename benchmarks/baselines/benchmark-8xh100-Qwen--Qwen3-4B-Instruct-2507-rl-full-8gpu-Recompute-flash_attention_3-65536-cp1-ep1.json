@@ -3,7 +3,6 @@
     "type": "rl",
     "num_gpus": 8,
     "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-    "lora_rank": null,
     "seq_len": 65536,
     "ac": "Recompute",
     "attention": "flash_attention_3",

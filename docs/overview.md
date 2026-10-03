@@ -10,9 +10,9 @@ A `prime-rl` RL run is three cooperating processes:
 
 - **Inference** — vLLM-backed server (or fleet) holding the current policy. The orchestrator drives rollouts through the token-in `/inference/v1/generate` route via the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) package (OpenAI-compatible chat/completions routes are also exposed for external clients). We are trying to stay up-to-date with the latest vLLM features, you can read more about the supported features and deployment options in the dedicated [inference documentation](inference.md).
 - **Orchestrator** — Lightweight CPU process that owns the data plane across many [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) training and eval environments. Each env runs in an isolated subprocess with a variable-size pool of env workers for scalability. The orchestrator drives multi-turn rollouts against the inference fleet (tool use, browsers, sandboxes, long horizons) without re-tokenizing across turns, computes advantages, packs the rollouts into training batches, and relays new weights from trainer to inference.
-- **Trainer** — FSDP2 process group that consumes packed rollouts and steps the optimizer. We ship optimized custom modeling code for many MoE / dense / VLM families that unlocks advanced trainer parallelism — expert parallelism (EP, with DeepEP kernels) and context parallelism (CP) for long-sequence training — plus selective activation checkpointing, FP8 training on Hopper+, and LoRA. You can read more in the dedicated [training documentation](training.md).
+- **Trainer** — FSDP2 process group that consumes packed rollouts and steps the optimizer. We ship optimized custom modeling code for many MoE / dense / VLM families that unlocks advanced trainer parallelism — expert parallelism (EP, with DeepEP kernels) and context parallelism (CP) for long-sequence training — plus selective activation checkpointing, and FP8 training on Hopper+. You can read more in the dedicated [training documentation](training.md).
 
-The three processes communicate through configurable transports — by default the trainer↔orchestrator rollout link uses ZMQ, and weight broadcast uses NCCL for synchronous in-memory transfer (falling back to filesystem when LoRA is enabled or no inference server is configured). Swap the rollout link to the local filesystem (`rollout_transport.type = "filesystem"`) if you want rollouts persisted to disk. See [Scaling](scaling.md) for the deployment options.
+The three processes communicate through configurable transports — by default the trainer↔orchestrator rollout link uses ZMQ, and weight broadcast uses NCCL for synchronous in-memory transfer (falling back to filesystem when no inference server is configured). Swap the rollout link to the local filesystem (`rollout_transport.type = "filesystem"`) if you want rollouts persisted to disk. See [Scaling](scaling.md) for the deployment options.
 
 ## Installation
 
@@ -41,5 +41,5 @@ The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into 
 - **[Inference](inference.md)** — vLLM-backed server (or fleet) holding the current policy.
 - **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
 - **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.
-- **[Advanced](advanced.md)** — Custom modeling, multimodal, LoRA, P/D inference.
+- **[Advanced](advanced.md)** — Custom modeling, multimodal, P/D inference.
 - **[Development](development.md)** — Test suite, pre-commit hooks, adding a new model.

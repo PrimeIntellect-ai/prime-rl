@@ -3,7 +3,6 @@
     "type": "rl",
     "num_gpus": 4,
     "model_name": "Qwen/Qwen3-0.6B",
-    "lora_rank": null,
     "seq_len": 65536,
     "ac": "Recompute",
     "selective_targets": null,

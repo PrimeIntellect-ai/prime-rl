@@ -8,9 +8,6 @@ from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
 from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
-from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.serve.engine.protocol import ErrorResponse
-from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
@@ -24,10 +21,6 @@ router = APIRouter()
 
 def engine_client(request: Request) -> EngineClient:
     return request.app.state.engine_client
-
-
-def models(request: Request) -> OpenAIServingModels:
-    return request.app.state.openai_serving_models
 
 
 WORKER_EXTENSION_CLS = {
@@ -54,40 +47,6 @@ async def resume(request: Request):
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    return {"status": "ok"}
-
-
-@router.post("/load_lora_adapter")
-async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
-    """Wrapper around vLLM's /v1/load_lora_adapter.
-
-    prime-rl reloads a fixed-name adapter with fresh weights every step (the path
-    changes per policy version; the name is constant — the base model name, which
-    the adapter shadows: ``_maybe_get_adapters`` resolves ``lora_requests`` before
-    the base-model match, so requests keep addressing one stable name. If a future
-    vLLM rejects registering an adapter under a served model name, fall back to a
-    distinct constant adapter name set once at startup.) vLLM's native loader
-    rejects a same-name reload unless ``load_inplace=True``, so we force it here —
-    that makes the worker re-read the new weights during ``add_lora``, reusing the
-    existing ``lora_int_id``.
-
-    We then reset the stored request's flag back to ``False``. ``load_inplace`` is
-    a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
-    every generation request; left ``True`` it would force a disk reload on each
-    scheduler step. The orchestrator awaits this endpoint before dispatching
-    rollouts for the new version, so the reset always lands before generation.
-    The reset runs regardless of success/error: vLLM only stores the adapter on
-    success today, but resetting whatever is stored keeps us correct even if a
-    future version were to leave a ``load_inplace=True`` request behind on error.
-    """
-    handler = models(raw_request)
-    lora_request.load_inplace = True
-    response = await handler.load_lora_adapter(lora_request)
-    stored = handler.lora_requests.get(lora_request.lora_name)
-    if stored is not None:
-        stored.load_inplace = False
-    if isinstance(response, ErrorResponse):
-        return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     return {"status": "ok"}
 
 
@@ -184,15 +143,8 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    import os
-
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.launchers.api_server.entry import run_server
-
-    # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
-    lora_target_modules = config.vllm.lora_target_modules
-    if lora_target_modules and not any("expert" in m for m in lora_target_modules):
-        os.environ["PRIME_NO_MOE_LORA"] = "1"
 
     namespace = config.to_namespace()
 

@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -8,52 +7,9 @@ from verifiers.v1.configs.client import EvalClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
-    _is_retryable_lora_error,
     check_health,
-    load_lora_adapter,
     setup_client,
 )
-
-
-def test_is_retryable_lora_error_returns_true_for_404():
-    response = MagicMock()
-    response.status_code = 404
-    error = httpx.HTTPStatusError("Not found", request=MagicMock(), response=response)
-    assert _is_retryable_lora_error(error) is True
-
-
-def test_is_retryable_lora_error_returns_true_for_500():
-    response = MagicMock()
-    response.status_code = 500
-    error = httpx.HTTPStatusError("Server error", request=MagicMock(), response=response)
-    assert _is_retryable_lora_error(error) is True
-
-
-def test_is_retryable_lora_error_returns_false_for_400():
-    response = MagicMock()
-    response.status_code = 400
-    error = httpx.HTTPStatusError("Bad request", request=MagicMock(), response=response)
-    assert _is_retryable_lora_error(error) is False
-
-
-def test_is_retryable_lora_error_returns_false_for_non_http_error():
-    assert _is_retryable_lora_error(ValueError("some error")) is False
-
-
-def test_load_lora_adapter_succeeds_on_first_attempt():
-    mock_client = AsyncMock()
-    admin_plane = MagicMock(clients=[mock_client])
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_client.post.return_value = mock_response
-
-    asyncio.run(load_lora_adapter(admin_plane, "test-lora", Path("/test/path")))
-
-    mock_client.post.assert_called_once_with(
-        "/load_lora_adapter",
-        json={"lora_name": "test-lora", "lora_path": "/test/path"},
-        timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
-    )
 
 
 def test_admin_plane_initializes_nccl():
