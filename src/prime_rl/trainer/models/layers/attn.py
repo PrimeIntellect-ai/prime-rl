@@ -418,7 +418,7 @@ class AttentionConfig:
     output_bias: bool = False
 
 
-# TODO: Does torch compile support config._attn_implementation forking?
+# TODO: Does torch compile support config.attn_implementation forking?
 # If so, we can combine FlashAttention variants into one class
 # Otherwise, do ABC or something to make the signatures match
 

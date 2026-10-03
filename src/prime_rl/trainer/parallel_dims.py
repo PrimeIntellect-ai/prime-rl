@@ -276,10 +276,10 @@ class ParallelDims:
 
 
 def _is_moe_model(config: ModelConfig) -> bool:
-    """Return True if the model has MoE layers, by loading its HuggingFace config."""
-    from transformers import AutoConfig
+    """Return True if the model has MoE layers, by loading its config."""
+    from prime_rl.trainer.models.registry import load_model_config
 
-    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    model_config = load_model_config(config.name)
     model_config = getattr(model_config, "text_config", model_config)
     return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
 

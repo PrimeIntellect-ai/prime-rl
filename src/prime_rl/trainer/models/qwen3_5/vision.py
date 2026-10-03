@@ -3,7 +3,6 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
@@ -80,7 +79,7 @@ class Qwen3_5VisionAttention(nn.Module):
         self.head_dim = config.hidden_size // config.num_heads
         self.qkv = nn.Linear(config.hidden_size, config.hidden_size * 3, bias=True)
         self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
-        self.attention_implementation = config._attn_implementation
+        self.attention_implementation = config.attn_implementation
         self.flash_attention = self.FLASH_ATTENTION_FUNCTIONS[self.attention_implementation]
 
     def forward(
@@ -244,7 +243,8 @@ class Qwen3_5VisionModel(nn.Module):
             embeddings.append(position_embedding)
         return torch.cat(embeddings)
 
-    def forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> BaseModelOutputWithPooling:
+    def forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> torch.Tensor:
+        """Encode image patches into merged embeddings, one per ``spatial_merge_size**2`` patches."""
         hidden_states = self.patch_embed(pixel_values)
         hidden_states = hidden_states + self.interpolated_position_embeddings(grid_thw)
         rotary = self.rotary_embeddings(grid_thw)
@@ -254,10 +254,7 @@ class Qwen3_5VisionModel(nn.Module):
         cu_seqlens = F.pad(sequence_lengths.cumsum(dim=0, dtype=torch.int32), (1, 0))
         for block in self.blocks:
             hidden_states = block(hidden_states, cu_seqlens, position_embeddings)
-        return BaseModelOutputWithPooling(
-            last_hidden_state=hidden_states,
-            pooler_output=self.merger(hidden_states),
-        )
+        return self.merger(hidden_states)
 
 
 __all__ = ["Qwen3_5VisionModel"]

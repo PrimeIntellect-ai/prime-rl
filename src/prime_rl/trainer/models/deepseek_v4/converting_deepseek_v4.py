@@ -5,10 +5,9 @@
 naming (`attn`, `ffn`, `wkv`, `wq_a`, `hc_attn_base`, per-expert `w1`/`w2`/`w3`) that carries no
 `model.` prefix on any of its 72317 keys.
 
-Nothing else translates those names. The pinned `transformers` ships no DeepSeek V4 model and no
-`conversion_mapping` entry for one, and prime-rl reads the raw safetensors directly for DCP
-sharding rather than going through `from_pretrained`, so the chain below is the only mapping
-between the published checkpoint and prime-rl's module tree.
+Nothing else translates those names: prime-rl reads the raw safetensors directly for DCP
+sharding, so the chain below is the only mapping between the published checkpoint and prime-rl's
+module tree.
 
 It runs both ways: forward for `load_dcp_from_hf`, and reversed (`convert_to_hf`) for the weight
 broadcast, whose output vLLM's own loader reads back under the published names.

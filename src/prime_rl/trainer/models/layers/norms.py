@@ -4,7 +4,6 @@ from functools import lru_cache
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.integrations import use_kernel_forward_from_hub
 
 
 @lru_cache(maxsize=1)
@@ -26,7 +25,6 @@ class RMSNormConfig:
     eps: float = 1e-6
 
 
-@use_kernel_forward_from_hub("RMSNorm")
 class RMSNorm(nn.Module):
     def __init__(self, config: RMSNormConfig) -> None:
         super().__init__()

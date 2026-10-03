@@ -16,7 +16,7 @@ This page covers the specialized features layered on top of the core training st
 
 ## Custom Modeling
 
-The trainer only runs `prime-rl`'s own model implementations, selected from the HF config type. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
+The trainer only runs `prime-rl`'s own model implementations, selected by the `model_type` in the checkpoint's `config.json`. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|

@@ -2,9 +2,9 @@ import time
 
 import torch
 from torch import nn
-from transformers import PretrainedConfig
 
 from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.models.config import PrimeModelConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRAModule
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -109,7 +109,7 @@ class PerfCounter:
             return 312e12
 
     @staticmethod
-    def get_active_mm_params(config: PretrainedConfig) -> float:
+    def get_active_mm_params(config: PrimeModelConfig) -> float:
         """Get number of active parameters per token involved in matmuls"""
         # Handle VLM models with nested text_config (e.g., Qwen3-VL)
         if hasattr(config, "text_config"):
@@ -174,7 +174,7 @@ class PerfCounter:
         ## Total
         return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
-    def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
+    def _get_num_flop_per_token(self, model_config: PrimeModelConfig, seq_len: int) -> int:
         # Handle VLM models with nested text_config (e.g., Qwen3-VL)
         if hasattr(model_config, "text_config"):
             model_config = model_config.text_config

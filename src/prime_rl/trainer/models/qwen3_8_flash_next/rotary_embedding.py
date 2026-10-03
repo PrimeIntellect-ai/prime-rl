@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
+from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextRopeParameters
 
 
 def apply_rotary_embedding(
@@ -18,21 +19,14 @@ def apply_rotary_embedding(
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(
-        self,
-        *,
-        head_dim: int,
-        theta: float,
-        partial_rotary_factor: float,
-        mrope_section: tuple[int, int, int],
-        device: torch.device | None = None,
-    ) -> None:
+    inv_freq: torch.Tensor
+
+    def __init__(self, rope: Qwen3_8FlashNextRopeParameters, head_dim: int) -> None:
         super().__init__()
-        rotary_dim = int(head_dim * partial_rotary_factor)
-        self.rotary_dim = rotary_dim
-        self.theta = theta
-        self.mrope_section = mrope_section
-        self.register_buffer("inv_freq", torch.empty(rotary_dim // 2, device=device), persistent=False)
+        self.rotary_dim = int(head_dim * rope.partial_rotary_factor)
+        self.theta = rope.rope_theta
+        self.mrope_section = rope.mrope_section
+        self.register_buffer("inv_freq", torch.empty(self.rotary_dim // 2), persistent=False)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:

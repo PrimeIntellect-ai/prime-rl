@@ -24,12 +24,13 @@ def setup_weight_sender(
     output_dir: Path,
     config: WeightBroadcastConfig,
     parallel_dims: ParallelDims,
+    base_model_name: str,
     lora_config: LoRAConfig | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
-        return FileSystemWeightSender(output_dir, config, lora_config)
+        return FileSystemWeightSender(output_dir, config, base_model_name, lora_config)
     elif config.type == "nixl":
         return NIXLWeightSender(output_dir, config, parallel_dims)
     else:
