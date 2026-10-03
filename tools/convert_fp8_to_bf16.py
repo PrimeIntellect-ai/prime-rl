@@ -17,7 +17,6 @@ import shutil
 from pathlib import Path
 
 import torch
-from convert_bf16_to_fp8 import list_shards
 from safetensors import safe_open
 from safetensors.torch import save_file
 
@@ -27,6 +26,16 @@ def dequantize_blockwise(weight: torch.Tensor, scales: torch.Tensor, block_size:
     block_rows, block_cols = block_size
     expanded = scales.repeat_interleave(block_rows, dim=0)[:rows].repeat_interleave(block_cols, dim=1)[:, :cols]
     return (weight.to(torch.float32) * expanded).to(torch.bfloat16)
+
+
+def list_shards(model_dir: Path) -> list[str]:
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.exists():
+        weight_map = json.loads(index_path.read_text())["weight_map"]
+        return sorted(set(weight_map.values()))
+    if (model_dir / "model.safetensors").exists():
+        return ["model.safetensors"]
+    raise FileNotFoundError(f"No safetensors checkpoint found in {model_dir}")
 
 
 def main() -> None:
