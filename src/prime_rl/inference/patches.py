@@ -31,6 +31,40 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS") == "1":
+        monkey_patch_sampling_mask_logprobs()
+
+
+# float32 -inf as int32 bits. Mask logprobs ride XORed with it, so an id without a value
+# (zero high bits) decodes to -inf: no sampler probability, no centering.
+NEG_INF_BITS = int(np.float32(-np.inf).view(np.int32))
+
+
+def monkey_patch_sampling_mask_logprobs():
+    """Return the sampler's logprob of every sampling-mask id (score centering).
+
+    vLLM builds the mask from the processed logits (temperature + top-k/top-p, -inf
+    outside the kept set S), so ``logits[id] - logsumexp(logits)`` is the sampler's
+    renormalized logprob on S. Each value rides the existing mask path (engine IPC,
+    output processor) in the high half of an int64 id:
+    ``(float32 bits ^ NEG_INF_BITS) << 32 | id``. Rows wider than the compact
+    buffer (ties, served from the bitmask as plain int32 ids) decode to -inf.
+    ``PrimeRlServingTokens`` splits the pairs; streaming and offline ``LLM`` consumers
+    would see packed ids and are unsupported while this is on.
+    """
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    from_logits = SamplingMaskTensors.from_logits.__func__
+
+    def from_logits_with_logprobs(cls, logits, num_sampled_tokens, max_num_kept):
+        tensors = from_logits(cls, logits, num_sampled_tokens, max_num_kept)
+        # Slots past each row's count are uninitialized and never read; clamp so the gather stays in range.
+        ids = tensors.token_ids.long().clamp(0, logits.shape[1] - 1)
+        logprobs = (logits.gather(1, ids) - logits.logsumexp(-1, keepdim=True)).float()
+        bits = logprobs.view(torch.int32) ^ NEG_INF_BITS
+        return tensors._replace(token_ids=(bits.long() << 32) | tensors.token_ids.long())
+
+    SamplingMaskTensors.from_logits = classmethod(from_logits_with_logprobs)
 
 
 @dataclass
