@@ -594,6 +594,9 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
+    payload_root: Path | None = None
+    """Shared directory (visible at the same path to inference, orchestrator and trainer) for by-handle router-replay ids and sampling masks. When set, train rollouts ask the inference servers to write these under ``v<dispatch policy version>/`` instead of returning them inline; the orchestrator wipes the directory on a fresh run and deletes each version once no unread batch can reference it. The ``rl`` entrypoint sets it to ``<run dir>/payloads`` on multi-node runs with router replay or sampling-mask capture. Not supported with disaggregated P/D."""
+
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 

@@ -12,6 +12,8 @@ deltas here:
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pybase64
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
@@ -25,6 +27,7 @@ from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _GenerateRoutedExpertsCapture,
+    _PayloadCapture,
 )
 
 
@@ -82,7 +85,7 @@ def test_generate_response_post_process_preserves_prompt_metadata():
         mm_placeholders={"image": [PlaceholderRangeInfo(offset=1, length=2)]},
     )
 
-    processed = capture.post_process(response)
+    processed = asyncio.run(capture.post_process(response))
 
     assert processed.choices[0].routed_experts == compact_routed_experts
     assert processed.model == "test-model"
@@ -92,3 +95,27 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     assert payload["prompt_token_ids"] == [10, 11, 12, 13]
     assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
+
+
+def test_post_process_writes_payload_by_handle(tmp_path):
+    routed_experts = np.arange(5 * 2 * 3).reshape(5, 2, 3)
+    capture = _PayloadCapture(_empty_request_outputs(), start=2, directory=tmp_path / "v3")
+    capture.prompt_len = 4
+    capture.routed_experts[0] = routed_experts
+    capture.sampling_masks[0] = [[7], [8, 9, 10]]
+    response = GenerateResponse(choices=[GenerateResponseChoice(index=0, token_ids=[1, 2, 3])])
+
+    processed = asyncio.run(capture.post_process(response))
+
+    choice = processed.choices[0]
+    assert choice.routed_experts is None and choice.sampling_mask is None
+    routing, mask = choice.payload
+    assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 5, [2, 3])
+    assert (mask["field"], mask["pos"], mask["rows"], mask["shape"]) == ("sampling_mask", 4, 2, [3])
+    data = open(routing["file"], "rb").read()
+    np.testing.assert_array_equal(
+        np.frombuffer(data[: mask["offset"]], dtype=routing["dtype"]).reshape(5, 2, 3), routed_experts
+    )
+    np.testing.assert_array_equal(
+        np.frombuffer(data[mask["offset"] :], dtype=np.int32).reshape(2, 3), [[7, -1, -1], [8, 9, 10]]
+    )

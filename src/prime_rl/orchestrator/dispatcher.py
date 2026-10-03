@@ -33,6 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Literal
 
 import verifiers.v1 as vf
@@ -144,8 +145,10 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
+        payload_root: Path | None = None,
     ) -> None:
         self.policy = policy
+        self.payload_root = payload_root
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -598,6 +601,11 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    # Keyed on the rollout's own dispatch version (>= its group's start),
+                    # which the payload GC in Orchestrator.on_policy_update relies on.
+                    payload_dir=str(self.payload_root / f"v{self.policy.version}")
+                    if self.payload_root is not None and group.kind == "train" and live_sourced
+                    else None,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
