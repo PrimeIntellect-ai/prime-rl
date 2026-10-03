@@ -26,8 +26,9 @@ from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def _prune_zero_advantages(sample: TrainingSample) -> bool:
-    """Remove zero-advantage tokens from the RL component."""
+def _prune_small_advantages(sample: TrainingSample, min_abs_advantage: float) -> bool:
+    """Remove RL tokens with ``|advantage| <= min_abs_advantage`` (by default exactly zero)
+    from the RL component. Returns whether the sample still carries any training signal."""
     if sample.advantages is None:
         return True
 
@@ -40,7 +41,7 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     for index, (trainable, advantage, weight) in enumerate(
         zip(sample.mask, sample.advantages, rl_weights, strict=True)
     ):
-        if trainable and advantage == 0.0 and weight != 0.0:
+        if trainable and abs(advantage) <= min_abs_advantage and weight != 0.0:
             rl_weights[index] = 0.0
             changed = True
 
@@ -271,7 +272,9 @@ class TrainSink:
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
-                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
+                samples = [
+                    sample for sample in samples if _prune_small_advantages(sample, env.config.min_abs_advantage)
+                ]
             if samples:
                 samples_by_trace[trace.id] = samples
 
@@ -297,6 +300,9 @@ class TrainSink:
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
+    def _min_abs_advantage(self, trace_id: str) -> float:
+        env_name = episode_env_name(self.episode_by_trace[trace_id])
+        return self.train_envs.get(env_name).config.min_abs_advantage
 
     def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
@@ -328,7 +334,9 @@ class TrainSink:
 
         if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
-                trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
+                trace_id: [
+                    sample for sample in samples if _prune_small_advantages(sample, self._min_abs_advantage(trace_id))
+                ]
                 for trace_id, samples in selected
             }
             selected_by_trace = {trace_id: samples for trace_id, samples in selected_by_trace.items() if samples}
