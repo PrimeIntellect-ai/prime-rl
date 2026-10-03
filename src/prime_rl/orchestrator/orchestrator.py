@@ -1065,6 +1065,7 @@ class Orchestrator:
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:
+                    await env.algorithm.close()
                     for clients in (env.generation_source.connected, env.algorithm.connected):
                         if clients is not None:
                             await clients.aclose()

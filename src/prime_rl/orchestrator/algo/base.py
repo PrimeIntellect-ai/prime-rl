@@ -65,6 +65,9 @@ class Algorithm:
     async def setup(self) -> None:
         """Connect resources owned by the algorithm."""
 
+    async def close(self) -> None:
+        """Release resources owned by the algorithm at shutdown."""
+
     async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
         """Connect and track the frozen model pool owned by this algorithm."""
         self.connected = await connect_frozen_client(reference)

@@ -6,6 +6,7 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -664,6 +665,17 @@ class OrchestratorConfig(BaseConfig):
             return self
         if self.monitors.wandb is not None and self.monitors.wandb.name:
             self.monitors.prime.name = self.monitors.wandb.name
+        return self
+
+    @model_validator(mode="after")
+    def checkpoint_gar_candidates(self):
+        """A ``gar`` source checkpoints each rollout's box when its agent finishes
+        (verifiers ``agent.checkpoint_on_finish``), so the grader can open every
+        candidate's box; the algorithm deletes a group's checkpoints after grading."""
+        for env_cfg in self.train.source:
+            if isinstance(env_cfg.algo, GARAlgoConfig):
+                for agent in agent_config_fields(env_cfg.env).values():
+                    agent.checkpoint_on_finish = True
         return self
 
     @model_validator(mode="after")
