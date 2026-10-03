@@ -8,34 +8,17 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
-from prime_rl.configs.orchestrator import (
-    FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    OrchestratorConfig,
-)
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import (
     EnvVars,
+    FileSystemWeightBroadcastConfig,
+    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
-)
-from prime_rl.configs.trainer import (
-    FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+    WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     TokenizerConfig,
@@ -50,7 +33,6 @@ from prime_rl.utils.validation import (
     validate_shared_seq_len,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
-    validate_shared_weight_broadcast,
 )
 
 
@@ -126,50 +108,6 @@ class SharedModelConfig(BaseConfig):
 
     vlm: "VLMConfig | None" = None
     """VLM configuration. Set this to enable vision-language model support."""
-
-
-class SharedInMemoryWeightBroadcastConfig(BaseConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for NCCL weight broadcast."""
-
-
-class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-class SharedFileSystemWeightBroadcastConfig(BaseConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -290,7 +228,7 @@ class RLConfig(BaseConfig):
     seq_len: int | None = None
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    weight_broadcast: SharedWeightBroadcastConfig | None = None
+    weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
 
@@ -446,52 +384,28 @@ class RLConfig(BaseConfig):
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
-                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
+        if "inference_world_size" in self.weight_broadcast.model_fields_set:
+            raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
+        update = {}
+        if self.weight_broadcast.type != "filesystem":
+            update["inference_world_size"] = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
                 else 1
             )
-            common_config = dict(
-                host=self.weight_broadcast.host,
-                port=self.weight_broadcast.port,
-                timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
-            )
-            if self.weight_broadcast.type == "nccl":
-                transport_config = {}
-                trainer_config_type = TrainerNCCLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
-                transport_config = dict(
-                    session_id=self.weight_broadcast.session_id,
-                    overlap_transfer_and_replay=self.weight_broadcast.overlap_transfer_and_replay,
-                )
-                trainer_config_type = TrainerNIXLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
-            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
-            self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
-        elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
+        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy(update=update)
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
-
-        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
-
         return self
 
     @model_validator(mode="after")

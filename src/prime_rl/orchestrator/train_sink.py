@@ -26,11 +26,6 @@ from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None) -> int:
-    """Token cost of one trainer-bound trace."""
-    return sum(len(sample.token_ids) for sample in samples) or (trace.num_total_tokens if trace is not None else 0)
-
-
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
     if sample.advantages is None:
@@ -69,19 +64,14 @@ class TrainSink:
         tokenizer,
         train_envs: TrainEnvs,
         progress: Progress,
-        batch_size: int | None,
-        token_batch_size: int | None,
+        batch_size: int,
         on_result: Callable[[list[vf.Episode]], bool] | None = None,
     ) -> None:
-        assert (batch_size is None) != (token_batch_size is None), (
-            "Exactly one of batch_size / token_batch_size must be set"
-        )
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.progress = progress
         self.batch_size = batch_size
-        self.token_batch_size = token_batch_size
         self.on_result = on_result
 
         self.pending_episodes = TrainEpisodes()
@@ -95,7 +85,6 @@ class TrainSink:
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
-        self.pending_tokens = 0
         # Queued traces voided by the staleness sweep since the last ship;
         # read and reset by the orchestrator's per-step metrics.
         self.stale_drops = 0
@@ -108,11 +97,8 @@ class TrainSink:
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
-    def batch_progress(self) -> tuple[int, int, str]:
-        if self.batch_size is not None:
-            return len(self.pending_batch), self.batch_size, "traces"
-        assert self.token_batch_size is not None
-        return self.pending_tokens, self.token_batch_size, "tokens"
+    def batch_progress(self) -> tuple[int, int]:
+        return len(self.pending_batch), self.batch_size
 
     def buffered_count(self) -> int:
         episodes = sum(len(group) for group in self.pending_groups.values())
@@ -170,12 +156,7 @@ class TrainSink:
         """Sweep stale queued traces, then cut a batch if the survivors still
         meet the threshold."""
         self._drop_stale()
-        ready = (
-            len(self.pending_batch) >= self.batch_size
-            if self.batch_size is not None
-            else self.pending_tokens >= (self.token_batch_size or 0)
-        )
-        return self.process_batch() if ready else None
+        return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being
@@ -205,9 +186,7 @@ class TrainSink:
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
                 continue
-            samples = self.pending_batch.pop(trace_id)
-            if self.token_batch_size is not None:
-                self.pending_tokens -= payload_tokens(samples, self._trace(trace_id))
+            del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
@@ -306,10 +285,6 @@ class TrainSink:
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
                     self.episode_by_trace[trace.id] = episode
-        if self.token_batch_size is not None:
-            self.pending_tokens += sum(
-                payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
-            )
         self._drop_stale(samples_by_trace)
         # A group's traces share one dispatch version, so the insertion sweep
         # voids all or none of them. A fully-voided group shipped nothing —
@@ -322,10 +297,6 @@ class TrainSink:
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
-    def _trace(self, trace_id: str) -> vf.Trace:
-        episode = self.episode_by_trace[trace_id]
-        return next(trace for trace in episode.traces if trace.id == trace_id)
-
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
@@ -333,22 +304,15 @@ class TrainSink:
         """``n_owed`` counts the group's full episode budget (arrived +
         cancelled), so dropped groups advance the zero-output tally at the
         same rate as fully-delivered ones."""
-        if self.batch_size is not None:
-            returned_traces = sum(len(episode.traces) for episode in group)
-            self.zero_output_units += len(survivors) or returned_traces or n_owed
-        else:
-            survivor_tokens = sum(trace.num_total_tokens for trace in survivors)
-            episode_tokens = sum(episode.num_total_tokens for episode in group)
-            self.zero_output_units += survivor_tokens or episode_tokens or self.config.seq_len * n_owed
+        returned_traces = sum(len(episode.traces) for episode in group)
+        self.zero_output_units += len(survivors) or returned_traces or n_owed
         self._warn_zero_output()
 
     def _warn_zero_output(self) -> None:
         """Warn once per batch-equivalent of finalized units that shipped no
         payload, so a run that produces no training signal stays visible in the
         logs without aborting."""
-        target = self.batch_size if self.batch_size is not None else self.token_batch_size
-        assert target is not None
-        windows = self.zero_output_units // target
+        windows = self.zero_output_units // self.batch_size
         if windows <= self.reported_zero_output_windows:
             return
         self.reported_zero_output_windows = windows
@@ -358,20 +322,7 @@ class TrainSink:
         )
 
     def process_batch(self) -> TrainBatch:
-        items = list(self.pending_batch.items())
-        if self.batch_size is not None:
-            selected = items[: self.batch_size]
-        else:
-            assert self.token_batch_size is not None
-            cut = 0
-            running = 0
-            for index, (trace_id, samples) in enumerate(items):
-                running += payload_tokens(samples, self._trace(trace_id))
-                cut = index + 1
-                if running >= self.token_batch_size:
-                    break
-            selected = items[:cut]
-            self.pending_tokens -= running
+        selected = list(self.pending_batch.items())[: self.batch_size]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)

@@ -27,6 +27,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
@@ -450,6 +451,7 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
+        step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
                 print_sample(
@@ -476,12 +478,15 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in micro_moe_stats.items():
                     moe_stats[f"{name}/mean"] += value / grad_accum_steps
                     if name == "max_vio":
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
+                step_tokens_per_expert += tokens_per_expert
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
@@ -646,7 +651,7 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()}
+        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
         if moe_log_metrics:
             asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 

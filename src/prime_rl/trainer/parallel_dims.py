@@ -294,12 +294,6 @@ def resolve_ep(config: ModelConfig) -> None:
     if config.ep != "auto":
         return
 
-    # EP requires the custom implementation; skip auto-resolution for HF impl
-    if config.impl not in ("custom", "auto"):
-        config.ep = 1
-        get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
-        return
-
     world_size = dist.get_world_size()
 
     if not _is_moe_model(config):

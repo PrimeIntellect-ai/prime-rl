@@ -9,7 +9,6 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_final_logit_softcapping
 
 # Same as torch's cross entropy loss
 IGNORE_INDEX = -100
@@ -384,14 +383,6 @@ def inject_prime_lm_head(
     )
 
     logger = get_logger()
-
-    # Check for Gemma-style softcapping - dispatch to specialized implementation.
-    final_logit_softcapping = get_final_logit_softcapping(model.config)
-    if final_logit_softcapping:
-        from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
-
-        inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
-        return
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head

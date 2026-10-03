@@ -302,18 +302,3 @@ def validate_shared_tokenizer(
                 f"the shared tokenizer chat_template ({trainer.tokenizer.chat_template!r}). "
                 f"Use the shared [tokenizer] config to set chat_template for all components."
             )
-
-
-def validate_shared_weight_broadcast(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-    inference: Optional[InferenceConfig] = None,
-) -> None:
-    if trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
-        raise ValueError(
-            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
-        )
-    if inference is not None and inference.weight_broadcast.type != trainer.weight_broadcast.type:
-        raise ValueError(
-            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and trainer/orchestrator weight broadcast type ({trainer.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for all components."
-        )

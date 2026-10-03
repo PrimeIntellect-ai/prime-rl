@@ -14,13 +14,14 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    BaseWeightBroadcastConfig,
     ClientConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
     ResumeConfig,
     TransportConfig,
+    WeightBroadcastConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
@@ -484,47 +485,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference workers across all servers."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
-
-
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
     in-flight episode cap from engine KV capacity and learned per-env episode
@@ -610,14 +570,11 @@ class OrchestratorConfig(BaseConfig):
     tasks_per_minute: int | None = Field(None, ge=1)
     """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
 
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+    batch_size: int = Field(128, ge=1)
+    """Samples to train on per step."""
 
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
@@ -663,6 +620,19 @@ class OrchestratorConfig(BaseConfig):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
             env_cfg.algo.validate_env(env_cfg.env)
+        return self
+
+    @model_validator(mode="after")
+    def validate_loss_aggregation(self):
+        """The trainer divides the rl loss by the batch's summed rl weights, so token-mean (weight
+        1 per token) and prompt-mean (weight 1 per group) envs can't share a batch."""
+        algos = [env.algo for env in self.train.source if env.algo.action_loss_type == "rl"]
+        aggregations = {algo.loss_aggregation if isinstance(algo, GRPOAlgoConfig) else "token" for algo in algos}
+        if len(aggregations) > 1:
+            raise ValueError(
+                "All train envs with an rl loss must use the same loss_aggregation: a prompt-mean group "
+                "would weigh as much as a single token of a token-mean env."
+            )
         return self
 
     @model_validator(mode="after")
@@ -755,17 +725,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
         group_sizes = [source.group_size for source in self.train.source] or [self.train.group_size]
-        if self.batch_size is not None and any(self.batch_size % size for size in group_sizes):
+        if any(self.batch_size % size for size in group_sizes):
             raise ValueError(
                 f"Batch size {self.batch_size} must be divisible by every train source's group_size {sorted(set(group_sizes))}"
             )

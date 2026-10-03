@@ -1,6 +1,6 @@
 # Hendrycks Sanity
 
-This example runs the Hendrycks Sanity Check experiment proposed in [Defeating the Training-Inference Mismatch](https://arxiv.org/abs/2510.26788). The sanity check tests whether an RL algorithm can reliably improve a model on problems it can *already partially solve*. The dataset is filtered from MATH to only include problems where the base model (`DeepSeek-R1-Distill-Qwen-1.5B`) solves 20-80% of the time across 40 rollouts. A reliable algorithm should push training accuracy on this "perfectible" subset above 95%.
+This example runs the Hendrycks Sanity Check experiment proposed in [Defeating the Training-Inference Mismatch](https://arxiv.org/abs/2510.26788). The sanity check tests whether an RL algorithm can reliably improve a model on problems it can *already partially solve*. The dataset is filtered from MATH to only include problems that `DeepSeek-R1-Distill-Qwen-1.5B` solves 20-80% of the time across 40 rollouts. A reliable algorithm should push training accuracy on this "perfectible" subset above 95%. This example trains `Qwen3-1.7B` on that subset; the 20-80% band was measured for the distill model, not for `Qwen3-1.7B`.
 
 Because our trainer is asynchronous, we perform only one gradient step per batch (the inference engine generates the next batch while the trainer processes the current one).
 
