@@ -16,13 +16,15 @@ MIXER_ALPHA = 0.5
 """Blend of the target term (long-run dispatch ∝ demand) and the deficit term
 (push envs behind on the current batch) in the env weights."""
 MIN_ACCEPTANCE_RATE = 0.05
-"""Floor on an env's estimated acceptance rate, so an env that yields nothing
-cannot take all dispatch."""
+"""Below this acceptance rate an env's dispatch correction tapers back to 1×
+(see :func:`acceptance_correction`)."""
 PRIOR_ACCEPTANCE_RATE = 0.5
 PRIOR_GROUPS = 4
 """Finalized groups an env needs before its measured acceptance rate replaces the prior."""
-ACCEPTANCE_WINDOW = 20
-"""Groups in the acceptance-rate moving average."""
+ESTIMATE_WINDOW = 20
+"""Samples (groups or episodes) in the acceptance-rate and duration moving averages."""
+CAP_HEADROOM = 1.25
+"""In-flight cap of an env relative to its Little's-law share of the train slots."""
 
 
 def trace_quotas(shares: dict[str, float], batch_size: int) -> dict[str, int]:
@@ -36,11 +38,38 @@ def trace_quotas(shares: dict[str, float], batch_size: int) -> dict[str, int]:
     return quotas
 
 
+def acceptance_correction(acceptance_rate: float) -> float:
+    """Groups to generate per accepted group: ``1 / acceptance_rate``, peaking
+    at ``1 / MIN_ACCEPTANCE_RATE``. Below that rate the env's share is not
+    reachable at a sane cost, so the correction tapers back to 1× at zero
+    acceptance: an env that yields nothing is dispatched no more than an env
+    that accepts everything, instead of starving the other envs."""
+    if acceptance_rate >= MIN_ACCEPTANCE_RATE:
+        return 1 / acceptance_rate
+    return max(acceptance_rate / MIN_ACCEPTANCE_RATE**2, 1.0)
+
+
 def mixer_weight(target: float, pending: float, acceptance_rate: float) -> float:
     """Dispatch weight of one env (MiMo-V2.6 Eq. 7), in groups to generate:
     ``target`` accepted groups per batch, ``pending`` accepted groups not yet
     shipped."""
-    return (MIXER_ALPHA * target + (1 - MIXER_ALPHA) * max(target - pending, 0.0)) / acceptance_rate
+    deficit = max(target - pending, 0.0)
+    return (MIXER_ALPHA * target + (1 - MIXER_ALPHA) * deficit) * acceptance_correction(acceptance_rate)
+
+
+def inflight_caps(
+    demand: dict[str, float], durations: dict[str, float], capacity: int, max_off_policy_steps: int | None
+) -> dict[str, float]:
+    """Per-env in-flight episode caps: ``CAP_HEADROOM`` times the env's
+    Little's-law share of ``capacity`` (``demand`` episodes per step times
+    mean episode duration), clipped at the ``1 + max_off_policy_steps`` steps
+    of demand that can still train."""
+    need = {env: durations[env] * demand[env] for env in demand}
+    total = sum(need.values())
+    caps = {env: CAP_HEADROOM * capacity * need[env] / total for env in demand}
+    if max_off_policy_steps is not None:
+        caps = {env: min(cap, (1 + max_off_policy_steps) * demand[env]) for env, cap in caps.items()}
+    return caps
 
 
 def smooth_round_robin(current: dict[str, float], weights: dict[str, float]) -> str:
@@ -60,9 +89,13 @@ class TrainSource:
     by smooth weighted round-robin over :func:`mixer_weight`, which corrects
     for group size and for the share of each env's groups that end up in the
     batch (acceptance rate); ``TrainSink`` enforces the share per batch with
-    :meth:`quotas`."""
+    :meth:`quotas`. Envs at their in-flight cap (:func:`inflight_caps`) are
+    skipped unless every env is at its cap, so a slow or stalled env cannot
+    take every train slot."""
 
-    def __init__(self, train_envs: TrainEnvs, batch_size: int | None = None) -> None:
+    def __init__(
+        self, train_envs: TrainEnvs, batch_size: int | None = None, max_off_policy_steps: int | None = None
+    ) -> None:
         self.envs = list(train_envs)
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
@@ -79,6 +112,8 @@ class TrainSource:
         self.shares = {env.name: env.config.ratio / total_ratio for env in self.envs}
         self.group_sizes = {env.name: env.config.group_size for env in self.envs}
         self.batch_size = batch_size
+        # The staleness clip on the caps needs absolute targets, i.e. a trace batch.
+        self.max_off_policy_steps = max_off_policy_steps if batch_size is not None else None
         # Accepted groups per batch. Token batches have no trace count, so the
         # targets are only relative and the deficit term is left out.
         self.targets = {name: share * (batch_size or 1) / self.group_sizes[name] for name, share in self.shares.items()}
@@ -87,6 +122,10 @@ class TrainSource:
         self.finalized: Counter[str] = Counter()
         self.pending: Counter[str] = Counter()
         """Accepted traces per env waiting in the sink for a batch."""
+        self.durations = {name: 0.0 for name in self.env_names}
+        self.completed: Counter[str] = Counter()
+        self.inflight: dict[str, int] = {}
+        self.caps: dict[str, float] | None = None
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
@@ -96,7 +135,7 @@ class TrainSource:
     def acceptance_rate(self, env_name: str) -> float:
         if self.finalized[env_name] < PRIOR_GROUPS:
             return PRIOR_ACCEPTANCE_RATE
-        return max(self.acceptance[env_name], MIN_ACCEPTANCE_RATE)
+        return self.acceptance[env_name]
 
     def weights(self) -> dict[str, float]:
         weights = {}
@@ -105,8 +144,25 @@ class TrainSource:
             weights[name] = mixer_weight(target, pending, self.acceptance_rate(name))
         return weights
 
-    def next_task(self, *, step: int) -> TaskRequest:
-        env_name = smooth_round_robin(self.current, self.weights())
+    def next_task(self, *, step: int, capacity: int, inflight: dict[str, int]) -> TaskRequest:
+        """``capacity`` is the train share of the dispatcher's in-flight cap,
+        ``inflight`` the train episodes in flight per env."""
+        weights = self.weights()
+        self.inflight = inflight
+        # Caps need a duration estimate for every env.
+        self.caps = None
+        if all(self.completed[name] for name in self.env_names):
+            demand = {
+                name: target * acceptance_correction(self.acceptance_rate(name)) * self.group_sizes[name]
+                for name, target in self.targets.items()
+            }
+            self.caps = inflight_caps(demand, self.durations, capacity, self.max_off_policy_steps)
+            uncapped = {
+                name: weight if inflight.get(name, 0) < self.caps[name] else 0.0 for name, weight in weights.items()
+            }
+            if any(uncapped.values()):
+                weights = uncapped
+        env_name = smooth_round_robin(self.current, weights)
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
     def on_result(self, group: list[vf.Episode]) -> bool:
@@ -132,8 +188,14 @@ class TrainSource:
         if cancel_reason in ("overload", "superseded"):
             return
         self.finalized[env_name] += 1
-        window = min(self.finalized[env_name], ACCEPTANCE_WINDOW)
+        window = min(self.finalized[env_name], ESTIMATE_WINDOW)
         self.acceptance[env_name] += (float(accepted) - self.acceptance[env_name]) / window
+
+    def on_episode_complete(self, env_name: str, duration: float) -> None:
+        """Update the env's mean episode duration (seconds an episode holds a slot)."""
+        self.completed[env_name] += 1
+        window = min(self.completed[env_name], ESTIMATE_WINDOW)
+        self.durations[env_name] += (duration - self.durations[env_name]) / window
 
     def metrics(self) -> dict[str, float]:
         metrics: dict[str, float] = {}
@@ -151,13 +213,22 @@ class TrainSource:
                 f"mixer/{env_name}/acceptance_rate": self.acceptance_rate(env_name),
                 f"mixer/{env_name}/weight": weights[env_name] / total_weight,
                 f"mixer/{env_name}/surplus_groups": self.pending[env_name] / self.group_sizes[env_name],
+                f"mixer/{env_name}/inflight": float(self.inflight.get(env_name, 0)),
             }
+            if self.caps is not None:
+                metrics[f"mixer/{env_name}/cap"] = self.caps[env_name]
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
         return {
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
-            "mixer": {"current": self.current, "acceptance": self.acceptance, "finalized": dict(self.finalized)},
+            "mixer": {
+                "current": self.current,
+                "acceptance": self.acceptance,
+                "finalized": dict(self.finalized),
+                "durations": self.durations,
+                "completed": dict(self.completed),
+            },
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
@@ -175,3 +246,5 @@ class TrainSource:
             self.current |= mixer["current"]
             self.acceptance |= mixer["acceptance"]
             self.finalized.update(mixer["finalized"])
+            self.durations |= mixer["durations"]
+            self.completed.update(mixer["completed"])

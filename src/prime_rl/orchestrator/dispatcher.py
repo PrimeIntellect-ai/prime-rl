@@ -520,7 +520,11 @@ class Dispatcher:
             assert self.train_source is not None
             if self.progress is None:
                 raise RuntimeError("Train dispatch requires progress state")
-            request = self.train_source.next_task(step=self.progress.step)
+            request = self.train_source.next_task(
+                step=self.progress.step,
+                capacity=self.max_inflight - self.inflight_eval_count,
+                inflight={env: n for (kind, env), n in self.inflight_by_env.items() if kind == "train"},
+            )
         else:
             assert self.eval_source is not None
             request = self.eval_source.next_task()
@@ -645,6 +649,8 @@ class Dispatcher:
         self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
+        if meta.kind == "train" and self.train_source is not None and meta.started_at > 0:
+            self.train_source.on_episode_complete(meta.env_name, time.monotonic() - meta.started_at)
 
         try:
             episode: vf.WireEpisode = task.result()
