@@ -4,7 +4,7 @@
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const api = async (path) => {
-  const res = await fetch(path);
+  const res = await fetch(path.replace(/^\//, ""));
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.json();
 };
@@ -6441,7 +6441,7 @@ function showViewToast(cmd) {
 }
 
 function connectViewEvents() {
-  const source = new EventSource("/api/view/events");
+  const source = new EventSource("api/view/events");
   source.onmessage = (e) => {
     let cmd;
     try {
