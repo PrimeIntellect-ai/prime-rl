@@ -210,13 +210,12 @@ def train(config: SFTConfig):
             model,
             [optimizer],
             scheduler if not skip.skip_scheduler else None,
-            progress if not skip.skip_progress else None,
+            progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
-        if not skip.skip_progress:
-            progress.step += 1
+        progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)

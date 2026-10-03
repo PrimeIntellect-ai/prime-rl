@@ -3,7 +3,7 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import SGD, AdamW, Optimizer
+from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
@@ -117,14 +117,6 @@ def _create_optimizer(
     # param at load time, mismatching the saved state). Muon filters internally below.
     trainable_params = [p for _, p in named_params if p.requires_grad]
     match config.type:
-        case "sgd":
-            return SGD(
-                params=trainable_params,
-                lr=lr,
-                weight_decay=config.weight_decay,
-                momentum=config.momentum,
-                nesterov=config.nesterov,
-            )
         case "adamw":
             return AdamW(
                 params=trainable_params,
