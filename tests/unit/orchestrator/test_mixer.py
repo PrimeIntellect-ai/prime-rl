@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import PrefixSourceConfig
+from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.train_source import TrainSource, inflight_caps, mixer_weight
+from prime_rl.orchestrator.trajectories import trace_to_samples
 
 
 def test_dispatch_corrects_for_acceptance() -> None:
@@ -26,20 +28,30 @@ def test_inflight_caps_split_slots_by_littles_law_with_staleness_clip() -> None:
     assert inflight_caps({"fast": 100.0, "slow": 10.0}, {"fast": 1.0, "slow": 1000.0}, 400, bounds)["slow"] == 20.0
 
 
-def prefix_episode(task: vf.Task, *, reward: float, step: int, calls: int = 3) -> vf.Episode:
-    """A fresh episode whose trace commits ``calls`` model calls, a tool result between each."""
+def prefix_episode(task: vf.Task, *, reward: float, step: int, calls: int = 3, replayed: int = 0) -> vf.Episode:
+    """An episode whose trace commits ``calls`` model calls, a tool result between each;
+    the first ``replayed`` are committed as a prefix replay commits them."""
     nodes = [vf.MessageNode(message=vf.UserMessage(content="q"), token_ids=[1], mask=[False])]
     for i in range(calls):
         if i:
             tool = vf.ToolMessage(content="out", tool_call_id=str(i))
             nodes.append(vf.MessageNode(message=tool, token_ids=[2], mask=[False], parent=len(nodes) - 1))
-        reply = vf.AssistantMessage(content="a")
-        nodes.append(vf.MessageNode(message=reply, token_ids=[10 + i], mask=[True], parent=len(nodes) - 1))
+        live = i >= replayed
+        reply = vf.MessageNode(
+            message=vf.AssistantMessage(content="a"),
+            sampled=True,
+            replayed=0 if live else 1,
+            token_ids=[10 + i],
+            mask=[live],
+            logprobs=[-0.1] if live else [],
+            parent=len(nodes) - 1,
+        )
+        nodes.append(reply)
     trace = vf.Trace(
         task=vf.TraceTask(type="Task", data=task.data, key=task.key, hash=task.hash),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
-        calls=[vf.ModelCall(node=index) for index, node in enumerate(nodes) if any(node.mask)],
+        calls=[vf.ModelCall(node=index) for index, node in enumerate(nodes) if node.sampled],
         rewards={"reward": vf.Reward(score=reward)},
         ok=True,
     )
@@ -83,3 +95,13 @@ def test_prefix_source_dispatches_only_with_eligible_episodes() -> None:
     # Episodes older than max_age expire.
     source.on_group(source.next_task(step=2, capacity=8, inflight={}).group_id, "swe", group)
     assert source.weights(5)["swe-prefix"] == 0.0
+
+
+def test_replayed_prefix_calls_do_not_train() -> None:
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    trace = prefix_episode(task, reward=1.0, step=0, calls=3, replayed=2).traces[0]
+    assign_advantages(trace, 1.0)
+    (sample,) = trace_to_samples(trace)
+    # q a0 out a1 out a2: only the live a2 trains
+    assert sample.mask == [False] * 5 + [True]
+    assert len(sample.logprobs) == len(sample.token_ids) and sample.advantages[-1] == 1.0

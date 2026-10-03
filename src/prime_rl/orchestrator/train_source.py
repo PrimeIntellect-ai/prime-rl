@@ -77,10 +77,8 @@ class TrainSource:
     in-flight cap (:func:`inflight_caps`) are skipped unless every env is at
     its cap, so a slow or stalled env cannot take every train slot.
 
-    Prefix sources (``PrefixSourceConfig``) are mixer sources next to the envs:
-    their groups run on their env, continue episodes from the env's
-    ``PrefixBuffer``, and skip its curriculum. A prefix source with no eligible
-    episode gets weight 0."""
+    Prefix sources are mixer sources too; they skip the curriculum, and one with
+    no eligible episode gets weight 0."""
 
     def __init__(
         self, train_envs: TrainEnvs, batch_size: int, prefixes: list[PrefixSourceConfig] | None = None
@@ -132,7 +130,7 @@ class TrainSource:
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
-    def weights(self, step: int = 0) -> dict[str, float]:
+    def weights(self, step: int) -> dict[str, float]:
         """A prefix source with nothing to continue gets weight 0."""
         self.step = step
         weights = {}
@@ -178,8 +176,7 @@ class TrainSource:
         return TaskRequest(env_name=env_name, task=task, step=step, group_id=group_id)
 
     def on_group(self, group_id: str, env_name: str, group: list[vf.Episode]) -> None:
-        """See a finalized group, trained or not. A fresh group of an env with
-        prefix sources feeds their buffers; a prefix group records its stats."""
+        """Feed a finalized fresh group to its env's prefix buffers; record prefix group stats."""
         task = self.fresh_tasks.pop(group_id, None)
         if task is not None:
             for name, env in self.prefix_envs.items():
@@ -203,8 +200,7 @@ class TrainSource:
                     )
 
     def on_result(self, group: list[vf.Episode]) -> bool:
-        """Report a finalized group and return whether it should train. Prefix
-        groups bypass the curriculum: their pass rates are not the task's."""
+        """Report a finalized group and return whether it should train. Prefix groups skip the curriculum."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = episode_env_name(group[0])

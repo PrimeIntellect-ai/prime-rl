@@ -1,8 +1,4 @@
-"""Prefix replay: groups that continue recent train episodes from inside them.
-
-``PrefixBuffer`` keeps recent fresh-start episodes of one train env. Each prefix group
-picks one episode and one cut, and all its rollouts replay the episode's first ``cut``
-model calls (``vf.Prefix``) before sampling."""
+"""Recent fresh-start episodes of a train env, for prefix groups to continue."""
 
 from __future__ import annotations
 
