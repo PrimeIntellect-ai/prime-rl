@@ -7,14 +7,16 @@ from prime_rl.utils.logger import get_logger
 
 class PayloadGC:
     """Owns the payload root. Each per-policy-version directory (``v<k>``, written by
-    the inference servers for requests salted with version ``k``) is deleted once no
-    batch the trainer has yet to read can reference it.
+    the inference servers for requests tagged with ``payload_tag = k``, the version a
+    rollout was dispatched at) is deleted once no batch the trainer has yet to read can
+    reference it.
 
     Trainer step ``s`` reads batch ``s`` and then broadcasts policy ``v{s}``. So when
     inference applies ``v{step}``, the trainer has read every batch up to ``step``. The
     unread batches are ``step + 1`` and later, and batch ``b`` only holds rollouts
-    dispatched at ``min_fresh_version(b)`` or newer (the train sink's stale sweep). That
-    makes ``min_fresh_version(step + 1)`` the oldest version still referenced.
+    whose group started at ``min_fresh_version(b)`` or newer (the train sink's stale
+    sweep); a rollout is dispatched no earlier than its group started, so its tag is at
+    least that. That makes ``min_fresh_version(step + 1)`` the oldest tag still referenced.
 
     A fresh run wipes the root. A resumed run keeps it, because a trainer that outlived
     the orchestrator may still read batches that point into it. The startup sync
