@@ -30,6 +30,82 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    if os.environ.get("PRIME_RETURN_ROUTED_EXPERT_WEIGHTS") == "1":
+        monkey_patch_return_routed_expert_weights()
+
+
+def monkey_patch_return_routed_expert_weights():
+    """Total Router Recall: capture each token's routing weights next to its expert ids.
+
+    Enabled by ``inference.enable_return_routed_expert_weights`` (via the
+    ``PRIME_RETURN_ROUTED_EXPERT_WEIGHTS`` env var, so it reaches every vLLM process).
+    The routed-experts buffers widen from ``[tokens, layers, top_k]`` expert ids to int32
+    ``[tokens, layers, 2 * top_k]``: the logical expert ids followed by the raw bits of
+    their fp32 routing weights. Both halves then share router replay's whole data path
+    (slot storage, prefix-cache reuse, request slicing, transport, packing) and the
+    trainer splits them again (``MoE.forward``).
+
+    Weights are captured in the trainer's convention (normalized and scaled): models that
+    apply ``routed_scaling_factor`` to the MoE output rather than to the weights (e.g.
+    Nemotron-H) get it folded in here. Only routers deriving from vLLM's ``BaseRouter``
+    expose weights; other capture paths (monolithic MoE kernels, DeepSeek-V4) fail loudly.
+    """
+    import numpy as np
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
+    from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
+
+    if getattr(BaseRouter, "_prime_rl_captures_weights", False):
+        return
+
+    original_get_shape = routed_experts_capturer._get_routed_experts_shape
+    original_manager_init = routed_experts_capturer.RoutedExpertsManager.__init__
+    original_capture = routed_experts_capturer.RoutedExpertsCapturer.capture
+    original_runner_init = MoERunner.__init__
+
+    def _get_routed_experts_shape(vllm_config):
+        num_layers, num_experts, top_k = original_get_shape(vllm_config)
+        return num_layers, num_experts, 2 * top_k
+
+    def _manager_init(self, vllm_config, kv_cache_config):
+        original_manager_init(self, vllm_config, kv_cache_config)
+        # Upstream stores expert ids as uint8/uint16, which would truncate the weight bits.
+        self.routed_experts_by_slot = np.zeros(self.routed_experts_by_slot.shape, dtype=np.int32)
+
+    def _capture(self, layer_id, topk_ids):
+        if topk_ids.shape[-1] != self.device_buffer.shape[-1]:
+            raise ValueError(
+                "Routed-expert weights are only captured from vLLM BaseRouter routers; "
+                "this MoE path captures expert ids only."
+            )
+        original_capture(self, layer_id, topk_ids)
+
+    def _runner_init(self, *args, **kwargs):
+        original_runner_init(self, *args, **kwargs)
+        self.router.output_scale = self.routed_scaling_factor
+
+    def _select_experts(self, hidden_states, router_logits, topk_indices_dtype=None, *, input_ids=None):
+        # Copy of BaseRouter._select_experts (vLLM 0.30) that also captures the weights.
+        self._validate_eplb_state()
+        topk_weights, topk_ids = self._compute_routing(
+            hidden_states, router_logits, topk_indices_dtype, input_ids=input_ids
+        )
+        if self.capture_fn is not None:
+            weights = topk_weights.float()
+            output_scale = getattr(self, "output_scale", 1.0)
+            if output_scale != 1.0:
+                weights = weights * output_scale
+            self.capture_fn(torch.cat([topk_ids.to(torch.int32), weights.view(torch.int32)], dim=-1))
+        topk_ids = self._apply_eplb_mapping(topk_ids)
+        topk_ids = self._convert_indices_dtype(topk_ids, topk_indices_dtype)
+        return topk_weights, topk_ids
+
+    routed_experts_capturer._get_routed_experts_shape = _get_routed_experts_shape
+    routed_experts_capturer.RoutedExpertsManager.__init__ = _manager_init
+    routed_experts_capturer.RoutedExpertsCapturer.capture = _capture
+    MoERunner.__init__ = _runner_init
+    BaseRouter._select_experts = _select_experts
+    BaseRouter._prime_rl_captures_weights = True
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():

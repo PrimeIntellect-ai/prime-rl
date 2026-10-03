@@ -252,3 +252,25 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_moe_total_router_recall_replays_sampler_weights():
+    torch.manual_seed(0)
+    moe = MoE.from_args(MoEArgs(num_experts=4, top_k=2), dim=8, hidden_dim=16, shared_expert=None)
+    moe.init_weights(0.02, torch.device("cpu"))
+    x = torch.randn(1, 3, 8)
+    ids = torch.tensor([[[0, 3], [2, 1], [1, 0]]], dtype=torch.int32)
+    weights = torch.tensor([[[0.75, 0.25], [0.5, 0.5], [0.875, 0.125]]])
+    recorded = {}
+    run = moe.token_dispatcher.run
+
+    def record_run(x, scores, selected, *args, **kwargs):
+        recorded["scores"], recorded["selected"] = scores, selected
+        return run(x, scores, selected, *args, **kwargs)
+
+    moe.token_dispatcher.run = record_run
+    moe(x, routed_experts=torch.cat([ids, weights.view(torch.int32)], dim=-1)).sum().backward()
+
+    assert torch.equal(recorded["scores"], weights.view(-1, 2))
+    assert torch.equal(recorded["selected"], ids.view(-1, 2))
+    assert moe.router.gate.weight.grad.abs().sum() > 0

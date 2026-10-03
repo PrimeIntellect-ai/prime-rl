@@ -500,6 +500,16 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_routed_expert_weights_require_router_replay(self):
+        if self.inference is not None and self.inference.enable_return_routed_expert_weights:
+            if not self.trainer.enable_router_replay:
+                raise ValueError(
+                    "inference.enable_return_routed_expert_weights (Total Router Recall) requires "
+                    "trainer.enable_router_replay = true."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_llmd_no_routed_experts(self):
         """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
 

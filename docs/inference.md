@@ -18,6 +18,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
+    - [Total Router Recall](#total-router-recall)
 
 
 ## Overview
@@ -300,6 +301,23 @@ enable_return_routed_experts = true
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
+
+### Total Router Recall
+
+Router replay only replays expert ids; the trainer still recomputes the routing weights from its own router logits, so a replayed expert can carry a very different weight than it had at sampling time. Total Router Recall ([mismatch blog](https://kiddyboots216.github.io/mismatch/#total-router-recall)) also returns the sampler's fp32 routing weights and has the trainer use them.
+
+```toml
+[trainer]
+enable_router_replay = true
+
+[inference]
+enable_return_routed_expert_weights = true # implies inference.vllm.enable_return_routed_experts
+```
+
+- The trainer's forward uses the sampler's expert ids and weights exactly. The backward still goes through the trainer's router (`w - sg[w] + w_sampler`), so the gradient matches ids-only router replay and the router stays trainable. Set `trainer.model.freeze_moe_router = true` to keep it fixed.
+- The routed-experts payload becomes int32 `[tokens, layers, 2 * top_k]` (expert ids, then fp32 weight bits) and rides router replay's data path unchanged. That is `8 * layers * top_k` bytes per token (3 KiB for Qwen3-30B-A3B, ~5 KiB for GLM-5) instead of `layers * top_k` (uint8 ids), both in the HTTP response and in vLLM's CPU routing buffer.
+- Weights are captured from vLLM's `BaseRouter` routers (Qwen3-MoE, Qwen3.5-MoE, GLM-4.5/GLM-5, Nemotron-H, ...). Monolithic MoE kernels and DeepSeek-V4 only capture ids and fail at startup.
+- Same constraints as router replay, and disaggregated P/D is not supported.
 
 ### Sampling Replay
 
