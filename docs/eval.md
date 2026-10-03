@@ -80,7 +80,7 @@ Every source's env server is spawned by the eval process unless the source sets 
 
 ## Resume
 
-An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes and the ones the interruption cut off run again.
+An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes run again. A rollout the interruption cut off continues from its live trace: the harness replays its recorded model calls, runs each tool call again to rebuild its state, and samples live from the first call whose prompt differs from the recording. This works after a crash, a kill, Ctrl-C, or SIGTERM. A harness that puts a fresh id or timestamp in a prompt samples live from that call on.
 
 ```bash
 uv run eval @ eval.toml --run.name my-eval

@@ -90,7 +90,8 @@ class EvalConfig(ServedEvalConfig):
 
     resume: bool = False
     """Continue the interrupted run named by ``run.name`` from its trace stream: the
-    landed episodes rejoin the epoch and only the rollouts still owed run."""
+    landed episodes rejoin the epoch and only the rollouts still owed run. A rollout the
+    interruption cut off replays its recorded model calls, then samples live."""
 
     log: LogConfig = LogConfig()
 
