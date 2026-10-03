@@ -535,9 +535,8 @@ class RLConfig(BaseConfig):
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
-        configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
-        on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
-        so eval sampling against the same server must set both."""
+        configs are bounded by TRAIN_TOP_K_BOUND and give eval sources a top-k, since
+        capture is engine-wide and vLLM rejects requests without ``top_k > 0``)."""
         policy_samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
@@ -552,13 +551,6 @@ class RLConfig(BaseConfig):
             )
             return self
         self.inference.enable_return_sampling_mask = True
-        if self.orchestrator.eval is not None:
-            warnings.warn(
-                "Sampling-mask capture is engine-wide: eval requests without top_k > 0 (from the "
-                "eval sampling config or the model's generation config) or with temperature 0 are "
-                "rejected by the inference server while truncated train sampling is on.",
-                stacklevel=2,
-            )
         return self
 
     @model_validator(mode="after")
