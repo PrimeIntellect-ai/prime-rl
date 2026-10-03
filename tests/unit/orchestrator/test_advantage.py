@@ -213,15 +213,15 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
 
 
-def test_grpo_prompt_loss_aggregation_equalizes_group_mass():
-    """Each group's |advantage|·token mass is T̄ times its mean |advantage|, whatever its total length."""
+def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
+    """Each group's rl weights total 1, spread as 1/T_q over its trainable tokens, whatever its length."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), clients=None)
-    masses = []
-    for length in (10, 100):
-        group = _make_group(rewards=[1.0, 0.0], completion_lengths=[length, length])
+    for lengths in ([10, 30], [100, 300]):
+        group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
         asyncio.run(algo.score_group(group))
-        masses.append(sum(abs(_scalar(episode)) * length for episode in group) / algo.mean_group_tokens)
-    assert masses == pytest.approx([0.5, 0.5])
+        weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
+        assert set(weights) == {0.0, 1.0 / sum(lengths)}
+        assert sum(weights) == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------

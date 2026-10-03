@@ -626,6 +626,19 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_loss_aggregation(self):
+        """The trainer divides the rl loss by the batch's summed rl weights, so token-mean (weight
+        1 per token) and prompt-mean (weight 1 per group) envs can't share a batch."""
+        algos = [env.algo for env in self.train.source if env.algo.action_loss_type == "rl"]
+        aggregations = {algo.loss_aggregation if isinstance(algo, GRPOAlgoConfig) else "token" for algo in algos}
+        if len(aggregations) > 1:
+            raise ValueError(
+                "All train envs with an rl loss must use the same loss_aggregation: a prompt-mean group "
+                "would weigh as much as a single token of a token-mean env."
+            )
+        return self
+
+    @model_validator(mode="after")
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
