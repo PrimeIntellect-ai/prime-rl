@@ -80,6 +80,7 @@ jobs:
       sha: ${{ steps.vars.outputs.sha }}
       full_sha: ${{ steps.vars.outputs.full_sha }}
       platforms: ${{ steps.vars.outputs.platforms }}
+      promote_main: ${{ steps.vars.outputs.promote_main }}
     steps:
       - name: Set build matrix
         id: matrix
@@ -147,6 +148,19 @@ jobs:
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "full_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "platforms=${PLATFORMS}" >> "$GITHUB_OUTPUT"
+
+          # Mainline detection is ancestry-based, never `inputs.ref == 'main'`:
+          # devx_tag dispatches mainline builds with inputs.ref=<v*.devN> (a
+          # tag on the just-pushed commit), so ref strings alone cannot be
+          # trusted. Only a resolved commit that sits on origin/main may
+          # promote the mutable :main tag.
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$(git rev-parse HEAD)" refs/remotes/origin/main; then
+            promote_main=true
+          else
+            promote_main=false
+          fi
+          echo "promote_main=${promote_main}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and push (${{ matrix.suffix }})
@@ -307,4 +321,78 @@ jobs:
             echo "| **Platforms** | \`${PLATFORMS}\` |"
             echo "| **Image** | \`${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}\` |"
             echo "| **Commit Image** | \`${REGISTRY}/${IMAGE_NAME}:commit-${IMAGE_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-main:
+    name: Publish mutable main tag
+    # Runs only for mainline builds (prepare.outputs.promote_main) AND only
+    # after the multi-arch index exists (manifest requires both arch builds
+    # to succeed and both platforms). Single-arch builds and feature-branch
+    # builds never reach this job.
+    needs: [prepare, manifest]
+    if: needs.prepare.outputs.promote_main == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Serialize :main publications across ALL builds so the forward-only
+    # check below cannot race with a concurrently finishing build.
+    concurrency:
+      group: build-image-promote-main
+      cancel-in-progress: false
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push multi-arch index as :main (forward-only)
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_SHA: ${{ needs.prepare.outputs.sha }}
+          IMAGE_FULL_SHA: ${{ needs.prepare.outputs.full_sha }}
+          SOURCE_URL: https://github.com/${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}"
+
+          current=""
+          if annotations=$(docker buildx imagetools inspect "${image}:main" \
+          --format '{{json .Manifest.Annotations}}' 2>/dev/null); then
+            current=$(printf '%s' "$annotations" | jq -r '."org.opencontainers.image.revision" // empty')
+          fi
+
+          if [ -n "$current" ] && [ "$current" != "$IMAGE_FULL_SHA" ]; then
+            status=$(gh api "repos/${REPO}/compare/${current}...${IMAGE_FULL_SHA}" --jq '.status' 2>/dev/null || echo unknown)
+            case "$status" in
+              ahead)
+                echo "Promoting :main: ${current} -> ${IMAGE_FULL_SHA} (new commit is ahead on main)." ;;
+              *)
+                # behind / diverged / unknown: never move :main backwards.
+                echo "::warning::Skipping :main promotion at ${IMAGE_FULL_SHA}: current :main revision is ${current} (compare status: ${status})."
+                exit 0 ;;
+            esac
+          elif [ -z "$current" ]; then
+            echo "No :main tag published yet; publishing it at ${IMAGE_FULL_SHA}."
+          fi
+
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.revision=${IMAGE_FULL_SHA}" \
+            --annotation "index:org.opencontainers.image.version=${IMAGE_TAG}" \
+            --annotation "index:org.opencontainers.image.source=${SOURCE_URL}" \
+            -t "${image}:main" \
+            "${image}:commit-${IMAGE_SHA}"
+
+      - name: Summary
+        env:
+          IMAGE_FULL_SHA: ${{ needs.prepare.outputs.full_sha }}
+        run: |
+          {
+            echo "## Main Tag Summary"
+            echo ""
+            echo "Promoted \`${REGISTRY}/${IMAGE_NAME}:main\` to revision \`${IMAGE_FULL_SHA}\` (multi-arch index)."
           } >> "$GITHUB_STEP_SUMMARY"
