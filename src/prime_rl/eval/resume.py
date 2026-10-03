@@ -96,7 +96,11 @@ def take_partial(run_dir: Path) -> dict[str, dict[str, list[list[dict]]]]:
     owner: dict[str, str] = {}
     for directory in attempts:
         for path in sorted((directory / live).glob("*.jsonl")):
-            if (read := read_live(path)) is None:
+            try:
+                read = read_live(path)
+            except Exception:  # a live file that does not fold holds no recording
+                continue
+            if read is None:
                 continue
             dispatch, trace = read
             if dispatch.get("kind") != "eval" or trace["id"] in done:
