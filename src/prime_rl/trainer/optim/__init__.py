@@ -14,9 +14,9 @@ from prime_rl.trainer.optim.offload import (
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
