@@ -150,7 +150,7 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
-    a capped importance ratio, and a squared-log-ratio KL regularizer."""
+    and a capped importance ratio."""
 
     def __init__(self, config: IPOLossConfig):
         self.config = config
@@ -178,11 +178,6 @@ class IPOLoss:
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
-        if loss_config.kl_tau:
-            kl_loss = loss_config.kl_tau * log_importance_ratio.clamp(-1e4, 1e4).square()
-            if weights is not None:
-                kl_loss = kl_loss * weights
-            loss = loss + kl_loss.sum()
 
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
@@ -296,7 +291,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     model is the per-token policy-gradient signal, with the importance ratio
     correcting trainer/inference mismatch and staleness. A one-sided trust
     region drops tokens whose trainer probability fell more than 0.2 below the
-    inference probability; a squared-log-ratio term regularizes drift. Scalar
+    inference probability. Scalar
     advantages are not read — ref_kl algorithms ship none.
     """
     if inputs.ref_logprobs is None:
@@ -316,11 +311,9 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], 1e4)
     pg_loss = -ref_kl[keep_mask].detach() * importance_ratio
-    kl_loss = 1e-3 * log_importance_ratio.clamp(-1e4, 1e4).square()
     if weights is not None:
         pg_loss = pg_loss * weights[keep_mask]
-        kl_loss = kl_loss * weights
-    loss = pg_loss.sum() + kl_loss.sum()
+    loss = pg_loss.sum()
     mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
     # Namespaced: the rl loss fn emits same-named trust-region metrics with a

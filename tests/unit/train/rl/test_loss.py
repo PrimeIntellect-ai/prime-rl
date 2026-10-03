@@ -131,7 +131,7 @@ def test_icepop_loss_masks_extreme_ratio_without_nan():
     assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
 
 
-@pytest.mark.parametrize("config", [IPOLossConfig(kl_tau=0.01), IcePopLossConfig()])
+@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig()])
 def test_ipo_icepop_match_original_on_finite_ratios(config):
     torch.manual_seed(23)
     trainer_logprobs = (-8 * torch.rand(128, device="cuda")).requires_grad_()
@@ -146,9 +146,7 @@ def test_ipo_icepop_match_original_on_finite_ratios(config):
     ratio = log_ratio.exp()
     if isinstance(config, IPOLossConfig):
         keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
-        expected = (
-            (-(keep * config.adv_tau * advantages * ratio) + loss_mask * config.kl_tau * log_ratio.square()) * weights
-        ).sum()
+        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
     else:
         keep = (
             loss_mask

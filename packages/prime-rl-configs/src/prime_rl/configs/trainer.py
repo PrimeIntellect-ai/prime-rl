@@ -582,9 +582,6 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
-    kl_tau: float = Field(0.0, ge=0)
-    """Temperature for the KL term."""
-
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"

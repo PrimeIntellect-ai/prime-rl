@@ -192,15 +192,12 @@ The orchestrator stamps each sample's component membership as per-token weight s
 
 ### IPO Loss
 
-The default RL loss is Importance Policy Optimization (IPO). It combines an importance-weighted policy-gradient term with a squared log-ratio KL regularizer. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
+The default RL loss is Importance Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
 
 $$
-\mathcal{L}(\theta) = \frac{1}{N}\sum_t
-\left[
--\mathbb{1}\!\left(\left|\pi(y_t)-\mu(y_t)\right| \le \epsilon\right)
-\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}
-+ \tau_{KL}\log^2\!\left(\frac{\pi(y_t)}{\mu(y_t)}\right)
-\right].
+\mathcal{L}(\theta) = -\frac{1}{N}\sum_t
+\mathbb{1}\!\left(\left|\pi(y_t)-\mu(y_t)\right| \le \epsilon\right)
+\tau_A \hat{A}_t \frac{\pi(y_t)}{\mu(y_t)}.
 $$
 
 $\mu$ is the policy that generated the rollout. $\pi$ is the current trainer policy. $\hat{A}_t$ is the token-level advantage. The trust region uses the sampled token probabilities, not their ratio.
@@ -210,8 +207,7 @@ The knobs under `[trainer.loss]` are:
 | Knob | Default | What it does |
 |---|---|---|
 | `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 to drop the policy-gradient term, leaving only the KL regularizer. |
-| `kl_tau` | 0.0 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
@@ -221,8 +217,7 @@ IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
 importance ratio falls outside a fixed acceptance band, introduced to stabilize
 MoE RL in [Every Step Evolves: Scaling Reinforcement Learning for Trillion-Scale
 Mixture-of-Experts Reasoning Models](https://arxiv.org/abs/2510.18855). Accepted
-tokens retain the importance-weighted policy-gradient term, and there is no
-separate KL penalty:
+tokens retain the importance-weighted policy-gradient term:
 
 $$
 \mathcal{L}(\theta) = -\frac{1}{N}\sum_t
