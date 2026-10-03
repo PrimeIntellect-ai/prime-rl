@@ -420,25 +420,30 @@ def test_env_algo_inherits_the_group_algo():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "train": {
-                "algo": {"type": "echo", "roles": {"user": {"alpha": 0.1}}},
+                "algo": {"type": "grpo", "echo": {"roles": {"user": {"alpha": 0.1}}}},
                 "source": [
-                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
+                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "rae"}},
                     {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
-                    {"env": {"taskset": {"id": "reverse-text"}}, "name": "c", "algo": {"roles": {"tool": {}}}},
+                    {
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "name": "c",
+                        "algo": {"echo": {"roles": {"tool": {}}}},
+                    },
                 ],
             },
         }
     )
     env_a, env_b, env_c = config.train.source
     # A different type is the env's own algorithm; no type keeps the group's.
-    assert env_a.algo.type == "grpo"
-    assert env_b.algo.type == "echo" and env_b.algo.roles.user.alpha == 0.1
-    assert env_c.algo.type == "echo" and env_c.algo.roles.user.alpha == 0.1 and env_c.algo.roles.tool is not None
+    assert env_a.algo.type == "rae"
+    assert env_b.algo.type == "grpo" and env_b.algo.echo.roles.user.alpha == 0.1
+    assert env_c.algo.echo.roles.user.alpha == 0.1 and env_c.algo.echo.roles.tool is not None
 
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
+    assert [env.algo.type for env in reloaded.train.source] == ["rae", "grpo", "grpo"]
+    assert reloaded.train.source[2].algo.echo == env_c.algo.echo
 
 
 def test_sources_inherit_the_group_fields_they_leave_unset():

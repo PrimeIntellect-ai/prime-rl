@@ -5,9 +5,8 @@ is — a bundle of sampling and the per-token training signal. This package
 turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.generation_source.GenerationSource`):
 
-- one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
-  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
-  class owns its scoring hooks
+- one module per algorithm (``grpo``, ``rae``, ``opd``, ``opsd``, ``sft``,
+  ``debug``) — each named class owns its scoring hooks
   (``score_episode`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
   :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
@@ -24,10 +23,7 @@ from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
 from prime_rl.orchestrator.algo.debug import DebugAlgorithm
-from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
-from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
-from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
@@ -42,10 +38,7 @@ if TYPE_CHECKING:
 # each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
-    "echo": EchoAlgorithm,
-    "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
-    "hierarchical_grpo": HierarchicalGRPOAlgorithm,
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
@@ -67,10 +60,7 @@ def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
 __all__ = [
     "Algorithm",
     "DebugAlgorithm",
-    "EchoAlgorithm",
     "GRPOAlgorithm",
-    "HierarchicalGRPOAlgorithm",
-    "MaxRLAlgorithm",
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RAEAlgorithm",

@@ -8,7 +8,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import GRPOAlgorithm, assign_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
 
@@ -35,11 +35,9 @@ def _ref_kind(ref):
     ("algorithm_type", "build_kwargs", "source", "action_loss_type"),
     [
         ("grpo", {}, "policy", "rl"),
-        ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
-        ("echo", {}, "policy", "rl"),
     ],
 )
 def test_type_defaults_are_the_vetted_algorithms(algorithm_type, build_kwargs, source, action_loss_type):
@@ -51,20 +49,20 @@ def test_type_defaults_are_the_vetted_algorithms(algorithm_type, build_kwargs, s
 
 def test_echo_role_table():
     # Default: tool-response bodies at alpha 0.1, every other role off.
-    default = _build(type="echo")
+    default = _build(type="grpo", echo={}).echo
     assert default.roles.tool.alpha == 0.1
     assert default.roles.system is None
     assert default.roles.user is None
     assert default.roles.assistant is None
     # Setting any role replaces the whole table — the tool default is gone.
-    replaced = _build(type="echo", roles={"user": {"alpha": 0.5}})
+    replaced = _build(type="grpo", echo={"roles": {"user": {"alpha": 0.5}}}).echo
     assert replaced.roles.user.alpha == 0.5
     assert replaced.roles.tool is None
 
 
 def test_echo_roles_require_at_least_one():
     with pytest.raises(ValueError, match="at least one role"):
-        _build(type="echo", roles={})
+        _build(type="grpo", echo={"roles": {}})
 
 
 def test_opd_teacher_must_be_a_frozen_endpoint():
@@ -340,11 +338,11 @@ def test_assign_advantages_list_rejects_misaligned():
 # --------------------------------------------------------------------------
 
 
-def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
-    kwargs: dict = {"type": "echo"}
+def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> GRPOAlgorithm:
+    echo: dict = {}
     if roles is not None:
-        kwargs["roles"] = roles
-    algo = EchoAlgorithm(_build(**kwargs), MagicMock())
+        echo["roles"] = roles
+    algo = GRPOAlgorithm(_build(type="grpo", echo=echo), MagicMock())
     algo.filter_fn = filter_fn
     return algo
 

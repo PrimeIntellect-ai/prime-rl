@@ -659,13 +659,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_env_algorithms(self):
-        """Let each algorithm reject environments it cannot score correctly."""
-        for env_cfg in self.train.source:
-            env_cfg.algo.validate_env(env_cfg.env)
-        return self
-
-    @model_validator(mode="after")
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).

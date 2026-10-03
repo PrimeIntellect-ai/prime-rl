@@ -3,13 +3,8 @@ import asyncio
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.algorithm import (
-    GRPOAlgoConfig,
-    LinearLengthPenaltyConfig,
-    MaxRLAlgoConfig,
-)
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
-from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
 
@@ -159,8 +154,8 @@ def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
 
 
 def _max_rl(group: list[vf.Episode]) -> list[float]:
-    """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = MaxRLAlgorithm(MaxRLAlgoConfig(), clients=None)
+    """Drive mean-normalized ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
+    algo = GRPOAlgorithm(GRPOAlgoConfig(normalize_by_mean=True), clients=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 

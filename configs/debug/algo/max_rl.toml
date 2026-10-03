@@ -15,7 +15,7 @@ batch_size = 128
 group_size = 16
 
 [orchestrator.train.algo]
-type = "max_rl"
+normalize_by_mean = true
 
 [orchestrator.renderer]
 name = "prime-qwen3"

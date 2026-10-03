@@ -1,8 +1,7 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
-``opsd``, ``sft``, ``echo``, ``debug``).
+on ``type`` (``grpo``, ``rae``, ``opd``, ``opsd``, ``sft``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -21,8 +20,8 @@ Each algorithm fixes two things:
    trainer evaluates the per-token signal against the live policy. The algorithm
    determines which loss component consumes the action tokens (``rl`` / ``ce`` /
    ``ref_kl``, via the ``action_loss_type`` class declaration) and what happens
-   to env-provided observation tokens (masked out by default; ``echo`` trains on
-   them with weighted CE).
+   to env-provided observation tokens (masked out by default; GRPO's ``echo``
+   option trains on them with weighted CE).
 
 prime-rl only ever hosts the trainable policy. Every other model an algorithm
 uses is an external OpenAI-compatible endpoint, declared inline on the
@@ -36,7 +35,6 @@ executes them.
 
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
-import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
@@ -89,7 +87,7 @@ class SamplingConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Shared sub-configs (length penalty, echo roles)
+# Shared sub-configs (length penalty, echo)
 # ---------------------------------------------------------------------------
 
 
@@ -190,12 +188,21 @@ class BaseAlgoConfig(BaseConfig):
             )
         return self
 
-    def validate_env(self, env_config: vf.EnvConfig) -> None:
-        """Raise if this algorithm cannot run on the env it is configured for,
-        given that env's resolved config. Most algorithms read only the rollouts
-        and their rewards, so they run on any env and the base does nothing;
-        override where the credit assignment encodes an env's episode structure.
-        Called once per train env after algorithm inheritance resolves."""
+
+class EchoConfig(BaseConfig):
+    """ECHO: weighted CE on env-provided tokens of later turns (tool output,
+    user feedback), selected by message role via the renderer's per-token
+    ``is_content`` attribution (renderers that don't attribute content fall back
+    to weighting the whole non-sampled span). Selected tokens feed the ``ce``
+    loss component at their role's ``alpha`` and stay outside the rl mask and
+    its denominator."""
+
+    roles: EchoRolesConfig = EchoRolesConfig(tool=EchoRoleConfig())
+    """The role table. The default — tool-response bodies at ``alpha = 0.1``
+    — is the vetted ECHO setting."""
+
+    filter: EchoFilterConfig | None = None
+    """Optional user-supplied filter narrowing the role-selected tokens."""
 
 
 class GRPOAlgoConfig(BaseAlgoConfig):
@@ -208,36 +215,30 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     length_penalty: LengthPenaltyConfig | None = None
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
+    normalize_by_mean: bool = False
+    """MaxRL (arXiv:2602.02710): divide the advantages by the group mean reward.
+    Normalizing by the mean instead of the standard deviation makes the policy
+    gradient unbiased for the order-``group_size`` truncation of the
+    maximum-likelihood objective: low-pass-rate examples get ~1/p weight.
+    Designed for non-negative (canonically binary) rewards; a group with mean
+    reward <= 0 gets zero advantages."""
 
-class EchoAlgoConfig(GRPOAlgoConfig):
-    type: Literal["echo"] = "echo"  # type: ignore[assignment]
-    """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
-    CE on env-provided tokens of later turns (tool output, user feedback),
-    selected by message role via the renderer's per-token ``is_content``
-    attribution (renderers that don't attribute content fall back to weighting
-    the whole non-sampled span). Selected tokens feed the ``ce`` loss component
-    at their role's ``alpha`` and stay outside the rl mask and its denominator."""
+    episode_agents: Annotated[list[str], Field(min_length=1)] | None = None
+    """Per-agent baselines for multi-agent envs: when set, each agent's traces
+    are compared only with that agent's traces — per episode for the listed
+    agents, across the group for the others. E.g. ``["solver"]`` for
+    ``proposer-solver``: solvers are compared with attempts on the same proposed
+    problem, proposers with the other proposals in the group. A comparison with
+    one trace gets zero advantage. None compares every trace in the group."""
 
-    roles: EchoRolesConfig = EchoRolesConfig(tool=EchoRoleConfig())
-    """The role table. The default — tool-response bodies at ``alpha = 0.1``
-    — is the vetted ECHO setting."""
+    echo: EchoConfig | None = None
+    """Also train env-provided observation tokens with weighted CE (see ``EchoConfig``)."""
 
-    filter: EchoFilterConfig | None = None
-    """Optional user-supplied filter narrowing the role-selected tokens."""
-
-
-class MaxRLAlgoConfig(BaseAlgoConfig):
-    type: Literal["max_rl"] = "max_rl"
-    """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
-    group mean, consumed by the ``rl`` loss component. Normalizing by the
-    mean instead of GRPO's standard deviation makes the policy gradient
-    unbiased for the order-``group_size`` truncation of the maximum-likelihood
-    objective: low-pass-rate examples get ~1/p weight, and ``group_size`` is
-    the truncation order interpolating REINFORCE (1) → exact maximum
-    likelihood (∞). Designed for non-negative (canonically binary) rewards;
-    a group with mean reward 0 carries zero advantages everywhere."""
-
-    action_loss_type: ClassVar[ActionLossType] = "rl"
+    @model_validator(mode="after")
+    def validate_episode_agents(self):
+        if self.episode_agents is not None and (self.length_penalty is not None or self.normalize_by_mean):
+            raise ValueError("episode_agents does not support length_penalty or normalize_by_mean")
+        return self
 
 
 class RAEAlgoConfig(BaseAlgoConfig):
@@ -259,39 +260,6 @@ class RAEAlgoConfig(BaseAlgoConfig):
     scored, its agent's baseline moves as ``baseline ← decay · baseline +
     (1 − decay) · reward``. Baselines start at 0 and live in orchestrator
     memory — a restart re-warms them over ~1/(1 − decay) traces per agent."""
-
-
-class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
-    type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
-    """GRPO for proposer-solver envs.
-
-    Agents in ``episode_agents`` are compared with same-role attempts on the
-    same proposed problem. Other agents are compared with the same role across
-    proposals generated from one source task. This keeps rewards from different
-    problems and different roles out of the same average."""
-
-    action_loss_type: ClassVar[ActionLossType] = "rl"
-
-    episode_agents: list[str] = Field(min_length=1)
-    """Roles compared within one proposed problem. Use ``["solver"]`` for
-    ``proposer-solver``."""
-
-    def validate_env(self, env_config: vf.EnvConfig) -> None:
-        """Require the proposer-solver structure used by the comparisons."""
-        try:
-            from proposer_solver import ProposerSolverEnvConfig
-        except ImportError as e:
-            raise ValueError(
-                "algorithm 'hierarchical_grpo' requires a proposer-solver env, but the "
-                "proposer-solver package is not installed (`uv sync --all-packages`)."
-            ) from e
-        if not isinstance(env_config, ProposerSolverEnvConfig):
-            raise ValueError(
-                f"algorithm 'hierarchical_grpo' needs a proposer-solver env, but this env resolved to "
-                f"{type(env_config).__name__}. It compares solver attempts on the same proposed "
-                "problem and proposers across proposals. Use 'grpo' for a flat env or 'rae' for "
-                "multi-agent self-play."
-            )
 
 
 class OPDAlgoConfig(BaseAlgoConfig):
@@ -392,15 +360,7 @@ class DebugAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig
-    | EchoAlgoConfig
-    | MaxRLAlgoConfig
-    | RAEAlgoConfig
-    | HierarchicalGRPOAlgoConfig
-    | OPDAlgoConfig
-    | OPSDAlgoConfig
-    | SFTAlgoConfig
-    | DebugAlgoConfig,
+    GRPOAlgoConfig | RAEAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig | DebugAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -408,13 +368,12 @@ assignment and loss routing, fused). The ``type`` selects the algorithm, and
 its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
-- ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+  Options: ``length_penalty``, ``normalize_by_mean`` (MaxRL), ``episode_agents``
+  (per-agent baselines), ``echo`` (weighted CE on observation tokens).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
-- ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
-- ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 - ``debug`` — the same constant advantage on every sampled token, ignoring
   rewards. Debugging only: for infra work that needs every token trainable.
 
