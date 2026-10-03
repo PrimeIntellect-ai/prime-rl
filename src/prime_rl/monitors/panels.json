@@ -1,0 +1,59 @@
+{
+  "common_metrics": [
+    "effective/num_turns/mean",
+    "effective/num_total_tokens/mean",
+    "effective/num_branches/mean"
+  ],
+  "common_regexes": [
+    "effective/[^/]+/is_truncated/mean",
+    "all/[^/]+/is_timeout/mean",
+    "all/[^/]+/has_error/mean"
+  ],
+  "rl": {
+    "stability": [
+      {"metric": "optim/grad_norm"},
+      {"metric": "entropy/all/mean"},
+      {"metric": "mismatch_kl/all/mean"},
+      {"metric": "kl_ent_ratio/mean"}
+    ],
+    "inference": [
+      {"metrics": ["inference/agg/kv_cache_usage_perc/mean", "inference/agg/kv_cache_usage_perc/min", "inference/agg/kv_cache_usage_perc/max"]},
+      {"metrics": ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"]},
+      {"metrics": ["inference/agg/num_requests_running/mean", "inference/agg/num_requests_running/min", "inference/agg/num_requests_running/max"]},
+      {"metrics": ["inference/agg/num_requests_waiting/mean", "inference/agg/num_requests_waiting/min", "inference/agg/num_requests_waiting/max"]},
+      {"metrics": ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"]},
+      {"metrics": ["inference/agg/generation_tokens_total:rate/sum"]},
+      {"metrics": ["inference/agg/prompt_tokens_total:rate/sum"]},
+      {"metrics": ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"]}
+    ],
+    "performance": [
+      {"metric": "perf/mfu"},
+      {"metric": "time/step"},
+      {"metric": "time/wait_for_batch"},
+      {"metric": "time/wait_for_policy"}
+    ]
+  },
+  "sft": {
+    "train": [
+      {"metric": "loss/mean"},
+      {"metric": "loss/perplexity"},
+      {"metric": "val/loss"},
+      {"metric": "val/perplexity"},
+      {"metric": "progress/epoch"}
+    ],
+    "stability": [
+      {"metric": "optim/grad_norm"},
+      {"metric": "optim/lr"},
+      {"metric": "loss/nan_count"},
+      {"regex": "max_vio/(mean|max)"}
+    ],
+    "performance": [
+      {"metric": "perf/mfu"},
+      {"metric": "perf/throughput"},
+      {"metric": "perf/peak_memory"},
+      {"metric": "time/step"},
+      {"metric": "time/forward_backward"},
+      {"metric": "time/save_ckpt"}
+    ]
+  }
+}
