@@ -10,8 +10,9 @@ from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_c
 from prime_rl.trainer.models.layers.ring_attn import sliding_window_kv
 
 WORLD_SIZE = 4
-# 48 tokens, 12 per rank: a document spans three shards and one starts exactly at a shard boundary.
-CU_SEQLENS = torch.tensor([0, 5, 24, 28, 48], dtype=torch.int32)
+# 48 tokens, 12 per rank: the second document spans all four shards, so rank 3's 19-token halo
+# takes 12 tokens from rank 2 and 7 from rank 1.
+CU_SEQLENS = torch.tensor([0, 5, 40, 48], dtype=torch.int32)
 
 
 def _varlen_window_attention(q, k, v, cu_seqlens_q, cu_seqlens_k, window):

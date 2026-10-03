@@ -20,7 +20,6 @@ def _flash_attention_forward(
     max_seqlen_k: int,
     softmax_scale: float,
     causal: bool,
-    window_size: tuple[int, int],
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if attention_backend == "flash_attention_2":
@@ -37,8 +36,6 @@ def _flash_attention_forward(
             dropout_p=0.0,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
             softcap=0.0,
             alibi_slopes=None,
             return_softmax=False,
@@ -58,16 +55,12 @@ def _flash_attention_forward(
             max_seqlen_k=max_seqlen_k,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
         )
         return out, softmax_lse
 
     if attention_backend == "flash_attention_4":
         from flash_attn.cute.interface import _flash_attn_fwd
 
-        window_size_left = window_size[0] if window_size[0] != -1 else None
-        window_size_right = window_size[1] if window_size[1] != -1 else None
         out, softmax_lse, _, _ = _flash_attn_fwd(
             q,
             k,
@@ -78,8 +71,6 @@ def _flash_attention_forward(
             max_seqlen_k=max_seqlen_k,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
             return_lse=True,
         )
         return out, softmax_lse
@@ -103,7 +94,6 @@ def _flash_attention_backward(
     dv: torch.Tensor,
     softmax_scale: float,
     causal: bool,
-    window_size: tuple[int, int],
     attention_backend: str,
 ) -> None:
     if attention_backend == "flash_attention_2":
@@ -126,8 +116,8 @@ def _flash_attention_backward(
             dropout_p=0.0,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
+            window_size_left=-1,
+            window_size_right=-1,
             softcap=0.0,
             alibi_slopes=None,
             deterministic=False,
@@ -153,16 +143,12 @@ def _flash_attention_backward(
             dv=dv,
             softmax_scale=softmax_scale,
             is_causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
         )
         return
 
     if attention_backend == "flash_attention_4":
         from flash_attn.cute.interface import _flash_attn_bwd
 
-        window_size_left = window_size[0] if window_size[0] != -1 else None
-        window_size_right = window_size[1] if window_size[1] != -1 else None
         _flash_attn_bwd(
             q,
             k,
@@ -172,8 +158,6 @@ def _flash_attention_backward(
             softmax_lse,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=max_seqlen_q,
@@ -201,13 +185,10 @@ def ring_attention_forward(
     heads_k_stride: int,
     causal: bool,
     group_name: str,
-    window_size_left: int,
-    window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     group = dist.distributed_c10d._resolve_process_group(group_name)
     local_k_slice = slice(local_k_slice_start, local_k_slice_stop)
-    window_size = (window_size_left, window_size_right)
     softmax_scale = q.shape[-1] ** -0.5
 
     _, num_query_heads, _ = q.shape
@@ -247,7 +228,6 @@ def ring_attention_forward(
             max_seqlen_k=max_seqlen_k,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size=window_size,
             attention_backend=attention_backend,
         )
         outputs.append(out)
@@ -270,8 +250,6 @@ def _ring_attention_forward_fake(
     heads_k_stride: int,
     causal: bool,
     group_name: str,
-    window_size_left: int,
-    window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return q.new_empty(q.shape), q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
@@ -294,13 +272,10 @@ def ring_attention_backward(
     heads_k_stride: int,
     causal: bool,
     group_name: str,
-    window_size_left: int,
-    window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     group = dist.distributed_c10d._resolve_process_group(group_name)
     local_k_slice = slice(local_k_slice_start, local_k_slice_stop)
-    window_size = (window_size_left, window_size_right)
     softmax_scale = q.shape[-1] ** -0.5
 
     _, num_query_heads, _ = q.shape
@@ -356,7 +331,6 @@ def ring_attention_backward(
             dv=gathered_kv_grad[1][local_k_slice],
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size=window_size,
             attention_backend=attention_backend,
         )
 
@@ -393,8 +367,6 @@ def _ring_attention_backward_fake(
     heads_k_stride: int,
     causal: bool,
     group_name: str,
-    window_size_left: int,
-    window_size_right: int,
     attention_backend: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return q.new_empty(q.shape), k.new_empty(k.shape), v.new_empty(v.shape)
@@ -414,8 +386,6 @@ def _ring_attention_setup_context(ctx, inputs, output) -> None:
         heads_k_stride,
         causal,
         group_name,
-        window_size_left,
-        window_size_right,
         attention_backend,
     ) = inputs
     out, softmax_lse = output
@@ -427,8 +397,6 @@ def _ring_attention_setup_context(ctx, inputs, output) -> None:
     ctx.heads_k_stride = heads_k_stride
     ctx.causal = causal
     ctx.group_name = group_name
-    ctx.window_size_left = window_size_left
-    ctx.window_size_right = window_size_right
     ctx.attention_backend = attention_backend
     ctx.mark_non_differentiable(softmax_lse)
 
@@ -451,11 +419,9 @@ def _ring_attention_autograd_backward(ctx, dout: torch.Tensor, _dsoftmax_lse: to
         heads_k_stride=ctx.heads_k_stride,
         causal=ctx.causal,
         group_name=ctx.group_name,
-        window_size_left=ctx.window_size_left,
-        window_size_right=ctx.window_size_right,
         attention_backend=ctx.attention_backend,
     )
-    return (dq, dk, dv) + (None,) * 12
+    return (dq, dk, dv) + (None,) * 10
 
 
 ring_attention_forward.register_autograd(
@@ -477,7 +443,6 @@ def ring_varlen_attention(
     heads_k_stride: int,
     group: dist.ProcessGroup,
     attention_backend: str,
-    window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     out, _ = ring_attention_forward(
         q=q,
@@ -492,8 +457,6 @@ def ring_varlen_attention(
         heads_k_stride=heads_k_stride,
         causal=causal,
         group_name=group.group_name,
-        window_size_left=window_size[0],
-        window_size_right=window_size[1],
         attention_backend=attention_backend,
     )
     return out
@@ -526,13 +489,13 @@ def sliding_window_kv(
 
     input_splits = [chunk_len(dst - rank) if dst > rank else 0 for dst in range(world_size)]
     output_splits = [chunk_len(rank - src) if src < rank else 0 for src in range(world_size)]
-    kv = torch.cat([k, v], dim=1)
-    send = torch.cat([kv[shard_len - n :] for n in input_splits if n > 0] or [kv[:0]])
+    # Zero-length tails keep `send` in the autograd graph on every rank, so all ranks join the backward all-to-all.
+    send = torch.cat([torch.cat([k[shard_len - n :], v[shard_len - n :]], dim=1) for n in input_splits])
     received = all_to_all_single(send, torch.tensor(output_splits), torch.tensor(input_splits), group)
     torch._check(received.shape[0] == sum(output_splits))  # resolves the op's data-dependent size under compile
-    kv = torch.cat([received[received.shape[0] - halo_len :], kv])
+    halo_k, halo_v = received[received.shape[0] - halo_len :].split(k.shape[1], dim=1)
+    k, v = torch.cat([halo_k, k]), torch.cat([halo_v, v])
 
-    cu_seqlens_k = cu_seqlens_k - (cu_seqlens_k[-1] - kv.shape[0])
+    cu_seqlens_k = cu_seqlens_k - (cu_seqlens_k[-1] - k.shape[0])
     cu_seqlens_k[0] = 0
-    k, v = kv.split(k.shape[1], dim=1)
     return k, v, cu_seqlens_k
