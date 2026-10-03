@@ -4,6 +4,7 @@ from typing import Annotated, Literal, get_args
 
 import pytest
 import tomli_w
+import verifiers.v1 as vf
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
@@ -462,11 +463,21 @@ def test_env_algo_inherits_the_group_algo():
     assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
 
-def test_sources_inherit_the_group_fields_they_leave_unset():
+@pytest.mark.parametrize("group_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_limit", [200, None])
+def test_sources_inherit_the_group_fields_they_leave_unset(group_token_key, source_token_key, source_token_limit):
     config = EvalConfig.model_validate(
         {
             "r": 4,
-            "sampling": {"temperature": 0.5, "extra_body": {"a": 1}},
+            "sampling": {
+                group_token_key: 100,
+                "temperature": 3.0,
+                "reasoning_effort": "xhigh",
+                "top_k": 40,
+                "frequency_penalty": 0.5,
+                "extra_body": {"a": 1},
+            },
             "select": {"limit": 8, "include": {"idx": [":100"]}},
             "env": {"retries": {"max_retries": 3}},
             "source": [
@@ -475,7 +486,12 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
                     "name": "b",
                     "env": {"taskset": {"id": "gsm8k"}},
                     "group_size": 2,
-                    "sampling": {"extra_body": {"b": 2}},
+                    "sampling": {
+                        source_token_key: source_token_limit,
+                        "reasoning_effort": "max",
+                        "top_k": 20,
+                        "extra_body": {"b": 2},
+                    },
                     "select": {"include": {"names": ["x"]}},
                 },
             ],
@@ -483,7 +499,18 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
     )
     a, b = config.source
     assert (a.group_size, b.group_size) == (4, 2)
-    assert b.sampling.temperature == 0.5 and b.sampling.extra_body == {"a": 1, "b": 2}
+    assert isinstance(a.sampling, vf.SamplingConfig) and isinstance(b.sampling, vf.SamplingConfig)
+    assert a.sampling.max_tokens == 100 and b.sampling.max_tokens == source_token_limit
+    assert a.sampling.reasoning_effort == "xhigh" and a.sampling.wire_args()["top_k"] == 40
+    assert b.sampling.wire_args() == {
+        **({"max_tokens": source_token_limit} if source_token_limit is not None else {}),
+        "temperature": 3.0,
+        "reasoning_effort": "max",
+        "top_k": 20,
+        "frequency_penalty": 0.5,
+        "a": 1,
+        "b": 2,
+    }
     assert b.select.limit == 8 and b.select.include.idx == [":100"] and b.select.include.names == ["x"]
     assert a.env.retries.max_retries == 3 and b.env.retries.max_retries == 3
     reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))

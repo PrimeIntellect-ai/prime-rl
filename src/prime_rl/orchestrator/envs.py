@@ -67,7 +67,7 @@ class Env:
         self.address_file = address_file
         """Where a launcher-managed server publishes its address; read when ``address``
         is None."""
-        self.sampling_args: dict = {}
+        self.sampling = vf.SamplingConfig()
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -110,10 +110,11 @@ class Env:
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
-        sampling = {**self.sampling_args}
+        sampling = self.sampling
         if cache_salt is not None:
-            sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
-        return vf.SamplingConfig(**sampling)
+            extra_body = {**(getattr(sampling, "extra_body", None) or {}), "cache_salt": cache_salt}
+            sampling = sampling.model_copy(update={"extra_body": extra_body})
+        return sampling
 
     async def run(
         self,
@@ -164,10 +165,16 @@ class TrainEnv(Env):
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
-        self.sampling_args = config.sampling.to_sampling_args()
-        if not self.uses_live_policy:
-            # Logprobs only feed importance ratios on policy-sampled tokens; frozen endpoints may reject the knob.
-            self.sampling_args.pop("logprobs", None)
+        self.sampling = vf.SamplingConfig(
+            **config.sampling.model_dump(exclude_none=True, exclude={"top_k", "extra_body"}),
+            # Keep top_k nested so an agent's extra_body can override it.
+            extra_body={
+                **config.sampling.extra_body,
+                **config.sampling.model_dump(exclude_none=True, include={"top_k"}),
+            },
+            # Only policy rollouts need sampling logprobs for importance ratios.
+            logprobs=True if self.uses_live_policy else None,
+        )
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
 
@@ -191,7 +198,7 @@ class EvalEnv(Env):
 
     def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
         super().__init__(config, address, address_file)
-        self.sampling_args = config.sampling.to_sampling_args()
+        self.sampling = config.sampling
         self.examples: list[vf.Task] = []
 
     async def start(self) -> None:

@@ -105,7 +105,7 @@ class EvalRunner:
 
         # Pessimistic per-episode token cost for the controller's starting cap,
         # only used when the engine doesn't report its max context length.
-        fallback_cost = max((source.sampling.max_completion_tokens or 0) for source in config.source) or 8192
+        fallback_cost = max((source.sampling.max_tokens or 0) for source in config.source) or 8192
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=fallback_cost)
         self.dispatcher = Dispatcher(
             train_envs=None,
