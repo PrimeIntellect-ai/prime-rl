@@ -100,6 +100,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     config = SimpleNamespace(
         ratio=1.0,
         group_size=1,
+        max_off_policy_steps=8,
         curriculum=CurriculumConfig(
             sampler=DifficultyPoolSamplerConfig(pools=pools),
             gates={

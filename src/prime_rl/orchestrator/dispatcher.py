@@ -148,7 +148,6 @@ class Dispatcher:
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
-        max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
@@ -162,7 +161,6 @@ class Dispatcher:
         self.policy_clients = policy_clients
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
         # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
@@ -426,21 +424,21 @@ class Dispatcher:
 
         if self.train_envs is None or self.progress is None:
             return
-        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        stale_groups = [
-            gid
-            for gid, group in self.groups.items()
-            if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
-            and group.policy_version_at_start < min_version
-        ]
+        stale_groups = []
+        for gid, group in self.groups.items():
+            if group.kind != "train":
+                continue
+            env = self.train_envs.get(group.env_name)
+            min_version = min_fresh_version(self.progress.step, env.config.max_off_policy_steps)
+            if env.generation_source.uses_live_policy and group.policy_version_at_start < min_version:
+                stale_groups.append(gid)
         cancelled = 0
         for gid in stale_groups:
             cancelled += await self.drop_group(gid, reason="stale")
 
         if cancelled:
             get_logger().warning(
-                f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
+                f"Cancelled {cancelled} train episodes past their env's max_off_policy_steps. "
                 "Consider increasing it to avoid this."
             )
 

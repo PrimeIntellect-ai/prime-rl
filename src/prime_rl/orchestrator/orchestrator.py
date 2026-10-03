@@ -278,9 +278,7 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
-        self.train_source = TrainSource(
-            self.train_envs, batch_size=config.batch_size, max_off_policy_steps=config.max_off_policy_steps
-        )
+        self.train_source = TrainSource(self.train_envs, batch_size=config.batch_size)
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
@@ -346,7 +344,6 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -586,6 +583,8 @@ class Orchestrator:
         now = time.perf_counter()
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
+        if step_time:
+            self.train_source.on_step(step_time)
 
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.

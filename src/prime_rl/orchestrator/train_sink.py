@@ -193,7 +193,7 @@ class TrainSink:
             self.train_source.pending_groups[env_name] -= 1
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
-        """Void queued traces past ``max_off_policy_steps``. The batch being
+        """Void queued traces past their env's ``max_off_policy_steps``. The batch being
         collected is ``progress.step`` and trains policy v{step-1}, so a
         queued trace generated from v{k} would ship at staleness
         ``(step-1) - k``. This sweep is the hard guarantee on trained
@@ -211,14 +211,12 @@ class TrainSink:
                 return
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
-        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
-        if min_version <= 0:
-            return
         dropped = 0
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            max_off_policy_steps = self.train_envs.get(episode_env_name(episode)).config.max_off_policy_steps
+            if policy is None or policy.start >= min_fresh_version(self.progress.step, max_off_policy_steps):
                 continue
             samples = self.pending_batch.pop(trace_id)
             self._dequeue(trace_id)
@@ -230,7 +228,7 @@ class TrainSink:
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
-                f"Dropped {dropped} queued traces past max_off_policy_steps={self.config.max_off_policy_steps}. "
+                f"Dropped {dropped} queued traces past their env's max_off_policy_steps. "
                 "Consider increasing it to avoid this."
             )
 
@@ -342,7 +340,7 @@ class TrainSink:
         # surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
-            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason="stale")
             return
         self.train_source.on_group_finalized(env_name, accepted=True, cancel_reason=cancel_reason)
         self.zero_output_units = 0

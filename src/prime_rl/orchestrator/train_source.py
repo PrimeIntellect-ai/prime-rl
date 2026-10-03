@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import random
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
+from statistics import fmean
 from typing import Any
 
 import verifiers.v1 as vf
@@ -21,7 +23,7 @@ MIN_ACCEPTANCE_RATE = 0.05
 (see :func:`acceptance_correction`)."""
 PRIOR_ACCEPTANCE_RATE = 0.5
 ESTIMATE_WINDOW = 20
-"""Samples (groups or episodes) in the acceptance-rate and duration moving averages."""
+"""Samples (groups, episodes or steps) in the acceptance-rate, duration and step-time estimates."""
 CAP_HEADROOM = 1.25
 """In-flight cap of an env relative to its Little's-law share of the train slots."""
 
@@ -46,17 +48,25 @@ def mixer_weight(target: float, pending: float, acceptance_rate: float) -> float
 
 
 def inflight_caps(
-    demand: dict[str, float], durations: dict[str, float], capacity: int, max_off_policy_steps: int | None
+    demand: dict[str, float],
+    durations: dict[str, deque[float]],
+    capacity: int,
+    step_time: float | None,
+    max_off_policy_steps: dict[str, int],
 ) -> dict[str, float]:
     """Per-env in-flight episode caps: ``CAP_HEADROOM`` times the env's
     Little's-law share of ``capacity`` (``demand`` episodes per step times
-    mean episode duration), clipped at the ``1 + max_off_policy_steps`` steps
-    of demand that can still train."""
-    need = {env: durations[env] * demand[env] for env in demand}
+    mean episode duration). An env whose p90 episode outlasts the
+    ``1 + max_off_policy_steps`` steps of ``step_time`` it may run and still
+    train has its cap scaled down in proportion, so it cannot hold more work
+    than can finish in time."""
+    need = {env: fmean(durations[env]) * demand[env] for env in demand}
     total = sum(need.values())
     caps = {env: CAP_HEADROOM * capacity * need[env] / total for env in demand}
-    if max_off_policy_steps is not None:
-        caps = {env: min(cap, (1 + max_off_policy_steps) * demand[env]) for env, cap in caps.items()}
+    if step_time:
+        for env in caps:
+            p90_steps = sorted(durations[env])[math.ceil(0.9 * len(durations[env])) - 1] / step_time
+            caps[env] *= min(1.0, (1 + max_off_policy_steps[env]) / p90_steps)
     return caps
 
 
@@ -71,9 +81,7 @@ class TrainSource:
     in-flight cap (:func:`inflight_caps`) are skipped unless every env is at
     its cap, so a slow or stalled env cannot take every train slot."""
 
-    def __init__(
-        self, train_envs: TrainEnvs, batch_size: int | None = None, max_off_policy_steps: int | None = None
-    ) -> None:
+    def __init__(self, train_envs: TrainEnvs, batch_size: int | None = None) -> None:
         self.rng = random.Random(42)
         self.envs = list(train_envs)
         if not self.envs:
@@ -90,11 +98,10 @@ class TrainSource:
         total_ratio = sum(env.config.ratio for env in self.envs)
         self.shares = {env.name: env.config.ratio / total_ratio for env in self.envs}
         self.group_sizes = {env.name: env.config.group_size for env in self.envs}
+        self.max_off_policy_steps = {env.name: env.config.max_off_policy_steps for env in self.envs}
         # A prompt contributes ``group_size`` traces to the batch.
         total_traces = sum(share * self.group_sizes[name] for name, share in self.shares.items())
         self.batch_size = batch_size
-        # The staleness clip on the caps needs absolute targets, i.e. a trace batch.
-        self.max_off_policy_steps = max_off_policy_steps if batch_size is not None else None
         # Accepted groups per batch. Token batches have no trace count, so the
         # targets are only relative and the deficit term is left out.
         self.targets = {name: share * (batch_size or 1) / total_traces for name, share in self.shares.items()}
@@ -103,8 +110,9 @@ class TrainSource:
         """Accepted traces per env waiting in the sink for a batch."""
         self.pending_groups: Counter[str] = Counter()
         """Accepted groups per env with traces waiting in the sink."""
-        self.durations = {name: 0.0 for name in self.env_names}
-        self.completed: Counter[str] = Counter()
+        self.durations = {name: deque(maxlen=ESTIMATE_WINDOW) for name in self.env_names}
+        """Recent episode durations per env, in seconds an episode holds a slot."""
+        self.step_times: deque[float] = deque(maxlen=ESTIMATE_WINDOW)
         self.inflight: dict[str, int] = {}
         self.caps: dict[str, float] | None = None
         self.dispatch_weights: dict[str, float] = {}
@@ -125,12 +133,13 @@ class TrainSource:
         self.inflight = inflight
         # Caps need a duration estimate for every env.
         self.caps = None
-        if all(self.completed[name] for name in self.env_names):
+        if all(self.durations.values()):
             demand = {
                 name: target * acceptance_correction(self.acceptance[name]) * self.group_sizes[name]
                 for name, target in self.targets.items()
             }
-            self.caps = inflight_caps(demand, self.durations, capacity, self.max_off_policy_steps)
+            step_time = fmean(self.step_times) if self.step_times else None
+            self.caps = inflight_caps(demand, self.durations, capacity, step_time, self.max_off_policy_steps)
             uncapped = {
                 name: weight if inflight.get(name, 0) < self.caps[name] else 0.0 for name, weight in weights.items()
             }
@@ -156,19 +165,20 @@ class TrainSource:
 
     def on_group_finalized(self, env_name: str, *, accepted: bool, cancel_reason: CancelReason | None) -> None:
         """Update the acceptance rate: ``accepted`` means the group queued
-        traces for a batch. Groups cut by an overload or superseded
-        cancellation are a pipeline decision, not env yield, and are skipped;
-        stale groups count as not accepted, so a slow env that loses groups to
-        the staleness bound is dispatched more."""
-        if cancel_reason in ("overload", "superseded"):
+        traces for a batch. Cancelled groups (stale, overload, superseded)
+        say nothing about the env's yield and are skipped: counting stale
+        groups as rejected would dispatch more of an env the more of its work
+        goes stale."""
+        if cancel_reason is not None:
             return
         self.acceptance[env_name] += (float(accepted) - self.acceptance[env_name]) / ESTIMATE_WINDOW
 
     def on_episode_complete(self, env_name: str, duration: float) -> None:
-        """Update the env's mean episode duration (seconds an episode holds a slot)."""
-        self.completed[env_name] += 1
-        window = min(self.completed[env_name], ESTIMATE_WINDOW)
-        self.durations[env_name] += (duration - self.durations[env_name]) / window
+        self.durations[env_name].append(duration)
+
+    def on_step(self, step_time: float) -> None:
+        """Record the seconds between two shipped batches."""
+        self.step_times.append(step_time)
 
     def metrics(self) -> dict[str, float]:
         metrics: dict[str, float] = {}
@@ -191,9 +201,9 @@ class TrainSource:
                 metrics[f"mixer/{env_name}/weight"] = self.dispatch_weights[env_name] / total_weight
             if self.caps is not None:
                 metrics[f"mixer/{env_name}/cap"] = self.caps[env_name]
-            if self.completed[env_name]:
+            if self.durations[env_name]:
                 # Mean seconds an episode holds a slot; what the in-flight caps are sized from
-                metrics[f"mixer/{env_name}/episode_duration"] = self.durations[env_name]
+                metrics[f"mixer/{env_name}/episode_duration"] = fmean(self.durations[env_name])
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
@@ -202,8 +212,7 @@ class TrainSource:
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
             "mixer": {
                 "acceptance": self.acceptance,
-                "durations": self.durations,
-                "completed": dict(self.completed),
+                "durations": {name: list(durations) for name, durations in self.durations.items()},
             },
         }
 
@@ -223,5 +232,6 @@ class TrainSource:
         mixer = state_dict.get("mixer")
         if mixer is not None:
             self.acceptance = dict(mixer["acceptance"])
-            self.durations = dict(mixer["durations"])
-            self.completed = Counter(mixer["completed"])
+            self.durations = {
+                name: deque(durations, maxlen=ESTIMATE_WINDOW) for name, durations in mixer["durations"].items()
+            }
