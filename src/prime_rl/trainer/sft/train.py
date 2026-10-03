@@ -382,6 +382,7 @@ def train(config: SFTConfig):
             config.run_dir,
             config.weight_broadcast,
             parallel_dims,
+            config.model.name,
             config.model.lora,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken

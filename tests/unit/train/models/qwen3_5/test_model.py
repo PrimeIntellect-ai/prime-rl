@@ -5,12 +5,11 @@ import torch
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
+    Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
@@ -18,6 +17,7 @@ from prime_rl.trainer.models.qwen3_5 import (
 )
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 from prime_rl.utils.cp import CPContext
+from prime_rl.utils.utils import default_dtype
 
 
 def get_text_config(config_cls=Qwen3_5TextConfig) -> Qwen3_5TextConfig:
@@ -66,21 +66,15 @@ def get_vlm_config(text_config) -> Qwen3_5Config:
         text_config=text_config,
         vision_config=vision_config,
         image_token_id=120,
-        video_token_id=121,
-        vision_start_token_id=122,
-        vision_end_token_id=123,
     )
 
 
 def get_model(config, device="cuda"):
     runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
-    with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
-        )
-    inject_prime_lm_head(model, chunk_size=None)
-    return model
+    config = type(config).model_validate({**config.model_dump(), "attn_implementation": runtime_config.attn})
+    with torch.device(device), default_dtype(torch.bfloat16):
+        return Qwen3_5ForCausalLM(config)
 
 
 @pytest.mark.gpu
@@ -96,11 +90,10 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
         if hasattr(module, "cp_context"):
             module.cp_context = text_cp_context
 
-    assert text_model.model.cp_context is text_cp_context
-    assert text_model.model.cp_context.cp_rank == 1
-    assert text_model.model.cp_context.cp_world_size == 2
-    assert text_model.model.cp_context.cp_style == "ulysses"
     assert linear_layer.linear_attn.cp_context is text_cp_context
+    assert linear_layer.linear_attn.cp_context.cp_rank == 1
+    assert linear_layer.linear_attn.cp_context.cp_world_size == 2
+    assert linear_layer.linear_attn.cp_context.cp_style == "ulysses"
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
 
@@ -110,8 +103,7 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
             module.cp_context = vlm_cp_context
 
     assert vlm_model.model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
+    assert vlm_model.model.cp_context.cp_style == "ulysses"
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
 
 

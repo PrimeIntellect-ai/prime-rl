@@ -1,8 +1,9 @@
+import re
+
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PrimeModel
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -41,13 +42,13 @@ class NemotronHMoE(MoE):
 class NemotronHDecoderLayer(nn.Module):
     def __init__(self, config: NemotronHConfig, layer_idx: int) -> None:
         super().__init__()
-        self.layer_type = config.layer_types[layer_idx]
+        self.layer_type = config.layers_block_type[layer_idx]
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
 
         if self.layer_type == "mamba":
             self.mamba = NemotronHMamba2(config)
         elif self.layer_type == "attention":
-            self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](
+            self.self_attn = ATTN_IMPL2CLASS[config.attn_implementation](
                 AttentionConfig(
                     hidden_size=config.hidden_size,
                     head_dim=config.head_dim,
@@ -128,11 +129,52 @@ class NemotronHDecoderLayer(nn.Module):
         return residual + hidden_states
 
 
-class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
-    config: NemotronHConfig
+class NemotronHModel(nn.Module):
+    def __init__(self, config: NemotronHConfig) -> None:
+        super().__init__()
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.layers = nn.ModuleList(
+            NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
+        )
+        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        seq_lens: Tensor,
+        seq_lens_are_pre_shard: bool = False,
+        routed_experts: Tensor | None = None,
+    ) -> Tensor:
+        """``routed_experts`` (``[batch, seq, num_layers, top_k]``) replays the inference router's choices."""
+        hidden_states = self.embed_tokens(input_ids)
+
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=hidden_states.device),
+            total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+
+        for layer_idx, decoder_layer in enumerate(self.layers):
+            layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
+            hidden_states = decoder_layer(
+                hidden_states,
+                cu_seqlens,
+                max_seqlen,
+                routed_experts=layer_routed_experts,
+            )
+        return self.norm(hidden_states)
+
+
+class NemotronHForCausalLM(PrimeModel):
+    def __init__(self, config: NemotronHConfig) -> None:
+        super().__init__(config)
+        self.model = NemotronHModel(config)
+        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.model.embed_tokens.weight
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
+    def cp_support(cls, config: NemotronHConfig) -> CPSupport:
         return CPSupport(
             frozenset({"ulysses"}),
             "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
@@ -156,82 +198,27 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        import re
-
         for name in list(state_dict):
             hf_name = re.sub(r"(\.layers\.\d+)\.(?:self_attn|mlp|mamba)\.", r"\1.mixer.", name)
             if hf_name != name:
                 state_dict[hf_name] = state_dict.pop(name)
         return state_dict
 
-
-class NemotronHModel(NemotronHPreTrainedModel):
-    def __init__(self, config: NemotronHConfig) -> None:
-        super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
-        self.layers = nn.ModuleList(
-            NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
-        )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
-
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        position_ids: torch.LongTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
+        input_ids: Tensor,
+        position_ids: Tensor,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
-        hidden_states = self.embed_tokens(input_ids)
-
-        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=hidden_states.device),
-            total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
-        )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
-
-        for layer_idx, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
-            hidden_states = decoder_layer(
-                hidden_states,
-                cu_seqlens,
-                max_seqlen,
-                routed_experts=layer_routed_experts,
-            )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
-
-
-class NemotronHForCausalLM(NemotronHPreTrainedModel):
-    def __init__(self, config: NemotronHConfig) -> None:
-        super().__init__(config)
-        self.model = NemotronHModel(config)
-        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-
-    def forward(
-        self,
-        input_ids: torch.LongTensor,
-        position_ids: torch.LongTensor | None = None,
-        labels: torch.LongTensor | None = None,
-        temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        *,
-        seq_lens: torch.LongTensor,
-        seq_lens_are_pre_shard: bool = False,
+        labels: Tensor | None = None,
+        temperature: Tensor | None = None,
+        sampling_mask: Tensor | None = None,
+        routed_experts: Tensor | None = None,
     ) -> PrimeLmOutput:
-        outputs = self.model(
-            input_ids=input_ids,
-            routed_experts=routed_experts,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
-        return self.lm_head(
-            outputs.last_hidden_state,
-            labels,
-            temperature=temperature,
-            sampling_mask=sampling_mask,
-        )
+        # Nemotron-H attention has no positional encoding, so position_ids is unused.
+        hidden_states = self.model(input_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
+        return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
     def init_buffers_post_meta(self) -> None:
         for module in self.modules():
@@ -245,5 +232,4 @@ __all__ = [
     "NemotronHForCausalLM",
     "NemotronHMoE",
     "NemotronHModel",
-    "NemotronHPreTrainedModel",
 ]

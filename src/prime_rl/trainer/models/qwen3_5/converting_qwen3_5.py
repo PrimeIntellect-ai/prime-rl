@@ -1,7 +1,7 @@
 from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeTextConfig
+from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5MoeTextConfig, Qwen3_5TextConfig
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -16,13 +16,14 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
     return has_qwen_layers and not has_fused_experts
 
 
-def conversion_chain(config) -> list[ConvOp]:
+def conversion_chain(config: Qwen3_5TextConfig | Qwen3_5Config) -> list[ConvOp]:
     operations: list[ConvOp] = [Drop("mtp.", is_prefix=True)]
-    text_config = getattr(config, "text_config", config)
+    is_vlm = isinstance(config, Qwen3_5Config)
+    text_config = config.text_config if is_vlm else config
     if not isinstance(text_config, Qwen3_5MoeTextConfig):
         return operations
 
-    model_prefix = "model.language_model" if hasattr(config, "vision_config") else "model"
+    model_prefix = "model.language_model" if is_vlm else "model"
     for layer_index in range(text_config.num_hidden_layers):
         prefix = f"{model_prefix}.layers.{layer_index}.mlp"
         operations.extend(

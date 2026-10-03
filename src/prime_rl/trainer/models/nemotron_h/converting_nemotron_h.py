@@ -22,7 +22,7 @@ def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
         Rename("model.norm_f.weight", "model.norm.weight"),
     ]
 
-    for layer_idx, layer_type in enumerate(config.layer_types):
+    for layer_idx, layer_type in enumerate(config.layers_block_type[: config.num_hidden_layers]):
         prefix = f"model.layers.{layer_idx}"
         if layer_type == "mamba":
             ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba."))

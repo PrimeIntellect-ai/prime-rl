@@ -68,7 +68,7 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 ### Implement the Modeling Code
 
-Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
+Drop the modeling code under `src/prime_rl/trainer/models/<arch>/`: a `PrimeModelConfig` (pydantic, validated from the checkpoint's `config.json`), a `PrimeModel` subclass with an explicit `forward`, and the HF↔prime-rl weight conversion. Register the config and model classes in `MODEL_REGISTRY` (`models/registry.py`), keyed by the `model_type` in `config.json`. Mirror the layout of an existing family — `llama/` (dense) or `qwen3_moe/` (MoE) are good starting points.
 
 ### Register a Mini Preset
 
@@ -133,19 +133,19 @@ Don't expect reward to climb meaningfully in 20 steps on a random model.
 
 Before merging a new model, you need to ensure the following:
 
-- The model is correctly registered and defines and all the required methods - such as `convert_hf_layer_to_tt` and `convert_tt_layer_to_hf`.
+- The model is registered in `MODEL_REGISTRY` and implements the `PrimeModel` interface (`models/base.py`): state-dict format detection, `conversion_chain`, and `init_buffers_post_meta`.
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.
 
 ## Adding a Custom VLM Implementation
 
-VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementation-only: `get_model` rejects models without a custom PrimeRL VLM class at load time. To make a new VLM family trainable, extend a custom text model with a composite VLM body. The unified dense/MoE Qwen3.5 implementation in `models/qwen3_5/` is the reference. The pieces, in dependency order:
+VLM training (any run with `[model.vlm]` set, SFT or RL) requires a registered VLM architecture: `get_model` rejects other models at load time. To make a new VLM family trainable, extend a custom text model with a composite VLM body. The unified dense/MoE Qwen3.5 implementation in `models/qwen3_5/` is the reference. The pieces, in dependency order:
 
 1. **Custom text model first.** The VLM body wraps a custom `*ForCausalLM` (see [Adding a New Model](#adding-a-new-model)), so the text side — including its state-dict conversion and KL-mismatch table — comes first.
 2. **Composite VLM body.** A `*VLMModel` that holds the vision encoder and custom text model, embeds tokens, runs vision, scatters image embeddings over placeholder tokens, and builds MRoPE 3D positions from `mm_token_type_ids` (the renderer owns the token→modality mapping). The unified `*ForCausalLM` dispatches on the config: composite config → VLM path, text config → text path.
 3. **Always run the vision encoder.** Text-only micro-batches must feed the encoder dummy pixels and graft the result into the graph with zero contribution (`inputs_embeds + image_embeds.sum() * 0.0`) so FSDP/EP collectives stay symmetric across ranks when the encoder is trainable.
 4. **Packed-boundary consumption.** Samples pack into shared rows with per-document boundaries in `seq_lens`; every custom model's `forward()` declares the typed `seq_lens`/`seq_lens_are_pre_shard` parameters (the trainer passes them unconditionally) and must honor the boundaries — varlen flash `cu_seqlens`, linear-attention state resets per document, and a loud rejection on attention paths that can't (see the packed-batch guard in any modeling file). Set `supports_packed_multimodal_training` on the VLM model once packed rows are handled — RL fails loudly at startup for VLM models without it.
-5. **Registration.** Register the composite `model_type` in `_CUSTOM_VLM_MAPPING` (`models/__init__.py`) so `get_model` dispatches to the custom class, and describe the family in `VLM_REGISTRY` (`utils/vlm.py`).
+5. **Registration.** Register the composite config and the model class under the composite `model_type` in `MODEL_REGISTRY` (`models/registry.py`), and describe the family in `VLM_REGISTRY` (`utils/vlm.py`).
 6. **Context parallelism (optional).** CP-capable VLMs hold a `CPContext` on all modules which need to be CP-aware and shard embeds/positions inside the model after the vision merge; the trainers defer sharding to the model for MRoPE batches under ulysses.
 7. **Validation.** Same bar as text models: the KL-mismatch table for the text path, plus an SFT run and an RL run on a real multimodal dataset (the `color-codeword` environment is the reference task).

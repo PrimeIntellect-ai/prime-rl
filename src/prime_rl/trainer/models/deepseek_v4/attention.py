@@ -330,9 +330,7 @@ class PackedContext:
             token = int(disagrees.any(dim=0).nonzero()[0])
             raise ValueError(
                 f"position_ids must restart at 0 at every document boundary of seq_lens: token "
-                f"{token} starts a document but carries {position_ids[:, token].tolist()}. A caller "
-                "that passes none of its own gets the 1-based arange the injected LM head "
-                "substitutes (see `prime_rl.trainer.models.layers.lm_head`), which this rejects."
+                f"{token} starts a document but carries {position_ids[:, token].tolist()}."
             )
 
 

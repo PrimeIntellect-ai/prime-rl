@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor, nn
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PrimeModel
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -26,12 +23,13 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
 )
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.cp import CPContext
 
 
-class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
+class DeepseekV4DecoderLayer(nn.Module):
     """One hyper-connected block: mHC, attention, mHC, MoE.
 
     Both sublayers read the single sequence their `DeepseekV4HyperConnection` collapsed the
@@ -91,39 +89,105 @@ KEEP_IN_FP32_MODULES = (
 )
 
 
-class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
-    config: DeepseekV4Config
-    config_class = DeepseekV4Config
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["DeepseekV4DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention runs its own fused kernel; no transformers backend can serve it.
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
-    _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
+class DeepseekV4Model(nn.Module):
+    def __init__(self, config: DeepseekV4Config):
+        super().__init__()
+        self.config = config
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
+        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
+        self.layers = nn.ModuleList(
+            [
+                DeepseekV4DecoderLayer(config, layer_idx, self.rotary_emb)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
+        )
+        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.hc_head = DeepseekV4HyperHead(config)
+        self.cp_context = CPContext()
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        seq_lens: Tensor,
+        seq_lens_are_pre_shard: bool = False,
+        routed_experts: Tensor | None = None,
+    ) -> Tensor:
+        """
+        input_ids (`(batch_size, sequence_length)`):
+            Token ids. Threaded down to every decoder layer, not just the embedding: the
+            bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
+        position_ids (`(batch_size, sequence_length)`):
+            Each token's position within its own document. Only checked, never consulted: the
+            positions every rotation and every causal threshold reads are derived from
+            `seq_lens`, so the two cannot disagree.
+        seq_lens (`(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract). Clips the
+            sliding window at document boundaries and lays out the compressors' entries per
+            document, so a packed row gives every document what running it alone would.
+        seq_lens_are_pre_shard:
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4 shards the
+            queries alone and keeps every key, entry and index value global, so it needs the
+            whole row's boundaries: this must be set exactly when context parallelism is on.
+        routed_experts (`(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token in the sequence. Only used for router replay.
+        """
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
+            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
+        )
+
+        inputs_embeds = self.embed_tokens(input_ids)
+
+        # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
+        total_tokens = int(seq_lens.sum())
+        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
+            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
+            f"{inputs_embeds.shape[1]} tokens each"
+        )
+
+        # Every layer type attends over the same local window; the compressed variants add their
+        # own out-of-window entries and the per-query bias that gates them. One layout per distinct
+        # compress rate, shared by every layer that pools at that rate; sliding layers own no
+        # compressor and contribute no rate.
+        packed = PackedContext.build(
+            rotary_emb=self.rotary_emb,
+            seq_lens=seq_lens,
+            device=inputs_embeds.device,
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
+        )
+        packed.check_position_ids(position_ids)
+
+        mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        for layer_idx, decoder_layer in enumerate(self.layers):
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            mhc_states = decoder_layer(
+                mhc_states,
+                input_ids=input_ids,
+                routed_experts=routed_experts_layer,
+                packed=packed,
+            )
+
+        return self.norm(self.hc_head(mhc_states))
+
+
+class DeepseekV4ForCausalLM(PrimeModel):
+    def __init__(self, config: DeepseekV4Config):
+        super().__init__(config)
+        self.model = DeepseekV4Model(config)
+        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.model.embed_tokens.weight
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
+    def cp_support(cls, config: DeepseekV4Config) -> CPSupport:
         return CPSupport(
             frozenset({"ring"}),
             "currently only supporting the minimal ring strategy where all keys, or tensors "
             "required to form the keys are all-gathered in the CP region.",
         )
-
-    def _init_weights(self, module: nn.Module) -> None:
-        super()._init_weights(module)
-        init_std = self.config.initializer_range
-        if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
-            module.init_weights(init_std)
-        elif isinstance(module, DeepseekV4MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
-        elif isinstance(module, DeepseekV4RotaryEmbedding):
-            module.init_buffers_post_meta()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -147,7 +211,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         )
 
     @classmethod
-    def conversion_chain(cls, config):
+    def conversion_chain(cls, config: DeepseekV4Config):
         return conversion_chain(config)
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -159,6 +223,21 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         """
         dequantize_state_dict_(state_dict)
         return super().convert_to_prime(state_dict)
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        *,
+        seq_lens: Tensor,
+        seq_lens_are_pre_shard: bool = False,
+        labels: Tensor | None = None,
+        temperature: Tensor | None = None,
+        sampling_mask: Tensor | None = None,
+        routed_experts: Tensor | None = None,
+    ) -> PrimeLmOutput:
+        hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
+        return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
     def init_buffers_post_meta(self) -> None:
         # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
@@ -174,175 +253,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
                 module.tokens_per_expert.zero_()
 
 
-class DeepseekV4Model(DeepseekV4PreTrainedModel):
-    def __init__(self, config: DeepseekV4Config):
-        super().__init__(config)
-        self.padding_idx = config.pad_token_id
-        self.vocab_size = config.vocab_size
-
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
-        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
-        self.layers = nn.ModuleList(
-            [
-                DeepseekV4DecoderLayer(config, layer_idx, self.rotary_emb)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
-        )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.hc_head = DeepseekV4HyperHead(config)
-        self.gradient_checkpointing = False
-
-        self.post_init()
-
-    def forward(
-        self,
-        input_ids: torch.LongTensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        *,
-        seq_lens: torch.LongTensor,
-        seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
-        """
-        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Token ids. Threaded down to every decoder layer, not just the embedding: the
-            bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
-        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Each token's position within its own document. Only checked, never consulted: the
-            positions every rotation and every causal threshold reads are derived from
-            `seq_lens`, so the two cannot disagree.
-
-            NOTE: omitting it is not the same as having no positions. `inject_prime_lm_head`
-            rebinds this model's forward and substitutes a 1-based `arange(1, N + 1)`, which is
-            wrong for V4 twice over, since entries are numbered and rotated from 0: it shifts
-            every query-entry RoPE distance by one and admits an entry whose last source token
-            is one past the query. `check_position_ids` rejects it, so a caller that passes
-            nothing gets a `ValueError` rather than a working default.
-
-            TODO: make that substitution 0-based, matching HF's convention and every other
-            model's own fallback, after which an omitted `position_ids` would just be accepted.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
-            Per-document lengths of the packed row (PrimeRL packed-batch contract). Clips the
-            sliding window at document boundaries and lays out the compressors' entries per
-            document, so a packed row gives every document what running it alone would.
-        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4 shards the
-            queries alone and keeps every key, entry and index value global, so it needs the
-            whole row's boundaries: this must be set exactly when context parallelism is on.
-        """
-        assert (input_ids is None) != (inputs_embeds is None), "pass exactly one of input_ids or inputs_embeds"
-
-        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
-            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
-        )
-
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-
-        # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
-        total_tokens = int(seq_lens.sum())
-        assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
-            f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
-            f"{inputs_embeds.shape[1]} tokens each"
-        )
-
-        # Every layer type attends over the same local window; the compressed variants add their
-        # own out-of-window entries and the per-query bias that gates them. One layout per distinct
-        # compress rate, shared by every layer that pools at that rate; sliding layers own no
-        # compressor and contribute no rate.
-        packed = PackedContext.build(
-            rotary_emb=self.rotary_emb,
-            seq_lens=seq_lens,
-            device=inputs_embeds.device,
-            cp_rank=cp_rank,
-            cp_world_size=cp_world_size,
-        )
-        if position_ids is not None:
-            packed.check_position_ids(position_ids)
-
-        mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
-        for layer_idx, decoder_layer in enumerate(self.layers):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            mhc_states = decoder_layer(
-                mhc_states,
-                input_ids=input_ids,
-                routed_experts=routed_experts_layer,
-                packed=packed,
-            )
-
-        hidden_states = self.norm(self.hc_head(mhc_states))
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
-
-
-class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
-    def __init__(self, config: DeepseekV4Config):
-        super().__init__(config)
-        self.model = DeepseekV4Model(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.post_init()
-
-    def get_decoder(self):
-        return self.model
-
-    def set_decoder(self, decoder):
-        self.model = decoder
-
-    def forward(
-        self,
-        input_ids: torch.LongTensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        labels: torch.LongTensor | None = None,
-        logits_to_keep: int | torch.Tensor = 0,
-        temperature: torch.Tensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        *,
-        seq_lens: torch.LongTensor,
-        seq_lens_are_pre_shard: bool = False,
-        **kwargs,
-    ) -> PrimeLmOutput:
-        """
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels used by PrimeRL's wrapped LM head to optionally compute per-token
-            logprobs/entropy.
-        temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Per-token temperatures for logprobs/entropy computation when `labels` are given.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
-            Per-document lengths of the packed row. Required rather than defaulting to one
-            document, so a caller that forgets it fails instead of silently getting a window
-            that spans neighbouring rollouts.
-        """
-        outputs = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            routed_experts=routed_experts,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
-
-        hidden_states = outputs.last_hidden_state
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(
-            hidden_states[:, slice_indices, :],
-            labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature,
-        )
-
-
 __all__ = [
     "DeepseekV4DecoderLayer",
     "DeepseekV4ForCausalLM",
     "DeepseekV4Model",
-    "DeepseekV4PreTrainedModel",
 ]

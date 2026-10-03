@@ -1,10 +1,9 @@
 import pytest
 import torch
-from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models import cast_float_and_contiguous
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
-from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, use_fused_lm_head
+from prime_rl.trainer.models.qwen3 import Qwen3Config, Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
 
@@ -183,15 +182,13 @@ def test_full_model_fused_vs_vanilla():
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         # Create two identical models
-        model_vanilla = Qwen3ForCausalLM._from_config(config)
-        model_fused = Qwen3ForCausalLM._from_config(config)
+        model_vanilla = Qwen3ForCausalLM(config)
+        model_fused = Qwen3ForCausalLM(config)
 
         # Share weights between models
         model_fused.load_state_dict(model_vanilla.state_dict())
 
-        # Wrap with different LM heads
-        inject_prime_lm_head(model_vanilla, chunk_size=None)  # Vanilla
-        inject_prime_lm_head(model_fused, chunk_size=32)  # Fused with chunking
+        use_fused_lm_head(model_fused, chunk_size=32)
 
     # Setup optimizers
     optimizer_vanilla = torch.optim.AdamW(model_vanilla.parameters(), lr=1e-4)
@@ -298,8 +295,8 @@ def test_fused_lm_head_correct_shift():
 
 
 @pytest.mark.gpu
-def test_inject_prime_lm_head_vanilla():
-    """Test that inject_prime_lm_head correctly wraps the model with VanillaOutputLinear."""
+def test_vanilla_lm_head():
+    """Test that models build a VanillaOutputLinear LM head by default."""
     torch.manual_seed(123)
 
     config = Qwen3Config(
@@ -317,10 +314,7 @@ def test_inject_prime_lm_head_vanilla():
     )
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3ForCausalLM._from_config(config)
-
-    # Wrap with VanillaOutputLinear (chunk_size=None)
-    inject_prime_lm_head(model, chunk_size=None)
+        model = Qwen3ForCausalLM(config)
 
     assert isinstance(model.lm_head, VanillaOutputLinear), "lm_head should be VanillaOutputLinear"
 
@@ -350,8 +344,8 @@ def test_inject_prime_lm_head_vanilla():
 
 
 @pytest.mark.gpu
-def test_inject_prime_lm_head_fused():
-    """Test that inject_prime_lm_head correctly wraps the model with FusedOutputLinear."""
+def test_use_fused_lm_head():
+    """Test that use_fused_lm_head swaps in a FusedOutputLinear LM head."""
     torch.manual_seed(123)
 
     config = Qwen3Config(
@@ -369,10 +363,9 @@ def test_inject_prime_lm_head_fused():
     )
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3ForCausalLM._from_config(config)
+        model = Qwen3ForCausalLM(config)
 
-    # Wrap with FusedOutputLinear
-    inject_prime_lm_head(model, chunk_size=512)
+    use_fused_lm_head(model, chunk_size=512)
 
     assert isinstance(model.lm_head, FusedOutputLinear), "lm_head should be FusedOutputLinear"
 

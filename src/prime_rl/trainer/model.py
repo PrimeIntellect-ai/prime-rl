@@ -1,13 +1,6 @@
-import logging
-import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
-
-# Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
-# modules with implementations that have incompatible CUDA requirements.
-os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
@@ -23,7 +16,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
-from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
+from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -39,14 +32,7 @@ from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
-from prime_rl.trainer.models import (
-    AutoModelForCausalLMPrimeRL,
-    PrimeLmOutput,
-    cast_float_and_contiguous,
-    get_custom_causal_lm_cls,
-    get_custom_vlm_cls,
-    supports_custom_impl,
-)
+from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -55,16 +41,17 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import use_fused_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
+from prime_rl.trainer.models.registry import get_model_cls, load_model_config
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
+from prime_rl.utils.utils import default_dtype, format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
     load_state_dict,
@@ -94,13 +81,6 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
 
-
-# Add filter to the standard logging module for transformers.modeling_utils to supress the
-# flash attention dtype warnings since FSDP is used to handle mixed precision.
-transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
-transformers_modeling_utils_logger.addFilter(
-    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
-)
 
 DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -341,30 +321,16 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
 
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
-) -> nn.Module:
+) -> PrimeModel:
+    """Build the PrimeRL model for ``config.name`` on ``device``. Checkpoint weights are loaded separately."""
     logger = get_logger()
-    logger.debug(
-        f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
-    )
+    logger.debug(f"Loading model config (name={config.name}, attn={config.attn})")
 
-    is_vlm_training = config.vlm is not None
+    model_config = load_model_config(config.name, attn_implementation=config.attn)
+    if model_config.pad_token_id is None:
+        eos_token_id = model_config.eos_token_id
+        model_config.pad_token_id = eos_token_id[0] if isinstance(eos_token_id, list) else eos_token_id
 
-    model_config = cast(
-        PretrainedConfig,
-        AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
-        ),
-    )
-    model_config.use_cache = False
-    is_vlm_arch = is_vlm_architecture(model_config)
-
-    if is_vlm_training:
-        logger.info(f"Detected vision-language model: {config.name}")
-
-    for subconfig_key in getattr(model_config, "sub_configs", {}):
-        subconfig = getattr(model_config, subconfig_key, None)
-        if subconfig is not None and hasattr(subconfig, "use_cache"):
-            subconfig.use_cache = False
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
@@ -382,36 +348,7 @@ def get_model(
                 f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
             )
 
-    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
-    # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
-    if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
-        gen_config = GenerationConfig.from_model_config(model_config)
-        # Use `is not None` instead of truthiness: token ID 0 is valid.
-        pad_token_id = next(
-            (
-                v
-                for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(model_config, "eos_token_id", None)]
-                if v is not None
-            ),
-            None,
-        )
-        # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which
-        # crashes both huggingface_hub's strict setter and transformers'
-        # GenerationConfig.validate(). Unwrap before assigning.
-        if isinstance(pad_token_id, list):
-            pad_token_id = pad_token_id[0]
-        model_config.pad_token_id = pad_token_id
-
-    # Handle list pad_token_id that was already set on the config (not from our
-    # fallback above, but directly in the model's config.json).
-    if isinstance(getattr(model_config, "pad_token_id", None), list):
-        model_config.pad_token_id = model_config.pad_token_id[0]
-
-    # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
-    # The model should load in its default dtype (bf16) to match vLLM inference.
-    # The FSDP MixedPrecisionPolicy handles compute dtype separately.
-
-    logger.debug(f"Loaded model config ({model_config.to_dict()})")
+    logger.debug(f"Loaded model config ({model_config})")
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
@@ -422,17 +359,11 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
-    if custom_vlm_cls is None and not supports_custom_impl(model_config):
-        raise ValueError(
-            f"{model_config.model_type!r} has no PrimeRL model implementation. "
-            "The trainer only supports the architectures in prime_rl.trainer.models."
-        )
+    model_cls = get_model_cls(model_config.model_type)
 
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
-        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
-        support = cp_model_cls.cp_support(model_config)
+        support = model_cls.cp_support(model_config)
         if config.cp_style not in support.styles:
             supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
             raise ValueError(
@@ -440,27 +371,14 @@ def get_model(
                 f"({support.reason}); {supported}."
             )
 
-    if config.vlm is not None and custom_vlm_cls is None:
-        raise ValueError(
-            f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
-        )
+    if config.vlm is not None:
+        if not is_vlm_architecture(model_config):
+            raise ValueError(f"VLM training requires a VLM architecture; {model_config.model_type!r} is not one.")
+        logger.info(f"Detected vision-language model: {config.name}")
 
-    with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
-
-        load_model_start_time = time.perf_counter()
-        if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
-        else:
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=model_config,
-                trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
-            )
-        logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
+    logger.info(f"Building model {config.name} using {model_cls.__name__} on {device}")
+    with device, default_dtype(dtype):
+        model = model_cls(model_config)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -618,7 +536,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             # data-parallel size. That is already the dense parameters' default divisor.
             transformer_block.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
-    shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+    shard_norm_and_lm_head = not model.config.tie_word_embeddings
     final_module = (
         getattr(language_model, "norm", None)
         or getattr(language_model, "norm_f", None)
@@ -957,11 +875,8 @@ def setup_model(
         applied = apply_model_fusions(model, config.fusions.enabled)
         logger.info(f"Applied runtime model fusions: {applied}")
 
-    lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
-        lm_head_chunk_size = config.fused_lm_head_token_chunk_size
-
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+        use_fused_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
 
     apply_quantization(model, config)
 
@@ -1019,7 +934,7 @@ def setup_model(
 
 
 def forward(
-    model: nn.Module,
+    model: PrimeModel,
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     *,
@@ -1035,31 +950,29 @@ def forward(
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
 ) -> PrimeLmOutput:
-    kwargs = {
-        "input_ids": input_ids,
-        "labels": labels,
-        "temperature": temperature,
-        "sampling_mask": sampling_mask,
-    }
-
+    # Only MoE models take `routed_experts` and only VLMs take multimodal inputs.
+    optional_kwargs: dict[str, Tensor] = {}
+    if routed_experts is not None:
+        optional_kwargs["routed_experts"] = routed_experts
     if mm_kwargs:
-        kwargs.update(mm_kwargs)
-        if mm_token_type_ids is not None:
-            kwargs["mm_token_type_ids"] = mm_token_type_ids
         # SFT still uses its existing eager processor path and does not provide
         # an adapter policy yet, so preserve its current kwargs-based behavior.
         policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
         if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
             raise ValueError("Multimodal forward policy requires mm_token_type_ids")
-        if policy.pass_position_ids:
-            kwargs["position_ids"] = position_ids
-    else:
-        kwargs["position_ids"] = position_ids
+        if not policy.pass_position_ids:
+            # The VLM computes its own MRoPE positions.
+            position_ids = None
+        optional_kwargs.update(mm_kwargs, mm_token_type_ids=mm_token_type_ids)
 
-    kwargs["seq_lens"] = seq_lens
-    kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
-
-    if routed_experts is not None:
-        kwargs["routed_experts"] = routed_experts
-
-    return cast_float_and_contiguous(model(**kwargs))
+    output = model(
+        input_ids,
+        position_ids,
+        seq_lens=seq_lens,
+        seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+        labels=labels,
+        temperature=temperature,
+        sampling_mask=sampling_mask,
+        **optional_kwargs,
+    )
+    return cast_float_and_contiguous(output)

@@ -13,7 +13,6 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
 
@@ -81,8 +80,7 @@ MODEL = dict(
     rms_norm_eps=1e-6,
 )
 
-# Shared: model construction only writes transformers' private `_attn_implementation_internal`
-# and `_experts_implementation_internal`, idempotently, so deep-copy before any other mutation.
+# Shared: model construction only reads it.
 MODEL_CONFIG = DeepseekV4Config(**MODEL)
 
 # The Lightning Indexer scores one packed row, which makes every batch axis here 1.
@@ -151,10 +149,9 @@ def _randomize(module: nn.Module) -> None:
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     _randomize(model)
     eager_reference.use_eager_attention(model)
-    inject_prime_lm_head(model, chunk_size=None)
     return model
 
 
@@ -233,7 +230,6 @@ def test_deepseek_v4_backward():
         model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     _randomize(model)
     eager_reference.use_eager_attention(model)
-    inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, MODEL["vocab_size"], (BATCH, MODEL_SEQ), device="cuda")
     position_ids, seq_lens = _single_doc(input_ids)
@@ -260,6 +256,8 @@ def test_deepseek_v4_backward():
 
 def test_deepseek_v4_weight_conversion_roundtrip():
     model = DeepseekV4ForCausalLM(MODEL_CONFIG).to("cuda")
+    # Several parameters allocate with `torch.empty`, whose NaNs would fail `torch.equal` below.
+    _randomize(model)
     original = {name: tensor.clone() for name, tensor in model.state_dict().items()}
 
     state_dict = model.state_dict()
@@ -408,7 +406,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 
@@ -430,7 +428,7 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
 
     model.init_buffers_post_meta()
 
-    reference = 1.0 / (MODEL_CONFIG.rope_theta ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
+    reference = 1.0 / (MODEL["rope_theta"] ** (torch.arange(0, 16, 2, device="cuda", dtype=torch.float) / 16))
     torch.testing.assert_close(model.model.rotary_emb.main_inv_freq, reference)
     compressors = [layer.self_attn.compressor for layer in model.model.layers if layer.self_attn.compressor]
     assert compressors, "config must contain a compressed attention layer"

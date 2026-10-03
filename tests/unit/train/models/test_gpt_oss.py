@@ -29,7 +29,6 @@ def _config() -> GptOssConfig:
         sliding_window=4,
         rope_parameters={"rope_type": "default", "rope_theta": 150000.0},
         attn_implementation="flash_attention_4",
-        use_cache=False,
     )
 
 

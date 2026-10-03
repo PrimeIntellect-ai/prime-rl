@@ -14,7 +14,6 @@ from prime_rl.utils.vlm import get_language_model
 def config(request):
     text = Qwen3_8FlashNextTextConfig(
         vocab_size=32,
-        bos_token_id=31,
         eos_token_id=31,
         hidden_size=16,
         num_hidden_layers=1,
@@ -42,7 +41,7 @@ def config(request):
 @pytest.mark.parametrize("shard_count", [3, 128])
 def test_config_and_checkpoint_roundtrip(config, shard_count):
     getattr(config, "text_config", config).split_ngram_parts = shard_count
-    restored = type(config).from_dict(config.to_dict())
+    restored = type(config).model_validate(config.model_dump())
     model = Qwen3_8FlashNextForCausalLM(restored)
     model.init_buffers_post_meta()
     assert len(get_language_model(model).layers) == 1
