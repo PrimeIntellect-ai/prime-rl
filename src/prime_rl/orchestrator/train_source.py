@@ -39,12 +39,12 @@ class TrainSource:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
+    def on_result(self, group: list[vf.Episode], *, observe: bool = True) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = episode_env_name(group[0])
-        admitted = self.curricula[env_name].on_result(group)
+        admitted = self.curricula[env_name].on_result(group, observe=observe)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
         if admitted:
@@ -52,6 +52,10 @@ class TrainSource:
         else:
             self._rejected[env_name] += 1
         return admitted
+
+    def observe(self, group: list[vf.Episode]) -> None:
+        """Report a group to its curriculum's sampler without gating it."""
+        self.curricula[episode_env_name(group[0])].observe(group)
 
     def metrics(self) -> dict[str, float]:
         metrics: dict[str, float] = {}

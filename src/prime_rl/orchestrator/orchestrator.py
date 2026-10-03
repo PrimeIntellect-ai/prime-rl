@@ -372,7 +372,7 @@ class Orchestrator:
             train_envs=self.train_envs,
             progress=self.progress,
             batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
+            train_source=self.train_source,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -703,6 +703,8 @@ class Orchestrator:
             }
         metrics["off_policy/dropped"] = float(self.train_sink.stale_drops)
         self.train_sink.stale_drops = 0
+        metrics |= {name: float(count) for name, count in self.train_sink.event_counts.items()}
+        self.train_sink.event_counts.clear()
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         metrics |= self.train_source.metrics()

@@ -47,8 +47,20 @@ class Curriculum:
                 raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
             self.gates[name] = gate
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
-        """Observe every result, evaluate every gate, and combine with AND."""
+    def on_result(self, group: list[vf.Episode], *, observe: bool = True) -> bool:
+        """Observe the result (unless the group is observed later as a whole),
+        evaluate every gate, and combine with AND."""
+        if observe:
+            self.observe(group)
+        decisions: list[bool] = []
+        for name, gate in self.gates.items():
+            decision = gate.admit(group)
+            if not isinstance(decision, bool):
+                raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
+            decisions.append(decision)
+        return all(decisions)
+
+    def observe(self, group: list[vf.Episode]) -> None:
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         task_keys = {episode.task.key for episode in group}
@@ -57,13 +69,6 @@ class Curriculum:
         if len(task_keys) != 1:
             raise ValueError(f"A finalized group contains multiple task keys: {task_keys}")
         self.sampler.observe(group)
-        decisions: list[bool] = []
-        for name, gate in self.gates.items():
-            decision = gate.admit(group)
-            if not isinstance(decision, bool):
-                raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
-            decisions.append(decision)
-        return all(decisions)
 
     def state_dict(self) -> dict[str, Any]:
         return {
