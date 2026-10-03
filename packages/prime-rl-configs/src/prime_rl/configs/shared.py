@@ -82,7 +82,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
-"""Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer, orchestrator and inference; the inference server only reads ``type``."""
+"""Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
 
 
 class RunConfig(BaseConfig):

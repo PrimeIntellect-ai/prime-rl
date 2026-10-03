@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import (
@@ -392,6 +393,8 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
+        if "inference_world_size" in self.weight_broadcast.model_fields_set:
+            raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
         update = {}
         if self.weight_broadcast.type != "filesystem":
             update["inference_world_size"] = (
@@ -402,7 +405,7 @@ class RLConfig(BaseConfig):
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy(update=update)
         if self.inference is not None:
-            self.inference.weight_broadcast = self.weight_broadcast.model_copy()
+            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
         return self
 
     @model_validator(mode="after")

@@ -10,6 +10,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
@@ -456,7 +457,7 @@ class SFTConfig(BaseConfig):
                 self.weight_broadcast.inference_world_size = (
                     self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
-            self.inference.weight_broadcast = self.weight_broadcast.model_copy()
+            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -507,7 +508,7 @@ class SFTConfig(BaseConfig):
             vllm.api_server_count = vllm.data_parallel_size
         if self.weight_broadcast.type == "nccl":
             self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
-        self.inference.weight_broadcast = self.weight_broadcast.model_copy()
+        self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client
