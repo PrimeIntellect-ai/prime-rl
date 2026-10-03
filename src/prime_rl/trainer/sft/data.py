@@ -3,7 +3,7 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import torch
@@ -33,6 +33,7 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    num_tokens: NotRequired[int]
 
 
 class Batch(TypedDict):
@@ -43,6 +44,8 @@ class Batch(TypedDict):
     seq_lens: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    num_tokens: int
+    sample_ids: NotRequired[list[tuple[int, int]]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -591,6 +594,7 @@ class CatDataset(StatefulIterableDataset):
             result["target_ids"].extend([0] * pad_len)
             result["seq_lens"][-1] += pad_len
         result["mm_kwargs"] = packed["mm_kwargs"]
+        result["num_tokens"] = seq_len - pad_len
         if packed["mm_token_type_ids"] is not None:
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
         else:
@@ -609,6 +613,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "num_tokens": sample.get("num_tokens", len(sample["input_ids"])),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
@@ -772,12 +777,16 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     state (it reaches the dataset copies inside workers when the iterator forks them;
     the main-process dataset object stays at position zero). The keys are torchdata's
     private worker-snapshot layout."""
+    if hasattr(dataloader, "dataset_progress"):
+        return {"broker": dataloader.dataset_progress}
     snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
 def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
     """Dataset position and aggregate counters from dataloader workers."""
+    if hasattr(dataloader, "dataset_progress"):
+        return dataloader.dataset_progress
     snapshot = dataloader.state_dict()["_snapshot"]
     worker_snapshots = snapshot["_worker_snapshots"]
     positions = [worker_snapshot["dataset_state"]["dataset"] for worker_snapshot in worker_snapshots.values()]
