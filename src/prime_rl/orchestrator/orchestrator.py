@@ -23,6 +23,7 @@ import asyncio
 import os
 import time
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
@@ -68,6 +69,7 @@ from prime_rl.orchestrator.utils import (
     episode_staleness,
     eval_work,
     intercept_vf_logging,
+    release_and_trim,
     set_default_executor,
     trim_process_memory,
 )
@@ -111,6 +113,7 @@ class Orchestrator:
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
+    release_future: asyncio.Future | None
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
@@ -163,6 +166,7 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
+        self.release_future = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -437,7 +441,7 @@ class Orchestrator:
             if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.train_source.state_dict(), step=self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -637,7 +641,6 @@ class Orchestrator:
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
-        trim_process_memory()
 
         # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
         # full arrival window; ``effective`` is the exact shipped cohort.
@@ -758,7 +761,12 @@ class Orchestrator:
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
-        trim_process_memory()
+        # Free the shipped payload in a worker without holding up the next batch; at most one
+        # release is pending, so payloads cannot pile up behind a slow release.
+        if self.release_future is not None:
+            await self.release_future
+        payload = (batch.samples, batch.episodes.episodes, batch.cohort.episodes, *micro_batch_grid)
+        self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
         """Stop scheduling train work and let the pipeline empty; triggered
@@ -968,9 +976,9 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        # Snapshot on the event loop so the dispatcher cannot mutate the state mid-save;
+        # only the file write runs in a worker.
+        await asyncio.to_thread(self.ckpt_manager.save, replace(self.progress), self.train_source.state_dict(), step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:

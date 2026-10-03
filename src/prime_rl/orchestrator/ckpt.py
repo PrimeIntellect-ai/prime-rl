@@ -27,7 +27,7 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def save(self, progress: Progress, train_source_state: dict, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -36,7 +36,7 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                torch.save({"progress": progress, "train_source": train_source_state}, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
