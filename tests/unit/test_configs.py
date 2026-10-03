@@ -1081,7 +1081,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"source": [{"dataset": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"}]},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )
