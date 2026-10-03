@@ -591,6 +591,14 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 
+    train_timeouts: Literal["drop", "score"] = "drop"
+    """How a TRAIN rollout stopped by the agent deadline (``agent_timeout``) is treated. ``drop`` (default, original
+    behaviour): it becomes an error and is excluded from advantages, the curriculum and the batch. ``score``: a *healthy*
+    budget exhaustion -- stop condition ``agent_timeout``, no recorded error, at least one sampled turn, and a grader reward --
+    is kept as a scored outcome with the grader's reward (0 unless the fresh grader verified a clean solve), so it
+    contributes failure signal and updates task difficulty. Timeouts that are unhealthy or ungraded stay errors under
+    either setting. Eval always keeps timeouts as scored outcomes."""
+
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
