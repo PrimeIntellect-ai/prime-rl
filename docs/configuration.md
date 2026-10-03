@@ -203,7 +203,7 @@ The group `env` block holds only the knobs that every env and taskset has: `retr
 - **In-flight caps.** Each env may hold at most 1.25× its share of the train slots, where the share is proportional to its demand times its mean episode duration (and at most the demand of `max_off_policy_steps + 1` steps). Envs at their cap are skipped unless every env is, so a slow or stalled env cannot take every slot and no slot is left idle.
 - **Batches.** A batch ships as soon as `batch_size` samples are queued, as with a single env; extra samples stay queued for the next batch. The share is held by dispatch, so it holds on average and a single batch can be off by a few groups.
 
-`mixer/<env>/shipped_prompt_share` tracks the prompt share each env actually got, against `mixer/<env>/target_prompt_share`; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of the last dispatch decision, after the in-flight caps), `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups), and `mixer/<env>/inflight` against `mixer/<env>/cap` show how it got there.
+`mixer/<env>/shipped_prompt_share` tracks the prompt share each env actually got, against `mixer/<env>/target_prompt_share`; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of the last dispatch decision, after the in-flight caps), `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups), and `mixer/<env>/inflight` against `mixer/<env>/cap` show how it got there; `mixer/<env>/episode_duration` is the mean episode duration (seconds) the caps are sized from.
 
 Eval sources of a training run carry `interval` instead of `ratio`, the step interval at which they fire; a standalone eval has neither.
 

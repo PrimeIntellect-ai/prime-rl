@@ -191,6 +191,9 @@ class TrainSource:
                 metrics[f"mixer/{env_name}/weight"] = self.dispatch_weights[env_name] / total_weight
             if self.caps is not None:
                 metrics[f"mixer/{env_name}/cap"] = self.caps[env_name]
+            if self.completed[env_name]:
+                # Mean seconds an episode holds a slot; what the in-flight caps are sized from
+                metrics[f"mixer/{env_name}/episode_duration"] = self.durations[env_name]
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
