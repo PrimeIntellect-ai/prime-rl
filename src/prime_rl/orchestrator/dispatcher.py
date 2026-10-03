@@ -325,6 +325,10 @@ class Dispatcher:
             if meta.kind == "train" and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
         ]
 
+    def train_group_tasks(self) -> dict[str, vf.Task]:
+        """Task of each open train group, by group id."""
+        return {str(gid): group.task for gid, group in self.groups.items() if group.kind == "train"}
+
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:

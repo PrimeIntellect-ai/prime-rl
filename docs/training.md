@@ -297,7 +297,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data and mixer state, accepted samples queued for the next batch | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -329,6 +329,8 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+A resume replays the samples that were queued for the next batch when the checkpoint was written (`orchestrator/queue.pt`), dropping those that would exceed `max_off_policy_steps`. It also keeps the finished rollouts of groups that were still running, within the same bound, and runs only their missing rollouts (same task, same group); in-flight rollouts are regenerated. If `queue.pt` cannot be loaded (for example after a dependency upgrade), the run resumes without replay and logs a warning. Replayed samples train normally, but their episodes are not kept, so the first steps after a resume leave them out of the rollout metrics and trace logs. Multimodal samples keep references to their image URLs: replay them only if those URLs outlive the run (not ephemeral storage).
 
 ### Exporting Checkpoints
 
