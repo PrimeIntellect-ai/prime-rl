@@ -17,7 +17,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
-from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
+from prime_rl.utils.cp import CPPartition, setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -254,10 +254,9 @@ def train(config: SFTConfig):
             mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
 
         seq_lens_are_pre_shard = False
+        cp_partition = CPPartition(input_ids.shape[1], cp_size) if config.model.cp_unpadded else None
 
         if cp_enabled:
-            # CP requires the sequence length to be divisible by cp_size. CatDataset
-            # pads every pack to seq_len; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
                 mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
@@ -270,10 +269,11 @@ def train(config: SFTConfig):
                     cp_group,
                     seq_lens=seq_lens,
                     cp_style=config.model.cp_style,
+                    partition=cp_partition,
                 )
             seq_lens_are_pre_shard = True
-            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition)
+            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size, partition=cp_partition)
 
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
@@ -293,6 +293,7 @@ def train(config: SFTConfig):
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_type_ids,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                cp_total_tokens=cp_partition.total_tokens if cp_partition is not None and cp_enabled else None,
             )
             loss_sum = out["loss"]
 

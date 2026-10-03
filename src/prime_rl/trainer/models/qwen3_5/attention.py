@@ -43,6 +43,7 @@ class Qwen3_5Attention(FlashAttention):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
     ) -> tuple[torch.Tensor, None]:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -51,7 +52,7 @@ class Qwen3_5Attention(FlashAttention):
             query_states, output_gate = query_states.view(
                 batch_size, sequence_length, self.num_heads, self.head_dim * 2
             ).chunk(2, dim=-1)
-            output_gate = output_gate.reshape(batch_size, sequence_length, -1)
+            output_gate = output_gate.reshape(batch_size, sequence_length, self.num_heads * self.head_dim)
         else:
             query_states = query_states.view(batch_size, sequence_length, self.num_heads, self.head_dim)
             output_gate = None
@@ -77,7 +78,8 @@ class Qwen3_5Attention(FlashAttention):
             value_states[0],
             cu_seqlens,
             max_seqlen,
-        ).reshape(batch_size, sequence_length, -1)
+            **({"cp_total_tokens": cp_total_tokens} if cp_total_tokens is not None else {}),
+        ).reshape(batch_size, sequence_length, self.num_heads * self.head_dim)
         if output_gate is not None:
             attention_output = attention_output * output_gate.sigmoid()
         return self.o_proj(attention_output), None

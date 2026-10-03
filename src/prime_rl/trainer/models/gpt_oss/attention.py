@@ -12,6 +12,7 @@ from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import CPContext
 
 
 class GptOssAttention(nn.Module):
@@ -50,6 +51,7 @@ class GptOssAttention(nn.Module):
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
         self.flash_attn = flash_attn_4_varlen_func
+        self.cp_context = CPContext()
 
     def compute_attention(
         self,
@@ -58,8 +60,28 @@ class GptOssAttention(nn.Module):
         value: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
     ) -> torch.Tensor:
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
+        if self.cp_context.cp_enabled and cp_total_tokens is not None:
+            from prime_rl.trainer.models.layers.cp_attn import context_parallel_attention
+
+            return context_parallel_attention(
+                self.flash_attn,
+                query,
+                key,
+                value,
+                cu_seqlens,
+                max_seqlen,
+                cp_total_tokens,
+                self.cp_context,
+                4,
+                window_size=window_size,
+                softmax_scale=self.scaling,
+                learnable_sink=self.sinks,
+            )
+        if query.shape[0] == 0:
+            return query + (key.sum() + value.sum() + self.sinks.sum()).to(query.dtype)
         output, _ = self.flash_attn(
             query,
             key,
@@ -81,6 +103,7 @@ class GptOssAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         if self.qkv_proj is None:
@@ -101,8 +124,17 @@ class GptOssAttention(nn.Module):
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
 
-        output = self.compute_attention(query[0], key[0], value[0], cu_seqlens, max_seqlen)
-        return self.o_proj(output.contiguous().view(batch_size, sequence_length, -1))
+        output = self.compute_attention(
+            query[0],
+            key[0],
+            value[0],
+            cu_seqlens,
+            max_seqlen,
+            **({"cp_total_tokens": cp_total_tokens} if cp_total_tokens is not None else {}),
+        )
+        return self.o_proj(
+            output.contiguous().view(batch_size, sequence_length, self.num_attention_heads * self.head_dim)
+        )
 
 
 def substitute_gpt_oss_ring_attention(

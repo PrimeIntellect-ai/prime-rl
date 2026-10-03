@@ -17,6 +17,8 @@ from prime_rl.utils.logger import get_logger
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
 def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
+    if x.numel() == 0:
+        return x.new_empty((*x.shape[:-1], weight.shape[0]), dtype=torch.bfloat16)
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
@@ -43,6 +45,8 @@ def _fp8_blockwise_mm_backward(
     needs_grad_x: bool,
     needs_grad_weight: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if x.numel() == 0:
+        return torch.empty_like(x), torch.zeros_like(weight)
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()

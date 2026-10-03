@@ -122,6 +122,16 @@ cp = 2                       # CP degree
 cp_style = "ulysses"         # "ring"
 ```
 
+RL distributes the original packed tokens into balanced CP shards. For example, nine tokens across four ranks produce lengths `[3, 2, 2, 2]`; rows shorter than the CP degree include empty shards. The same partition applies to positions, labels, temperatures, sampling masks, and router replay. Packed sample boundaries remain independent of rank boundaries. Ulysses retains its head divisibility requirements.
+
+The packer splits at whole-sample boundaries to balance distributed iterations. When a lane has no sample for an iteration, it executes an explicit zero-token slot. FSDP parameter hooks, expert communication, and vision participation still run, so other lanes can use parameters and experts owned by that rank. Empty slots contribute no loss members or sample annotations. A globally empty training step is rejected before updating the optimizer.
+
+These behaviors are enabled by `model.cp_unpadded` and `model.inactive_micro_batches`, both defaulting to `true`. Managed RL configures the orchestrator accordingly; a standalone orchestrator must use matching trainer settings. `perf/input_tokens`, `perf/real_micro_batches`, and `perf/inactive_micro_batches` report the executed data separately from empty slots. Sampling-set `-1` entries, kernel workspace alignment, and SFT dataset packing retain their own storage contracts.
+
+Changing token counts can create additional compiled variants, particularly for zero- and one-token shards. CUDA Graph capture depends on the chosen compile mode and kernel support. Measure useful-token throughput and memory on the target workload; removing input tokens does not guarantee lower step latency.
+
+Ring CP gathers a combined buffer of real keys and values before applying causal packed attention. Its temporary memory scales with the full row's KV width. Recurrent layers redistribute features or gather their real sequence as required by their kernel. Compilation still follows each kernel's existing restrictions; FA4 and multi-LoRA contain graph breaks in the current dependencies and require the default `fullgraph=false` setting.
+
 ### Activation Checkpointing and Offloading
 
 | Knob | Memory ↓ | Throughput ↓ |

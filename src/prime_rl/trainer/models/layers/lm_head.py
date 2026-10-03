@@ -7,9 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from transformers.modeling_outputs import BaseModelOutputWithPast
 
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_final_logit_softcapping
+from prime_rl.utils.vlm import get_final_logit_softcapping, get_language_model
 
 # Same as torch's cross entropy loss
 IGNORE_INDEX = -100
@@ -385,6 +386,11 @@ def inject_prime_lm_head(
 
     logger = get_logger()
 
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+
+    if not isinstance(model, PreTrainedModelPrimeRL):
+        _enable_empty_backbone(model)
+
     # Check for Gemma-style softcapping - dispatch to specialized implementation.
     final_logit_softcapping = get_final_logit_softcapping(model.config)
     if final_logit_softcapping:
@@ -407,6 +413,42 @@ def inject_prime_lm_head(
     del old_lm_head
 
     _patch_model_forward(model)
+
+
+def _enable_empty_backbone(model: nn.Module) -> None:
+    """Execute empty HF rows through the same embedding, decoder, and norm FSDP units."""
+    backbone = model.model
+    language_model = get_language_model(model)
+    language_path = next(name for name, module in backbone.named_modules() if module is language_model)
+    for layer in language_model.layers:
+        original_layer_forward = type(layer).forward
+
+        def layer_forward(self, hidden_states, *args, _empty_input=False, _forward=original_layer_forward, **kwargs):
+            if not _empty_input:
+                return _forward(self, hidden_states, *args, **kwargs)
+            for parameter in self.parameters():
+                if parameter.requires_grad:
+                    hidden_states = hidden_states + parameter.reshape(-1)[:0].sum().to(hidden_states.dtype)
+            return hidden_states
+
+        layer.forward = types.MethodType(layer_forward, layer)
+
+    original_forward = type(backbone).forward
+
+    def backbone_forward(self, input_ids=None, inputs_embeds=None, **kwargs):
+        inputs = input_ids if inputs_embeds is None else inputs_embeds
+        if inputs.shape[1] != 0:
+            return original_forward(self, input_ids=input_ids, inputs_embeds=inputs_embeds, **kwargs)
+        language_model = self.get_submodule(language_path)
+        if inputs_embeds is None:
+            embedding = getattr(language_model, "embed_tokens", None) or language_model.embeddings
+            inputs_embeds = embedding(input_ids)
+        for layer in language_model.layers:
+            inputs_embeds = layer(inputs_embeds, _empty_input=True)
+        norm = getattr(language_model, "norm", None) or language_model.norm_f
+        return BaseModelOutputWithPast(last_hidden_state=norm(inputs_embeds))
+
+    backbone.forward = types.MethodType(backbone_forward, backbone)
 
 
 def _patch_model_forward(model: nn.Module) -> None:

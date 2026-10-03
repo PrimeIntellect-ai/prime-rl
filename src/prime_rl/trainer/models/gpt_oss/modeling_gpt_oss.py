@@ -69,11 +69,14 @@ class GptOssDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
         routed_experts: torch.Tensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
+        hidden_states = self.self_attn(
+            hidden_states, position_embeddings, cu_seqlens, max_seqlen, cp_total_tokens=cp_total_tokens
+        )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -135,15 +138,20 @@ class GptOssModel(GptOssPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -154,6 +162,7 @@ class GptOssModel(GptOssPreTrainedModel):
                 position_embeddings,
                 cu_seqlens,
                 max_seqlen,
+                cp_total_tokens=cp_total_tokens,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
@@ -185,6 +194,7 @@ class GptOssForCausalLM(GptOssPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> PrimeLmOutput:
         outputs = self.model(
             input_ids=input_ids,
@@ -193,6 +203,7 @@ class GptOssForCausalLM(GptOssPreTrainedModel):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
         hidden_states = outputs.last_hidden_state
         if isinstance(logits_to_keep, int):

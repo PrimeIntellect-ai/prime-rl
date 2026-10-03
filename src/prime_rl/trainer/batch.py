@@ -667,11 +667,19 @@ def packed_samples_into_micro_bs(
             bins.append(_MicroBatchBin.from_sample(sample))
 
     if num_train_workers > 1:
-        target_count = max(
-            ((len(bins) + num_train_workers - 1) // num_train_workers) * num_train_workers,
-            num_train_workers,
-        )
-        _expand_bins_by_splitting(bins, target_count, bin_cost)
+        while True:
+            count = len(bins)
+            groups = [[], []]
+            for bin_content in bins:
+                has_images = any(_is_multimodal_sample(sample) for sample in bin_content.samples)
+                groups[int(has_images)].append(bin_content)
+            for group in groups:
+                target_count = ((len(group) + num_train_workers - 1) // num_train_workers) * num_train_workers
+                _expand_bins_by_splitting(group, target_count, bin_cost)
+            bins = groups[1] + groups[0]
+            # Splitting a mixed bin can create a text-only bin in another execution group.
+            if len(bins) == count:
+                break
 
     return [_materialize_bin(bin_content) for bin_content in bins]
 
@@ -809,11 +817,28 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     return dummy
 
 
-def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+def _pad_group_for_distribution(
+    group: list[MicroBatch], num_train_workers: int, inactive_micro_batches: bool = False
+) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = (
+            MicroBatch(
+                input_ids=[],
+                loss_mask=[],
+                advantages=[],
+                inference_logprobs=[],
+                position_ids=[],
+                sequence_lengths=[],
+                temperatures=[],
+                env_names=[],
+                seq_lens=[],
+                inactive=True,
+            )
+            if inactive_micro_batches
+            else _make_dummy_batch(group[0])
+        )
         group.extend([dummy] * num_padding)
     return group
 
@@ -824,6 +849,7 @@ def prepare_batch(
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    inactive_micro_batches: bool = True,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -844,8 +870,8 @@ def prepare_batch(
     text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
 
     # Pad each group independently so its count is divisible by num_train_workers
-    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
-    text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
+    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers, inactive_micro_batches)
+    text_batches = _pad_group_for_distribution(text_batches, num_train_workers, inactive_micro_batches)
 
     # Alignment check after distribution padding so the dummy batches are covered too
     for micro_batch in (*mm_batches, *text_batches):

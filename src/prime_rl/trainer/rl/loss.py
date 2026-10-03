@@ -126,7 +126,7 @@ def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = 
     """
     if pad_value is None:
         pad_value = 0.0
-    return torch.cat([torch.full((t.shape[0], 1), pad_value, device=t.device, dtype=t.dtype), t[:, :-1]], dim=1)
+    return torch.cat([torch.full_like(t[:, :1], pad_value), t[:, :-1]], dim=1)
 
 
 def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:

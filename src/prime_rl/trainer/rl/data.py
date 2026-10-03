@@ -20,6 +20,8 @@ from prime_rl.transports.batch import (
 class TensorMicroBatch(TypedDict):
     """A micro batch of data for training."""
 
+    inactive: bool
+
     # Token level
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
@@ -117,6 +119,7 @@ class FakeDataLoader:
         inference_logprobs = torch.randn(input_ids.shape[0], generator=generator)
 
         return {
+            "inactive": False,
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
@@ -141,6 +144,7 @@ class FakeDataLoader:
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
         return {
+            "inactive": False,
             "input_ids": torch.randint(
                 0,
                 100,
@@ -221,6 +225,7 @@ class DataLoader:
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         return TensorMicroBatch(
+            inactive=micro_batch.inactive,
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),

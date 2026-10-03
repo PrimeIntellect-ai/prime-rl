@@ -2,9 +2,26 @@ import pytest
 import torch
 
 from prime_rl.utils.sequence import (
+    CPPartition,
     get_cu_seqlens_from_position_ids,
     get_cu_seqlens_from_seq_lens,
 )
+
+
+@pytest.mark.parametrize("degree", [1, 2, 4])
+@pytest.mark.parametrize("total", [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 32769])
+def test_cp_partition_roundtrip(total, degree):
+    partition = CPPartition(total, degree)
+    assert len(partition.lengths) == degree
+    assert partition.offsets[0] == 0
+    assert partition.offsets[-1] == total
+    assert sum(partition.lengths) == total
+    assert max(partition.lengths) - min(partition.lengths) <= 1
+    for dim, shape in [(1, (1, total, 2, 3)), (2, (3, 1, total))]:
+        tensor = torch.arange(torch.tensor(shape).prod()).reshape(shape)
+        shards = [partition.shard(tensor, rank, dim) for rank in range(degree)]
+        assert [shard.shape[dim] for shard in shards] == list(partition.lengths)
+        torch.testing.assert_close(torch.cat(shards, dim=dim), tensor)
 
 
 @pytest.mark.parametrize(

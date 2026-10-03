@@ -96,6 +96,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
+        cp_total_tokens: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -106,6 +107,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            cp_total_tokens=cp_total_tokens,
         )
         hidden_states = residual + hidden_states
 
@@ -196,6 +198,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -204,6 +207,8 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced context parallelism.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -213,9 +218,13 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -231,6 +240,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cp_total_tokens=cp_total_tokens,
                 routed_experts=routed_experts_layer,
             )
 
@@ -269,6 +279,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -276,6 +287,8 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced context parallelism.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not
@@ -320,6 +333,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
 
         hidden_states = outputs.last_hidden_state

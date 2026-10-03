@@ -78,6 +78,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         cu_seqlens: Optional[torch.LongTensor] = None,
         max_seqlen: Optional[int] = None,
+        cp_total_tokens: int | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -87,6 +88,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            cp_total_tokens=cp_total_tokens,
         )
         hidden_states = residual + hidden_states
 
@@ -185,12 +187,15 @@ class LlamaModel(LlamaPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutputWithPast:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced Ulysses partitioning.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -200,9 +205,13 @@ class LlamaModel(LlamaPreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -213,6 +222,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cp_total_tokens=cp_total_tokens,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -253,6 +263,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -260,6 +271,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        cp_total_tokens (`int`, *optional*):
+            Full packed row length for balanced Ulysses partitioning.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not
@@ -301,6 +314,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
 
         hidden_states = outputs.last_hidden_state

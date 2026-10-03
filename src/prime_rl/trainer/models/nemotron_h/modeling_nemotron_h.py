@@ -110,18 +110,20 @@ class NemotronHDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        cp_total_tokens: int | None = None,
         routed_experts: torch.Tensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
         if self.layer_type == "mamba":
-            hidden_states = self.mamba(hidden_states, cu_seqlens)
+            hidden_states = self.mamba(hidden_states, cu_seqlens, cp_total_tokens=cp_total_tokens)
         elif self.layer_type == "attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cp_total_tokens=cp_total_tokens,
             )
         else:
             hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
@@ -182,14 +184,19 @@ class NemotronHModel(NemotronHPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> BaseModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=hidden_states.device),
-            total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
+            total_tokens=None if seq_lens_are_pre_shard and seq_lens.numel() else hidden_states.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not self.cp_context.cp_unpadded:
+            cp_total_tokens = None
+        elif cp_total_tokens is None:
+            cp_total_tokens = int(cu_seqlens[-1].item())
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
@@ -197,6 +204,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
                 hidden_states,
                 cu_seqlens,
                 max_seqlen,
+                cp_total_tokens=cp_total_tokens,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
@@ -219,12 +227,14 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        cp_total_tokens: int | None = None,
     ) -> PrimeLmOutput:
         outputs = self.model(
             input_ids=input_ids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            cp_total_tokens=cp_total_tokens,
         )
         return self.lm_head(
             outputs.last_hidden_state,

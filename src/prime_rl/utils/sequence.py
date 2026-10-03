@@ -1,6 +1,37 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
+
+
+@dataclass(frozen=True)
+class CPPartition:
+    """Contiguous balanced token ranges for one context-parallel forward."""
+
+    total_tokens: int
+    degree: int
+
+    def __post_init__(self):
+        if self.total_tokens < 0 or self.degree < 1:
+            raise ValueError("CP partition requires a nonnegative length and a positive degree")
+
+    @property
+    def lengths(self) -> tuple[int, ...]:
+        quotient, remainder = self.total_tokens // self.degree, self.total_tokens % self.degree
+        return tuple(quotient + (rank < remainder) for rank in range(self.degree))
+
+    @property
+    def offsets(self) -> tuple[int, ...]:
+        quotient, remainder = self.total_tokens // self.degree, self.total_tokens % self.degree
+        return tuple(rank * quotient + min(rank, remainder) for rank in range(self.degree + 1))
+
+    def shard(self, tensor: torch.Tensor, rank: int, dim: int = 1) -> torch.Tensor:
+        if tensor.shape[dim] != self.total_tokens:
+            raise ValueError(f"CP partition length {self.total_tokens} != tensor length {tensor.shape[dim]}")
+        if not 0 <= rank < self.degree:
+            raise ValueError(f"CP rank {rank} is outside degree {self.degree}")
+        return tensor.narrow(dim, self.offsets[rank], self.lengths[rank])
 
 
 def get_cu_seqlens_from_position_ids(position_ids: torch.Tensor) -> tuple[torch.Tensor, int]:
@@ -39,6 +70,8 @@ def get_cu_seqlens_from_seq_lens(seq_lens: torch.Tensor, total_tokens: int | Non
     if seq_lens.ndim != 1:
         raise ValueError(f"seq_lens must be 1D, got shape={tuple(seq_lens.shape)}")
     if seq_lens.numel() == 0:
+        if total_tokens == 0:
+            return torch.zeros(1, dtype=torch.int32, device=seq_lens.device), 0
         raise ValueError("seq_lens must not be empty")
     if bool((seq_lens <= 0).any().item()):
         raise ValueError(f"seq_lens must be positive, got {seq_lens.tolist()}")

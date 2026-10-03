@@ -125,7 +125,6 @@ from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
-import torch.distributed._functional_collectives as funcol
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -136,7 +135,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_ro
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import CPPartition, get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
@@ -176,7 +175,7 @@ class DeepseekV4GroupedLinear(nn.Linear):
         w = self.weight.view(self.n_groups, -1, hidden_dim).transpose(1, 2)
         x = x.reshape(-1, self.n_groups, hidden_dim).transpose(0, 1)
         y = torch.bmm(x, w).transpose(0, 1)
-        return y.reshape(*input_shape, self.n_groups, -1)
+        return y.reshape(*input_shape, self.n_groups, self.out_features // self.n_groups)
 
 
 @dataclass(frozen=True)
@@ -225,7 +224,7 @@ class CompressionLayout:
             entry_doc_idx=entry_doc_idx,
             entry_local_idx=entry_local_idx,
             first_entry_of_doc=first_entry_of_doc,
-            max_entries_per_doc=int(counts.max()),
+            max_entries_per_doc=int(counts.max()) if counts.numel() else 0,
         )
 
 
@@ -250,6 +249,7 @@ class PackedContext:
     tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
     window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
+    total_tokens: int
 
     @classmethod
     def build(
@@ -265,7 +265,7 @@ class PackedContext:
 
         `rotary_emb` supplies the sliding window, the compress rates in use and the positions its
         RoPE cache covers, all read from its config. The sequence is as long as `seq_lens` says,
-        padding included: both packers fold their padding into the last document.
+        with every token assigned to its original document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of; the keys, the entries and the index
@@ -274,17 +274,15 @@ class PackedContext:
         config = rotary_emb.config
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
         total_tokens = int(seq_lens.sum())
-        assert total_tokens % cp_world_size == 0, (
-            f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
-        )
+        partition = CPPartition(total_tokens, cp_world_size)
         # Document-local positions stay below the row's length; the RoPE kernels index the cache unchecked.
         assert total_tokens <= config.max_position_embeddings, (
             f"{total_tokens} tokens exceed the {config.max_position_embeddings} positions of the RoPE cache"
         )
-        n_queries = total_tokens // cp_world_size
-        q_start = cp_rank * n_queries
+        n_queries = partition.lengths[cp_rank]
+        q_start = partition.offsets[cp_rank]
 
-        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device))
+        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device), total_tokens=total_tokens)
         compress_rates = {
             config.compress_rates[layer_type]
             for layer_type in set(config.layer_types)
@@ -307,6 +305,7 @@ class PackedContext:
 
         return cls(
             position_ids=position_ids,
+            total_tokens=total_tokens,
             tok_doc_idx=tok_doc_idx,
             compression_layouts={
                 rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
@@ -472,7 +471,7 @@ class DeepseekV4Compressor(nn.Module):
         width = self.n_series * self.head_dim
         proj = torch.cat([self.kv_proj(hidden_states), self.gate_proj(hidden_states)], dim=-1)
         if cp_world_size > 1:
-            proj = gather_for_cp(proj, cp_group)
+            proj = gather_for_cp(proj, cp_group, packed.total_tokens)
         kv, gate = proj.split(width, dim=-1)
 
         kv = kv[:, layout.entry_tok_idx]
@@ -486,6 +485,8 @@ class DeepseekV4Compressor(nn.Module):
 
         entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
+        if compressed.shape[1] == 0:
+            return compressed
         return dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
@@ -540,7 +541,9 @@ class DeepseekV4Indexer(nn.Module):
         n_entries = compressed_kv.shape[1]
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
-        q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
+        q = self.q_b_proj(q_residual).view(batch, seq_len, self.num_heads, self.head_dim)
+        if seq_len == 0:
+            return torch.empty((batch, 0, self.index_topk), device=q.device, dtype=torch.int64)
         q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
@@ -722,25 +725,21 @@ class DeepseekV4Attention(nn.Module):
         # `hidden_states` is (b, t, hidden_size).
 
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)  # (b, t, h, d), the query view
+        hidden_shape = (*input_shape, self.num_heads, self.head_dim)  # (b, t, h, d), the query view
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)  # (max_position, qk_rope_head_dim)
 
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
-        kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
+        if kv.shape[1]:
+            kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.cp_context.cp_enabled:
-            # Launch on NCCL's communication stream; query/compressor work does not read KV.
-            kv = torch.ops._c10d_functional.all_gather_into_tensor(
-                kv.movedim(1, 0).contiguous(),
-                self.cp_context.cp_world_size,
-                self.cp_context.cp_group.group_name,
-            )
+            kv = gather_for_cp(kv, self.cp_context.cp_group, packed.total_tokens)
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
-        q = dsv4_q_norm_rope(
-            self.q_b_proj(q_residual).view(*hidden_shape), cos_sin_cache, packed.position_ids, self.q_b_norm.eps
-        )  # (b, t, h, d)
+        q = self.q_b_proj(q_residual).view(*hidden_shape)
+        if q.shape[1]:
+            q = dsv4_q_norm_rope(q, cos_sin_cache, packed.position_ids, self.q_b_norm.eps)
 
         compressed = (
             self.compressor(
@@ -754,8 +753,6 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
-        if self.cp_context.cp_enabled:
-            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
         inputs = SparseAttnInputs.build(
             kv=kv,
@@ -763,20 +760,28 @@ class DeepseekV4Attention(nn.Module):
             top_k_indices=top_k_indices,
             window_indices=packed.window_indices,
         )
-        attn_output, _ = dsv4_sparse_attn(
-            q,
-            inputs.kv_buf,
-            inputs.indices,
-            self.sinks,
-            self.scaling,
-        )  # (b, t, h, d)
+        if q.shape[1] == 0:
+            attn_output = q + (inputs.kv_buf.sum() + self.sinks.sum()).to(q.dtype)
+        else:
+            attn_output, _ = dsv4_sparse_attn(
+                q,
+                inputs.kv_buf,
+                inputs.indices,
+                self.sinks,
+                self.scaling,
+            )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+        if attn_output.shape[1]:
+            attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
 
         # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
-        grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
+        grouped = self.o_a_proj(
+            attn_output.reshape(
+                *input_shape, self.config.o_groups, self.num_heads * self.head_dim // self.config.o_groups
+            )
+        ).flatten(2)
         return self.o_b_proj(grouped), None  # (b, t, hidden_size)
 
     def init_weights(self, init_std: float) -> None:

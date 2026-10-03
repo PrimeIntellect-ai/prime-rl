@@ -684,7 +684,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
+        self.orchestrator.pad_to_multiple_of = 1 if self.trainer.model.cp_unpadded else self.trainer.model.cp
+        self.orchestrator.inactive_micro_batches = self.trainer.model.inactive_micro_batches
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp

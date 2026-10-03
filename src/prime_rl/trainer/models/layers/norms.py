@@ -35,7 +35,7 @@ class RMSNorm(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         quack_fn = get_quack_rmsnorm() if hidden_states.is_cuda else None
-        if quack_fn is not None:
+        if quack_fn is not None and hidden_states.numel() > 0:
             return quack_fn(hidden_states, self.weight, eps=self.variance_epsilon)
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)

@@ -274,10 +274,13 @@ def get_load_balance_stats(
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
-        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
+        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load.clamp_min(1e-12)
+        max_vio = torch.where(num_routed_tokens > 0, max_vio, torch.nan)
         per_layer_max_vio.append(max_vio.detach())
 
-        routing_confidence = routing_confidence_sum / num_routed_tokens
+        routing_confidence = torch.where(
+            num_routed_tokens > 0, routing_confidence_sum / num_routed_tokens.clamp_min(1), torch.nan
+        )
         per_layer_routing_confidence.append(routing_confidence.detach())
 
         block_mlp.tokens_per_expert.zero_()
@@ -298,12 +301,15 @@ def get_global_moe_stats(
     for name, values in get_load_balance_stats(model, group=ep_group).items():
         if values is None:
             continue
-        value = values.max() if name == "max_vio" else values.mean()
+        # Empty routing groups have no observation to contribute to the global statistic.
+        valid = ~values.isnan()
         if name == "max_vio":
+            value = values.masked_fill(~valid, 0.0).max()
             dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
         else:
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            value /= dist.get_world_size(dp_cp_group)
+            totals = torch.stack((values.masked_fill(~valid, 0.0).sum(), valid.sum()))
+            dist.all_reduce(totals, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            value = totals[0] / totals[1].clamp_min(1)
         stats[name] = value.to("cpu")
     return stats
 
@@ -1131,6 +1137,7 @@ def forward(
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
+    cp_total_tokens: int | None = None,
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
@@ -1160,6 +1167,8 @@ def forward(
     if isinstance(model, PreTrainedModelPrimeRL):
         kwargs["seq_lens"] = seq_lens
         kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
+        if cp_total_tokens is not None:
+            kwargs["cp_total_tokens"] = cp_total_tokens
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts

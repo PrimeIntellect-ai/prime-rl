@@ -18,7 +18,7 @@ class DeepseekV4UnweightedRMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out_dtype = self.out_dtype if self.out_dtype is not None else x.dtype
         quack_rms = norms.get_quack_rmsnorm()
-        if quack_rms is not None:
+        if quack_rms is not None and x.numel() > 0:
             return quack_rms(x, eps=self.eps, out_dtype=out_dtype)
         x = x.float()
         return (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + self.eps)).to(out_dtype)
@@ -64,7 +64,11 @@ class DeepseekV4HyperConnection(nn.Module):
         pre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps
         post = 2 * torch.sigmoid(post_w * post_scale + post_b)
         comb_logits = comb_w.view(*comb_w.shape[:-1], hc, hc) * comb_scale + comb_b.view(hc, hc)
-        comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
+        comb = (
+            comb_logits
+            if comb_logits.numel() == 0
+            else dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
+        )
 
         collapsed = (pre.unsqueeze(-1) * mhc_states).sum(dim=2).to(mhc_states.dtype)
         return post, comb, collapsed
@@ -74,6 +78,8 @@ class DeepseekV4HyperConnection(nn.Module):
     ) -> torch.Tensor:
         """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
         dtype = mhc_states.dtype
+        if mhc_states.numel() == 0:
+            return (mhc_states + sublayer_out.unsqueeze(2) + post.unsqueeze(-1) + comb.sum()).to(dtype)
         return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
 
     def init_weights(self, init_std: float) -> None:
