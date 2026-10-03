@@ -42,21 +42,23 @@ COLUMNS = 4
 ROWS = 6
 
 
-def section(name: str, panels: Sequence[dict]) -> ws.Section:
+def line_plot(panel: dict) -> wr.LinePlot:
+    if "regex" in panel:
+        return wr.LinePlot(x="step", metric_regex=panel["regex"])
     # inference/* and the dispatcher gauges are logged against time (step_metric="_timestamp"), plotted
     # on "RelativeTime(Wall)" (== W&B's "_absolute_runtime", seconds since run start) so runs started at
     # different times overlay; everything else on "step" (prime-rl's logged training step, not internal
     # "Step"). x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
-    x = "RelativeTime(Wall)" if name == "inference" else "step"
+    y = panel.get("metrics") or [panel["metric"]]
+    time_keyed = any(m.startswith(("inference/", "dispatcher/")) for m in y)
+    return wr.LinePlot(x="RelativeTime(Wall)" if time_keyed else "step", y=y)
+
+
+def section(name: str, panels: Sequence[dict]) -> ws.Section:
     return ws.Section(
         name=name,
         is_open=True,
-        panels=[
-            wr.LinePlot(x=x, metric_regex=p["regex"])
-            if "regex" in p
-            else wr.LinePlot(x=x, y=p.get("metrics") or [p["metric"]])
-            for p in panels
-        ],
+        panels=[line_plot(p) for p in panels],
         layout_settings=ws.SectionLayoutSettings(columns=COLUMNS, rows=ROWS),
     )
 
