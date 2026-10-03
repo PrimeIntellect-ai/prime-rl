@@ -20,6 +20,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and
 from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+from prime_rl.trainer.models.nemotron_h_omni import NemotronHOmniConfig, NemotronHOmniForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -45,6 +46,7 @@ AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
+AutoConfig.register(NemotronHOmniConfig.model_type, NemotronHOmniConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
 AutoConfig.register("qwen3_5", Qwen3_5Config, exist_ok=True)
 AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
@@ -68,6 +70,7 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (LagunaConfig, LagunaForCausalLM),
     (MiniMaxM2Config, MiniMaxM2ForCausalLM),
     (NemotronHConfig, NemotronHForCausalLM),
+    (NemotronHOmniConfig, NemotronHOmniForCausalLM),
     (Qwen3MoeConfig, Qwen3MoeForCausalLM),
     (Qwen3_5TextConfig, Qwen3_5ForCausalLM),
     (Qwen3_5MoeTextConfig, Qwen3_5ForCausalLM),
@@ -113,6 +116,7 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
 # Used by get_model() to dispatch VLMs that have a custom text model implementation.
 # Points to the same unified class — the config drives text-only vs VLM behavior.
 _CUSTOM_VLM_MAPPING: dict[str, type] = {
+    NemotronHOmniConfig.model_type: NemotronHOmniForCausalLM,
     "qwen3_5": Qwen3_5ForCausalLM,
     "qwen3_5_moe": Qwen3_5ForCausalLM,
     "qwen4_exp": Qwen3_8FlashNextForCausalLM,
