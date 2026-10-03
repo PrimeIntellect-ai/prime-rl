@@ -21,7 +21,7 @@ from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
-from prime_rl.trainer.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
