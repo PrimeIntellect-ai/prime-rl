@@ -200,9 +200,13 @@ def write_slurm_script(
                 "router": config.inference.router,
                 "router_port": config.inference.server.port,
                 "backend_port": config.inference.backend_port,
-                "data_parallel_rpc_port": config.inference.vllm.data_parallel_rpc_port,
+                "inference_tp": config.inference.vllm.tensor_parallel_size,
+                "inference_data_parallel_rpc_port": config.inference.vllm.data_parallel_rpc_port,
                 "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
-                "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
+                "inference_enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
+                # Every inference node is an independent replica.
+                "nodes_per_infer_replica": 1,
+                "num_infer_replicas": config.deployment.num_infer_nodes,
                 "inference_env_vars": inference_env_vars,
                 "online_eval_env_vars": {
                     **DEFAULT_COMMON_ENV_VARS,
