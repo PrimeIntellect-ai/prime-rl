@@ -310,16 +310,16 @@ def test_cost_penalty_prefix_cache_and_parallel_time():
     cached, uncached, output = 19, 14, 8
     parallelism = 3.5 / 4  # union of call intervals / sum of call durations
     model_time = (uncached / 10 + output / 4) * parallelism
-    cost = uncached + 0.1 * cached + 2 * output + 8  # 8 s of sandbox at 1 USD/s
+    time_s = model_time + 2.5  # 6 s agent span - 3.5 s in model calls
+    cost = uncached + 0.1 * cached + 2 * output + (2 + time_s)  # boot + finalize + time_s of sandbox at 1 USD/s
     assert rollout_cost(trace, config) == pytest.approx(
         {
             "cost_usd": cost,
-            "time_s": model_time + 2.5,
+            "time_s": time_s,
             "model_time_s": model_time,
-            "tool_time_s": 2.5,  # 6 s agent span - 3.5 s in model calls
+            "tool_time_s": 2.5,
             "parallelism": parallelism,
-            "prefix_cache_hit": cached / (cached + uncached),
-            "sandbox_cost_frac": 8 / cost,
+            "prefix_cache_hit_rate": cached / (cached + uncached),
         }
     )
 

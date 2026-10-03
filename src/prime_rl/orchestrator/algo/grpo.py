@@ -35,7 +35,7 @@ class GRPOAlgorithm(Algorithm):
                 costs = [rollout_cost(trace, length_penalty) for trace in traces]
                 for trace, cost in zip(traces, costs, strict=True):
                     trace.record_metrics({f"cost_penalty/{name}": value for name, value in cost.items()})
-                penalty_frac = torch.tensor(
+                ungated_penalty = torch.tensor(
                     [
                         length_penalty.cost_weight * c["cost_usd"] + length_penalty.time_weight * c["time_s"]
                         for c in costs
@@ -47,12 +47,12 @@ class GRPOAlgorithm(Algorithm):
                 total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
                 turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
                 input = total - output
-                penalty_frac = (
+                ungated_penalty = (
                     length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
                     + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
                     + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
                 )
-            penalty = rewards.mean() * penalty_frac
+            penalty = rewards.mean() * ungated_penalty
             shaped_rewards = rewards - penalty
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
@@ -78,9 +78,11 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
     """Modelled deployment cost (USD) and wait time (s) of one rollout, with their parts.
 
     A call's input is cached up to its longest common prefix with any earlier call's
-    prompt + completion in the trace (all agents, by call start). Graph nodes dedup
-    identical prefixes, so the prefix is the leading already-seen nodes on the call's
-    path, extended token-wise into the first unseen node against its seen siblings."""
+    prompt + completion in the trace (all agents, by call start), exact up to node
+    boundaries: graph nodes dedup identical prefixes, so the prefix is the leading
+    already-seen nodes on the call's path, extended token-wise into the first unseen
+    node against its seen siblings, and not beyond it. Calls to non-policy models carry
+    no token ids and are priced at zero."""
     nodes = trace.nodes
     seen: set[int] = set()
     seen_children: dict[int | None, list[int]] = {}
@@ -109,7 +111,8 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
                 seen.add(n)
                 seen_children.setdefault(parent, []).append(n)
 
-    intervals = sorted((c.time.start, c.time.end) for c in trace.calls if c.time.duration > 0)
+    # Failed calls (no node) stay out of the union, so their duration counts as tool time.
+    intervals = sorted((c.time.start, c.time.end) for c in trace.calls if c.node is not None and c.time.duration > 0)
     busy = sum(end - start for start, end in intervals)
     union, reach = 0.0, float("-inf")
     for start, end in intervals:
@@ -119,20 +122,19 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
     model_time = (uncached / penalty.prefill_tokens_per_s + output / penalty.decode_tokens_per_s) * parallelism
     timing = trace.timing
     tool_time = max(0.0, timing.agent.duration - union)
-    sandbox_hours = sum(s.duration for s in (timing.boot, timing.setup, timing.agent, timing.finalize)) / 3600
-    sandbox_cost = penalty.sandbox_usd_per_hour * sandbox_hours
-    token_cost = (
+    time_s = model_time + tool_time
+    # The measured agent span includes RL-server queueing, so the sandbox lives for the modelled time instead.
+    sandbox_hours = (timing.boot.duration + timing.setup.duration + timing.finalize.duration + time_s) / 3600
+    cost = (
         penalty.input_usd_per_mtok * uncached
         + penalty.cached_input_usd_per_mtok * cached
         + penalty.output_usd_per_mtok * output
-    ) / 1e6
-    cost = token_cost + sandbox_cost
+    ) / 1e6 + penalty.sandbox_usd_per_hour * sandbox_hours
     return {
         "cost_usd": cost,
-        "time_s": model_time + tool_time,
+        "time_s": time_s,
         "model_time_s": model_time,
         "tool_time_s": tool_time,
         "parallelism": parallelism,
-        "prefix_cache_hit": cached / max(1, cached + uncached),
-        "sandbox_cost_frac": sandbox_cost / cost if cost else 0.0,
+        "prefix_cache_hit_rate": cached / max(1, cached + uncached),
     }

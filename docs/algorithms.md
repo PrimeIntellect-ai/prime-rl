@@ -325,17 +325,19 @@ type = "grpo"
 type = "linear"
 ```
 
+On the CLI, enable it with `--orchestrator.train.algo.length-penalty.type linear`.
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 #### Cost penalty
 
 The `cost` penalty charges each rollout for what it would cost and how long it would take as a deployed product: $s_i' = s_i - \bar{s} \cdot (\texttt{cost\_weight} \cdot \text{cost}_i + \texttt{time\_weight} \cdot \text{time}_i)$, with the same pass-rate gate $\bar{s}$ as `linear`. Unlike `linear`, it is in absolute units, not normalized by the group.
 
-- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6), plus `sandbox_usd_per_hour` × sandbox lifetime (boot + setup + agent + finalize spans). All model calls in the trace count, including subagents; judge calls do not.
-- **Time (s)** = modelled model time + measured tool time. Model time is Σ (uncached input / `prefill_tokens_per_s` + output / `decode_tokens_per_s`), scaled by the measured parallelism (union of call intervals / sum of call durations; 1 for sequential calls). Tool time is the measured agent span minus the union of call intervals. Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model; tool and harness time is the same in deployment, so it is measured.
-- **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier call's prompt + completion in the same trace (any agent). This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
+- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6), plus `sandbox_usd_per_hour` × sandbox lifetime (measured boot + setup + finalize spans plus the modelled time below; the measured agent span is not used because it includes RL-server queueing). All model calls in the trace count, including subagents; judge calls do not, and calls to non-policy models (no token ids) are priced at zero.
+- **Time (s)** = modelled model time + measured tool time. Model time is Σ (uncached input / `prefill_tokens_per_s` + output / `decode_tokens_per_s`), scaled by the measured parallelism (union of call intervals / sum of call durations; 1 for sequential calls). Tool time is the measured agent span minus the union of call intervals; failed calls are left out of the union, so their duration counts as tool time. Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model; tool and harness time is the same in deployment, so it is measured.
+- **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier call's prompt + completion in the same trace (any agent), exact up to node boundaries: a match that continues past the first differing message node is not credited. This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
 
-Pricing and speeds describe the **deployed** model and have no defaults. Pick the weights from what a solved task is worth: `cost_weight = 1 / (USD value of a solve)`, and `time_weight = cost_weight × (USD value of an hour of user time) / 3600`. Per-trace parts are logged under `metrics/cost_penalty/*` (`cost_usd`, `time_s`, `model_time_s`, `tool_time_s`, `parallelism`, `prefix_cache_hit`, `sandbox_cost_frac`).
+Pricing and speeds describe the **deployed** model and have no defaults. Pick the weights from what a solved task is worth: `cost_weight = 1 / (USD value of a solve)`, and `time_weight = cost_weight × (USD value of an hour of user time) / 3600`. Per-trace parts are logged under `metrics/cost_penalty/*` (`cost_usd`, `time_s`, `model_time_s`, `tool_time_s`, `parallelism`, `prefix_cache_hit_rate`).
 
 ```toml
 [orchestrator.train.algo.length_penalty]
