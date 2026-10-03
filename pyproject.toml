@@ -59,6 +59,8 @@ gpu = [
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
+    # DSA sparse MLA backward kernel (CuTe DSL); >=1.29 matches the pinned CUTLASS DSL 4.7.
+    "nvidia-cudnn-frontend>=1.30.0 ; sys_platform == 'linux'",
     "flash-linear-attention ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
