@@ -10,7 +10,7 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
-from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender

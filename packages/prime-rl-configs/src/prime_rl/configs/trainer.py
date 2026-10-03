@@ -8,13 +8,14 @@ from pydantic import BeforeValidator, Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    BaseWeightBroadcastConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    WeightBroadcastConfig,
     ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -657,48 +658,6 @@ class FakeDataLoaderConfig(BaseConfig):
 class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
-
-
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    # TODO: Should not be configurable, but auto-inferred
-    inference_world_size: int = 1
-    """Number of inference workers."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
-
-
-WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
 
 
 class TrainerConfig(BaseConfig):

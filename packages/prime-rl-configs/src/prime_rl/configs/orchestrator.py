@@ -14,13 +14,14 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    BaseWeightBroadcastConfig,
     ClientConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
     ResumeConfig,
     TransportConfig,
+    WeightBroadcastConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
@@ -482,47 +483,6 @@ class CheckpointConfig(BaseConfig):
 
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
-
-
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference workers across all servers."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
 
 
 class ConcurrencyConfig(BaseConfig):

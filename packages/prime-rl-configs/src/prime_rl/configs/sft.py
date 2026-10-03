@@ -13,24 +13,24 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
+    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TrainerLogConfig,
+    WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
-    FileSystemWeightBroadcastConfig,
     GCConfig,
     ModelConfig,
-    NCCLWeightBroadcastConfig,
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
-    WeightBroadcastConfig,
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -456,7 +456,7 @@ class SFTConfig(BaseConfig):
                 self.weight_broadcast.inference_world_size = (
                     self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
-            self.inference.weight_broadcast.type = self.weight_broadcast.type
+            self.inference.weight_broadcast = self.weight_broadcast.model_copy()
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -507,7 +507,7 @@ class SFTConfig(BaseConfig):
             vllm.api_server_count = vllm.data_parallel_size
         if self.weight_broadcast.type == "nccl":
             self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
-        self.inference.weight_broadcast.type = self.weight_broadcast.type
+        self.inference.weight_broadcast = self.weight_broadcast.model_copy()
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client

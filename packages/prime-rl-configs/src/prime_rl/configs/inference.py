@@ -6,7 +6,13 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
+from prime_rl.configs.shared import (
+    EnvVars,
+    FileSystemWeightBroadcastConfig,
+    LogConfig,
+    SlurmConfig,
+    WeightBroadcastConfig,
+)
 from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -214,11 +220,6 @@ class VllmConfig(BaseConfig):
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
         return self
-
-
-class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
-    """Weight broadcast transport."""
 
 
 class CPUOffloadTier(BaseConfig):
@@ -461,7 +462,7 @@ class InferenceConfig(BaseConfig):
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
-    weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
