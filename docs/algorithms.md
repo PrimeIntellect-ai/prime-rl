@@ -331,25 +331,39 @@ A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-
 
 #### Cost penalty
 
-The `cost` penalty charges each rollout for what it would cost and how long it would take as a deployed product: $s_i' = s_i - \bar{s} \cdot (\texttt{cost\_weight} \cdot \text{cost}_i + \texttt{time\_weight} \cdot \text{time}_i)$, with the same pass-rate gate $\bar{s}$ as `linear`. Unlike `linear`, it is in absolute units, not normalized by the group.
+The `cost` penalty charges each rollout for what it would cost and how long the user would wait once the model is deployed. Both are priced in USD and divided by what a solve is worth:
 
-- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6), plus `sandbox_usd_per_hour` × sandbox lifetime (measured boot + setup + finalize spans plus the modelled time below; the measured agent span is not used because it includes RL-server queueing). All model calls in the trace count, including subagents; judge calls do not, and calls to non-policy models (no token ids) are priced at zero.
-- **Time (s)** = modelled model time + measured tool time. Model time is Σ (uncached input / `prefill_tokens_per_s` + output / `decode_tokens_per_s`), scaled by the measured parallelism (union of call intervals / sum of call durations; 1 for sequential calls). Tool time is the measured agent span minus the union of call intervals; failed calls are left out of the union, so their duration counts as tool time. Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model; tool and harness time is the same in deployment, so it is measured.
-- **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier call's prompt + completion in the same trace (any agent), exact up to node boundaries: a match that continues past the first differing message node is not credited. This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
+$$s_i' = s_i - \bar{s} \cdot \frac{\text{cost}_i + \text{time}_i / 3600 \cdot \texttt{usd\_per\_hour}}{\texttt{usd\_per\_success}}$$
 
-Pricing and speeds describe the **deployed** model and have no defaults. Pick the weights from what a solved task is worth: `cost_weight = 1 / (USD value of a solve)`, and `time_weight = cost_weight × (USD value of an hour of user time) / 3600`. Per-trace parts are logged under `metrics/cost_penalty/*` (`cost_usd`, `time_s`, `model_time_s`, `tool_time_s`, `parallelism`, `prefix_cache_hit_rate`).
+It uses the same pass-rate gate $\bar{s}$ as `linear`. Unlike `linear`, it is in absolute units and not normalized by the group.
+
+- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6). All model calls in the trace count, including subagents. Judge calls do not count. Calls to non-policy models carry no token ids, so they are priced at zero.
+- **Time (s)** = modelled model time + measured tool time.
+  - Model time is Σ (uncached input / `input_tokens_per_s` + output / `output_tokens_per_s`), scaled by the measured parallelism: the union of call intervals / the sum of call durations (1 for sequential calls).
+  - Tool time is the measured agent span minus the union of call intervals. Failed calls are left out of the union, so their duration counts as tool time.
+  - Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model. Tool and harness time is the same in deployment, so it is measured.
+- **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier call's prompt + completion in the same trace (any agent). This is exact up to node boundaries: a match that continues past the first differing message node is not credited. This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
+
+**How to pick.** Set `usd_per_success` to what a fully solved task is worth. Set `usd_per_hour` to what an hour of the user waiting is worth (0 ignores time). Fill `deployment` from the deployed model's price sheet and per-request speed. `input_usd_per_mtok`, `output_usd_per_mtok`, and `output_tokens_per_s` are required. `cached_input_usd_per_mtok` defaults to 10% of the input price, and `input_tokens_per_s` to 5000.
+
+Example: with `usd_per_success = 5` and `usd_per_hour = 30`, a rollout that costs $0.40 and takes 6 minutes gets a penalty of (0.40 + 0.1 · 30) / 5 = 0.68, times the group's pass rate. Under GRPO only differences within a group matter. A rollout that is $0.40 and 6 minutes cheaper than its siblings gains the same advantage as solving 0.68 more of the task at pass rate 1.
+
+Per-trace values are logged under `metrics/cost_penalty/*`:
+- `penalty`: the amount before the pass-rate gate, in reward units.
+- `cost_usd` and `time_s`.
+- `model_time_s` and `tool_time_s`.
+- `parallelism` and `prefix_cache_hit_rate`.
 
 ```toml
 [orchestrator.train.algo.length_penalty]
 type = "cost"
-cost_weight = 0.5                # a solve is worth 2 USD
-time_weight = 0.0083             # user time worth 60 USD/h
+usd_per_success = 5.0      # a fully solved task is worth 5 USD
+usd_per_hour = 30.0        # an hour of waiting costs the user 30 USD
+
+[orchestrator.train.algo.length_penalty.deployment]
 input_usd_per_mtok = 0.6
-cached_input_usd_per_mtok = 0.06
 output_usd_per_mtok = 2.2
-prefill_tokens_per_s = 5000
-decode_tokens_per_s = 80
-sandbox_usd_per_hour = 0.05
+output_tokens_per_s = 80
 ```
 
 ### Hierarchical GRPO
