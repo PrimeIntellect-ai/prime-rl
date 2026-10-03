@@ -42,6 +42,7 @@ from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
@@ -344,6 +345,7 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
+        step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -559,8 +561,10 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in moe_stats.items():
                     tensors[name].append(value.reshape(1))
+                step_tokens_per_expert += tokens_per_expert
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
@@ -634,6 +638,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        if is_moe_model:
+            tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
