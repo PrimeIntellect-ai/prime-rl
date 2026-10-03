@@ -38,8 +38,6 @@ def rl_process(
         "@",
         "configs/ci/integration/reverse-text-moe/start.toml",
         "--clean",
-        "--trainer.model.impl",
-        "custom",
         "--trainer.model.conversion-dir",
         (output_dir / RUN_NAME / "model-conversion").as_posix(),
         "--monitors.wandb.project",
@@ -60,4 +58,4 @@ def test_no_error(rl_process: ProcessResult, run_dir: Path):
 
 
 def test_moe_runs(rl_process: ProcessResult, test_no_error):
-    """MoE RL with custom model impl completes without error."""
+    """MoE RL completes without error."""

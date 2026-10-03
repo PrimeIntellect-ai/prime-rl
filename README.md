@@ -36,7 +36,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 3. Native integration with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments through the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), including built-in support for SWE and agentic environments.
 4. End-to-end post-training: SFT, RL training, and evals.
 5. Multi-node deployment with Slurm and Kubernetes support.
-6. Multimodal support for VLMs such as Qwen3-VL.
+6. Multimodal support for VLMs such as Qwen3.5.
 7. Hackable, modular, and extensible by design.
 8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
 
@@ -44,16 +44,14 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 ## Models support
 
 
-The trainer works with both Hugging Face and Prime custom `ModelForCausalLM` out of the box. For selected families (especially large MoE) we also ship highly optimized training code under `src/prime_rl/trainer/models/`, including expert parallelism (EP) for MoE layers and context parallelism (CP) for long sequences (see the table), and additional kernels like [quack-kernels](https://github.com/quack-kernels/quack-kernels).
-
-With `[model] impl = "auto"` (the default), the trainer selects that custom stack when the Hugging Face config type is registered.
+The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/models/`: dense Llama, Qwen3 and Qwen3.5, plus the families in the table below, with expert parallelism (EP) for MoE layers, context parallelism (CP) for long sequences, and additional kernels like [quack-kernels](https://github.com/quack-kernels/quack-kernels). Other architectures fail at trainer setup.
 
 | Family | Example IDs | MoE | EP | CP |
 |--------|-------------|-----|----|-----|
 | GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | yes | ✅ | ✅ |
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ✅ |
@@ -178,7 +176,7 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 2. [**Wordle**](examples/basic/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
 3. [**Alphabet Sort**](examples/basic/alphabet-sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Demonstrates multi-turn RL training via LoRA without SFT warmup. Can be trained on a single H100 GPU in just over an hour. Ideal for exploring LoRA-based training.
 4. [**Wiki Search**](examples/basic/wiki-search/README.md): Train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia. Demonstrates multi-turn with web search tool use.
-5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Run a sanity check experiment on `DeepSeek-R1-Distill-Qwen-1.5B` using a filtered subset of MATH where the model already partially solves 20-80% of problems. Useful for algorithm ablations.
+5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Run a sanity check experiment on `Qwen3-1.7B` using a subset of MATH filtered to problems that `DeepSeek-R1-Distill-Qwen-1.5B` partially solves (20-80%). Useful for algorithm ablations.
 
 ### Advanced Training: 32 - 2048 GPUs:
 

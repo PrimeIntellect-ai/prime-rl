@@ -609,13 +609,6 @@ class SFTConfig(BaseConfig):
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 
-    @model_validator(mode="after")
-    def ep_only_with_custom_impl(self):
-        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
-            raise ValueError("EP is only supported with the custom implementation or auto mode")
-
-        return self
-
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")

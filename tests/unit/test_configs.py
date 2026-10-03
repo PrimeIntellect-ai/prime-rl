@@ -624,7 +624,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
-            "impl": "custom",
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
             "vlm": {
@@ -880,12 +879,12 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "trainer": {"model": {"impl": "custom"}},
+            "trainer": {"model": {"attn": "flash_attention_3"}},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
     assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
-    assert config.trainer.model.impl == "custom"
+    assert config.trainer.model.attn == "flash_attention_3"
 
 
 def test_run_dir_propagates_through_cli(tmp_path):

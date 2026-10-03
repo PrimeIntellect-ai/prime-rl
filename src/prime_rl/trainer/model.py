@@ -23,7 +23,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
+from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -41,7 +41,6 @@ from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
-    PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
@@ -134,17 +133,8 @@ def freeze_moe_router(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if mlp is None:
-            continue
-
-        # Custom implementation
         if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
-                param.requires_grad = False
-                num_frozen += 1
-        # HuggingFace implementation: gate may have been wrapped with LoRA.
-        elif hasattr(mlp, "gate") and isinstance(mlp.gate, nn.Module):
-            for param in mlp.gate.parameters():
                 param.requires_grad = False
                 num_frozen += 1
 
@@ -171,8 +161,8 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
                 mlp.router.fp32_gate = True
             num_routers += 1
 
-    # No-op for non-MoE and HF-impl models: moe_router_dtype='float32' is the default,
-    # so absence of custom-impl MoE routers is the common case, not an error.
+    # No-op for non-MoE models: moe_router_dtype='float32' is the default,
+    # so absence of MoE routers is the common case, not an error.
     if num_routers > 0:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
@@ -235,7 +225,7 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
             num_routers += 1
 
     if num_routers == 0:
-        raise ValueError("No MoE routers found to force-balance. Is this a custom-impl MoE model?")
+        raise ValueError("No MoE routers found to force-balance. Is this a MoE model?")
 
     logger.warning(
         f"Forced balanced routing on {num_routers} MoE layers (debug.force_balanced_routing=True). "
@@ -395,31 +385,14 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    # Determine the implementation to use
     custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
-    if config.impl == "auto":
-        if is_vlm_arch:
-            impl_to_use = "custom" if custom_vlm_cls is not None else "hf"
-        else:
-            impl_to_use = "custom" if supports_custom_impl(model_config) else "hf"
-        logger.info(f"Auto-selected implementation: {impl_to_use}")
-    else:
-        impl_to_use = config.impl
-
-    if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
+    if custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
-            f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
-            f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."
+            f"{model_config.model_type!r} has no PrimeRL model implementation. "
+            "The trainer only supports the architectures in prime_rl.trainer.models."
         )
 
-    if config.cp > 1 and config.impl == "auto" and impl_to_use != "custom":
-        raise ValueError(
-            "Context parallelism with model.impl='auto' requires a supported custom PrimeRL implementation, "
-            "but this architecture resolved to model.impl='hf'."
-        )
-
-    # Past the check above, cp > 1 implies impl_to_use == "custom", so the model class always
-    # resolves. Queried here so a misconfigured job dies at setup rather than at the first forward.
+    # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
         cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         support = cp_model_cls.cp_support(model_config)
@@ -430,40 +403,25 @@ def get_model(
                 f"({support.reason}); {supported}."
             )
 
-    if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
+    if config.vlm is not None and custom_vlm_cls is None:
         raise ValueError(
-            "VLM training requires a registered custom PrimeRL VLM implementation; "
-            f"{getattr(model_config, 'model_type', config.name)!r} has none."
+            f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
     with device:
-        if impl_to_use == "custom" and custom_vlm_cls is not None:
-            model_cls = custom_vlm_cls
-        elif is_vlm_arch:
-            from transformers import AutoModelForImageTextToText
-
-            model_cls = AutoModelForImageTextToText
-        else:
-            match impl_to_use:
-                case "hf":
-                    model_cls = AutoModelForCausalLM
-                case "custom":
-                    model_cls = AutoModelForCausalLMPrimeRL
+        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
-        # HF VLM models require torch_dtype; custom PrimeRL models and text Auto models use dtype
-        use_torch_dtype = is_vlm_arch and model_cls is not custom_vlm_cls
-        dtype_kwarg = {"torch_dtype": dtype} if use_torch_dtype else {"dtype": dtype}
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, **dtype_kwarg)
+            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
         else:
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path=config.name,
                 config=model_config,
                 trust_remote_code=config.trust_remote_code,
-                **dtype_kwarg,
+                dtype=dtype,
             )
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
@@ -717,10 +675,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     torch.distributed.barrier()
 
     # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
-    if isinstance(model, PreTrainedModelPrimeRL):
-        model.init_buffers_post_meta()
-    else:
-        fix_model_post_empty(model)
+    model.init_buffers_post_meta()
 
     logger = get_logger()
     if config.debug.random_init:
@@ -739,54 +694,49 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # Dynamically convert between different weight formats if needed.
     # All ranks read just the key names (cheap) to determine the path independently.
     # Only master loads the full state dict when conversion is actually needed.
-    if isinstance(model, PreTrainedModelPrimeRL):
-        source_path = snapshot_path
-        convert_dir = config.conversion_dir or source_path
-        snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
-        model_keys = dict.fromkeys(model.state_dict().keys())
+    source_path = snapshot_path
+    convert_dir = config.conversion_dir or source_path
+    snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
+    model_keys = dict.fromkeys(model.state_dict().keys())
 
-        if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
-            raise RuntimeError(f"PrimeRL conversion cache {source_path} is missing the required .prime-v1 marker")
+    if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
+        raise RuntimeError(f"PrimeRL conversion cache {source_path} is missing the required .prime-v1 marker")
 
-        snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
-        snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
+    snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
+    snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
 
-        if snapshot_is_hf and not snapshot_is_prime and model.is_prime_state_dict(model_keys):
-            logger.warning(
-                "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
+    if snapshot_is_hf and not snapshot_is_prime and model.is_prime_state_dict(model_keys):
+        logger.warning(
+            "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
+        )
+        snapshot_path = convert_dir / "prime"
+        if not snapshot_path.exists() and get_world().is_master:
+            logger.debug(
+                f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
-            snapshot_path = convert_dir / "prime"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_prime(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                (snapshot_path / ".prime-v1").touch()
-                del snapshot_state_dict
+            snapshot_state_dict = load_state_dict(source_path)
+            model.convert_to_prime(snapshot_state_dict)
+            save_state_dict(snapshot_state_dict, snapshot_path)
+            (snapshot_path / ".prime-v1").touch()
+            del snapshot_state_dict
 
-        elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
-            logger.warning(
-                "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
+    elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
+        logger.warning(
+            "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
+        )
+        snapshot_path = convert_dir / "hf"
+        if not snapshot_path.exists() and get_world().is_master:
+            logger.debug(
+                f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
-            snapshot_path = convert_dir / "hf"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_hf(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+            snapshot_state_dict = load_state_dict(source_path)
+            model.convert_to_hf(snapshot_state_dict)
+            save_state_dict(snapshot_state_dict, snapshot_path)
+            del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
-    if (
-        isinstance(model, PreTrainedModelPrimeRL)
-        and snapshot_path.name == "prime"
-        and not (snapshot_path / ".prime-v1").is_file()
-    ):
+    if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
@@ -800,10 +750,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
     write_back_loaded_packed_parameters(model, state_dict)
-    # Restore weight tying broken by to_empty() for HF models
-    if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
-        model.tie_weights()
-
     _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
@@ -820,80 +766,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         for module in lora_modules:
             module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
-
-
-def can_reinit_empty_buffers(model: nn.Module):
-    """Whether the model will be loaded correctly by load_dcp_from_hf.
-
-    The main issue is with anything that is not in the checkpoint.
-    This is usually any non-persistent buffers.
-    """
-    # Custom PrimeRL models handle buffer reinit via init_buffers_post_meta
-    if isinstance(model, PreTrainedModelPrimeRL):
-        return True
-
-    buffer_names = [name for name, _ in model.named_buffers()]
-
-    # TT MoE buffers
-    buffer_names = [
-        name
-        for name in buffer_names
-        if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
-    ]
-    buffer_names = [
-        name
-        for name in buffer_names
-        if not (name.startswith("model.layers.") and name.endswith("mlp.router.selection_bias"))
-    ]
-    # HF standard transformer model
-    if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
-        return True
-
-    # GPT-OSS (has original_inv_freq alongside inv_freq from dynamic rope scaling)
-    gpt_oss_buffers = {"model.rotary_emb.inv_freq", "model.rotary_emb.original_inv_freq"}
-    if set(buffer_names) == gpt_oss_buffers:
-        return True
-
-    # Gemma3 model (has embed_scale and local rotary emb)
-    gemma3_buffers = {"model.embed_tokens.embed_scale", "model.rotary_emb.inv_freq", "model.rotary_emb_local.inv_freq"}
-    if set(buffer_names) == gemma3_buffers:
-        return True
-
-    get_logger().warning(f"Model cannot be loaded using meta device because of buffers: {buffer_names}")
-    return False
-
-
-def fix_model_post_empty(model: nn.Module):
-    buffer_names = [name for name, _ in model.named_buffers()]
-    # HF standard transformer model
-    if "model.rotary_emb.inv_freq" in buffer_names:
-        rotary_emb = model.model.rotary_emb
-        if hasattr(rotary_emb, "rope_init_fn"):
-            rope_init_fn = rotary_emb.rope_init_fn
-        else:
-            # GPT-OSS stores rope_init_fn only as a local in __init__; re-derive it
-            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
-
-            rope_init_fn = (
-                ROPE_INIT_FUNCTIONS[rotary_emb.rope_type]
-                if rotary_emb.rope_type != "default"
-                else rotary_emb.compute_default_rope_parameters
-            )
-        inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
-        rotary_emb.inv_freq.copy_(inv_freq)
-        if "model.rotary_emb.original_inv_freq" in buffer_names:
-            rotary_emb.original_inv_freq.copy_(inv_freq)
-    # Gemma3 local rotary emb
-    if "model.rotary_emb_local.inv_freq" in buffer_names:
-        rotary_emb_local = model.model.rotary_emb_local
-        inv_freq_local, rotary_emb_local.attention_scaling = rotary_emb_local.rope_init_fn(
-            rotary_emb_local.config, rotary_emb_local.inv_freq.device
-        )
-        rotary_emb_local.inv_freq.copy_(inv_freq_local)
-    # Gemma3 embed_scale (scalar computed from hidden_size)
-    if "model.embed_tokens.embed_scale" in buffer_names:
-        embed_scale = model.config.hidden_size**0.5
-        model.model.embed_tokens.embed_scale.fill_(embed_scale)
 
 
 def reshard_module(model: nn.Module):
@@ -1039,20 +911,8 @@ def setup_model(
 
     logger = get_logger()
 
-    # 1. We load to meta device by default
+    # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
-
-    possible_to_load_to_meta = can_reinit_empty_buffers(model)
-
-    if config.debug.random_init and not possible_to_load_to_meta:
-        raise ValueError(
-            "It's not possible to load to meta device and random initialize is enabled. Please disable random initialize or use a different model."
-        )
-
-    # 1a. We load to CPU if we cannot reinit empty buffers
-    if not possible_to_load_to_meta:
-        logger.warning("Cannot load model to meta device only, loading to CPU instead.")
-        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
@@ -1105,31 +965,17 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if not possible_to_load_to_meta:
+    if loading_from_checkpoint_later:
+        logger.warning(
+            "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+        )
+        device = "cpu" if config.fsdp_cpu_offload else "cuda"
+        model.to_empty(device=device)
+        torch.distributed.barrier()
+        model.init_buffers_post_meta()
         _move_buffers_to_cuda(model, config)
-
-    # 2. if we can load to meta, we either:
-    if possible_to_load_to_meta:
-        # - load from checkpoint later if needed
-        if loading_from_checkpoint_later:
-            logger.warning(
-                "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
-            )
-            device = "cpu" if config.fsdp_cpu_offload else "cuda"
-            model.to_empty(device=device)
-            torch.distributed.barrier()
-            if isinstance(model, PreTrainedModelPrimeRL):
-                model.init_buffers_post_meta()
-            else:
-                fix_model_post_empty(model)
-                # Restore weight tying broken by to_empty() for HF models
-                if model.config.tie_word_embeddings:
-                    model.tie_weights()
-
-            _move_buffers_to_cuda(model, config)
-        # - or load from HF with dcp
-        else:
-            load_dcp_from_hf(model, config, parallel_dims)
+    else:
+        load_dcp_from_hf(model, config, parallel_dims)
 
     _reset_runtime_moe_buffers(model)
     return model
@@ -1156,12 +1002,8 @@ def forward(
         "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
+        "sampling_mask": sampling_mask,
     }
-
-    # Sampling masks are consumed by the injected prime lm_head; HF
-    # forwards don't know the kwarg, so only pass it when present.
-    if sampling_mask is not None:
-        kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)
@@ -1177,17 +1019,10 @@ def forward(
     else:
         kwargs["position_ids"] = position_ids
 
-    if isinstance(model, PreTrainedModelPrimeRL):
-        kwargs["seq_lens"] = seq_lens
-        kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
+    kwargs["seq_lens"] = seq_lens
+    kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
 
-    out = model(**kwargs)
-
-    # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
-    if isinstance(out, dict):
-        return cast_float_and_contiguous(out)
-
-    return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))
+    return cast_float_and_contiguous(model(**kwargs))
