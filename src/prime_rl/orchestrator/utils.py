@@ -85,6 +85,15 @@ def set_default_executor(max_workers: int = 64) -> None:
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 
+def release_and_trim(*containers: list) -> None:
+    """Empty lists one element at a time, so freeing a large payload in a worker
+    thread lets the GIL switch between elements, then trim process memory."""
+    for items in containers:
+        while items:
+            items.pop()
+    trim_process_memory()
+
+
 def trim_process_memory() -> None:
     """Return freed heap pages to the OS on glibc systems."""
     gc.collect()

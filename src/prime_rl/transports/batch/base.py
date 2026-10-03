@@ -21,6 +21,18 @@ class BatchSender(ABC):
         """Send grid of micro batches to the trainers."""
         pass
 
+    def encode(self, micro_batches: list[MicroBatch]) -> bytes:
+        """Byte-identical to ``self.encoder.encode(micro_batches)``, but encodes one
+        micro batch at a time so a worker thread releases the GIL between them."""
+        n = len(micro_batches)
+        if n < 16:
+            header = bytes([0x90 | n])
+        elif n < 2**16:
+            header = b"\xdc" + n.to_bytes(2, "big")
+        else:
+            header = b"\xdd" + n.to_bytes(4, "big")
+        return b"".join([header, *(self.encoder.encode(micro_batch) for micro_batch in micro_batches)])
+
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
         pass

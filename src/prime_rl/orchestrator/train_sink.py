@@ -54,6 +54,13 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     return has_rl or has_ce or has_ref_kl
 
 
+def _prune_selected(selected: list[tuple[str, list[TrainingSample]]]) -> dict[str, list[TrainingSample]]:
+    pruned = {
+        trace_id: [sample for sample in samples if _prune_zero_advantages(sample)] for trace_id, samples in selected
+    }
+    return {trace_id: samples for trace_id, samples in pruned.items() if samples}
+
+
 class TrainSink:
     """Score native episodes, admit groups, then compile trainer payloads."""
 
@@ -121,7 +128,7 @@ class TrainSink:
         if not self._group_complete(group_id, env_name):
             return None
         await self.process_group(group_id)
-        return self._maybe_batch()
+        return await self._maybe_batch()
 
     async def cancel(self, cancellation: GroupCancellation) -> TrainBatch | None:
         """Process a dropped group's terminal marker: its ``count`` completes
@@ -133,7 +140,7 @@ class TrainSink:
         if not self._group_complete(cancellation.group_id, cancellation.env_name):
             return None
         await self.process_group(cancellation.group_id)
-        return self._maybe_batch()
+        return await self._maybe_batch()
 
     async def fail(self, failure: DispatchFailure) -> TrainBatch | None:
         """Count a request failure toward its group without presenting it as
@@ -144,7 +151,7 @@ class TrainSink:
         if not self._group_complete(failure.group_id, failure.env_name):
             return None
         await self.process_group(failure.group_id)
-        return self._maybe_batch()
+        return await self._maybe_batch()
 
     def _group_complete(self, group_id: str, env_name: str) -> bool:
         cancellation = self.pending_group_cancellations.get(group_id)
@@ -152,11 +159,11 @@ class TrainSink:
         failed = len(self.pending_group_failures[group_id])
         return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
 
-    def _maybe_batch(self) -> TrainBatch | None:
+    async def _maybe_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
         meet the threshold."""
         self._drop_stale()
-        return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
+        return await self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being
@@ -321,7 +328,7 @@ class TrainSink:
             f"({windows} zero-output batch equivalents)"
         )
 
-    def process_batch(self) -> TrainBatch:
+    async def process_batch(self) -> TrainBatch:
         selected = list(self.pending_batch.items())[: self.batch_size]
 
         selected_by_trace = dict(selected)
@@ -330,11 +337,7 @@ class TrainSink:
             del self.pending_batch[trace_id]
 
         if not self.config.constant_trainer_batch_size:
-            selected_by_trace = {
-                trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
-                for trace_id, samples in selected
-            }
-            selected_by_trace = {trace_id: samples for trace_id, samples in selected_by_trace.items() if samples}
+            selected_by_trace = await asyncio.to_thread(_prune_selected, selected)
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
