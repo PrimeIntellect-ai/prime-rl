@@ -102,15 +102,37 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
         stream.close()
 
     land("m0", "m1")
-    assert [episode.id for episode in resume.take_landed(tmp_path)] == ["m0", "m1"]
+    assert [episode.id for episode in resume.take_landed(tmp_path, lambda episode: episode.ok)] == ["m0", "m1"]
     assert not get_file_monitor_dir(tmp_path).exists()
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
 
     # the resumed attempt re-logged one episode and landed a new one before it died
     land("m0", "m2")
-    landed = resume.take_landed(tmp_path)
+    landed = resume.take_landed(tmp_path, lambda episode: episode.ok)
     source = EvalSource([_env("math", ["m0", "m1", "m2"], group_size=2)])
     _, kept = source.trigger(0, completed=landed)
     assert [episode.id for episode in kept] == ["m0", "m1", "m2"]
     assert [request.rollouts for request in source.queue] == [1, 1, 1]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
+
+
+@pytest.mark.parametrize("ok,accepted", [(True, True), (False, True), (True, False), (False, False), (True, None)])
+def test_resume_counts_only_environment_accepted_episodes(tmp_path, ok, accepted) -> None:
+    record = {**_record("math", "m0", ok=ok), "id": "saved"}
+    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+    for row in [{key: value for key, value in record.items() if key != "traces"}, {**record, "traces": None}, record]:
+        stream.append(orjson.dumps(row, option=orjson.OPT_APPEND_NEWLINE))
+    stream.close()
+
+    def complete(episode):
+        assert isinstance(episode, vf.WireEpisode)
+        if accepted is None:
+            raise ValueError("The environment cannot validate this saved result")
+        return accepted
+
+    landed = resume.take_landed(tmp_path, complete)
+    source = EvalSource([_env("math", ["m0"], group_size=2)])
+    _, restored = source.trigger(0, completed=landed)
+
+    assert [episode.id for episode in restored] == (["saved"] if accepted else [])
+    assert [request.rollouts for request in source.queue] == [1 if accepted else 2]

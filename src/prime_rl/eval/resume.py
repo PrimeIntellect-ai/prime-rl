@@ -1,9 +1,9 @@
 """Resume an interrupted eval from its trace stream.
 
-The stream records what landed, so it is what a resume continues from. The run's ok
-episodes are read back and rejoin the epoch as if they had just arrived - through the
-monitors, so the rebuilt stream, the epoch's metrics and the platform upload cover the
-whole epoch - and only the rollouts still owed run. Errored episodes and the in-flight
+The stream records what landed, so it is what a resume continues from. Episodes the
+environment accepts rejoin the epoch through the monitors as if they had just arrived,
+so the rebuilt stream, the epoch's metrics and the platform upload cover the
+whole epoch - and only the rollouts still owed run. Rejected episodes and the in-flight
 ones the interruption cut off are owed again.
 
 The shared Verifiers rollout planner matches these episodes to the current tasks
@@ -13,7 +13,7 @@ any of it may be overridden.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import orjson
@@ -54,8 +54,8 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path) -> list[vf.WireEpisode]:
-    """The ok eval episodes from every attempt's stream; the planner deduplicates them.
+def take_landed(run_dir: Path, complete: Callable[[vf.WireEpisode], bool]) -> list[vf.WireEpisode]:
+    """Environment-accepted episodes from every attempt; the planner deduplicates them.
     The current file monitor directory joins the archives so the resumed attempt writes a
     fresh stream, plan and metrics; nothing is deleted."""
     current = get_file_monitor_dir(run_dir)
@@ -64,8 +64,16 @@ def take_landed(run_dir: Path) -> list[vf.WireEpisode]:
     for directory in [*archives(run_dir), current]:
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
-                if record.get("ok"):
-                    landed.append(vf.WireEpisode.model_validate(record))
+                try:
+                    if "traces" not in record:
+                        continue
+                    episode = vf.WireEpisode.model_validate(record)
+                    if not complete(episode):
+                        continue
+                except Exception:
+                    # A malformed record or failed completion check does not satisfy a rollout.
+                    continue
+                landed.append(episode)
     if current.is_dir():
         current.rename(current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}"))
     return landed
