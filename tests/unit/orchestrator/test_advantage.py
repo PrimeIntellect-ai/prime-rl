@@ -347,6 +347,8 @@ def test_cost_penalty_skips_calls_without_token_ids():
     cost = rollout_cost(trace, config)
     assert cost["cost_usd"] == pytest.approx(3 + 2)  # only the policy call: 3 uncached input + 2 output
     assert cost["prefix_cache_hit_rate"] == 0.0
+    assert cost["tool_time_s"] == pytest.approx(2.0)  # the judge call's 1 s counts as tool time, like a failed call
+    assert cost["parallelism"] == 1.0
 
 
 # --------------------------------------------------------------------------

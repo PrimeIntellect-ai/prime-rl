@@ -337,10 +337,10 @@ $$s_i' = s_i - \bar{s} \cdot \frac{\text{cost}_i + \text{time}_i / 3600 \cdot \t
 
 It uses the same pass-rate gate $\bar{s}$ as `linear`. Unlike `linear`, it is in absolute units and not normalized by the group.
 
-- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6). All model calls in the trace count, including subagents. Judge calls do not count. Calls to non-policy models carry no token ids, so they are priced at zero and skipped entirely, including their context.
+- **Cost (USD)** = per call, `input_usd_per_mtok` × uncached input + `cached_input_usd_per_mtok` × cached input + `output_usd_per_mtok` × output tokens (divided by 1e6). All model calls in the trace count, including subagents. Judge calls do not count. Calls to non-policy models carry no token ids, so they are priced at zero and skipped entirely, including their context. Their duration counts as tool time.
 - **Time (s)** = modelled model time + measured tool time.
   - Model time is Σ (uncached input / `input_tokens_per_s` + output / `output_tokens_per_s`), scaled by the measured parallelism: the union of call intervals / the sum of call durations (1 for sequential calls).
-  - Tool time is the measured agent span minus the union of call intervals. Failed calls are left out of the union, so their duration counts as tool time.
+  - Tool time is the measured agent span minus the union of call intervals. Failed calls and calls without token ids are left out of the union, so their duration counts as tool time.
   - Model time is modelled because the RL server's speed (batching, load, cache) says nothing about the deployed model. Tool and harness time is the same in deployment, so it is measured.
 - **Prefix cache.** A call's input counts as cached up to its longest common token prefix with any earlier policy call's prompt + completion in the same trace (any agent). This is exact up to node boundaries: a match that continues past the first differing message node is not credited. This is not the RL server's real cache hits. Context editing and compaction pay full input price from the first changed token.
 
