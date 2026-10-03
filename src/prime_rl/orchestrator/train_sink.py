@@ -226,6 +226,7 @@ class TrainSink:
         env_name = (
             episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
         )
+        self.train_source.on_group(group_id, env_name, group)
         env = self.train_envs.get(env_name)
         traces = [trace for episode in group for trace in episode.traces]
         task_idx = next((trace.task.data.idx for trace in traces), None)
