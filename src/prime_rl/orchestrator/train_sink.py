@@ -203,19 +203,22 @@ class TrainSink:
 
     def _quota_escape(self) -> bool:
         """Ship a batch short of its quotas once the queue holds
-        ``QUOTA_ESCAPE_BATCHES`` batches, or once a queued trace would go stale
-        at the next step. An env that cannot fill its quota (outage, very slow
-        rollouts) then delays a step by at most one more batch of collection,
-        and no queued trace is dropped while waiting for it."""
-        assert self.batch_size is not None
+        ``QUOTA_ESCAPE_BATCHES`` batches, or once the queued traces that would
+        go stale at the next step are at least as many as the quota shortfall
+        (shipping now saves more traces than it misallocates). An env that
+        cannot fill its quota (outage, very slow rollouts) then delays a step
+        by at most one more batch of collection."""
+        assert self.batch_size is not None and self.quotas is not None
         if len(self.pending_batch) >= QUOTA_ESCAPE_BATCHES * self.batch_size:
             return True
+        shortfall = sum(max(quota - self.train_source.pending[env], 0) for env, quota in self.quotas.items())
         next_min_version = min_fresh_version(self.progress.step + 1, self.config.max_off_policy_steps)
+        going_stale = 0
         for episode in self.episode_by_trace.values():
             policy = train_work(episode).policy
             if policy is not None and policy.start < next_min_version:
-                return True
-        return False
+                going_stale += 1
+        return going_stale >= shortfall
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being

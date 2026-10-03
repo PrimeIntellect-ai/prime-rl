@@ -85,11 +85,11 @@ def smooth_round_robin(current: dict[str, float], weights: dict[str, float]) -> 
 class TrainSource:
     """Mix train envs and host one user-authored curriculum per env.
 
-    ``ratio`` is each env's target share of shipped traces. Envs are picked
-    by smooth weighted round-robin over :func:`mixer_weight`, which corrects
-    for group size and for the share of each env's groups that end up in the
-    batch (acceptance rate); ``TrainSink`` enforces the share per batch with
-    :meth:`quotas`. Envs at their in-flight cap (:func:`inflight_caps`) are
+    ``ratio`` is each env's target share of the prompts (groups) in a shipped
+    batch. Envs are picked by smooth weighted round-robin over
+    :func:`mixer_weight`, which corrects for the share of each env's groups
+    that end up in the batch (acceptance rate); ``TrainSink`` enforces the
+    share per batch with :meth:`quotas`, in traces. Envs at their in-flight cap (:func:`inflight_caps`) are
     skipped unless every env is at its cap, so a slow or stalled env cannot
     take every train slot."""
 
@@ -111,12 +111,15 @@ class TrainSource:
         total_ratio = sum(env.config.ratio for env in self.envs)
         self.shares = {env.name: env.config.ratio / total_ratio for env in self.envs}
         self.group_sizes = {env.name: env.config.group_size for env in self.envs}
+        # An env's share of the batch's traces is its prompt share weighted by group size.
+        total_traces = sum(share * self.group_sizes[name] for name, share in self.shares.items())
+        self.trace_shares = {name: share * self.group_sizes[name] / total_traces for name, share in self.shares.items()}
         self.batch_size = batch_size
         # The staleness clip on the caps needs absolute targets, i.e. a trace batch.
         self.max_off_policy_steps = max_off_policy_steps if batch_size is not None else None
         # Accepted groups per batch. Token batches have no trace count, so the
         # targets are only relative and the deficit term is left out.
-        self.targets = {name: share * (batch_size or 1) / self.group_sizes[name] for name, share in self.shares.items()}
+        self.targets = {name: share * (batch_size or 1) / total_traces for name, share in self.shares.items()}
         self.current = {name: 0.0 for name in self.env_names}
         self.acceptance = {name: PRIOR_ACCEPTANCE_RATE for name in self.env_names}
         self.finalized: Counter[str] = Counter()
@@ -130,7 +133,7 @@ class TrainSource:
         self._rejected: dict[str, int] = defaultdict(int)
 
     def quotas(self, batch_size: int) -> dict[str, int]:
-        return trace_quotas(self.shares, batch_size)
+        return trace_quotas(self.trace_shares, batch_size)
 
     def acceptance_rate(self, env_name: str) -> float:
         if self.finalized[env_name] < PRIOR_GROUPS:
@@ -209,7 +212,7 @@ class TrainSource:
                 metrics[f"curriculum/{env_name}/admission_rate"] = admitted / total
             metrics |= {f"curriculum/{env_name}/{name}": float(value) for name, value in curriculum.metrics().items()}
             metrics |= {
-                f"mixer/{env_name}/target_share": self.shares[env_name],
+                f"mixer/{env_name}/target_prompt_share": self.shares[env_name],
                 f"mixer/{env_name}/acceptance_rate": self.acceptance_rate(env_name),
                 f"mixer/{env_name}/weight": weights[env_name] / total_weight,
                 f"mixer/{env_name}/surplus_groups": self.pending[env_name] / self.group_sizes[env_name],

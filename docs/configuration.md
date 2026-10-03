@@ -150,7 +150,7 @@ Training and evaluation sources are arrays of tables. Set one source per environ
 ```toml
 [[orchestrator.train.source]]
 name = "gsm8k"
-ratio = 3  # 75% of each batch's samples
+ratio = 3  # 75% of each batch's prompts
 env.taskset.id = "gsm8k"
 env.taskset.split = "train"
 env.agent.harness.id = "null"
@@ -158,7 +158,7 @@ env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-ratio = 1  # default — 25% of each batch's samples
+ratio = 1  # default — 25% of each batch's prompts
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
@@ -197,13 +197,13 @@ limit = 128
 
 The group `env` block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source. `select` picks which tasks of a source's taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order.
 
-`ratio` is a training-source field: each env's target share of the samples (traces) in every training batch. It defaults to `1` (equal share per env), and values are relative weights normalized across envs. The share holds regardless of `group_size` and of how many of an env's groups are filtered out (no trainable signal, curriculum gates, staleness):
+`ratio` is a training-source field: each env's target share of the prompts (groups) in every training batch. It defaults to `1` (equal share per env), and values are relative weights normalized across envs. A batch holds `batch_size` samples (traces), so an env's share of the samples is its prompt share weighted by its `group_size`: with `ratio = 1` each and `group_size` 16 vs 4, both envs ship the same number of prompts and the first ships four times as many samples. The share holds regardless of how many of an env's groups are filtered out (no trainable signal, curriculum gates, staleness):
 
-- **Dispatch.** The orchestrator opens new groups by smooth weighted round-robin. An env's weight is its share divided by its `group_size` and by its measured acceptance rate (the fraction of its finished groups that queue samples for training), and it is raised while the env is behind on the batch being collected. The acceptance correction is at most 20× and tapers back to 1× for an env whose acceptance rate falls below 5%, so an env that yields nothing does not take the other envs' dispatch.
+- **Dispatch.** The orchestrator opens new groups by smooth weighted round-robin. An env's weight is its share divided by its measured acceptance rate (the fraction of its finished groups that queue samples for training), and it is raised while the env is behind on the batch being collected. The acceptance correction is at most 20× and tapers back to 1× for an env whose acceptance rate falls below 5%, so an env that yields nothing does not take the other envs' dispatch.
 - **In-flight caps.** Each env may hold at most 1.25× its share of the train slots, where the share is proportional to its demand times its mean episode duration (and at most the demand of `max_off_policy_steps + 1` steps). Envs at their cap are skipped unless every env is, so a slow or stalled env cannot take every slot and no slot is left idle.
-- **Batch quota.** With `batch_size`, a batch ships once every env has queued its share of samples; extra samples stay queued for the next batch. If an env cannot fill its share, the batch ships anyway once the queue holds two batches or once a queued sample would exceed `max_off_policy_steps` at the next step, with the gap filled from the oldest samples of other envs (logged as `mixer/quota_shortfall`). With `token_batch_size`, `ratio` steers dispatch only.
+- **Batch quota.** With `batch_size`, a batch ships once every env has queued its share; extra samples stay queued for the next batch. If an env cannot fill its share, the batch ships anyway once the queue holds two batches, or once the queued samples that would exceed `max_off_policy_steps` at the next step outnumber the missing ones; the gap is filled from the oldest samples of other envs (logged as `mixer/quota_shortfall`, in samples). With `token_batch_size`, `ratio` steers dispatch only.
 
-`mixer/<env>/shipped_share` tracks the share each env actually got; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of dispatch), `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups), and `mixer/<env>/inflight` against `mixer/<env>/cap` show how it got there.
+`mixer/<env>/shipped_prompt_share` tracks the prompt share each env actually got, against `mixer/<env>/target_prompt_share`; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of dispatch), `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups), and `mixer/<env>/inflight` against `mixer/<env>/cap` show how it got there.
 
 Eval sources of a training run carry `interval` instead of `ratio`, the step interval at which they fire; a standalone eval has neither.
 

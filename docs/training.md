@@ -62,7 +62,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.train.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
-| `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; set each env's share of the batch via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
+| `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; set each env's share of the batch's prompts via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
 **Monitoring:**

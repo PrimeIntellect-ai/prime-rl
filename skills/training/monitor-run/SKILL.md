@@ -154,7 +154,7 @@ All metrics print to the console log (and W&B when configured).
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
 | orchestrator | `dispatcher/off_policy/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
 | orchestrator | `off_policy/{mean,max}`, `off_policy/{in_flight,in_queue}/{mean,max}`, `off_policy/dropped` | per-step staleness of trained rollouts |
-| orchestrator | `mixer/{env}/{shipped_share,target_share,acceptance_rate,weight,surplus_groups,inflight,cap}`, `mixer/quota_shortfall` | multi-env batch mix: `shipped_share` should track `target_share` (`ratio`); a persistent `quota_shortfall` means an env cannot fill its share |
+| orchestrator | `mixer/{env}/{shipped_prompt_share,target_prompt_share,acceptance_rate,weight,surplus_groups,inflight,cap}`, `mixer/quota_shortfall` | multi-env batch mix in prompts (groups): `shipped_prompt_share` should track `target_prompt_share` (`ratio`); a persistent `quota_shortfall` (in samples) means an env cannot fill its share |
 | orchestrator | `dispatcher/cancelled/{env}/{stale,overload,superseded}` | in-flight cancellations by reason |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 

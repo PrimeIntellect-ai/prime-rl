@@ -708,11 +708,15 @@ class Orchestrator:
         self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
-        shipped_by_env = batch.cohort.by_env()
+        # Shipped prompts per env, counted in group-equivalents (traces / group_size)
+        shipped_prompts = {
+            env_name: env_pool.num_traces / self.train_envs.get(env_name).config.group_size
+            for env_name, env_pool in batch.cohort.by_env().items()
+        }
+        total_prompts = sum(shipped_prompts.values())
         for env_name in self.train_envs.names:
-            shipped = shipped_by_env.get(env_name)
-            metrics[f"mixer/{env_name}/shipped_share"] = (
-                shipped.num_traces / batch.cohort.num_traces if shipped is not None else 0.0
+            metrics[f"mixer/{env_name}/shipped_prompt_share"] = (
+                shipped_prompts.get(env_name, 0.0) / total_prompts if total_prompts else 0.0
             )
         metrics["mixer/quota_shortfall"] = float(batch.quota_shortfall)
         metrics |= self.train_source.metrics()
