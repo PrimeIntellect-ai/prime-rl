@@ -40,6 +40,7 @@ from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
+    apply_router_replay_filter,
     forward,
     get_full_offload_dtype_policy,
     get_expert_load_stats,
@@ -151,6 +152,8 @@ def train(config: TrainerConfig):
     t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    if config.router_replay_min_score_ratio is not None:
+        apply_router_replay_filter(model, config.router_replay_min_score_ratio)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     processor = None

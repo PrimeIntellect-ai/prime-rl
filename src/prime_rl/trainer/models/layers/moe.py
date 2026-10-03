@@ -44,6 +44,32 @@ def _record_moe_routing_statistics_fake(
     return None
 
 
+def filter_replayed_experts(
+    scores: torch.Tensor,
+    routed_experts: torch.Tensor,
+    min_score_ratio: float,
+    selection_bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Drop implausible replayed experts, as in Composer 2's router replay (arXiv:2603.24477, sec. 6.2).
+
+    A replayed expert is kept if its score is at least ``min_score_ratio`` times the lowest score among
+    the router's own top-k. Dropped slots take the router's own top-k experts (best first) that are not
+    already kept, so the result has ``top_k`` distinct experts whenever the replayed ones are distinct.
+    """
+    with torch.no_grad():
+        top_k = routed_experts.shape[-1]
+        selection_scores = scores if selection_bias is None else scores + selection_bias
+        own = torch.topk(selection_scores, k=top_k, dim=1, sorted=True).indices
+        threshold = min_score_ratio * scores.gather(1, own).amin(dim=1, keepdim=True)
+        keep = scores.gather(1, routed_experts) >= threshold
+        kept_ids = routed_experts.masked_fill(~keep, -1)
+        taken = (own.unsqueeze(-1) == kept_ids.unsqueeze(1)).any(dim=-1)
+        candidates = own.gather(1, torch.argsort(taken.to(torch.int8), dim=1, stable=True))
+        drop_rank = ((~keep).cumsum(dim=1) - 1).clamp(min=0)
+        fill = candidates.gather(1, drop_rank).to(routed_experts.dtype)
+        return torch.where(keep, routed_experts, fill)
+
+
 @dataclass
 class MoEArgs:
     num_experts: int = 8
@@ -172,6 +198,8 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
         self.topk_sorted = topk_sorted
         self.force_balanced = False
+        # Set via trainer.router_replay_min_score_ratio, see `filter_replayed_experts`.
+        self.replay_min_score_ratio: float | None = None
         # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
         # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
         self.fp32_gate = False
@@ -220,6 +248,13 @@ class TokenChoiceTopKRouter(nn.Module):
         # top scores shape (bs*slen, top_k)
         # NOTE: selection biases are only used for routing. The gating value
         #       top_scores is still derived from the original scores/logits.
+
+        if routed_experts is not None and self.replay_min_score_ratio is not None:
+            # topk_softmax scores are logits; the threshold is a ratio of full-softmax probabilities.
+            filter_scores = F.softmax(scores.float(), dim=1) if self.score_func == "topk_softmax" else scores
+            routed_experts = filter_replayed_experts(
+                filter_scores, routed_experts, self.replay_min_score_ratio, self.selection_bias
+            )
 
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)

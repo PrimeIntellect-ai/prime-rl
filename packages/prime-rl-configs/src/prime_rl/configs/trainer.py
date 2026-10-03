@@ -668,6 +668,9 @@ class TrainerConfig(BaseConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    router_replay_min_score_ratio: float | None = Field(None, gt=0, le=1)
+    """Composer 2-style router replay filter. When set, a replayed expert is kept only if its router score is at least this fraction of the lowest score among the trainer router's own top-k; dropped experts are replaced by the router's own top-k picks. Requires ``enable_router_replay``."""
+
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 
@@ -782,4 +785,11 @@ class TrainerConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+    @model_validator(mode="after")
+    def router_replay_filter_requires_router_replay(self):
+        if self.router_replay_min_score_ratio is not None and not self.enable_router_replay:
+            raise ValueError("router_replay_min_score_ratio requires enable_router_replay")
+
         return self
