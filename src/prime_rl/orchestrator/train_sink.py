@@ -9,7 +9,6 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
-import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 
@@ -27,33 +26,10 @@ from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
-QUOTA_ESCAPE_BATCHES = 2
-
 
 def payload_tokens(samples: list[TrainingSample], trace: vf.Trace | None = None) -> int:
     """Token cost of one trainer-bound trace."""
     return sum(len(sample.token_ids) for sample in samples) or (trace.num_total_tokens if trace is not None else 0)
-
-
-def select_by_quota(traces: list[tuple[str, float]], quotas: dict[str, int]) -> tuple[list[int], int]:
-    """Pick a batch from queued traces, given as ``(env, policy version)`` in
-    queue order: up to each env's quota, oldest policy first; slots an env
-    cannot fill go to the oldest-policy leftover traces of any env, so the
-    traces closest to going stale ship first. Returns the picked indices in
-    queue order and the number of slots filled that way (the shortfall)."""
-    by_age = sorted(range(len(traces)), key=lambda index: traces[index][1])
-    taken: Counter[str] = Counter()
-    selected = []
-    for index in by_age:
-        env = traces[index][0]
-        if taken[env] < quotas.get(env, 0):
-            taken[env] += 1
-            selected.append(index)
-    shortfall = sum(quotas.values()) - len(selected)
-    if shortfall:
-        picked = set(selected)
-        selected += [index for index in by_age if index not in picked][:shortfall]
-    return sorted(selected), shortfall
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -108,8 +84,6 @@ class TrainSink:
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
         self.train_source = train_source
-        self.quotas = train_source.plan_batch() if batch_size is not None else None
-        self.escape: str | None = None
         # Queued traces per accepted group, at insertion and still queued:
         # groups, not traces / group_size, are the unit of the prompt share.
         self.group_traces: dict[str, int] = {}
@@ -199,45 +173,14 @@ class TrainSink:
 
     def _maybe_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
-        meet the threshold. A trace batch also waits for every env's quota,
-        except envs that yield nothing (``TrainSource.is_dead``), until
-        :meth:`_quota_escape` gives up on it."""
+        meet the threshold."""
         self._drop_stale()
-        if self.batch_size is None:
-            return self.process_batch() if self.pending_tokens >= (self.token_batch_size or 0) else None
-        if len(self.pending_batch) < self.batch_size:
-            return None
-        assert self.quotas is not None
-        short = [env for env, quota in self.quotas.items() if self.train_source.pending[env] < quota]
-        if not short:
-            self.escape = None
-        elif all(self.train_source.is_dead(env) for env in short):
-            self.escape = "dead"
-        else:
-            self.escape = self._quota_escape()
-            if self.escape is None:
-                return None
-        return self.process_batch()
-
-    def _quota_escape(self) -> str | None:
-        """Ship a batch short of its quotas once the queue holds
-        ``QUOTA_ESCAPE_BATCHES`` batches, or once the queued traces that would
-        go stale at the next step are at least as many as the quota shortfall
-        (shipping now saves more traces than it misallocates). An env that
-        cannot fill its quota (outage, very slow rollouts) then delays a step
-        by at most one more batch of collection."""
-        assert self.batch_size is not None and self.quotas is not None
-        if len(self.pending_batch) >= QUOTA_ESCAPE_BATCHES * self.batch_size:
-            return "count"
-        shortfall = sum(max(quota - self.train_source.pending[env], 0) for env, quota in self.quotas.items())
-        next_min_version = min_fresh_version(self.progress.step + 1, self.config.max_off_policy_steps)
-        going_stale = sum(self._policy_start(trace_id) < next_min_version for trace_id in self.pending_batch)
-        return "stale" if going_stale >= shortfall else None
-
-    def _policy_start(self, trace_id: str) -> float:
-        """Oldest policy version of a queued trace; frozen-sourced traces never go stale."""
-        policy = train_work(self.episode_by_trace[trace_id]).policy
-        return policy.start if policy is not None else math.inf
+        ready = (
+            len(self.pending_batch) >= self.batch_size
+            if self.batch_size is not None
+            else self.pending_tokens >= (self.token_batch_size or 0)
+        )
+        return self.process_batch() if ready else None
 
     def _dequeue(self, trace_id: str) -> None:
         """Release a queued trace from the mixer's per-env counts."""
@@ -442,26 +385,8 @@ class TrainSink:
 
     def process_batch(self) -> TrainBatch:
         items = list(self.pending_batch.items())
-        shortfall = 0
         if self.batch_size is not None:
-            assert self.quotas is not None
-            traces = [
-                (episode_env_name(self.episode_by_trace[trace_id]), self._policy_start(trace_id))
-                for trace_id, _ in items
-            ]
-            indices, shortfall = select_by_quota(traces, self.quotas)
-            selected = [items[index] for index in indices]
-            if shortfall:
-                short = {
-                    env: quota - self.train_source.pending[env]
-                    for env, quota in self.quotas.items()
-                    if self.train_source.pending[env] < quota
-                }
-                get_logger().warning(
-                    f"Step {self.progress.step}: shipping with {shortfall} traces short of the env quotas {short}, "
-                    f"filled from other envs ({self.escape} escape)"
-                )
-            self.quotas = self.train_source.plan_batch()
+            selected = items[: self.batch_size]
         else:
             assert self.token_batch_size is not None
             cut = 0
@@ -523,7 +448,5 @@ class TrainSink:
             buffered_episode_ids=buffered_episode_ids,
             cancelled_attempts=cancelled_attempts,
             stale_attempts=stale_attempts,
-            quota_shortfall=shortfall,
-            quota_escape=self.escape if shortfall else None,
             shipped_prompts=dict(shipped_prompts),
         )

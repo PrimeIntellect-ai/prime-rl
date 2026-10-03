@@ -713,9 +713,6 @@ class Orchestrator:
             metrics[f"mixer/{env_name}/shipped_prompt_share"] = (
                 batch.shipped_prompts.get(env_name, 0.0) / total_prompts if total_prompts else 0.0
             )
-        metrics["mixer/quota_shortfall"] = float(batch.quota_shortfall)
-        for reason in ("count", "stale", "dead"):
-            metrics[f"mixer/quota_escape/{reason}"] = float(batch.quota_escape == reason)
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
 
