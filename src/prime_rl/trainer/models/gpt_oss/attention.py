@@ -112,11 +112,31 @@ def substitute_gpt_oss_ring_attention(
     from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
 
     from prime_rl.trainer.distributed.collectives import all_gather
+    from prime_rl.trainer.models.layers.ring_attn import sliding_window_kv
 
     def ring_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
         key_value_groups = self.num_attention_heads // self.num_key_value_heads
         local_k_slice = DATA_PARAMS["local_k_slice"]
-        window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
+        if self.sliding_window is not None:
+            window_size = (self.sliding_window - 1, 0)
+            key, value, cu_seqlens_k = sliding_window_kv(
+                key, value, DATA_PARAMS["cu_seqlens_k"], local_k_slice, window_size[0], process_group
+            )
+            output, _ = self.flash_attn(
+                query,
+                key,
+                value,
+                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
+                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
+                softmax_scale=self.scaling,
+                causal=True,
+                window_size=window_size,
+                learnable_sink=self.sinks,
+            )
+            return output
+
         outputs = []
 
         for key_head_start in range(0, self.num_key_value_heads, heads_k_stride):
@@ -136,7 +156,6 @@ def substitute_gpt_oss_ring_attention(
                 max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
                 softmax_scale=self.scaling,
                 causal=True,
-                window_size=window_size,
                 learnable_sink=self.sinks[query_head_start:query_head_stop],
             )
             outputs.append(output)

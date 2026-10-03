@@ -7,6 +7,8 @@ import torch
 import torch.distributed as dist
 from ring_flash_attn.utils import AllGatherComm
 
+from prime_rl.trainer.distributed.collectives import all_to_all_single
+
 
 def _flash_attention_forward(
     q: torch.Tensor,
@@ -495,3 +497,42 @@ def ring_varlen_attention(
         attention_backend=attention_backend,
     )
     return out
+
+
+def sliding_window_kv(
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    local_k_slice: slice,
+    window_left: int,
+    group: dist.ProcessGroup,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Prepend the K/V a sliding-window layer's local queries can reach on preceding CP ranks.
+
+    Instead of all-gathering the whole sequence, each rank sends the tail of its shard that is
+    within `window_left` tokens of a later shard's start (usually only to the next rank). The
+    all-to-all's backward routes the halo's dK/dV back to the owning rank. Returns the extended
+    K/V and `cu_seqlens_k` re-based to it; the halo is clipped to the document the shard starts in.
+    """
+    rank, world_size = group.rank(), group.size()
+    shard_len = k.shape[0]
+    shard_start = local_k_slice.stop - shard_len
+    # The halo's sender only knows token counts, so it sends up to `window_left` tokens and the
+    # receiver drops the ones before the start of its first document.
+    halo_len = min(window_left, shard_start - local_k_slice.start)
+
+    def chunk_len(distance: int) -> int:
+        return min(max(window_left - (distance - 1) * shard_len, 0), shard_len)
+
+    input_splits = [chunk_len(dst - rank) if dst > rank else 0 for dst in range(world_size)]
+    output_splits = [chunk_len(rank - src) if src < rank else 0 for src in range(world_size)]
+    kv = torch.cat([k, v], dim=1)
+    send = torch.cat([kv[shard_len - n :] for n in input_splits if n > 0] or [kv[:0]])
+    received = all_to_all_single(send, torch.tensor(output_splits), torch.tensor(input_splits), group)
+    torch._check(received.shape[0] == sum(output_splits))  # resolves the op's data-dependent size under compile
+    kv = torch.cat([received[received.shape[0] - halo_len :], kv])
+
+    cu_seqlens_k = cu_seqlens_k - (cu_seqlens_k[-1] - kv.shape[0])
+    cu_seqlens_k[0] = 0
+    k, v = kv.split(k.shape[1], dim=1)
+    return k, v, cu_seqlens_k

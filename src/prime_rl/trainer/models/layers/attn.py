@@ -275,15 +275,28 @@ def substitute_ring_attn(
     attn_impl: str = "flash_attention_2",
 ) -> None:
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from .ring_attn import ring_varlen_attention
+    from .ring_attn import ring_varlen_attention, sliding_window_kv
 
     def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
 
-        window_size = (-1, -1)
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
             window_size = (sliding_window - 1, 0)
+            k, v, cu_seqlens_k = sliding_window_kv(
+                k, v, DATA_PARAMS["cu_seqlens_k"], DATA_PARAMS["local_k_slice"], window_size[0], process_group
+            )
+            kwargs = dict(
+                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+                cu_seqlens_k=cu_seqlens_k,
+                causal=True,
+                window_size=window_size,
+            )
+            if self._flash_attn_version != 4:
+                # The halo only shortens the first document, so the full-slice max stays an upper bound.
+                kwargs.update(max_seqlen_q=DATA_PARAMS["max_seqlen_q"], max_seqlen_k=DATA_PARAMS["max_seqlen_k"])
+            out = self.func(q, k, v, **kwargs)
+            return out[0] if self._flash_attn_version == 4 else out
 
         out = ring_varlen_attention(
             q,
@@ -295,7 +308,6 @@ def substitute_ring_attn(
             max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
             local_k_slice=DATA_PARAMS["local_k_slice"],
             causal=True,
-            window_size=window_size,
             group=process_group,
             heads_k_stride=heads_k_stride,
             attention_backend=attn_impl,

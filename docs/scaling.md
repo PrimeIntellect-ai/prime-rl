@@ -112,6 +112,8 @@ For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. Prefer `ulysses`: it gets the most throughput and is the only style that works for hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) and for VLMs. Each model class declares its supported styles in `cp_support`; an unsupported `cp_style`, or a model with no CP support at all, is rejected at setup.
 
+Under `ring`, sliding-window layers (gpt-oss, Laguna) do not all-gather K/V: each rank receives only the up to `sliding_window - 1` preceding tokens its queries can reach from the previous rank(s), so their traffic is bounded by the window instead of the sequence length. Full-attention layers still all-gather. `ulysses` moves the full sequence for a subset of heads either way.
+
 `ulysses` head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Nemotron-H redistributes its Mamba activations between sequence- and head-parallel layouts in the model-owned Mamba path; the CP degree must divide `mamba_num_heads` and `n_groups`.
 
 ```toml
