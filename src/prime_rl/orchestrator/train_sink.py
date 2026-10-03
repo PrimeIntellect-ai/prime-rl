@@ -343,20 +343,8 @@ class TrainSink:
         self._warn_zero_output()
 
         # Retain graph/call statistics for metrics, but release discarded training payloads.
-        protected_nodes = {
-            id(node)
-            for pending_group in self.pending_groups.values()
-            for episode in pending_group
-            for trace in episode.traces
-            for node in trace.nodes
-        }
-        protected_nodes.update(
-            id(node) for episode in self.episode_by_trace.values() for trace in episode.traces for node in trace.nodes
-        )
         for episode in group:
             for trace in episode.traces:
-                if any(id(node) in protected_nodes for node in trace.nodes):
-                    continue
                 for node in trace.nodes:
                     message = node.message
                     kwargs = {"role": message.role, "content": ""}
