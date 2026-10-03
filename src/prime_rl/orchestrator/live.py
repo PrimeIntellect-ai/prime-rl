@@ -10,8 +10,14 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from verifiers.v1.trace import EXCLUDE_FIELDS
+
 from prime_rl.monitors.file.traces.live import STAGES, stage
 from prime_rl.orchestrator.types import InflightEpisode, LiveTrace
+
+PAYLOAD_FIELDS = EXCLUDE_FIELDS["nodes"]["__all__"]
+"""Per-token binary node fields (router-replay experts, sampling masks): training input
+that the finished stream leaves out too."""
 
 
 def dispatch_info(meta: InflightEpisode) -> dict[str, Any]:
@@ -39,6 +45,18 @@ def pending_event(meta: InflightEpisode) -> dict[str, Any]:
 def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
     """The episode is no longer pending: a trace streamed, or the episode left the in-flight set."""
     return {"dispatched": meta.dispatch_id}
+
+
+def without_payloads(delta: dict[str, Any]) -> dict[str, Any]:
+    """The delta as the live files get it: no binary payloads, which JSON cannot hold and
+    which would make up most of a router-replay trace. Copies, so the episode the env
+    client assembles from the same delta keeps them."""
+    delta = {key: value for key, value in delta.items() if key != "routing_repairs"}
+    if "nodes" in delta:
+        delta["nodes"] = [
+            {key: value for key, value in node.items() if key not in PAYLOAD_FIELDS} for node in delta["nodes"]
+        ]
+    return delta
 
 
 def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:

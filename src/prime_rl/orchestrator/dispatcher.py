@@ -584,7 +584,7 @@ class Dispatcher:
             session_ids.add(delta["trace"])
             first = not meta.live
             live.apply(meta, delta)
-            self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
+            self.queue_live({"delta": live.without_payloads(delta), "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)
             if first and meta.live:
