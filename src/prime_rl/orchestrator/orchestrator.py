@@ -502,10 +502,20 @@ class Orchestrator:
         the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
+            # Apply the background-finalization cap to the dispatch gate.
+            if self.train_sink.finalizing or not self.dispatcher.dispatch_allowed.is_set():
+                self.update_dispatch_gate()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
+
+            # Groups finalized in the background settle before new results.
+            if not self.train_sink.finalized_q.empty():
+                train_batch = await self.train_sink.finalized(self.train_sink.finalized_q.get_nowait())
+                if train_batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(train_batch)
+                continue
 
             try:
                 item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
@@ -559,7 +569,9 @@ class Orchestrator:
                 await self.finalize_train_batch(train_batch)
 
     def _raise_if_component_stopped(self) -> None:
-        """Propagate unexpected background-component termination to the run."""
+        """Propagate unexpected background-component termination (or a failed
+        background group finalization) to the run."""
+        self.train_sink.raise_if_failed()
         for task in self.component_tasks:
             if not task.done():
                 continue
@@ -635,6 +647,7 @@ class Orchestrator:
         pack_time = time.perf_counter() - pack_start_time
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
+        await self.train_sink.cancel_stale_finalizing()
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -766,6 +779,7 @@ class Orchestrator:
         eval epochs still run to completion."""
         self.draining = True
         self.dispatcher.disable_train_scheduling()
+        await self.train_sink.stop()
         n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
         get_logger().info(
             f"{reason} — draining pipeline (cancelled {n_cancelled} in-flight "
@@ -822,7 +836,8 @@ class Orchestrator:
         multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 
         # Train batch: finalized-group survivors only (0→target). Partial-group
-        # arrivals are surfaced as a separate ``(+N buffered)`` addendum
+        # arrivals and groups finalizing in the background are surfaced as a
+        # separate ``(+N buffered)`` addendum
         train_pct = train_batch / train_target if train_target else 0.0
         train_batch_part = f"Train batch {train_batch}/{train_target} ({train_pct:.1%})"
         if multi_train:
@@ -980,7 +995,8 @@ class Orchestrator:
         collected — advanced right after shipping — so both call sites (ship time
         here, policy update in ``on_new_version``) share one lead formula. Steps
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
-        count is ``progress.step - 1``."""
+        count is ``progress.step - 1``. Train dispatch also pauses while an env
+        has ``max_finalizing_groups`` groups finalizing in the background."""
         lead = (self.progress.step - 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
@@ -991,6 +1007,12 @@ class Orchestrator:
                     f"(currently v{self.policy.version})"
                 )
                 self.gate_closed_at = time.perf_counter()
+            gate.clear()
+        elif self.train_sink.finalizing_full:
+            if was_set:
+                get_logger().info(
+                    f"Pausing dispatcher while {len(self.train_sink.finalizing)} groups finalize in the background"
+                )
             gate.clear()
         else:
             if not was_set:
@@ -1016,6 +1038,7 @@ class Orchestrator:
             if self.dispatcher is not None:
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()
+            await self.train_sink.stop()
             if self.watcher is not None:
                 get_logger().debug("Stopping weight watcher")
                 await self.watcher.stop()
