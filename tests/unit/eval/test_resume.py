@@ -183,10 +183,44 @@ def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, update
         assert len(resume.archives(tmp_path)) == 1
 
 
-def test_take_landed_requires_saved_experiment(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "missing",
+    [
+        None,
+        ("model",),
+        ("client", "skip_model_check"),
+        ("source", 0, "sampling", "temperature"),
+        ("source", 0, "group_size"),
+    ],
+)
+def test_take_landed_requires_saved_experiment(tmp_path, missing) -> None:
     config = EvalConfig(source=[{"env": {"id": "single_agent"}}])
     directory = get_file_monitor_dir(tmp_path)
     directory.mkdir(parents=True)
-    with pytest.raises(ValueError, match="no saved experiment config"):
+    if missing is not None:
+        saved = config.model_dump(mode="json")
+        parent = saved
+        for key in missing[:-1]:
+            parent = parent[key]
+        del parent[missing[-1]]
+        resume.stamp_config(tmp_path, saved)
+    with pytest.raises(ValueError, match="no saved experiment config|config differs"):
         resume.take_landed(tmp_path, config)
     assert directory.is_dir()
+    assert resume.archives(tmp_path) == []
+
+
+def test_take_landed_compares_effective_sources(tmp_path) -> None:
+    saved = EvalConfig(source=[{"env": {"id": "single_agent"}}])
+    current = EvalConfig.model_validate(
+        saved.model_dump(mode="json")
+        | {
+            "group_size": 2,
+            "sampling": {"temperature": 0.3},
+            "select": {"limit": 2},
+            "env": {"timeout": {"episode": 60}},
+        }
+    )
+    assert current.source == saved.source
+    resume.stamp_config(tmp_path, saved.model_dump(mode="json"))
+    assert resume.take_landed(tmp_path, current) == []
