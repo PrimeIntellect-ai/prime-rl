@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, IcePopLossConfig, IPOLossConfig
 from prime_rl.trainer.rl.loss import (
+    IcePopLoss,
     LossInputs,
     LossOutputs,
     _mismatch_kl_from_log_ratio,
@@ -93,8 +94,45 @@ def test_setup_rl_loss_fn_with_custom_config():
     assert "custom_metric" in result.metrics
 
 
-def test_ipo_matches_original_on_finite_ratios():
-    config = IPOLossConfig()
+def test_icepop_loss_masks_ratios_outside_inclusive_band():
+    ratios = torch.tensor([0.1, 0.2, 1.0, 5.0, 10.0], device="cuda")
+    trainer_logprobs = ratios.log().requires_grad_()
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.zeros_like(trainer_logprobs),
+        ref_logprobs=None,
+        advantages=torch.ones_like(trainer_logprobs),
+        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
+    )
+
+    result = setup_rl_loss_fn(IcePopLossConfig()).loss(inputs)
+
+    assert torch.isclose(result.loss, torch.tensor(-6.2, device="cuda"))
+    assert torch.isclose(result.metrics["is_masked"], torch.tensor(0.4, device="cuda"))
+    result.loss.backward()
+    assert torch.allclose(trainer_logprobs.grad, torch.tensor([0.0, -0.2, -1.0, -5.0, 0.0], device="cuda"))
+
+
+def test_icepop_loss_masks_extreme_ratio_without_nan():
+    trainer_logprobs = torch.tensor([100.0], device="cuda", requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.zeros_like(trainer_logprobs),
+        ref_logprobs=None,
+        advantages=torch.ones_like(trainer_logprobs),
+        loss_mask=torch.ones_like(trainer_logprobs, dtype=torch.bool),
+    )
+
+    result = IcePopLoss(IcePopLossConfig()).loss(inputs)
+
+    assert torch.equal(result.loss, torch.zeros_like(result.loss))
+    assert all(torch.isfinite(value) for value in result.metrics.values())
+    result.loss.backward()
+    assert torch.equal(trainer_logprobs.grad, torch.zeros_like(trainer_logprobs.grad))
+
+
+@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig()])
+def test_ipo_icepop_match_original_on_finite_ratios(config):
     torch.manual_seed(23)
     trainer_logprobs = (-8 * torch.rand(128, device="cuda")).requires_grad_()
     inference_logprobs = -8 * torch.rand(128, device="cuda")
@@ -106,8 +144,16 @@ def test_ipo_matches_original_on_finite_ratios():
     result = setup_rl_loss_fn(config).loss(inputs)
     log_ratio = trainer_logprobs - inference_logprobs
     ratio = log_ratio.exp()
-    keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
-    expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
+    if isinstance(config, IPOLossConfig):
+        keep = loss_mask & ((trainer_logprobs.exp() - inference_logprobs.exp()).abs() <= config.eps)
+        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
+    else:
+        keep = (
+            loss_mask
+            & (log_ratio.detach() >= torch.tensor(config.ratio_low, device="cuda").log())
+            & (log_ratio.detach() <= torch.tensor(config.ratio_high, device="cuda").log())
+        )
+        expected = (-(keep * config.adv_tau * advantages * ratio) * weights).sum()
 
     torch.testing.assert_close(result.loss, expected, rtol=1e-5, atol=1e-5)
     actual_grad = torch.autograd.grad(result.loss, trainer_logprobs, retain_graph=True)[0]
