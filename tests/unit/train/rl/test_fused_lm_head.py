@@ -1,10 +1,10 @@
 import pytest
 import torch
-from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
-from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
+from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
 
@@ -166,25 +166,25 @@ def test_full_model_fused_vs_vanilla():
     """Full model integration test comparing fused vs vanilla LM head across multiple training steps."""
     torch.manual_seed(123)
 
-    # Create tiny Llama model for fast testing
-    config = LlamaConfig(
+    # Create tiny Qwen3 model for fast testing
+    config = Qwen3Config(
         hidden_size=128,
         intermediate_size=256,
         max_position_embeddings=512,
         num_attention_heads=4,
         num_key_value_heads=2,
+        head_dim=32,
         num_hidden_layers=2,
         vocab_size=1000,
         rms_norm_eps=1e-5,
         rope_theta=10000.0,
         attention_bias=False,
-        mlp_bias=False,
     )
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         # Create two identical models
-        model_vanilla = PrimeRLLlamaForCausalLM._from_config(config)
-        model_fused = PrimeRLLlamaForCausalLM._from_config(config)
+        model_vanilla = Qwen3ForCausalLM._from_config(config)
+        model_fused = Qwen3ForCausalLM._from_config(config)
 
         # Share weights between models
         model_fused.load_state_dict(model_vanilla.state_dict())
@@ -302,22 +302,22 @@ def test_inject_prime_lm_head_vanilla():
     """Test that inject_prime_lm_head correctly wraps the model with VanillaOutputLinear."""
     torch.manual_seed(123)
 
-    config = LlamaConfig(
+    config = Qwen3Config(
         hidden_size=128,
         intermediate_size=256,
         max_position_embeddings=512,
         num_attention_heads=4,
         num_key_value_heads=2,
+        head_dim=32,
         num_hidden_layers=2,
         vocab_size=1000,
         rms_norm_eps=1e-5,
         rope_theta=10000.0,
         attention_bias=False,
-        mlp_bias=False,
     )
 
-    with torch.device("cuda"), default_dtype(torch.float32):
-        model = PrimeRLLlamaForCausalLM._from_config(config)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = Qwen3ForCausalLM._from_config(config)
 
     # Wrap with VanillaOutputLinear (chunk_size=None)
     inject_prime_lm_head(model, chunk_size=None)
@@ -354,22 +354,22 @@ def test_inject_prime_lm_head_fused():
     """Test that inject_prime_lm_head correctly wraps the model with FusedOutputLinear."""
     torch.manual_seed(123)
 
-    config = LlamaConfig(
+    config = Qwen3Config(
         hidden_size=128,
         intermediate_size=256,
         max_position_embeddings=512,
         num_attention_heads=4,
         num_key_value_heads=2,
+        head_dim=32,
         num_hidden_layers=2,
         vocab_size=1000,
         rms_norm_eps=1e-5,
         rope_theta=10000.0,
         attention_bias=False,
-        mlp_bias=False,
     )
 
-    with torch.device("cuda"), default_dtype(torch.float32):
-        model = PrimeRLLlamaForCausalLM._from_config(config)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = Qwen3ForCausalLM._from_config(config)
 
     # Wrap with FusedOutputLinear
     inject_prime_lm_head(model, chunk_size=512)
