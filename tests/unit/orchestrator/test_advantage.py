@@ -8,7 +8,7 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.gar import redistribute, win_rates
+from prime_rl.orchestrator.algo.gar import rank_advantages, redistribute, win_rates
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
@@ -328,3 +328,24 @@ def test_gar_redistribution():
 
     # Equal rewards (e.g. every pass was a confirmed hack, dropped to the minimum): zero advantages.
     assert redistribute([0.0, 0.0], [1.0, 1.0], lambda_max=1.5) == ([0.0, 0.0], 1.0)
+
+
+def test_gar_rank_advantages():
+    # Two tiers, slight: GRPO's 0/1 advantages with the top tier passing.
+    adv = rank_advantages([["a"], ["b", "c", "d"]], ["slight"], [])
+    assert adv == pytest.approx({"a": 0.75, "b": -0.25, "c": -0.25, "d": -0.25})
+    # A clear gap doubles its step; ties share a score; the result is zero-mean.
+    adv = rank_advantages([["a"], ["b", "c"], ["d"]], ["clear", "slight"], [])
+    assert adv["b"] == adv["c"]
+    assert adv["a"] - adv["b"] == pytest.approx(1.5)  # clear: 2 x (1 + 2) / 4
+    assert adv["b"] - adv["d"] == pytest.approx(0.75)  # slight: (2 + 1) / 4
+    assert sum(adv.values()) == pytest.approx(0.0)
+    slight = rank_advantages([["a"], ["b", "c"], ["d"]], ["slight", "slight"], [])
+    assert adv["a"] - adv["b"] == pytest.approx(2 * (slight["a"] - slight["b"]))
+    # Hacks as the last tier end lowest; unranked labels get no signal.
+    adv = rank_advantages([["a", "b"], ["c"], ["h"]], ["slight", "clear"], ["u"])
+    assert min(adv, key=adv.get) == "h"
+    assert adv["u"] == 0.0
+    assert sum(adv.values()) == pytest.approx(0.0)
+    # One tier: no signal.
+    assert rank_advantages([["a", "b", "c"]], [], ["u"]) == {"a": 0.0, "b": 0.0, "c": 0.0, "u": 0.0}

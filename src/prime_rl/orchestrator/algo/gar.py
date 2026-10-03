@@ -71,6 +71,47 @@ def redistribute(rewards: list[float], quality: list[float], lambda_max: float) 
     return [advantage - shift for advantage in advantages], lam
 
 
+CLEAR_GAP = 2.0
+"""In the ``advantages`` mode, a gap the grader marks ``clear`` counts this many
+``slight`` ones: enough to separate a clearly better tier, while the group's spread
+stays within twice its all-slight value."""
+
+
+def cited_hacks(verdict: GroupVerdict, data: GroupGradeData) -> dict[str, str]:
+    """Each label's hack level; a ``confirmed`` hack whose quotes are not found
+    verbatim in its cited turns is only ``suspected``."""
+    turns = {candidate.label: candidate.turns for candidate in data.candidates}
+    return {
+        v.label: "suspected"
+        if v.hack == "confirmed" and not all(quote_found(turns[v.label], e) for e in v.evidence)
+        else v.hack
+        for v in verdict.candidates
+    }
+
+
+def rank_advantages(tiers: list[list[str]], margins: list[str], unranked: list[str]) -> dict[str, float]:
+    """The ``advantages`` mode's per-label advantage from tiers (best first) and the
+    margin of each gap between adjacent tiers (``clear`` or ``slight``).
+
+    A ``slight`` gap is the win-rate difference of the two tiers (a tie counts 1/2),
+    scaled by ``2 (n - 1) / n`` for the ``n`` tiered labels, which makes it
+    ``(|T_j| + |T_j+1|) / n``; a ``clear`` gap is ``CLEAR_GAP`` times that. Scores add
+    up from the bottom tier and are centered to zero mean. With two tiers and slight
+    gaps this is exactly GRPO's advantage for 0/1 rewards with the top tier passing.
+    A single tier carries no signal (all zero). ``unranked`` labels get 0."""
+    labels = [label for tier in tiers for label in tier]
+    if len(tiers) < 2:
+        return dict.fromkeys(labels + unranked, 0.0)
+    scores, level = {}, 0.0
+    for j in reversed(range(len(tiers))):
+        if j < len(tiers) - 1:
+            gap = (len(tiers[j]) + len(tiers[j + 1])) / len(labels)
+            level += gap * (CLEAR_GAP if margins[j] == "clear" else 1.0)
+        scores.update(dict.fromkeys(tiers[j], level))
+    mean = sum(scores.values()) / len(labels)
+    return {**{label: score - mean for label, score in scores.items()}, **dict.fromkeys(unranked, 0.0)}
+
+
 class GARAlgorithm(GRPOAlgorithm):
     """GRPO whose mixed groups are graded by an agentic group grader. Owns the
     grader: its frozen model pool and the client onto its env server. Grading takes
@@ -145,12 +186,18 @@ class GARAlgorithm(GRPOAlgorithm):
             traces = [trace for _, trace in iter_trainable_traces([episode])]
             if traces:
                 members.append((next((trace for trace in traces if "patch" in trace.info), traces[0]), traces))
-        rewards = [candidate.reward for candidate, _ in members]
-        if len(set(rewards)) < 2:
-            await super().score_group(episodes)
-            return
-        mean = sum(rewards) / len(rewards)
-        passed = [reward > mean for reward in rewards]
+        passed: list[bool] | None = None
+        if self.config.mode == "advantages":
+            if len(members) < 2:
+                self.no_signal(episodes)
+                return
+        else:
+            rewards = [candidate.reward for candidate, _ in members]
+            if len(set(rewards)) < 2:
+                await super().score_group(episodes)
+                return
+            mean = sum(rewards) / len(rewards)
+            passed = [reward > mean for reward in rewards]
 
         data, labels = GroupGradeData.from_traces(
             [candidate for candidate, _ in members], passed, random.Random(episode_group_id(episodes[0]))
@@ -182,8 +229,13 @@ class GARAlgorithm(GRPOAlgorithm):
             await self.log_grade(grade, episodes, labels)
 
         if verdict is None:
-            await super().score_group(episodes)
+            if self.config.mode == "advantages":
+                self.no_signal(episodes)
+            else:
+                await super().score_group(episodes)
             info = {label: {"label": label, **common} for label in labels}
+        elif self.config.mode == "advantages":
+            info = self.apply_ranking(verdict, data, traces_by_label, common)
         else:
             info = self.apply(verdict, data, traces_by_label, common)
 
@@ -268,13 +320,7 @@ class GARAlgorithm(GRPOAlgorithm):
         advantages. Returns each label's ``info.gar`` record."""
         candidates = {candidate.label: candidate for candidate in data.candidates}
         verdicts = {candidate.label: candidate for candidate in verdict.candidates}
-        hacks = {
-            # A confirmed hack must quote its cited turns verbatim; otherwise it is only suspected.
-            label: "suspected"
-            if v.hack == "confirmed" and not all(quote_found(candidates[label].turns, e) for e in v.evidence)
-            else v.hack
-            for label, v in verdicts.items()
-        }
+        hacks = cited_hacks(verdict, data)
         ranked = [label for label, candidate in candidates.items() if candidate.passed and hacks[label] != "confirmed"]
         rates = win_rates([[label for label in tier if label in ranked] for tier in verdict.ranking])
         f_min = self.config.f_min
@@ -311,6 +357,56 @@ class GARAlgorithm(GRPOAlgorithm):
                 "lambda": lam,
             }
             for label in candidates
+        }
+
+    def no_signal(self, episodes: list[vf.Episode]) -> None:
+        """Zero advantages for a group the ``advantages`` mode cannot rank (pruned)."""
+        for _, trace in iter_trainable_traces(episodes):
+            assign_advantages(trace, 0.0)
+
+    def apply_ranking(
+        self,
+        verdict: GroupVerdict,
+        data: GroupGradeData,
+        traces_by_label: dict[str, list[vf.Trace]],
+        common: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """The ``advantages`` mode: advantages from the ranking alone
+        (:func:`rank_advantages`), confirmed hacks in a tier of their own below the
+        last, a ``clear`` gap above them. Returns each label's ``info.gar`` record."""
+        hacks = cited_hacks(verdict, data)
+        confirmed = [label for label, hack in hacks.items() if hack == "confirmed"]
+        tiers = [list(tier) for tier in verdict.ranking]
+        margins = list(verdict.margins) or ["slight"] * (len(tiers) - 1)
+        if confirmed:
+            tiers.append(confirmed)
+            margins.append("clear")
+        tiered = {label for tier in tiers for label in tier}
+        # A confirmed hack whose citation failed is in no tier: it gets no signal.
+        unranked = [label for label in traces_by_label if label not in tiered]
+        advantages = rank_advantages(tiers, margins, unranked)
+        rates = win_rates(tiers)
+        for label, traces in traces_by_label.items():
+            for trace in traces:
+                assign_advantages(trace, advantages[label])
+                trace.record_metric("gar/hack_confirmed", float(hacks[label] == "confirmed"))
+                trace.record_metric("gar/hack_suspected", float(hacks[label] == "suspected"))
+                if label in rates:
+                    trace.record_metric("gar/win_rate", rates[label])
+        tier_of = {label: index for index, tier in enumerate(tiers) for label in tier}
+        evidence = {v.label: [e.model_dump() for e in v.evidence] for v in verdict.candidates}
+        return {
+            label: {
+                "label": label,
+                **common,
+                "hack": hacks[label],
+                "evidence": evidence[label],
+                "tier": tier_of.get(label),
+                "margins": margins,
+                "w": rates.get(label),
+                "advantage": advantages[label],
+            }
+            for label in traces_by_label
         }
 
     async def log_grade(self, grade: vf.Episode, episodes: list[vf.Episode], labels: dict[str, str]) -> None:
