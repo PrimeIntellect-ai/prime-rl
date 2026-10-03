@@ -7,12 +7,10 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import (
-    CISPOLossConfig,
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
-    PPOLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -224,67 +222,6 @@ class IcePopLoss:
         return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
-class PPOLoss:
-    """Token-level PPO clipped surrogate with bounded importance weights."""
-
-    def __init__(self, config: PPOLossConfig):
-        self.config = config
-
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        config = self.config
-        logprobs = inputs.trainer_logprobs[inputs.loss_mask]
-        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask]
-        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
-
-        ratio = _capped_importance_ratio(log_ratio, config.max_importance_ratio)
-        clipped_ratio = ratio.clamp(config.ratio_low, config.ratio_high)
-        per_token_loss = -torch.minimum(advantages * ratio, advantages * clipped_ratio)
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
-
-        clipped = ((advantages > 0) & (log_ratio.detach() > log_ratio.new_tensor(config.ratio_high).log())) | (
-            (advantages < 0) & (log_ratio.detach() < log_ratio.new_tensor(config.ratio_low).log())
-        )
-        metrics = {
-            "is_clipped": clipped.sum() / max(clipped.numel(), 1),
-            "ratio_capped": (log_ratio.detach() > log_ratio.new_tensor(config.max_importance_ratio).log()).sum()
-            / max(log_ratio.numel(), 1),
-        }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
-
-
-class CISPOLoss:
-    """CISPO uses a detached clipped importance weight on the current logprob."""
-
-    def __init__(self, config: CISPOLossConfig):
-        self.config = config
-
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        config = self.config
-        logprobs = inputs.trainer_logprobs[inputs.loss_mask]
-        log_ratio = logprobs - inputs.inference_logprobs[inputs.loss_mask]
-        advantages = config.adv_tau * inputs.advantages[inputs.loss_mask]
-
-        detached_log_ratio = log_ratio.detach()
-        log_ratio_high = log_ratio.new_tensor(config.ratio_high).log()
-        clipped_log_ratio = detached_log_ratio.clamp(max=log_ratio_high)
-        is_clipped = detached_log_ratio > log_ratio_high
-        if config.ratio_low:
-            log_ratio_low = log_ratio.new_tensor(config.ratio_low).log()
-            clipped_log_ratio = clipped_log_ratio.clamp(min=log_ratio_low)
-            is_clipped = is_clipped | (detached_log_ratio < log_ratio_low)
-        importance_weight = clipped_log_ratio.exp()
-
-        per_token_loss = -importance_weight * advantages * logprobs
-        if inputs.loss_weights is not None:
-            per_token_loss = per_token_loss * inputs.loss_weights[inputs.loss_mask]
-
-        metrics = {
-            "is_clipped": is_clipped.sum() / max(is_clipped.numel(), 1),
-        }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
-
-
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     Ref-KL loss type (on-policy distillation): the reverse KL to the reference
@@ -366,10 +303,6 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
-        case PPOLossConfig():
-            return PPOLoss(loss_config)
-        case CISPOLossConfig():
-            return CISPOLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 
