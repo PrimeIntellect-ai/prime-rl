@@ -1,0 +1,62 @@
+# Qwen3-30B-A3B SFT on one 8-GPU node: the Qwen3-235B max-MFU setup
+# (configs/benchmark/qwen3-235b-a22b/sft-4n-16k-mega-moe.toml) scaled down to the small MoE: ep=8,
+# seq 16384, one packed 16384-token sample per GPU per step, Mega MoE dispatch, selective AC,
+# fullgraph, balanced routing. NOT YET MEASURED: the table in docs/performance.md has no row for it
+# until it has been run; the knobs most worth sweeping are micro_batch_size (2 or 4, with
+# max_tokens_per_rank = micro_batch_size * 16384) and `model.ac = "None"`, which the 30B's
+# activations should allow on 268 GiB GPUs.
+#
+#   uv run sft @ configs/benchmark/qwen3-30b-a3b/sft-1n-16k-mega-moe.toml
+
+dist_timeout_seconds = 7200
+max_steps = 20
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+NCCL_MAX_CTAS = "16"
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+
+[renderer]
+name = "qwen3"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+impl = "custom"
+seq_len = 16384
+ep = 8
+optim_cpu_offload = false
+ac_offloading = "None"
+moe_router_dtype = "bfloat16"
+
+[model.ac]
+mode = "selective"
+freq = 1
+
+[model.compile]
+fullgraph = true
+
+[model.moe.dispatch]
+type = "mega_moe"
+max_tokens_per_rank = 16384
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+seq_len = 16384
+batch_size = 8
+micro_batch_size = 1
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+
+[slurm]
+job_name = "bench-qwen30b-sft-1n-16k-mega-moe"
+partition = "all"
+
+[model.debug]
+force_balanced_routing = true
