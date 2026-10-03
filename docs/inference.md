@@ -309,13 +309,13 @@ Router replay only replays expert ids; the trainer still recomputes the routing 
 ```toml
 [trainer]
 enable_router_replay = true
-
-[inference]
-enable_return_routed_expert_weights = true # implies inference.vllm.enable_return_routed_experts
+enable_total_router_recall = true # this will also auto-set inference.enable_return_routed_expert_weights = true
 ```
 
-- The trainer's forward uses the sampler's expert ids and weights exactly. The backward still goes through the trainer's router (`w - sg[w] + w_sampler`), so the gradient matches ids-only router replay and the router stays trainable. Set `trainer.model.freeze_moe_router = true` to keep it fixed.
-- The routed-experts payload becomes int32 `[tokens, layers, 2 * top_k]` (expert ids, then fp32 weight bits) and rides router replay's data path unchanged. That is `8 * layers * top_k` bytes per token (3 KiB for Qwen3-30B-A3B, ~5 KiB for GLM-5) instead of `layers * top_k` (uint8 ids), both in the HTTP response and in vLLM's CPU routing buffer.
+When launching the inference server standalone, set `inference.enable_return_routed_expert_weights = true` yourself.
+
+- The trainer uses the sampler's expert ids and weights as constants, so **the router is not trained** while this is on (`trainer.model.freeze_moe_router` makes no difference). Gradients still reach the experts and the rest of the model.
+- The routed-experts payload becomes int32 `[tokens, layers, 2 * top_k]` (expert ids, then fp32 weight bits) and rides router replay's data path unchanged, inline in the HTTP response. That is `8 * layers * top_k` bytes per token (3 KiB for Qwen3-30B-A3B, ~5 KiB for GLM-5) instead of `layers * top_k` (uint8 ids), both in the response and in vLLM's CPU routing buffer.
 - Weights are captured from vLLM's `BaseRouter` routers (Qwen3-MoE, Qwen3.5-MoE, GLM-4.5/GLM-5, Nemotron-H, ...). Monolithic MoE kernels and DeepSeek-V4 only capture ids and fail at startup.
 - Same constraints as router replay, and disaggregated P/D is not supported.
 

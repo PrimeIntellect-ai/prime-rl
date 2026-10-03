@@ -389,8 +389,8 @@ class MoE(nn.Module):
         ) = self.router(x, routed_experts=routed_experts)
 
         if replayed_scores is not None:
-            # Forward with the sampler's weights exactly; backward through the trainer router.
-            top_scores = top_scores - top_scores.detach() + replayed_scores
+            # The sampler's weights are constants: the router gets no gradient under Total Router Recall.
+            top_scores = replayed_scores
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():

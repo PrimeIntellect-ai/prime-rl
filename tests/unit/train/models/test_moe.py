@@ -273,4 +273,4 @@ def test_moe_total_router_recall_replays_sampler_weights():
 
     assert torch.equal(recorded["scores"], weights.view(-1, 2))
     assert torch.equal(recorded["selected"], ids.view(-1, 2))
-    assert moe.router.gate.weight.grad.abs().sum() > 0
+    assert moe.router.gate.weight.grad is None

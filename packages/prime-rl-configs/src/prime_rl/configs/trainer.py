@@ -668,6 +668,9 @@ class TrainerConfig(BaseConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    enable_total_router_recall: bool = False
+    """Total Router Recall: also replay the sampler's routing weights, used as constants, instead of recomputing them. The router is not trained while this is on. Requires ``enable_router_replay`` and ``enable_return_routed_expert_weights=true`` on the inference server."""
+
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 
@@ -782,4 +785,10 @@ class TrainerConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+    @model_validator(mode="after")
+    def total_router_recall_requires_router_replay(self):
+        if self.enable_total_router_recall and not self.enable_router_replay:
+            raise ValueError("enable_total_router_recall requires enable_router_replay")
         return self

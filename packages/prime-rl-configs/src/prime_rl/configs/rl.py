@@ -492,20 +492,13 @@ class RLConfig(BaseConfig):
                         stacklevel=2,
                     )
                 self.inference.vllm.enable_return_routed_experts = True
+                if self.trainer.enable_total_router_recall:
+                    self.inference.enable_return_routed_expert_weights = True
+                    self.inference.auto_setup_routed_expert_weights()  # ran before this flag was set
             else:
                 warnings.warn(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server (and set `enable_return_routed_expert_weights = true` for Total Router Recall).",
                     stacklevel=2,
-                )
-        return self
-
-    @model_validator(mode="after")
-    def validate_routed_expert_weights_require_router_replay(self):
-        if self.inference is not None and self.inference.enable_return_routed_expert_weights:
-            if not self.trainer.enable_router_replay:
-                raise ValueError(
-                    "inference.enable_return_routed_expert_weights (Total Router Recall) requires "
-                    "trainer.enable_router_replay = true."
                 )
         return self
 
