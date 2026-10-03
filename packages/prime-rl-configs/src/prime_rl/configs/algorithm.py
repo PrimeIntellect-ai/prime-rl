@@ -2,7 +2,7 @@
 
 An algorithm is a named, self-contained config — a discriminated union keyed
 on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
-``opsd``, ``sft``, ``echo``, ``debug``).
+``opsd``, ``sft``, ``echo``, ``debug``, ``gar``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -37,7 +37,7 @@ executes them.
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -391,6 +391,84 @@ class DebugAlgoConfig(BaseAlgoConfig):
         return self
 
 
+class GraderConfig(BaseConfig):
+    """The group grader of ``gar``: a verifiers env (normally the ``group-grade``
+    taskset wrapping the train source's own taskset) served on its own env server, and
+    the frozen model its agent runs on. The grader's tokens are never trained."""
+
+    model: FrozenModelConfig
+    """The grader model — an inline frozen hosted model (``name`` + ``base_url``)."""
+
+    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
+    """The grader env, e.g. ``{ taskset = { id = "group-grade", task = { inner = { id = "r2e-gym" } } } }``.
+    Narrowed to the selected env's config class by the env id, else the taskset id."""
+
+    serve: vf.ServeConfig = vf.ServeConfig()
+    """How the grader env server is hosted (the launcher spawns it as split ``grade``
+    unless ``address`` is set)."""
+
+    timeout: float = Field(1800.0, gt=0)
+    """Seconds a group may wait for a grader slot and be graded; past it the group keeps
+    plain GRPO advantages. A group also falls back at the last step whose batch can
+    still take it under ``max_off_policy_steps``."""
+
+    max_concurrent: int = Field(32, ge=1)
+    """Grader episodes in flight at once for this source; further groups wait their turn."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_env(cls, data):
+        return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
+
+    @model_validator(mode="after")
+    def require_taskset(self):
+        if not self.env.taskset.id:
+            raise ValueError('the gar grader needs an env — set grader.env = { taskset = { id = "group-grade", ... } }')
+        return self
+
+
+class GARAlgoConfig(GRPOAlgoConfig):
+    type: Literal["gar"] = "gar"  # type: ignore[assignment]
+    """GAR — groupwise advantage redistribution (MiMo-V2.6 §4.3.2): GRPO whose
+    mixed groups (rewards not all equal) are graded by an agent that sees the whole
+    group in one sandbox. A confirmed hack's reward drops to the group's minimum
+    before the group statistics; the rollouts with a positive advantage are then
+    rescaled by a quality factor from the grader's ranking
+    (``f = f_min + (1 - f_min) * win rate``), with their positive mass kept
+    (``lambda``, capped at ``lambda_max``) and the group re-centered. Any grader
+    failure, timeout or invalid verdict keeps the group's plain GRPO advantages."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    grader: GraderConfig
+    """The group grader: env, served model and limits."""
+
+    mode: Literal["rewards", "advantages"] = "rewards"
+    """``rewards``: the above, the grader reshapes reward-based advantages.
+    ``advantages``: rewards are not used. Every group is graded; the grader ranks all
+    candidates into tiers (ties allowed) with a margin per gap between adjacent tiers
+    (``slight`` = 1/4, ``clear`` = 1/2, ``large`` = 1 = the 0/1 pass-vs-fail gap;
+    default ``slight``), confirmed hacks go below the last tier with a ``large`` gap.
+    The tiers' implied scores (bottom 0, each tier up adds its margin) centered to zero
+    mean are the advantages, i.e. GRPO's advantages for those scores. A single tier or
+    any grader failure gives the group zero advantages. ``f_min`` and ``lambda_max``
+    apply to ``rewards`` only."""
+
+    f_min: float = Field(0.5, gt=0, le=1)
+    """Quality factor of the worst-ranked candidate; the best gets 1."""
+
+    lambda_max: float = Field(1.5, ge=1)
+    """Cap on the rescale factor that keeps the positive advantages' total."""
+
+    @model_validator(mode="after")
+    def forbid_length_penalty(self):
+        if self.length_penalty is not None:
+            raise ValueError(
+                f"gar (mode {self.mode!r}) ranks by quality instead of a length penalty; unset length_penalty"
+            )
+        return self
+
+
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | EchoAlgoConfig
@@ -400,7 +478,8 @@ AlgoConfig: TypeAlias = Annotated[
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig
-    | DebugAlgoConfig,
+    | DebugAlgoConfig
+    | GARAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -415,6 +494,7 @@ its class defaults are the vetted setting.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
+- ``gar`` — GRPO whose mixed groups an agentic grader ranks and screens for hacks. Needs ``grader``.
 - ``debug`` — the same constant advantage on every sampled token, ignoring
   rewards. Debugging only: for infra work that needs every token trainable.
 

@@ -9,7 +9,7 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-Kind = Literal["train", "eval"]
+Kind = Literal["train", "eval", "grade"]
 Subset = Literal["all", "effective"]
 
 

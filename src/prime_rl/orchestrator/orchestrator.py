@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.algo.gar import GARAlgorithm
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -78,7 +79,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
+from prime_rl.utils.pathing import env_address_file, get_broadcast_dir, get_config_dir
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
@@ -234,6 +235,10 @@ class Orchestrator:
             clients=self.clients,
             renderer_config=config.renderer,
         )
+        for env in self.train_envs:
+            if isinstance(env.algorithm, GARAlgorithm):
+                grader_address_file = env_address_file(config_dir, "grade", env.name)
+                env.algorithm.bind(self.progress, config.max_off_policy_steps, grader_address_file)
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
 
@@ -1060,6 +1065,7 @@ class Orchestrator:
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:
+                    await env.algorithm.close()
                     for clients in (env.generation_source.connected, env.algorithm.connected):
                         if clients is not None:
                             await clients.aclose()

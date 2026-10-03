@@ -1,0 +1,24 @@
+# GAR (groupwise advantage redistribution) for the GLM-5.3 SWE run: an agentic grader
+# screens every mixed r2e group for hacks and ranks its passes (docs/algorithms.md, GAR).
+# Append to the base config:
+#
+#   uv run rl @ examples/advanced/glm-5.3/swe.toml @ examples/advanced/glm-5.3/swe-gar.toml
+
+[orchestrator.train.algo]
+type = "gar"
+lambda_max = 1.5
+
+[orchestrator.train.algo.grader]
+timeout = 1800
+max_concurrent = 32
+
+[orchestrator.train.algo.grader.model]
+name = "zai-org/GLM-5.2" # FILL IN: the served grader model
+base_url = "http://localhost:8001/v1" # FILL IN: its OpenAI-compatible endpoint
+
+[orchestrator.train.algo.grader.env]
+taskset.id = "group-grade"
+taskset.task.inner.id = "r2e-gym"
+agent.harness.id = "rlm"
+agent.runtime.labels = ["glm5"]
+agent.max_turns = 150

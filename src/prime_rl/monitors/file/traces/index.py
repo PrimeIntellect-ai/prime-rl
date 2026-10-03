@@ -23,7 +23,7 @@ def episode_kind(rec: dict) -> str:
     """The kind of work an episode did. The file monitor stamps it as the episode
     lands; a record without the stamp is read off its run info instead."""
     for trace in rec.get("traces") or []:
-        if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval"):
+        if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval", "grade"):
             return kind
     run = rec.get("run") or {}
     return (run.get("work") or {}).get("type") or run.get("type") or "eval"

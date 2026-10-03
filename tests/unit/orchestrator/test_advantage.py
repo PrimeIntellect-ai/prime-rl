@@ -8,6 +8,7 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
+from prime_rl.orchestrator.algo.gar import rank_advantages, redistribute, win_rates
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
@@ -268,3 +269,45 @@ def test_assign_advantages_rejects_misaligned():
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
         assign_advantages(episode.traces[0], [0.5])
+
+
+def test_gar_redistribution():
+    assert win_rates([["c1"], ["c2", "c3"], ["c4"]]) == {"c1": 1.0, "c2": 0.5, "c3": 0.5, "c4": 0.0}
+    assert win_rates([["c1", "c2"]]) == {"c1": 0.5, "c2": 0.5}
+    assert win_rates([["c1"]]) == {"c1": 1.0}
+
+    # f = 0.5 + 0.5 * win rate keeps the passes' total credit: lambda = 1 / mean(f) = 4/3.
+    advantages, lam = redistribute([1.0, 1.0, 1.0, 0.0], [1.0, 0.75, 0.5, 1.0], lambda_max=1.5)
+    assert lam == pytest.approx(4 / 3)
+    assert advantages == pytest.approx([1 / 3, 0.25, 1 / 6, -0.75])
+
+    # A binding cap shrinks the passes' mass; re-centering restores a zero-mean group.
+    advantages, lam = redistribute([1.0, 1.0, 1.0, 0.0], [1.0, 0.75, 0.5, 1.0], lambda_max=1.2)
+    assert lam == 1.2
+    assert sum(advantages) == pytest.approx(0.0)
+    assert advantages[0] > advantages[1] > advantages[2] > 0 > advantages[3]
+
+    # Non-binary rewards: P is the rollouts above the mean 0.5 (0.9 and 0.6); lambda = 0.5 / 0.4.
+    advantages, lam = redistribute([0.9, 0.6, 0.3, 0.2], [0.75, 1.0, 1.0, 1.0], lambda_max=1.5)
+    assert lam == pytest.approx(1.25)
+    assert advantages == pytest.approx([0.375, 0.125, -0.2, -0.3])
+
+    # Equal rewards (e.g. every pass was a confirmed hack, dropped to the minimum): zero advantages.
+    assert redistribute([0.0, 0.0], [1.0, 1.0], lambda_max=1.5) == ([0.0, 0.0], 1.0)
+
+
+def test_gar_rank_advantages():
+    # Steps are margins in reward units: c3 = 0, c1 = c4 = 0 + 1 (large), c2 = 1 + 0.25 (slight).
+    adv = rank_advantages([["c2"], ["c1", "c4"], ["c3"]], ["slight", "large"], [])
+    assert adv == pytest.approx({"c2": 0.4375, "c1": 0.1875, "c4": 0.1875, "c3": -0.8125})
+    # Two tiers with a large gap: GRPO's 0/1 advantages with the top tier passing.
+    adv = rank_advantages([["a"], ["b", "c", "d"]], ["large"], [])
+    assert adv == pytest.approx({"a": 0.75, "b": -0.25, "c": -0.25, "d": -0.25})
+    # Hacks as the last tier end lowest; unranked labels get no signal; zero mean.
+    adv = rank_advantages([["a", "b"], ["c"], ["h"]], ["clear", "large"], ["u"])
+    assert min(adv, key=adv.get) == "h"
+    assert adv["a"] - adv["c"] == pytest.approx(0.5)
+    assert adv["u"] == 0.0
+    assert sum(adv.values()) == pytest.approx(0.0)
+    # One tier: no signal.
+    assert rank_advantages([["a", "b", "c"]], [], ["u"]) == {"a": 0.0, "b": 0.0, "c": 0.0, "u": 0.0}

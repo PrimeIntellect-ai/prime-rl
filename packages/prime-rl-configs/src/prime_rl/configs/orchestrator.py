@@ -6,9 +6,11 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
+    GARAlgoConfig,
     GRPOAlgoConfig,
 )
 from prime_rl.configs.monitors import TrainMonitorsConfig
@@ -314,6 +316,13 @@ class TrainSourceConfig(EnvConfig):
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
+
+    @property
+    def grade_source(self) -> EnvConfig | None:
+        """The ``gar`` grader's env server, named after this source; None for other algorithms."""
+        if not isinstance(self.algo, GARAlgoConfig):
+            return None
+        return EnvConfig(name=self.resolved_name, env=self.algo.grader.env, serve=self.algo.grader.serve)
 
 
 class EvalSourceConfig(EnvConfig):
@@ -659,6 +668,34 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def checkpoint_gar_candidates(self):
+        """A ``gar`` source checkpoints each rollout's box when its agent finishes
+        (verifiers ``agent.checkpoint_on_finish``), so the grader can open every
+        candidate's box; the algorithm deletes a group's checkpoints after grading."""
+        for env_cfg in self.train.source:
+            if isinstance(env_cfg.algo, GARAlgoConfig):
+                for agent in agent_config_fields(env_cfg.env).values():
+                    agent.checkpoint_on_finish = True
+        return self
+
+    @model_validator(mode="after")
+    def validate_gar_advantages_mode(self):
+        """``gar`` in the ``advantages`` mode does not use rewards, so a reward-driven
+        task sampler would sample on a signal that does not train."""
+        for env_cfg in self.train.source:
+            if (
+                isinstance(env_cfg.algo, GARAlgoConfig)
+                and env_cfg.algo.mode == "advantages"
+                and env_cfg.curriculum is not None
+                and isinstance(env_cfg.curriculum.sampler, DifficultyPoolSamplerConfig)
+            ):
+                raise ValueError(
+                    f"env {env_cfg.resolved_name!r}: gar mode 'advantages' does not use rewards; "
+                    "the difficulty_pool sampler needs them (use the standard sampler)"
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_env_algorithms(self):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
@@ -809,8 +846,10 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_sources(self) -> list[tuple[str, EnvConfig]]:
         """Every ``(split, source)`` this run pulls from, train first then eval — the
-        order that fixes each source's deterministic env-server port."""
+        order that fixes each source's deterministic env-server port. A ``gar`` train
+        source adds its grader as split ``grade``."""
         sources: list[tuple[str, EnvConfig]] = [("train", source) for source in self.train.source]
+        sources += [("grade", grade) for source in self.train.source if (grade := source.grade_source) is not None]
         if self.eval is not None:
             sources += [("eval", source) for source in self.eval.source]
         return sources
