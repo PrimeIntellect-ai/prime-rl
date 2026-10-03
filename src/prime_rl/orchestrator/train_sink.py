@@ -134,9 +134,16 @@ class TrainSink:
 
     @property
     def finalizing_full(self) -> bool:
-        """Whether an env reached its algorithm's ``max_finalizing_groups``."""
+        """Whether an env has as many groups finalizing as its algorithm's
+        ``max_finalizing_groups`` or, if more, as one batch of its groups: a
+        bigger batch needs more groups graded per step."""
         counts = Counter(entry.env_name for entry in self.finalizing.values())
-        return any(n >= self.train_envs.get(name).algorithm.max_finalizing_groups for name, n in counts.items())
+        for name, n in counts.items():
+            env = self.train_envs.get(name)
+            batch_groups = self.batch_size // env.config.group_size
+            if n >= max(env.algorithm.max_finalizing_groups, batch_groups):
+                return True
+        return False
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)

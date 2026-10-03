@@ -54,7 +54,8 @@ class Algorithm:
     # Run ``finalize_group`` as a background task instead of inline in the
     # orchestrator loop; for algorithms whose group scoring awaits slow work.
     finalize_in_background: ClassVar[bool] = False
-    # Background finalizations per env before train dispatch pauses.
+    # Background finalizations per env before train dispatch pauses; the train
+    # sink raises it to one batch of the env's groups.
     max_finalizing_groups: int = 64
 
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
