@@ -213,6 +213,17 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
 
 
+def test_grpo_prompt_loss_aggregation_equalizes_group_mass():
+    """Each group's |advantage|·token mass is T̄ times its mean |advantage|, whatever its total length."""
+    algo = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), clients=None)
+    masses = []
+    for length in (10, 100):
+        group = _make_group(rewards=[1.0, 0.0], completion_lengths=[length, length])
+        asyncio.run(algo.score_group(group))
+        masses.append(sum(abs(_scalar(episode)) * length for episode in group) / algo.mean_group_tokens)
+    assert masses == pytest.approx([0.5, 0.5])
+
+
 # --------------------------------------------------------------------------
 # GRPO linear length penalty: pass_rate-scaled penalty before the baseline.
 # --------------------------------------------------------------------------

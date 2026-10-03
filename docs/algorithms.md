@@ -327,6 +327,14 @@ type = "linear"
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
+**Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). The trainer divides the `rl` loss by the batch's total loss-token count, so every token weighs the same and prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, each prompt group gets equal total weight, spread evenly over its tokens — MiMo-V2.6's prompt-mean (Eq. 1), which it uses to keep response length from growing too fast. It runs in `score_group`: each group's advantages (after the baseline and any length penalty) are scaled by $\bar{T}/T_q$, where $T_q$ is the group's total trainable tokens and $\bar{T}$ is an EMA of $T_q$ over groups with nonzero advantages. $\bar{T}$ keeps the overall gradient scale close to token-mean; exact prompt-mean would divide by per-batch counts instead, which differs only by a per-step factor on the effective learning rate. $\bar{T}$ is not checkpointed and re-warms within ~100 groups after a restart.
+
+```toml
+[orchestrator.train.algo]
+type = "grpo"
+loss_aggregation = "prompt"
+```
+
 ### Hierarchical GRPO
 
 GRPO gives each rollout its reward minus the average reward of comparable rollouts. In an ordinary single-agent group, every rollout answers the same task, so one group average is enough.

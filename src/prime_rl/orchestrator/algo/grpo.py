@@ -11,6 +11,15 @@ from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_node
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
 
+# EMA decay of the mean group token count used by prompt-mean loss aggregation (~100-group window).
+GROUP_TOKENS_DECAY = 0.99
+
+
+def num_trainable_tokens(trace: vf.Trace) -> int:
+    """Sampled (mask-True) tokens on the trace's trainable branches: the tokens its advantage is assigned to."""
+    on_trainable_branch = {id(node) for branch in trace.branches if branch.trainable for node in branch.nodes}
+    return sum(sum(node.mask) for node in trace.nodes if id(node) in on_trainable_branch)
+
 
 class GRPOAlgorithm(Algorithm):
     """Group Relative Policy Optimization: sample a group of rollouts from the
@@ -21,6 +30,8 @@ class GRPOAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
         self.length_weighted_baseline = config.length_weighted_baseline
+        self.loss_aggregation = config.loss_aggregation
+        self.mean_group_tokens: float | None = None
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
@@ -49,5 +60,17 @@ class GRPOAlgorithm(Algorithm):
             )
             baseline = (lengths * shaped_rewards).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
+        if self.loss_aggregation == "prompt" and advantages.any():
+            # Scale by T̄/T_q so the trainer's global token-mean becomes a per-prompt mean. All-zero groups
+            # are skipped: the train sink drops their tokens from the rl denominator. T̄ is not checkpointed;
+            # it re-warms within ~100 groups after a restart and until then only shifts the effective lr.
+            group_tokens = sum(num_trainable_tokens(trace) for trace in traces)
+            if self.mean_group_tokens is None:
+                self.mean_group_tokens = float(group_tokens)
+            else:
+                self.mean_group_tokens = (
+                    GROUP_TOKENS_DECAY * self.mean_group_tokens + (1.0 - GROUP_TOKENS_DECAY) * group_tokens
+                )
+            advantages = advantages * (self.mean_group_tokens / group_tokens)
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
