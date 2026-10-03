@@ -331,7 +331,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-A resume replays the samples that were queued for the next batch when the checkpoint was written, dropping those that would exceed `max_off_policy_steps`; in-flight rollouts are regenerated.
+A resume replays the samples that were queued for the next batch when the checkpoint was written (`orchestrator/queue.pt`), dropping those that would exceed `max_off_policy_steps`; in-flight rollouts and partly finished groups are regenerated. If `queue.pt` cannot be loaded (for example after a dependency upgrade), the run resumes without replay and logs a warning. Replayed samples train normally, but their episodes are not kept, so the first steps after a resume leave them out of the rollout metrics and trace logs. Multimodal samples keep references to their image URLs: replay them only if those URLs outlive the run (not ephemeral storage).
 
 ### Exporting Checkpoints
 

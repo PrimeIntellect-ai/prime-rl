@@ -9,8 +9,10 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 import verifiers.v1 as vf
@@ -26,6 +28,18 @@ from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Prog
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+@dataclass(frozen=True)
+class QueuedTrace:
+    """What the sink needs about a queued trace besides its samples; also
+    what a resume replays from the checkpoint."""
+
+    env_name: str
+    group_id: str
+    episode_id: str
+    policy_start: float
+    """Oldest policy version that generated the trace; ``inf`` for frozen-sourced traces, which never go stale."""
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -90,6 +104,9 @@ class TrainSink:
         # episodes the group will never deliver.
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
+        self.queued: dict[str, QueuedTrace] = {}
+        # Episodes of queued traces, for the shipped cohort's metrics. Traces
+        # replayed from a checkpoint have none.
         self.episode_by_trace: dict[str, vf.Episode] = {}
         # Queued traces voided by the staleness sweep since the last ship;
         # read and reset by the orchestrator's per-step metrics.
@@ -101,16 +118,25 @@ class TrainSink:
         self.reported_zero_output_windows = 0
 
     def state_dict(self) -> dict[str, Any]:
-        """Accepted traces still waiting for a batch. Saved with the
-        orchestrator checkpoint so a resume replays them instead of
-        regenerating them."""
-        return {"pending_batch": self.pending_batch, "episode_by_trace": self.episode_by_trace}
+        """Accepted traces still waiting for a batch: their samples and
+        :class:`QueuedTrace` records, no episodes. Saved with the orchestrator
+        checkpoint so a resume replays them instead of regenerating them. The
+        copies are shallow: queued samples are not mutated until they ship."""
+        return {
+            "pending_batch": dict(self.pending_batch),
+            "queued": dict(self.queued),
+            "group_traces": dict(self.group_traces),
+        }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.pending_batch = state_dict["pending_batch"]
-        self.episode_by_trace = state_dict["episode_by_trace"]
-        for trace_id in self.pending_batch:
-            self.train_source.pending[episode_env_name(self.episode_by_trace[trace_id])] += 1
+        self.queued = state_dict["queued"]
+        self.group_traces = state_dict["group_traces"]
+        for queued in self.queued.values():
+            self.train_source.pending[queued.env_name] += 1
+            if not self.group_queued[queued.group_id]:
+                self.train_source.pending_groups[queued.env_name] += 1
+            self.group_queued[queued.group_id] += 1
         self._drop_stale()
         get_logger().info(f"Replaying {len(self.pending_batch)} queued traces from the checkpoint")
 
@@ -127,9 +153,8 @@ class TrainSink:
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
-        for trace_id in self.pending_batch:
-            episode = self.episode_by_trace[trace_id]
-            counts[episode_env_name(episode)] += 1
+        for queued in self.queued.values():
+            counts[queued.env_name] += 1
         return dict(counts)
 
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
@@ -178,15 +203,17 @@ class TrainSink:
         self._drop_stale()
         return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
-    def _dequeue(self, trace_id: str) -> None:
-        """Release a queued trace from the mixer's per-env counts."""
-        episode = self.episode_by_trace[trace_id]
-        env_name, group_id = episode_env_name(episode), episode_group_id(episode)
+    def _dequeue(self, trace_id: str) -> QueuedTrace:
+        """Remove a queued trace and release it from the mixer's per-env counts."""
+        queued = self.queued.pop(trace_id)
+        self.episode_by_trace.pop(trace_id, None)
+        env_name, group_id = queued.env_name, queued.group_id
         self.train_source.pending[env_name] -= 1
         self.group_queued[group_id] -= 1
         if not self.group_queued[group_id]:
             del self.group_queued[group_id], self.group_traces[group_id]
             self.train_source.pending_groups[env_name] -= 1
+        return queued
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past their env's ``max_off_policy_steps``. The batch being
@@ -209,15 +236,12 @@ class TrainSink:
             trace_ids = list(self.pending_batch)
         dropped = 0
         for trace_id in trace_ids:
-            episode = self.episode_by_trace[trace_id]
-            policy = train_work(episode).policy
-            max_off_policy_steps = self.train_envs.get(episode_env_name(episode)).config.max_off_policy_steps
-            if policy is None or policy.start >= min_fresh_version(self.progress.step, max_off_policy_steps):
+            queued = self.queued[trace_id]
+            max_off_policy_steps = self.train_envs.get(queued.env_name).config.max_off_policy_steps
+            if queued.policy_start >= min_fresh_version(self.progress.step, max_off_policy_steps):
                 continue
             del self.pending_batch[trace_id]
-            self._dequeue(trace_id)
-            del self.episode_by_trace[trace_id]
-            self.pending_episodes.cancelled.add(episode.id)
+            self.pending_episodes.cancelled.add(self._dequeue(trace_id).episode_id)
             dropped += 1
         if dropped:
             self.stale_drops += dropped
@@ -319,9 +343,14 @@ class TrainSink:
         group_id = episode_group_id(group[0])
         self.group_traces[group_id] = self.group_queued[group_id] = len(samples_by_trace)
         for episode in group:
+            policy = train_work(episode).policy
             for trace in episode.traces:
-                if trace.id in samples_by_trace:
-                    self.episode_by_trace[trace.id] = episode
+                if trace.id not in samples_by_trace:
+                    continue
+                self.queued[trace.id] = QueuedTrace(
+                    env_name, group_id, episode.id, policy.start if policy is not None else math.inf
+                )
+                self.episode_by_trace[trace.id] = episode
         self._drop_stale(samples_by_trace)
         # A group's traces share one dispatch version, so the insertion sweep
         # voids all or none of them. A fully-voided group shipped nothing —
@@ -366,10 +395,11 @@ class TrainSink:
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
         shipped_prompts: dict[str, float] = defaultdict(float)
+        selected_episodes_by_trace = {trace_id: self.episode_by_trace.get(trace_id) for trace_id in selected_ids}
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
-            episode = self.episode_by_trace[trace_id]
-            shipped_prompts[episode_env_name(episode)] += 1 / self.group_traces[episode_group_id(episode)]
+            queued = self.queued[trace_id]
+            shipped_prompts[queued.env_name] += 1 / self.group_traces[queued.group_id]
             self._dequeue(trace_id)
 
         if not self.config.constant_trainer_batch_size:
@@ -381,12 +411,12 @@ class TrainSink:
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
-        buffered_episode_ids = {self.episode_by_trace[trace_id].id for trace_id in self.pending_batch}
+        buffered_episode_ids = {queued.episode_id for queued in self.queued.values()}
         traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[int, vf.Episode] = {}
-        for trace_id in selected_ids:
-            episode = self.episode_by_trace.pop(trace_id)
-            if trace_id in shipped_ids:
+        for trace_id, episode in selected_episodes_by_trace.items():
+            # Replayed traces have no episode and are left out of the cohort's metrics
+            if episode is not None and trace_id in shipped_ids:
                 selected_episodes[id(episode)] = episode
                 traces_by_episode[id(episode)].extend(trace for trace in episode.traces if trace.id == trace_id)
         cohort_episodes = [
