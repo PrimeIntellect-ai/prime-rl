@@ -443,6 +443,15 @@ class GARAlgoConfig(GRPOAlgoConfig):
     grader: GraderConfig
     """The group grader: env, served model and limits."""
 
+    mode: Literal["rewards", "advantages"] = "rewards"
+    """``rewards``: the above, the grader reshapes reward-based advantages.
+    ``advantages``: rewards are not used. Every group is graded; the grader ranks all
+    candidates into tiers (ties allowed) with optional ``clear``/``slight`` margins
+    between adjacent tiers, confirmed hacks go below the last tier, and the advantages
+    come from the ranking alone (zero mean; two tiers give GRPO's 0/1 advantages; a
+    ``clear`` gap counts double). A single tier or any grader failure gives the group
+    zero advantages. ``f_min`` and ``lambda_max`` apply to ``rewards`` only."""
+
     f_min: float = Field(0.5, gt=0, le=1)
     """Quality factor of the worst-ranked candidate; the best gets 1."""
 
@@ -452,7 +461,9 @@ class GARAlgoConfig(GRPOAlgoConfig):
     @model_validator(mode="after")
     def forbid_length_penalty(self):
         if self.length_penalty is not None:
-            raise ValueError("gar ranks passes by quality instead of a length penalty; unset length_penalty")
+            raise ValueError(
+                f"gar (mode {self.mode!r}) ranks by quality instead of a length penalty; unset length_penalty"
+            )
         return self
 
 

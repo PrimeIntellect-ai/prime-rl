@@ -679,6 +679,23 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_gar_advantages_mode(self):
+        """``gar`` in the ``advantages`` mode does not use rewards, so a reward-driven
+        task sampler would sample on a signal that does not train."""
+        for env_cfg in self.train.source:
+            if (
+                isinstance(env_cfg.algo, GARAlgoConfig)
+                and env_cfg.algo.mode == "advantages"
+                and env_cfg.curriculum is not None
+                and isinstance(env_cfg.curriculum.sampler, DifficultyPoolSamplerConfig)
+            ):
+                raise ValueError(
+                    f"env {env_cfg.resolved_name!r}: gar mode 'advantages' does not use rewards; "
+                    "the difficulty_pool sampler needs them (use the standard sampler)"
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_env_algorithms(self):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
