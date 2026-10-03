@@ -264,6 +264,12 @@ def test_filter_replayed_experts():
     assert filtered.dtype == routed.dtype
     assert filtered.tolist() == [[3, 0, 1], [3, 2, 4]]
 
+    # The bias steers the router's own top-k to [4, 0, 1]; the threshold uses unbiased scores (0.6 * 0.10).
+    scores = torch.tensor([[0.30, 0.25, 0.20, 0.15, 0.10, 0.05]])
+    bias = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.3, 0.0])
+    routed = torch.tensor([[5, 2, 3]])
+    assert filter_replayed_experts(scores, routed, 0.6, bias).tolist() == [[4, 2, 3]]
+
     router = TokenChoiceTopKRouter(
         dim=8, num_experts=6, top_k=3, score_func="softmax", route_norm=True, route_scale=1.0
     )

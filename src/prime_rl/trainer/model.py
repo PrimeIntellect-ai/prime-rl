@@ -239,13 +239,13 @@ def apply_router_replay_filter(model: nn.Module, min_score_ratio: float) -> None
     num_routers = 0
     for layer in get_language_model(model).layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        # Hash routers select by token id, not by score, so there is nothing to filter.
+        # Hash layers pass their token-id selection in as `routed_experts`; it must not be filtered.
         if isinstance(mlp, MoE) and not isinstance(mlp.router, DeepseekV4HashRouter):
             mlp.router.replay_min_score_ratio = min_score_ratio
             num_routers += 1
 
     if num_routers == 0:
-        raise ValueError("No MoE routers found for router_replay_min_score_ratio. Is this a custom-impl MoE model?")
+        raise ValueError("No MoE routers found for router_replay_min_score_ratio. Is this a MoE model?")
     get_logger().info(
         f"Filtering replayed experts below {min_score_ratio} x the router's own top-k on {num_routers} MoE layers"
     )
