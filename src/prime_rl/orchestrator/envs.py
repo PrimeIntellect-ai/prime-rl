@@ -65,7 +65,7 @@ class Env:
         self.address_file = address_file
         """Where a launcher-managed server publishes its address; read when ``address``
         is None."""
-        self.sampling_args: dict = {}
+        self.sampling = vf.SamplingConfig()
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
         self.tasks: Iterator[vf.Task] | None = None
@@ -108,10 +108,11 @@ class Env:
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
-        sampling = {**self.sampling_args}
+        sampling = self.sampling
         if cache_salt is not None:
-            sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
-        return vf.SamplingConfig(**sampling)
+            extra_body = {**(getattr(sampling, "extra_body", None) or {}), "cache_salt": cache_salt}
+            sampling = sampling.model_copy(update={"extra_body": extra_body})
+        return sampling
 
     async def run(
         self,
@@ -156,7 +157,7 @@ class TrainEnv(Env):
         super().__init__(config, address, address_file)
         self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
+        self.sampling = vf.SamplingConfig(**generation_source.sampling_args(config.sampling.to_sampling_args()))
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = (
             config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"
@@ -168,7 +169,7 @@ class EvalEnv(Env):
 
     def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
         super().__init__(config, address, address_file)
-        self.sampling_args = config.sampling.to_sampling_args()
+        self.sampling = config.sampling
         self.examples: list[vf.Task] = []
 
     async def start(self) -> None:
