@@ -584,6 +584,22 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_payload_root_without_disaggregated(self):
+        inference = self.inference
+        if (
+            self.orchestrator.payload_root is not None
+            and inference is not None
+            and inference.deployment.type == "disaggregated"
+        ):
+            raise ValueError(
+                "orchestrator.payload_root is not supported with disaggregated P/D yet (the PD router merges only "
+                "inline routed experts and drops by-handle prefill segments, so router replay silently falls off; "
+                "this needs PrimeIntellect-ai/router#60, a router release, and a vllm-router pin bump): unset "
+                "orchestrator.payload_root to keep payloads inline."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_disaggregated_combined_replay(self):
         inference = self.inference
         if (
