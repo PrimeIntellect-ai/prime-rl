@@ -17,26 +17,26 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-verifiers = false
-prime-pydantic-config = false
-harbor = "2026-08-11T00:00:00Z"
-prime-traces = false
-vllm-router = false
+deep-ep = false
+deep-gemm = false
 dion = false
 fastokens = false
-prime-runs = false
 flash-attn-3 = false
-prime-tunnel = false
-deep-gemm = false
-prime-evals = false
-torchao = false
-tokenspeed-mla = false
+harbor = "2026-08-11T00:00:00Z"
 nixl-cu13 = false
-deep-ep = false
-prime-sandboxes = false
-renderers = false
-prime-kernels = false
 prime = false
+prime-evals = false
+prime-kernels = false
+prime-pydantic-config = false
+prime-runs = false
+prime-sandboxes = false
+prime-traces = false
+prime-tunnel = false
+renderers = false
+tokenspeed-mla = false
+torchao = false
+verifiers = false
+vllm-router = false
 
 [manifest]
 members = [
@@ -4045,11 +4045,15 @@ wheels = [
 
 [[package]]
 name = "nvidia-cudnn-frontend"
-version = "1.25.0"
+version = "1.30.0"
 source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi" },
+    { name = "nvidia-cutlass-dsl" },
+]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/0f/df39a194f2529093db737d43cc4cbf594c6a79712a09aa104b999e4d95d4/nvidia_cudnn_frontend-1.25.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:09e6e1bc48ce1235743f89d8ea699c52b3008fd6dae7f2ecadb744bebf272a2b", size = 3263306, upload-time = "2026-06-10T21:07:48.093Z" },
-    { url = "https://files.pythonhosted.org/packages/03/65/3b45941d8a22128b971e910f2e9af6bf5ef453e92cc329c56b6eb53c53de/nvidia_cudnn_frontend-1.25.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9a94a72d736bd79eb35f451aaf26d9493778e02ecabccc92c05425508c9e7a83", size = 3414884, upload-time = "2026-06-10T21:08:08.603Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/53/07836d9f74f1416a8768530d428c155f67d7728f283bce3a9b3096b7e18f/nvidia_cudnn_frontend-1.30.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:279d227a226429288ae9e4e88db744ce144ae69605f63a286dc84ae180869a6e", size = 8631629, upload-time = "2026-09-23T03:44:15.265Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/95/c92076af7561e6e43da1ee3ac4155202dcd3876e5b999ff0dea5754eb3d2/nvidia_cudnn_frontend-1.30.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5dda72db38ea0c39f158ebffa9596eefab21ce7cc6a12824490ab8b6cb60e76d", size = 8797507, upload-time = "2026-09-23T03:44:35.051Z" },
 ]
 
 [[package]]
@@ -4990,6 +4994,7 @@ all = [
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux'" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux'" },
@@ -5042,6 +5047,7 @@ gpu = [
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux'" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux'" },
     { name = "tilelang" },
@@ -5110,6 +5116,7 @@ requires-dist = [
     { name = "nixl-cu13", marker = "sys_platform == 'linux' and extra == 'disagg'", specifier = "==0.10.1" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.10.1" },
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=1.30.0" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.10" },
