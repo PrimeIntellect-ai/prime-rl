@@ -72,7 +72,7 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
 
@@ -96,6 +96,11 @@ def train(config: TrainerConfig):
             run_config=config,
         )
     )
+
+    # The SLURM step watchdog reads the mtime of this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.output_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -710,6 +715,8 @@ def train(config: TrainerConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(str(progress.step))
 
         if is_last_step:
             break

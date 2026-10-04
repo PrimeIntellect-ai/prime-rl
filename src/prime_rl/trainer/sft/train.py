@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
@@ -90,6 +90,11 @@ def train(config: SFTConfig):
             overview_flavor="sft",
         )
     )
+
+    # The SLURM step watchdog reads the mtime of this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.run_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -657,6 +662,8 @@ def train(config: SFTConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(str(progress.step))
 
         if is_last_step:
             break

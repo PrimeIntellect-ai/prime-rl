@@ -20,6 +20,10 @@
 {%- endif %}
 #SBATCH --output={{ launcher_log_dir }}/job_%j.log
 #SBATCH --error={{ launcher_log_dir }}/job_%j.log
+{%- if max_requeues %}
+#SBATCH --requeue
+#SBATCH --open-mode=append
+{%- endif %}
 
 # Exit immediately if any setup command or the launcher fails so the SLURM job
 # releases its allocation instead of holding nodes after a crash.
@@ -27,7 +31,7 @@ set -e
 
 export PROJECT_DIR={{ project_dir }}
 export PRL_ATTEMPT_CONFIG_DIR={{ config_dir }}
-export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
+{% include '_requeue.sh.j2' %}
 
 # Setup environment
 cd $PROJECT_DIR
@@ -123,4 +127,4 @@ timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2
     exit 1
 }
 {% endif %}
-uv run rl @ {{ config_path }}{% if use_nixl_broadcast %} --weight-broadcast.host "$WEIGHT_BROADCAST_HOST"{% endif %}
+launch uv run rl @ {{ config_path }} $RESUME_ARGS{% if use_nixl_broadcast %} --weight-broadcast.host "$WEIGHT_BROADCAST_HOST"{% endif %}

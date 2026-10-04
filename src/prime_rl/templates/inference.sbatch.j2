@@ -20,6 +20,10 @@
 #SBATCH --exclusive
 #SBATCH --output={{ launcher_log_dir }}/job_%j.log
 #SBATCH --error={{ launcher_log_dir }}/job_%j.log
+{%- if max_requeues %}
+#SBATCH --requeue
+#SBATCH --open-mode=append
+{%- endif %}
 
 # Exit immediately on any failed command so a crash anywhere releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -54,9 +58,9 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
-export LOG_DIR={{ log_dir }}
 export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
-export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
+{% include '_requeue.sh.j2' %}
+export LOG_DIR=$PRL_ATTEMPT_LOG_DIR
 mkdir -p $LOG_DIR/inference
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
@@ -166,7 +170,7 @@ CLEANUP_SH
 # quoted delimiter passes the script through verbatim, so apostrophes and quotes
 # (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
 # the body reads stdin, which would otherwise eat the rest of the script.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+launch srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router) as task failures.

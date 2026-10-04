@@ -1,0 +1,53 @@
+# Requeue on failure, shared by the SLURM templates. A requeued job keeps its job ID,
+# appends to the same job log, writes component logs into a restart_<n> subdirectory
+# of the attempt, and (RL/SFT) resumes from the latest complete checkpoint.
+export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
+RESUME_ARGS=""
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
+    export PRL_ATTEMPT_LOG_DIR={{ log_dir }}/restart_${SLURM_RESTART_COUNT}
+    RESUME_ARGS="--resume.step None --resume.dir None"
+    echo "Restart ${SLURM_RESTART_COUNT} of job ${SLURM_JOB_ID}"
+fi
+export RESUME_ARGS
+{%- if step_timeout and trainer_step_path is defined %}
+
+# Kill the job's main command when the trainer step (the mtime of trainer_step_path,
+# written by the trainer master after every step) has not advanced for step_timeout
+# seconds. The first window starts at job start.
+watch_trainer_step() {
+    local pid=$1 start last now
+    start=$(date +%s)
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 30
+        last=$(stat -c %Y "{{ trainer_step_path }}" 2>/dev/null || echo 0)
+        [ "$last" -gt "$start" ] || last=$start
+        now=$(date +%s)
+        if [ $((now - last)) -ge {{ step_timeout }} ]; then
+            echo "[watchdog] trainer step has not advanced for $((now - last))s (last step: $(cat "{{ trainer_step_path }}" 2>/dev/null || echo none), step_timeout={{ step_timeout }}s) - killing the job"
+            kill -TERM "$pid" 2>/dev/null
+            sleep 60
+            kill -KILL "$pid" 2>/dev/null
+            return
+        fi
+    done
+}
+{%- endif %}
+
+# Run the job's main command; requeue the job if it fails and restarts are left.
+launch() {
+    "$@" <&0 &
+    local pid=$! code=0
+{%- if step_timeout and trainer_step_path is defined %}
+    watch_trainer_step "$pid" &
+    local watchdog_pid=$!
+{%- endif %}
+    wait "$pid" || code=$?
+{%- if step_timeout and trainer_step_path is defined %}
+    kill "$watchdog_pid" 2>/dev/null || true
+{%- endif %}
+    if [ "$code" -ne 0 ] && [ "${SLURM_RESTART_COUNT:-0}" -lt {{ max_requeues }} ]; then
+        echo "Job failed with exit code $code - requeueing (restart $((${SLURM_RESTART_COUNT:-0} + 1)) of {{ max_requeues }})"
+        scontrol requeue "$SLURM_JOB_ID"
+    fi
+    return "$code"
+}

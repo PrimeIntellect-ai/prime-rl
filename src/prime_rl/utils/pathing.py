@@ -333,6 +333,12 @@ def resolve_latest_ckpt_step(ckpt_dir: Path, components: tuple[str, ...]) -> int
     return steps[-1]
 
 
+def get_trainer_step_path(output_dir: Path) -> Path:
+    """The trainer master writes its last finished step here; the SLURM step watchdog
+    reads its mtime."""
+    return output_dir / "trainer_step"
+
+
 def has_checkpoints(output_dir: Path) -> bool:
     """Check if the output directory contains any checkpoints."""
     ckpt_dir = get_ckpt_dir(output_dir)
