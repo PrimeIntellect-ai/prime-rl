@@ -15,7 +15,8 @@
   source's emptiness), so in-flight episodes of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) drops train groups already past ``max_off_policy_steps`` — a
+  the weight update) cancels train episodes already past
+  ``max_off_policy_steps``, leaving their group's other members running — a
   compute-saving early cancel; the sink's queue sweep is what guarantees the
   bound. Eval episodes are measurements for the policy version they started
   with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
@@ -55,7 +56,7 @@ from prime_rl.orchestrator.types import (
     Progress,
     WorkKind,
 )
-from prime_rl.orchestrator.utils import min_fresh_version
+from prime_rl.orchestrator.utils import rollout_age
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
@@ -308,16 +309,22 @@ class Dispatcher:
         self.train_scheduling_disabled = True
 
     def inflight_staleness(self) -> list[int]:
-        """Current staleness of each in-flight live-sourced train episode: the
-        version the batch being collected trains on (v{step-1}) minus the
-        episode's dispatch version."""
+        """``rollout_age`` of each in-flight live-sourced train episode for the
+        batch being collected."""
         if self.train_envs is None or self.progress is None:
             return []
         return [
-            (self.progress.step - 1) - meta.policy_version
+            rollout_age(meta.policy_version, self.progress.step)
             for meta in self.inflight.values()
             if meta.kind == "train" and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
         ]
+
+    def _is_stale(self, meta: InflightEpisode) -> bool:
+        return (
+            meta.kind == "train"
+            and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            and rollout_age(meta.policy_version, self.progress.step) > self.max_off_policy_steps
+        )
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -397,14 +404,14 @@ class Dispatcher:
             await self.flush_live()
 
     async def on_version_pending(self, step: int) -> None:
-        """Drop train groups past ``max_off_policy_steps``: a group dispatched at
-        v{k} ships at earliest in the batch currently collecting, at staleness
-        ``(progress.step - 1) - k`` — beyond the bound it can never train, so
-        cut it before more inference sinks in. This is a compute saver; the
-        sink's queue sweep is what guarantees no stale episode ships. Eval
-        groups never go stale (they are tied to their start-time policy
-        version), nor do frozen-sourced train groups (their generation source
-        doesn't change with policy updates).
+        """Cancel in-flight train episodes past ``max_off_policy_steps``: an
+        episode ships at earliest in the batch currently collecting, so once
+        its ``rollout_age`` exceeds the bound it can never train — cut it
+        before more inference sinks in. The rest of its group keeps running.
+        This is a compute saver; the sink's queue sweep is what guarantees no stale
+        episode ships. Eval episodes never go stale (they are tied to their
+        start-time policy version), nor do frozen-sourced train episodes
+        (their generation source doesn't change with policy updates).
 
         Runs *before* the inference engines are paused for the weight update so
         the resulting aborts are processed while the engine is still stepping —
@@ -418,17 +425,9 @@ class Dispatcher:
 
         if self.train_envs is None or self.progress is None:
             return
-        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        stale_groups = [
-            gid
-            for gid, group in self.groups.items()
-            if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
-            and group.policy_version_at_start < min_version
-        ]
         cancelled = 0
-        for gid in stale_groups:
-            cancelled += await self.drop_group(gid, reason="stale")
+        for gid in {meta.group_id for meta in self.inflight.values() if self._is_stale(meta)}:
+            cancelled += await self.drop_group(gid, reason="stale", stale_only=True)
 
         if cancelled:
             get_logger().warning(
@@ -556,9 +555,10 @@ class Dispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
+        # Members share the group's salt so they reuse the prompt's prefix
+        # cache. Frozen-sourced train rollouts hit a frozen pool; salting per
+        # policy version would invalidate its prefix cache every weight update
+        # for no reason.
         if live_sourced:
             cache_salt = str(group.policy_version_at_start)
         else:
@@ -572,7 +572,7 @@ class Dispatcher:
             env_name=group.env_name,
             group_id=group_id,
             task=group.task,
-            policy_version=group.policy_version_at_start,
+            policy_version=self.policy.version,
             step=group.step,
             client_config=client,
             started_at=time.monotonic(),
@@ -700,14 +700,12 @@ class Dispatcher:
         await self.emit_episode(meta, group, episode)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
-        """Advance group accounting and return the attempt's pinned policy version."""
-        policy_version = meta.policy_version
+        """Advance group accounting and return the attempt's dispatch version."""
         if group is not None:
-            policy_version = group.policy_version_at_start
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
-        return policy_version
+        return meta.policy_version
 
     async def emit_episode(
         self,
@@ -735,54 +733,54 @@ class Dispatcher:
         episode.record_run(run)
         await self.out_q.put(episode)
 
-    async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
-        """Cancel this group's remaining in-flight tasks and emit one
-        ``GroupCancellation`` covering every episode it still owes the sink (both
-        in-flight and never-dispatched), so count-to-``group_size``
-        finalization still fires. Returns the owed count for metrics."""
-        group = self.groups.pop(group_id, None)
-        # Sync claim phase: pop matching tasks from ``self.inflight`` and
-        # release their permits in one non-yielding sweep. After this loop
-        # the dropped tasks are no longer reachable from ``self.inflight``,
-        # so ``handle_completed_request``'s existing None-guard makes the
-        # subsequent async emit phase race-free.
-        claimed: list[tuple[asyncio.Task, InflightEpisode]] = []
-        for task, meta in list(self.inflight.items()):
-            if meta.group_id != group_id:
-                continue
-            del self.inflight[task]
+    async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason, stale_only: bool = False) -> int:
+        """Cancel what this group still owes the sink, in flight and never
+        dispatched, and emit one ``GroupCancellation`` covering it, so
+        count-to-``group_size`` finalization still fires. With ``stale_only``,
+        only its in-flight episodes past ``max_off_policy_steps`` go and the
+        rest of the group keeps running. Returns the cancelled count."""
+        group = self.groups.get(group_id)
+        if group is None:
+            return 0
+        # Sync claim phase: pop the tasks from ``self.inflight`` and release
+        # their permits in one non-yielding sweep. After this the cancelled
+        # tasks are unreachable from ``self.inflight``, so
+        # ``handle_completed_request``'s None-guard makes the async emit phase
+        # race-free.
+        claimed = [
+            task
+            for task, meta in self.inflight.items()
+            if meta.group_id == group_id and (not stale_only or self._is_stale(meta))
+        ]
+        for task in claimed:
+            self.retire(self.inflight.pop(task))
             self.release()
-            self.retire(meta)
-            claimed.append((task, meta))
+        unscheduled = 0 if stale_only else group.episodes_to_schedule
+        group.episodes_to_schedule -= unscheduled
+        cancelled = len(claimed) + unscheduled
+        if cancelled == 0:
+            return 0
+        group.emitted += cancelled
+        if group.emitted >= group.target_episodes:
+            del self.groups[group_id]
 
-        inflight_cancelled = len(claimed)
-        unscheduled_cancelled = group.episodes_to_schedule if group is not None else 0
-        cancelled = inflight_cancelled + unscheduled_cancelled
-
-        if cancelled > 0:
-            # ``group`` can be ``None`` only if every episode was already
-            # emitted — then nothing is in flight or unscheduled, so kind/env
-            # always resolve from the group or a claimed meta.
-            kind = group.kind if group is not None else claimed[-1][1].kind
-            env_name = group.env_name if group is not None else claimed[-1][1].env_name
-            self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
-            get_logger().debug(
-                f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
-                f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
+        self.metrics.record_cancellation(kind=group.kind, env_name=group.env_name, n=cancelled)
+        get_logger().debug(
+            f"Cancelled {group.kind} episodes | group={str(group_id)[:8]} env={group.env_name} reason={reason} | "
+            f"cancelled={cancelled} (inflight={len(claimed)} unscheduled={unscheduled})"
+        )
+        await self.out_q.put(
+            GroupCancellation(
+                kind=group.kind,
+                env_name=group.env_name,
+                group_id=str(group_id),
+                step=group.step,
+                count=cancelled,
+                reason=reason,
             )
-            await self.out_q.put(
-                GroupCancellation(
-                    kind=kind,
-                    env_name=env_name,
-                    group_id=str(group_id),
-                    step=group.step if group is not None else claimed[-1][1].step,
-                    count=cancelled,
-                    reason=reason,
-                )
-            )
-
+        )
         if claimed:
-            await safe_cancel_all([task for task, _ in claimed])
+            await safe_cancel_all(claimed)
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:

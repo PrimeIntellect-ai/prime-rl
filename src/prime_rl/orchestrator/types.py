@@ -40,8 +40,8 @@ CancelReason = Literal["stale", "overload", "superseded"]
 
 @dataclass
 class GroupCancellation:
-    """Terminal marker for a dropped group: one message covering every episode
-    the group still owed the sink (in-flight and never-dispatched), so
+    """Cancelled episodes of one group (in flight and never dispatched): ``count``
+    stands in for the episodes the group will never deliver, so
     count-to-``group_size`` finalization still fires. ``reason`` distinguishes
     pipeline decisions (staleness, overload cut, superseded eval) from episode errors."""
 

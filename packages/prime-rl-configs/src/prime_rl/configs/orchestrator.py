@@ -592,7 +592,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the version the rollout was dispatched at (a rollout can span several weight updates), queue time included. Each episode is checked on its own and dropped alone, in flight or queued; its group is scored from the members that remain. Higher values yield better throughput at the cost of off-policy noise."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
