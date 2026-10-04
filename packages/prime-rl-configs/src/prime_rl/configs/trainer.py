@@ -266,10 +266,10 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
     load_balancing: Literal["frozen", "qb"] = "frozen"
-    """How the router selection bias evolves. ``frozen`` keeps it as loaded. ``qb`` (Quantile Balancing, Kimi K3) sets it after every step from the global histogram of each expert's routing margins so that every expert receives ``tokens * top_k / num_experts`` tokens; the new bias routes the next step."""
+    """How the router selection bias evolves. ``frozen`` keeps it as loaded. ``qb`` (Quantile Balancing, Kimi K3) sets it after every step from the global histogram of each expert's routing margins so that every expert receives ``tokens * top_k / num_experts`` tokens; the new bias routes the next step. Needs routers with a selection bias that the HF architecture exports (e.g. GLM-4.5/4.6 MoE, GLM-5 DSA, Laguna); other MoE models are rejected."""
 
-    qb_num_bins: Annotated[int, Field(ge=2)] = 10_000
-    """Histogram bins per expert for the ``qb`` quantile estimate."""
+    qb_num_bins: Annotated[int, Field(ge=2)] = 1024
+    """Histogram bins per expert for the ``qb`` quantile estimate; the quantile is interpolated within its bin."""
 
 
 class ModelConfig(BaseModelConfig):
