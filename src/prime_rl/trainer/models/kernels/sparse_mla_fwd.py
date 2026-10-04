@@ -196,6 +196,7 @@ def sparse_mla(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
+    backward_backend: str = "auto",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
@@ -235,15 +236,17 @@ def _sparse_mla_fake(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
+    backward_backend: str = "auto",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return q.new_empty((*q.shape[:-1], d_v)), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
 
 def _sparse_mla_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads = inputs
+    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads, backward_backend = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse)
     ctx.sm_scale = sm_scale
+    ctx.backward_backend = backward_backend
     ctx.mark_non_differentiable(lse)
 
 
@@ -257,8 +260,9 @@ def _sparse_mla_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.
         indices,
         lse.detach(),
         ctx.sm_scale,
+        ctx.backward_backend,
     )
-    return dq, dkv, None, None, None, None, None, None
+    return dq, dkv, None, None, None, None, None, None, None
 
 
 sparse_mla.register_autograd(_sparse_mla_autograd_backward, setup_context=_sparse_mla_setup_context)
