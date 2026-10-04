@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import pytest
 import torch
 
@@ -43,7 +41,7 @@ def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monke
     monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: model.state_dict().keys())
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
 
-    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
+    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)))
 
     selection_bias = model.model.layers[1].mlp.router.selection_bias
     torch.testing.assert_close(selection_bias.cpu(), expected.to(selection_bias.dtype))

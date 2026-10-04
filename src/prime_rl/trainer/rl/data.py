@@ -37,7 +37,6 @@ class TensorMicroBatch(TypedDict):
     branch_indices: list[int] | None
 
     # Batch level
-    lora_num_tokens: Int[Tensor, "n_loras"]
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
@@ -128,7 +127,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
-            "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -160,7 +158,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
-            "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -234,8 +231,6 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            # Single adapter: every token in the batch belongs to it (padding included).
-            lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

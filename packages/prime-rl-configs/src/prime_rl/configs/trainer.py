@@ -127,9 +127,6 @@ class LoRAConfig(BaseConfig):
     ]
     """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
-    modules_to_save: list[str] = []
-    """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
-
 
 class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
@@ -760,11 +757,6 @@ class TrainerConfig(BaseConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
-            )
-        if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:
-            raise ValueError(
-                "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
-                "adapter tensors, so fully-trained modules would silently diverge from inference."
             )
         return self
 

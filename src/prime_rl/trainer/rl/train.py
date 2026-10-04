@@ -66,7 +66,6 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -414,18 +413,6 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            if config.model.lora:
-                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
-                if cp_enabled:
-                    chunk_size = labels.shape[1]
-                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
-                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                    lora_num_tokens = torch.diff(
-                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
-                    )
-                set_lora_num_tokens(lora_num_tokens)
 
             temperatures = micro_batch["temperatures"].to("cuda")
 
