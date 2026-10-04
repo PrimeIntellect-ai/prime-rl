@@ -1,7 +1,8 @@
 """Convert episode traces into a branch-level Hugging Face dataset.
 
-Train and eval runs save one episode per line in `traces.jsonl`. This tool writes one
-dataset row for every branch of every agent trace. It does not select or filter rows.
+Train and eval runs stream one episode per line into the file monitor's chunked trace
+stream (`<output_dir>/monitors/file/traces/stream/`). This tool writes one dataset row
+for every branch of every agent trace. It does not select or filter rows.
 
 Each row includes `messages` and JSON-encoded `tools` for SFT. It also includes trace,
 agent, task, run, outcome, error, timing, and usage metadata. Scalar outcome fields such
@@ -9,7 +10,7 @@ as `reward`, `stop_condition`, `has_error`, and `is_truncated` stay as top-level
 so later scripts can filter them directly. Metadata with variable schemas stays as JSON.
 
 Usage (from the prime-rl repo):
-    uv run python tools/convert_traces_to_hf_dataset.py <traces.jsonl> --name <dir-or-repo-id>
+    uv run python tools/convert_traces_to_hf_dataset.py <output_dir> --name <dir-or-repo-id>
         [--subset default] [--split train] [--public] [--local]
 
 By default, the tool creates a private Hugging Face Hub repo named `<name>`. Use `--public`
@@ -27,6 +28,9 @@ from datasets import Dataset
 from pydantic import BaseModel
 from verifiers.v1 import Trace, WireEpisode
 from verifiers.v1.dialects.chat import message_to_wire
+
+from prime_rl.monitors.file.traces import get_trace_stream
+from prime_rl.monitors.file.traces.chunks import read_records
 
 
 def jsonable(value: Any) -> Any:
@@ -146,7 +150,7 @@ def register_in_dataset_card(root: Path, subset: str, split: str, rel_path: str)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("traces", type=Path, help="a run's traces.jsonl (one episode per line)")
+    parser.add_argument("output_dir", type=Path, help="a run's output directory (holds monitors/file/traces)")
     parser.add_argument("--name", required=True, help="HF repo id, or output dataset dir with --local")
     parser.add_argument("--subset", default="default", help="dataset config name")
     parser.add_argument("--split", default="train", help="dataset split name")
@@ -156,16 +160,16 @@ def main() -> None:
     if args.local and args.public:
         parser.error("--public cannot be used with --local")
 
+    stream = get_trace_stream(args.output_dir)
+    if not stream.is_dir():
+        parser.error(f"no trace stream at {stream}")
     num_episodes, num_traces, rows = 0, 0, []
-    with args.traces.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            num_episodes += 1
-            episode = WireEpisode.model_validate(json.loads(line))
-            for trace in episode.traces:
-                num_traces += 1
-                rows.extend(trace_rows(episode, trace))
+    for record in read_records(stream):
+        num_episodes += 1
+        episode = WireEpisode.model_validate(record)
+        for trace in episode.traces:
+            num_traces += 1
+            rows.extend(trace_rows(episode, trace))
     print(f"traces-to-hf: {num_episodes} episode(s) -> {num_traces} trace(s) -> {len(rows)} branch(es)")
     if not rows:
         raise SystemExit("traces-to-hf: no branches found")

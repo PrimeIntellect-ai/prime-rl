@@ -11,9 +11,11 @@ one. ``zstd -dcf stream/* | jq`` reads a whole stream, sealed and live alike.
 
 import shutil
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
+import orjson
 import pyzstd
 
 LEVEL = 3
@@ -43,6 +45,18 @@ def open_chunk(directory: Path, number: int) -> BinaryIO:
         return open(path, "rb")
     except FileNotFoundError:
         return pyzstd.SeekableZstdFile(path.with_name(path.name + ".zst"), "rb")
+
+
+def read_records(directory: Path) -> Iterator[dict]:
+    """Every record of a stream, in order. A torn last line (the interrupted
+    process died mid-append) ends the stream."""
+    for number in sorted(chunk_numbers(directory)):
+        with open_chunk(directory, number) as chunk:
+            for line in chunk:
+                try:
+                    yield orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    return
 
 
 def seal(path: Path) -> None:

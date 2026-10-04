@@ -75,8 +75,7 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
         cache.popitem(last=False)
 
 
-# Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
-_offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
+# Append-only per-stream cache of per-episode summaries, keyed by absolute path.
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _series_keys: dict[tuple[Path, str | None], tuple[int, set[str]]] = {}
 """Per stream and kind filter: how many summaries were scanned for series keys, and the keys."""
@@ -91,7 +90,7 @@ _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
 def is_run_dir(path: Path) -> bool:
     if not path.is_dir() or path.name.startswith("."):
         return False
-    return any((path / marker).exists() for marker in ("configs", "logs", "monitors", "traces.jsonl"))
+    return any((path / marker).exists() for marker in ("configs", "logs", "monitors"))
 
 
 _dirs_file_state: tuple[float, list[Path]] = (0.0, [])
@@ -338,7 +337,7 @@ def run_meta(run_dir: Path) -> dict:
         started = resolved.stat().st_mtime
     # An eval has no step horizon; it is complete when its file monitor finalized, which
     # only a clean exit does: the stream's live chunk is sealed and nothing plain is left.
-    finished = run_type == "eval" and stream is not None and stream.is_dir() and not any(stream.glob("*.jsonl"))
+    finished = run_type == "eval" and stream is not None and not any(stream.glob("*.jsonl"))
     plan_path = get_eval_plan_path(run_dir)
     eval_plan = orjson.loads(plan_path.read_bytes()) if plan_path.is_file() else {}
     platform_path = get_platform_run_path(run_dir)
@@ -594,20 +593,15 @@ def _file_size(path: Path) -> int:
 
 def traces_file(run_dir: Path) -> Path | None:
     """The run's episode stream: the chunk directory the file monitor writes, browsed
-    through its index, or a bare ``traces.jsonl`` at the run root."""
+    through its index."""
     stream = get_trace_stream(run_dir)
-    if _file_size(get_index_path(stream)) > 0:
-        return stream
-    bare = run_dir / "traces.jsonl"
-    if bare.is_file() and bare.stat().st_size > 0:
-        return bare
-    return None
+    return stream if _file_size(get_index_path(stream)) > 0 else None
 
 
 def stream_version(path: Path) -> int:
-    """What a stream's readers key their caches on. Both shapes are append-only, so
-    a size is a version: the index for a chunked stream, the file itself for a bare one."""
-    return _file_size(get_index_path(path)) if path.is_dir() else _file_size(path)
+    """What a stream's readers key their caches on: its index is append-only, so its
+    size is a version."""
+    return _file_size(get_index_path(path))
 
 
 def require_stream(run_dir: Path) -> Path:
@@ -629,87 +623,11 @@ def rollout_steps(run_dir: Path) -> list[dict]:
     return [{"step": step, "kinds": sorted(kinds)} for step, kinds in sorted(by_step.items())]
 
 
-def line_offsets(path: Path) -> list[int]:
-    size = path.stat().st_size
-    with _lock:
-        cached_size, checkpoint, offsets = _lru_get(_offsets_cache, path) or (0, b"", [])
-        if cached_size > size or (cached_size and file_checkpoint(path, cached_size) != checkpoint):
-            # The bytes immediately before the old EOF changed: this is a rewrite,
-            # not an append. Invalidate offsets and their derived summaries together.
-            cached_size, checkpoint, offsets = 0, b"", []
-            _summaries_cache.pop(path, None)
-            _sidecar_written.pop(path, None)
-        if cached_size == size:
-            return offsets
-    # re-scan from the last recorded line (it may have been partial) into a local
-    # list, then merge under the lock: the shared list only ever grows by strictly
-    # increasing appends, so concurrent readers' indices stay valid and concurrent
-    # growers can't double-append the same line start
-    scan_from = offsets[-1] if offsets else 0
-    found = []
-    with path.open("rb") as f:
-        f.seek(scan_from)
-        pos = scan_from
-        for line in f:
-            if line.strip():
-                found.append(pos)
-            pos += len(line)
-        scanned_size = f.tell()
-    with _lock:
-        cached_size, checkpoint, current = _lru_get(_offsets_cache, path) or (0, b"", offsets)
-        current_matches = not cached_size or file_checkpoint(path, cached_size) == checkpoint
-        if cached_size > scanned_size and current_matches:
-            return current  # a concurrent reader already scanned farther
-        if not current_matches:
-            cached_size, current = 0, []
-            _summaries_cache.pop(path, None)
-            _sidecar_written.pop(path, None)
-        for offset in found:
-            if not current or offset > current[-1]:
-                current.append(offset)
-        cached_size = max(scanned_size, cached_size)
-        _lru_put(_offsets_cache, path, (cached_size, file_checkpoint(path, cached_size), current))
-    return current
-
-
-def episode_summaries(path: Path) -> list[dict]:
+def episode_summaries(stream: Path) -> list[dict]:
     """Every episode's full summary, nested reward/metric/timing maps included. Parsed
     from the records themselves, resuming from the last one summarised, and persisted
-    so a revisit skips the parse."""
-    if path.is_dir():
-        return chunked_summaries(path)
-    offsets = line_offsets(path)
-    with _lock:
-        cached_count, summaries = _lru_get(_summaries_cache, path) or (0, [])
-        if cached_count > len(offsets):
-            cached_count, summaries = 0, []
-    if cached_count == 0:
-        loaded = load_sidecar(path)
-        if loaded is not None:
-            cached_count, summaries = len(loaded), loaded
-            cached_count = min(cached_count, len(offsets))
-    if cached_count == len(offsets):
-        with _lock:
-            _lru_put(_summaries_cache, path, (cached_count, summaries))
-        return summaries[:cached_count] if len(summaries) != cached_count else summaries
-    summaries = list(summaries[:cached_count])
-    with path.open("rb") as f:
-        f.seek(offsets[cached_count])
-        for line_no in range(cached_count, len(offsets)):
-            raw = f.readline()
-            try:
-                summaries.append(summarize_episode(line_no + 1, orjson.loads(raw)))
-            except orjson.JSONDecodeError:
-                summaries.append({"line": line_no + 1, "id": None, "error": "unparseable"})
-    with _lock:
-        _lru_put(_summaries_cache, path, (len(offsets), summaries))
-    write_sidecar(path, summaries)
-    return summaries
-
-
-def chunked_summaries(stream: Path) -> list[dict]:
-    """The summaries of a chunked stream: its index says where each record sits, so the
-    walk opens each chunk once and seeks record to record."""
+    so a revisit skips the parse. The index says where each record sits, so the walk
+    opens each chunk once and seeks record to record."""
     index = get_index_path(stream)
     rows = index_rows(index) or []
     with _lock:
@@ -1450,17 +1368,10 @@ def nice_bin(ideal: float) -> float:
 SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns", "group"}
 
 
-def stream_index_file(run_dir: Path) -> Path:
-    """Where the stream's index would sit — beside the stream, named for it. A stream
-    written by a producer that indexes nothing simply has no file there."""
-    stream = traces_file(run_dir)
-    return get_index_path(stream) if stream else get_index_path(get_trace_stream(run_dir))
-
-
 def index_rows(path: Path) -> list[dict] | None:
     """The rows of an index the file monitor wrote, read incrementally: an index is
     append-only, so only the bytes past the last read are parsed. ``None`` when there
-    is no index, which is the reader's cue to derive what it needs itself."""
+    is no index."""
     if not path.is_file():
         return None
     size = path.stat().st_size
@@ -1468,7 +1379,7 @@ def index_rows(path: Path) -> list[dict] | None:
         cached = _lru_get(_index_cache, path)
     # A resume rewrites/truncates the index (dropped errored rows, then re-grows it),
     # so the bytes before the old EOF change: reusing the cache append-only would splice
-    # stale rows in. Detect it via file_checkpoint, exactly like line_offsets().
+    # stale rows in. Detect it via file_checkpoint.
     if cached and (cached[0] > size or (cached[0] and file_checkpoint(path, cached[0]) != cached[1])):
         cached = None
     if cached and cached[0] == size:
@@ -1489,9 +1400,9 @@ def index_rows(path: Path) -> list[dict] | None:
     return rows
 
 
-def written_index(run_dir: Path) -> list[dict] | None:
-    """The stream's own index, when the stream's producer wrote one."""
-    return index_rows(stream_index_file(run_dir))
+def written_index(run_dir: Path) -> list[dict]:
+    """The rows of the stream's index."""
+    return index_rows(get_index_path(get_trace_stream(run_dir))) or []
 
 
 def episode_rows(run_dir: Path) -> list[dict]:
@@ -1512,8 +1423,6 @@ def episode_rows(run_dir: Path) -> list[dict]:
     if cached and cached[0] == key:
         return cached[1]
     rows = written_index(run_dir)
-    if rows is None:
-        rows = episode_summaries(path)
     # Resume only over the very rows stamped last time: a shorter list is a rewrite,
     # and a list rebuilt from disk holds new dicts the trace map would no longer reach.
     entered = cached[2] if cached else 0
@@ -1880,37 +1789,21 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-def read_episode_at(path: Path, line: int, at: tuple[int, int] | None = None) -> dict:
-    """One episode. A written index says which chunk and byte offset it sits at, so
-    reading it never touches the rest of the stream; a bare file is scanned for its
-    line offsets instead."""
-    if at is None:
-        offsets = line_offsets(path)
-        if not 1 <= line <= len(offsets):
-            raise HTTPException(404, "episode line out of range")
-        f, offset = path.open("rb"), offsets[line - 1]
-    else:
-        chunk, offset = at
-        f = open_chunk(path, chunk)
-    with f:
-        f.seek(offset)
+def read_episode(run_dir: Path, line: int) -> dict:
+    """One episode. The index says which chunk and byte offset it sits at, so reading
+    it never touches the rest of the stream."""
+    stream = require_stream(run_dir)
+    rows = written_index(run_dir)
+    if not 1 <= line <= len(rows):
+        raise HTTPException(404, "episode line out of range")
+    row = rows[line - 1]
+    with open_chunk(stream, row.get("chunk", 0)) as f:
+        f.seek(row.get("offset", 0))
         try:
             return orjson.loads(f.readline())
         except orjson.JSONDecodeError as error:
             # a record torn by a crash, or the stream's last line caught mid-append
             raise HTTPException(422, f"episode {line} is unparseable") from error
-
-
-def episode_at(run_dir: Path, line: int) -> tuple[int, int] | None:
-    """Where the written index puts an episode: ``(chunk, offset)``. None only when the
-    stream has no index; an index that exists is authoritative for what lines there are."""
-    rows = written_index(run_dir)
-    if rows is None:
-        return None
-    if not 1 <= line <= len(rows):
-        raise HTTPException(404, "episode line out of range")
-    row = rows[line - 1]
-    return row.get("chunk", 0), row.get("offset", 0)
 
 
 @app.get("/api/runs/{run}/episodes/{line}")
@@ -1922,8 +1815,7 @@ def get_episode(
 ) -> dict:
     """One episode, by its line in the stream, with every annotation folded on."""
     run_dir = get_run_dir(run)
-    path = require_stream(run_dir)
-    rec = read_episode_at(path, line, episode_at(run_dir, line))
+    rec = read_episode(run_dir, line)
     # only the opened episode's streams are read, by seeking to each of its records
     for trace in rec.get("traces") or []:
         updates = trace_updates(run_dir, trace.get("id") or "")
@@ -2037,7 +1929,7 @@ def validate_view_command(cmd: dict) -> dict:
             raise HTTPException(409, f"episode id {episode!r} is not unique in {kind}/{subset} at step {step}")
         line = cmd["line"] = matches[0]
     if line is not None:
-        rec = read_episode_at(path, line)
+        rec = read_episode(run_dir, line)
 
     selected_trace = None
     if rec is not None and (trace_index is not None or branch_index is not None or cmd.get("highlight") is not None):
@@ -2137,7 +2029,7 @@ async def view_events() -> "StreamingResponse":
 @app.get("/api/runs/{run}/episodes/{line}/timeline")
 def get_episode_timeline(run: str, line: int) -> dict:
     run_dir = get_run_dir(run)
-    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
+    return project_episode_timeline(read_episode(run_dir, line))
 
 
 # -------------------------------------------------------------------------- static

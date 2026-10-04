@@ -15,14 +15,13 @@ config is not checked against the interrupted one: any of it may be overridden.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterator
 from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
 
 from prime_rl.monitors.file.traces import get_trace_stream
-from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
+from prime_rl.monitors.file.traces.chunks import read_records
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.utils.pathing import get_file_monitor_dir
 
@@ -36,18 +35,6 @@ def stamp_config(run_dir: Path, config: dict) -> None:
     directory = get_file_monitor_dir(run_dir)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / CONFIG_NAME).write_bytes(orjson.dumps(config, option=orjson.OPT_INDENT_2))
-
-
-def read_records(stream: Path) -> Iterator[dict]:
-    """Every record of a trace stream, in order. A torn last line (the interrupted
-    process died mid-append) ends the stream."""
-    for number in sorted(chunk_numbers(stream)):
-        with open_chunk(stream, number) as chunk:
-            for line in chunk:
-                try:
-                    yield orjson.loads(line)
-                except orjson.JSONDecodeError:
-                    return
 
 
 def archives(run_dir: Path) -> list[Path]:
