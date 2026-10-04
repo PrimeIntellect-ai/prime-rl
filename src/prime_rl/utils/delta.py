@@ -1031,11 +1031,21 @@ def _extract_changed_values(
     values = selected_target - selected_base
     if not torch.equal(selected_base + values, selected_target):
         # Widen only tensors whose additive deltas would otherwise lose target bits.
-        dtype = torch.float32 if base_tensor.dtype in (torch.float16, torch.bfloat16) else torch.float64
-        values = selected_target.to(dtype) - selected_base.to(dtype)
-        reconstructed = (selected_base.to(dtype) + values).to(base_tensor.dtype)
-        if not torch.equal(reconstructed, selected_target):
-            raise ValueError("weight update cannot be represented exactly as an additive sparse delta")
+        wider_dtypes = (
+            (torch.float32, torch.float64) if base_tensor.dtype in (torch.float16, torch.bfloat16) else (torch.float64,)
+        )
+        for dtype in wider_dtypes:
+            values = selected_target.to(dtype) - selected_base.to(dtype)
+            reconstructed = (selected_base.to(dtype) + values).to(base_tensor.dtype)
+            if torch.equal(reconstructed, selected_target):
+                break
+        else:
+            mismatch = torch.nonzero(reconstructed != selected_target, as_tuple=False)[0, 0].item()
+            raise ValueError(
+                "weight update cannot be represented exactly as an additive sparse delta "
+                f"(dtype={base_tensor.dtype}, base={selected_base[mismatch].item()}, "
+                f"target={selected_target[mismatch].item()})"
+            )
     return indices, values.contiguous()
 
 

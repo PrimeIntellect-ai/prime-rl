@@ -16,14 +16,18 @@ from prime_rl.utils.delta import (
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
-def test_load_sparse_delta_weights_applies_delta(tmp_path, streaming, dtype) -> None:
+@pytest.mark.parametrize("target_value", [-0.001, 2**-40])
+def test_load_sparse_delta_weights_applies_delta(tmp_path, streaming, dtype, target_value) -> None:
     module = torch.nn.Linear(2, 2, bias=True, dtype=dtype)
     with torch.no_grad():
         module.weight.fill_(1.0)
         module.bias.zero_()
 
     base = {name: tensor.clone() for name, tensor in module.state_dict().items()}
-    target = {"weight": torch.tensor([[-0.001, 1.0], [1.0, 2.0]], dtype=dtype), "bias": torch.ones(2, dtype=dtype)}
+    target = {
+        "weight": torch.tensor([[target_value, 1.0], [1.0, 2.0]], dtype=dtype),
+        "bias": torch.ones(2, dtype=dtype),
+    }
     delta_path = tmp_path / "delta.safetensors"
     manager = ModelDeltaManager()
     extract = (

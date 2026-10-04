@@ -83,9 +83,10 @@ def test_sparse_delta_from_state_dicts_round_trips_bias(tmp_path, streaming) -> 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 @pytest.mark.parametrize("streaming", [False, True])
-def test_sparse_delta_preserves_target_bits_across_sign_changes(tmp_path, dtype, streaming) -> None:
+@pytest.mark.parametrize("target_value", [-0.001, 2**-40])
+def test_sparse_delta_preserves_target_bits_across_sign_changes(tmp_path, dtype, streaming, target_value) -> None:
     base = {"weight": torch.tensor([1.0, 0.0], dtype=dtype)}
-    target = {"weight": torch.tensor([-0.001, 0.0], dtype=dtype)}
+    target = {"weight": torch.tensor([target_value, 0.0], dtype=dtype)}
     delta_path = tmp_path / "delta"
     manager = ModelDeltaManager()
     extract = (
