@@ -14,9 +14,9 @@ from prime_rl.trainer.optim.offload import (
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
@@ -71,12 +71,7 @@ def setup_optimizer(
         if full_offload_dtype_policy is None:
             raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
-            model,
-            named_params,
-            pin_memory=not (
-                config.type in ("adamw", "sign_sgd") and full_offload_config.cpu_optimizer_backend == "native"
-            ),
-            dtype_policy=full_offload_dtype_policy,
+            model, named_params, dtype_policy=full_offload_dtype_policy
         )
 
     optimizer = _create_optimizer(

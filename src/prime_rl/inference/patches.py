@@ -1,17 +1,19 @@
+import os
+
 import torch
 
 
 def apply_shared_vllm_patches():
-    """vLLM general plugin: prime-rl patches that must run in every vLLM process.
+    """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process.
 
-    Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
-    in every vLLM process, including spawned workers. Note vLLM swallows plugin
-    load failures (``load_plugins_by_group`` logs and continues), so a broken
+    vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
     """
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
+    from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
     patch_gpt_oss_weight_loading()
+    patch_qwen38_weight_loading()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
@@ -21,6 +23,13 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_request_tools_placement()
+    monkey_patch_tokenize_params_validation()
+    monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_dp_coordinator_startup_timeout()
+    monkey_patch_minimax_m2_for_lora()
+    # Set by `server()` when the LoRA target modules include no expert layers.
+    if os.environ.get("PRIME_NO_MOE_LORA") == "1":
+        monkey_patch_no_moe_lora()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -574,8 +583,8 @@ def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
     These patches are only needed when using LoRA with MiniMax M2 but are safe
-    to apply unconditionally (verified with non-LoRA runs). We apply them at
-    import time because the worker __init__ runs before the vLLM config is
+    to apply unconditionally (verified with non-LoRA runs). We apply them
+    unconditionally because the vLLM plugin runs before the vLLM config is
     available, so we can't check if LoRA is enabled.
 
     Problem 1 — Gate dtype mismatch:

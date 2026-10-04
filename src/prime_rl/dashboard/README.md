@@ -11,6 +11,9 @@ the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 skips the registry. See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
+Opening a trace adds `trace=<id>` to the URL. Bookmarking or reopening that URL
+restores the selected trace, whether it is still live or has finished.
+
 The Config and Logs views keep each launch attempt available. The Config view
 shows a copyable command above the launch TOML or resolved JSON. Both views
 open at `latest (attempt <n>)` and let you select an earlier attempt.

@@ -125,7 +125,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
 
 
 def test_moe_custom_impl():
-    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", impl="custom")
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2")
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
@@ -141,7 +141,7 @@ def test_moe_custom_impl():
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
 @pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
 def test_model_forward_custom_impl(model_name):
-    config = ModelConfig(name=model_name, impl="custom", attn="flash_attention_2")
+    config = ModelConfig(name=model_name, attn="flash_attention_2")
     model = get_model(config)
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
     inject_prime_lm_head(model, chunk_size=None)

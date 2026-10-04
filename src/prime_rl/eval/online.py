@@ -18,7 +18,7 @@ import os
 
 from prime_rl import monitors
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
+from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import cli, dump_resolved_config

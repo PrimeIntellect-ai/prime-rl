@@ -24,7 +24,6 @@ interval = 100
 project = "qwen30b-math"
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 ep = 8
 

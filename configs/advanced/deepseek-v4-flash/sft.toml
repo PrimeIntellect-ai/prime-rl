@@ -23,7 +23,6 @@ max_steps = 20
 
 [model]
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
-impl = "custom"
 ep = 8
 
 # Torch all-to-all, not DeepEP. At full depth DeepEP dies on the first backward with

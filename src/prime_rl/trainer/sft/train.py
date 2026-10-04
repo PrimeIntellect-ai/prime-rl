@@ -27,6 +27,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
@@ -495,6 +496,7 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
+        step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_real_tokens += micro_batch["num_tokens"]
             if config.log.log_data:
@@ -522,12 +524,15 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in micro_moe_stats.items():
                     moe_stats[f"{name}/mean"] += value / grad_accum_steps
                     if name == "max_vio":
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
+                step_tokens_per_expert += tokens_per_expert
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
         real_tokens = torch.tensor(step_real_tokens, dtype=torch.int64, device="cuda")
         dist.all_reduce(real_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
         real_token_count = real_tokens.item() // cp_size
@@ -563,7 +568,7 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -607,15 +612,17 @@ def train(config: SFTConfig):
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
+        # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
+        # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
+        step_time = time.perf_counter() - step_start_time
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
-        step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
@@ -704,7 +711,7 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()}
+        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
         if moe_log_metrics:
             asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 

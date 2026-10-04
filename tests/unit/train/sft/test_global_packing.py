@@ -125,7 +125,6 @@ def test_global_packing_config_defaults_and_guards():
                 "data": {"global_packing": {}},
                 "model": {
                     "name": "Qwen/Qwen3.5-2B",
-                    "impl": "custom",
                     "vlm": {"vision_encoder_attr": "model.visual", "language_model_attr": "model.language_model"},
                 },
             }

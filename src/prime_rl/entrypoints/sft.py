@@ -1,12 +1,9 @@
 import json
 import os
-import signal
 import subprocess
 import sys
 import uuid
 from pathlib import Path
-from subprocess import Popen
-from threading import Event, Thread
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
@@ -34,11 +31,10 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
-    cleanup_processes,
-    cleanup_threads,
-    get_physical_gpu_ids,
-    monitor_process,
+    ProcessGroup,
+    partition_gpus,
     set_proc_title,
+    torchrun_cmd,
 )
 
 SFT_CONFIG = "sft.json"
@@ -333,21 +329,14 @@ def sft_local(config: SFTConfig):
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    # Derive launcher-local GPU IDs (inference first, then the trainer) only when the
-    # launcher must partition GPUs between processes; plain SFT leaves them to torchrun.
+    # Partition GPUs (inference first, then the trainer) only when the launcher must split
+    # them between processes; plain SFT leaves them to torchrun.
     infer_gpu_ids: list[int] = []
     trainer_gpu_ids: list[int] = []
     if config.inference is not None:
-        num_infer_gpus = config.deployment.num_infer_gpus
-        total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
-        physical_gpu_ids = get_physical_gpu_ids()
-        if total_requested_gpus > len(physical_gpu_ids):
-            raise ValueError(
-                f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
-                f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
-            )
-        infer_gpu_ids = physical_gpu_ids[:num_infer_gpus]
-        trainer_gpu_ids = physical_gpu_ids[num_infer_gpus:total_requested_gpus]
+        infer_gpu_ids, trainer_gpu_ids = partition_gpus(
+            config.deployment.num_infer_gpus, config.deployment.num_train_gpus
+        )
 
     # Trainer and online-eval log to a single shared W&B run whose id ($WANDB_RUN_ID)
     # equals $PRL_RUN_ID, one label per process.
@@ -364,37 +353,11 @@ def sft_local(config: SFTConfig):
             "WANDB_ARGS": json.dumps(sys.argv),
         }
 
-    processes: list[Popen] = []
-    monitor_threads: list[Thread] = []
-    error_queue: list[Exception] = []
-    stop_events: dict[str, Event] = {}
-
-    def sigterm_handler(signum, frame):
-        logger.warning("Received SIGTERM, terminating all processes...")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        sys.exit(1)
-
-    signal.signal(signal.SIGTERM, sigterm_handler)
-
-    def start_process(name: str, cmd: list[str], env: dict[str, str], log_path: Path) -> Popen:
-        logger.debug(f"{name.capitalize()} command: {' '.join(cmd)}")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "w") as log_file:
-            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file)
-        processes.append(process)
-        stop_event = Event()
-        stop_events[name] = stop_event
-        monitor_thread = Thread(target=monitor_process, args=(process, stop_event, error_queue, name), daemon=True)
-        monitor_thread.start()
-        monitor_threads.append(monitor_thread)
-        return process
-
-    try:
+    with ProcessGroup() as processes:
         # Optionally, start the inference server for online evals
         if config.inference is not None:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
-            start_process(
+            processes.start(
                 "inference",
                 ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
                 env={
@@ -413,7 +376,7 @@ def sft_local(config: SFTConfig):
         for source in eval_env_servers(config):
             name = source.resolved_name
             logger.info(f"Starting {name} server")
-            start_process(
+            processes.start(
                 f"env/eval/{name}",
                 ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
                 env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars},
@@ -422,7 +385,7 @@ def sft_local(config: SFTConfig):
 
         if config.eval is not None:
             logger.info("Starting online evals")
-            start_process(
+            processes.start(
                 "online-eval",
                 [sys.executable, "-m", "prime_rl.eval.online", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
                 env={
@@ -439,23 +402,6 @@ def sft_local(config: SFTConfig):
                 log_path=log_dir / "eval.log",
             )
 
-        from prime_rl.utils.utils import get_free_port
-
-        trainer_cmd = [
-            "torchrun",
-            "--role=trainer",
-            f"--rdzv-endpoint=localhost:{get_free_port()}",
-            f"--rdzv-id={uuid.uuid4().hex}",
-            f"--log-dir={log_dir / 'trainer' / 'torchrun'}",
-            f"--local-ranks-filter={','.join(map(str, config.log.ranks_filter))}",
-            "--redirect=3",
-            "--tee=3",
-            f"--nproc-per-node={config.deployment.num_train_gpus}",
-            "-m",
-            "prime_rl.trainer.sft.train",
-            "@",
-            config_path.as_posix(),
-        ]
         gpus_suffix = f" on GPU(s) {' '.join(map(str, trainer_gpu_ids))}" if trainer_gpu_ids else ""
         logger.info(f"Starting SFT trainer with {config.deployment.num_train_gpus} GPU(s){gpus_suffix}")
         trainer_env = {
@@ -470,48 +416,26 @@ def sft_local(config: SFTConfig):
             trainer_env["WANDB_SHARED_LABEL"] = "trainer"
         if trainer_gpu_ids:
             trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, trainer_gpu_ids))
-        trainer_process = start_process("trainer", trainer_cmd, env=trainer_env, log_path=log_dir / "trainer.log")
+        processes.start(
+            "trainer",
+            torchrun_cmd(
+                "prime_rl.trainer.sft.train",
+                config_path,
+                config.deployment.num_train_gpus,
+                log_dir,
+                config.log.ranks_filter,
+            ),
+            env=trainer_env,
+            log_path=log_dir / "trainer.log",
+        )
 
         logger.success("Launcher complete")
         log_dashboard_url(logger, dashboard_url)
 
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.
-        terminal_events = [stop_events["trainer"]]
-        if "online-eval" in stop_events:
-            terminal_events.append(stop_events["online-eval"])
-        while True:
-            pending = [event for event in terminal_events if not event.is_set()]
-            if error_queue:
-                logger.error(f"Error: {error_queue[0]}")
-                logger.error("Terminating all processes...")
-                cleanup_threads(monitor_threads)
-                cleanup_processes(processes)
-                sys.exit(1)
-            if not pending:
-                break
-            pending[0].wait(timeout=1)
-
-        if trainer_process.returncode != 0:
-            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
-            cleanup_threads(monitor_threads)
-            cleanup_processes(processes)
-            sys.exit(1)
-
+        processes.wait("trainer", *(["online-eval"] if config.eval is not None else []))
         logger.success("SFT training finished!")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-
-    except KeyboardInterrupt:
-        logger.warning("Received interrupt signal, terminating all processes...")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error occurred: {e}")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        raise
 
 
 def clean_stale_eval_artifacts(config: SFTConfig) -> None:

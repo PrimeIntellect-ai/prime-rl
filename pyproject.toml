@@ -290,8 +290,8 @@ deep-gemm = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }

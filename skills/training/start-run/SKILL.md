@@ -31,7 +31,7 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
   `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
   CPU optimizer kernel, only supports AdamW and SignSGD (SignSGD is stateless and
   halves the host RAM footprint), and disables gradient clipping. Use a
-  `[model.full_offload]` table only to select the Torch debugging backend or disable NUMA binding.
+  `[model.full_offload]` table only to disable NUMA binding.
 
 ## `rl` — RL training
 

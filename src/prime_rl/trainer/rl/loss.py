@@ -150,7 +150,7 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
-    a capped importance ratio, and a squared-log-ratio KL regularizer."""
+    and a capped importance ratio."""
 
     def __init__(self, config: IPOLossConfig):
         self.config = config
@@ -178,11 +178,6 @@ class IPOLoss:
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
-        if loss_config.kl_tau:
-            kl_loss = loss_config.kl_tau * log_importance_ratio.clamp(-1e4, 1e4).square()
-            if weights is not None:
-                kl_loss = kl_loss * weights
-            loss = loss + kl_loss.sum()
 
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
@@ -296,7 +291,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     model is the per-token policy-gradient signal, with the importance ratio
     correcting trainer/inference mismatch and staleness. A one-sided trust
     region drops tokens whose trainer probability fell more than 0.2 below the
-    inference probability; a squared-log-ratio term regularizes drift. Scalar
+    inference probability. Scalar
     advantages are not read — ref_kl algorithms ship none.
     """
     if inputs.ref_logprobs is None:
@@ -316,11 +311,9 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], 1e4)
     pg_loss = -ref_kl[keep_mask].detach() * importance_ratio
-    kl_loss = 1e-3 * log_importance_ratio.clamp(-1e4, 1e4).square()
     if weights is not None:
         pg_loss = pg_loss * weights[keep_mask]
-        kl_loss = kl_loss * weights
-    loss = pg_loss.sum() + kl_loss.sum()
+    loss = pg_loss.sum()
     mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
     # Namespaced: the rl loss fn emits same-named trust-region metrics with a
@@ -391,15 +384,16 @@ def compute_loss(
     ce_weights: list[Float[Tensor, " seq_i"]] | None,
     ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
     rl_loss_fn: Loss,
-    rl_scale: int,
-    ce_scale: int,
-    ref_kl_scale: int,
+    rl_scale: float,
+    ce_scale: float,
+    ref_kl_scale: float,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
+    weight stream and normalized by its own global denominator (rl: sum of its
+    weights; ce / ref_kl: token count):
 
     - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
       ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
@@ -422,7 +416,7 @@ def compute_loss(
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
         rl_loss_fn: RL loss object built by setup_rl_loss_fn()
-        rl_scale: Global rl-token count normalizing the rl component
+        rl_scale: Global sum of rl weights normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
 

@@ -85,7 +85,6 @@ dist_timeout_seconds = 1800
 
 [trainer.model]
 name = "zai-org/GLM-5.3-BF16"
-impl = "custom"
 attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
