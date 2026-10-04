@@ -6,6 +6,7 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 
 ## Table of Contents
 
+- [Outcome ownership](#outcome-ownership)
 - [Launch](#launch)
 - [Configuration](#configuration)
 - [Resume](#resume)
@@ -15,6 +16,45 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 - [Metrics](#metrics)
 
 `uv run eval` runs one epoch of every configured source and exits. It reuses the orchestrator's eval pipeline: env servers are spawned per source, episodes are admitted under the concurrency controller, and every episode streams into the run's trace stream and metrics.
+
+## Outcome ownership
+
+Native `vf-eval` runs the environment in process. Prime-RL dispatches episodes to Verifiers workers over ZMQ. Both use Verifiers' `Env.run_slot()` for environment execution, agent runs, scoring, and retries.
+
+```mermaid
+flowchart TD
+    N[Native vf-eval] --> I[In-process environment]
+    P[Prime-RL eval dispatcher] --> Z[ZMQ environment worker]
+    I --> V[Verifiers Env.run_slot]
+    Z --> V
+    V --> E[Completed episode and trace verdicts]
+    E -->|Native| C[Completion callback]
+    C --> S[Save episode and scores]
+    E -->|Prime-RL| W[ZMQ response and Env.run adapter]
+    W --> D[Dispatcher records errors and stamps provenance]
+    D --> L[EvalRunner logs episode]
+    L --> B[EvalSink counts episode toward the epoch]
+```
+
+An episode's outcome and its usefulness for training are separate decisions. Emptiness alone does not change a returned verdict: Prime-RL preserves a successful episode with no traces and a successful episode's traces with zero sampled turns. Existing failures remain failures; Verifiers' default environment still rejects a `run()` that ran no agent. A trace-less episode carries no trace reward to aggregate.
+
+Training uses the existing `iter_trainable_traces()` filter. A trace must be successful, belong to a trainable agent, have at least one sampled turn, and contain tokens marked for training. A successful empty outcome can therefore be recorded without contributing a trainer sample.
+
+```mermaid
+flowchart TD
+    E[Returned episode] --> K{Consumer}
+    K -->|Evaluation| V[Keep verdict and scores]
+    V --> M[Record outcome and update eval metrics]
+    K -->|Training| T[Apply training timeout exclusion]
+    T --> F[iter_trainable_traces]
+    F --> G{Any eligible traces?}
+    G -->|No traces or no eligible traces| Z[Complete group and record zero output]
+    G -->|Yes| A[Algorithm scoring and curriculum admission]
+    A -->|Admitted| B[Build samples from eligible traces]
+    A -->|Rejected| Z
+```
+
+`TrainSink` completes groups with no eligible traces and advances its zero-output warning counter without adding samples. In a mixed group, only eligible traces can produce samples. The training timeout exclusion still applies; evaluation keeps a successful timeout as a scored outcome.
 
 ## Launch
 

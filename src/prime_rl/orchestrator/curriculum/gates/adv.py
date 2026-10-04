@@ -27,7 +27,7 @@ class AdvRangeGate(AdmissionGate):
             advantage
             for episode in group
             for trace in episode.traces
-            if not trace.has_error and trace.agent.trainable
+            if not trace.has_error and trace.agent.trainable and trace.num_turns > 0
             for node in trace.nodes
             for advantage in node.advantages or []
         ]
