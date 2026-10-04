@@ -18,6 +18,9 @@ from prime_rl.configs.orchestrator import (
     ScheduledEvalConfig,
     TrainConfig,
 )
+from prime_rl.configs.orchestrator import (
+    ModelConfig as OrchestratorModelConfig,
+)
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -395,6 +398,36 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
+
+
+@pytest.mark.parametrize(
+    "config_class,source_args,expected_url,expected_key",
+    [
+        (
+            EvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "https://configured.pinference.ai/api/v1",
+            "PRIME_API_KEY",
+        ),
+        (
+            SFTOnlineEvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "http://localhost:8000/v1",
+            "VLLM_API_KEY",
+        ),
+        (OrchestratorModelConfig, [], "http://localhost:8000/v1", "VLLM_API_KEY"),
+    ],
+)
+@pytest.mark.parametrize("overrides", [[], ["--client.skip-model-check"], ["--client.wait-for-ready-timeout", "10"]])
+def test_client_defaults_survive_partial_overrides(
+    monkeypatch, config_class, source_args, expected_url, expected_key, overrides
+):
+    monkeypatch.setenv("PRIME_INFERENCE_URL", "https://configured.pinference.ai/api/v1")
+    config = cli(config_class, args=source_args + overrides)
+    assert config.client.base_url == expected_url
+    assert config.client.api_key_var == expected_key
+    reloaded = config_class.model_validate_json(config.model_dump_json())
+    assert reloaded.client == config.client
 
 
 def test_env_algo_inherits_the_group_algo():
